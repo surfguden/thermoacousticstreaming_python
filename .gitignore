@@ -1,0 +1,46 @@
+# Python caches and build outputs
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local application state
+.thermo_acoustic_ui.json
+
+# Hardware smoke-test and capture outputs
+ad2_scope_capture.*
+ad2_matplotlib_plot.*
+hamamatsu_snapshot.*
+frame_*.tif
+frame_*.tiff
+frame_*.npy
+*.tdms
+
+# Logs and temporary files
+*.log
+*.err
+*.tmp
+*.bak
+~$*
+
+# Editor and OS metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Codex/local agent scratch state
+.agents/
