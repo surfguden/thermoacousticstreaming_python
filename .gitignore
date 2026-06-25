@@ -15,6 +15,7 @@ dist/
 .venv/
 venv/
 env/
+.env
 
 # Local application state
 .thermo_acoustic_ui.json

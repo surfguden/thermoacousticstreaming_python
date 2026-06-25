@@ -33,8 +33,9 @@ RUNTIME_TBD = [
     ),
     (
         "Cetoni/Qmix real pump backend",
-        "The pump API surface is ported and simulated, but the real vendor SDK adapter "
-        "still needs to be connected and tested with the installed Qmix/Cetoni stack.",
+        "The Qmix/Cetoni backend is implemented through `QmixPumpBackend`, but it still "
+        "needs to be validated with the installed Qmix/Cetoni stack, real syringe "
+        "geometry, safe flow limits, and the user's device configuration.",
     ),
     (
         "Valve serial validation",

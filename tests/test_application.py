@@ -31,6 +31,7 @@ from thermo_acoustic.imaq import (
 )
 from thermo_acoustic.instruments import AD2Sdk, CetoniPump, HamamatsuCamera, PriorZMotor, RegloPumpControl, SimulatedAD2Sdk, Valve
 from thermo_acoustic.messages import Message, MessageName
+from thermo_acoustic.qmix_backend import QmixPumpBackend, SYRINGE_PRESETS
 from thermo_acoustic.serial_config import (
     visa_configure_serial_port,
     visa_configure_serial_port_instr,
@@ -473,6 +474,147 @@ def test_cetoni_backend_commands():
         ("stop",),
         ("close",),
     ]
+
+
+class FakeQmixBusModule:
+    class UnitPrefix:
+        micro = "micro"
+        milli = "milli"
+
+    class TimeUnit:
+        per_second = "per_second"
+        per_minute = "per_minute"
+
+    class Bus:
+        def __init__(self):
+            self.calls = []
+
+        def open(self, configuration_path, plugin_search_path):
+            self.calls.append(("open", configuration_path, plugin_search_path))
+
+        def start(self):
+            self.calls.append(("start",))
+
+        def stop(self):
+            self.calls.append(("stop",))
+
+        def close(self):
+            self.calls.append(("close",))
+
+
+class FakeQmixPumpModule:
+    UnitPrefix = FakeQmixBusModule.UnitPrefix
+    TimeUnit = FakeQmixBusModule.TimeUnit
+
+    class VolumeUnit:
+        litres = "litres"
+
+    class Pump:
+        instances = []
+
+        def __init__(self):
+            self.calls = []
+            self.fault = False
+            self.enabled = False
+            self.pumping = False
+            self.max_flow = 5000.0
+            self.max_volume = 10.0
+            FakeQmixPumpModule.Pump.instances.append(self)
+
+        def lookup_by_device_index(self, index):
+            self.calls.append(("lookup_by_device_index", index))
+
+        def lookup_by_name(self, name):
+            self.calls.append(("lookup_by_name", name))
+
+        def is_in_fault_state(self):
+            self.calls.append(("is_in_fault_state",))
+            return self.fault
+
+        def clear_fault(self):
+            self.calls.append(("clear_fault",))
+            self.fault = False
+
+        def is_enabled(self):
+            self.calls.append(("is_enabled",))
+            return self.enabled
+
+        def enable(self, enable):
+            self.calls.append(("enable", enable))
+            self.enabled = enable
+
+        def set_volume_unit(self, prefix, unit):
+            self.calls.append(("set_volume_unit", prefix, unit))
+
+        def set_flow_unit(self, prefix, unit, time_unit):
+            self.calls.append(("set_flow_unit", prefix, unit, time_unit))
+
+        def get_flow_rate_max(self):
+            self.calls.append(("get_flow_rate_max",))
+            return self.max_flow
+
+        def get_volume_max(self):
+            self.calls.append(("get_volume_max",))
+            return self.max_volume
+
+        def set_syringe_param(self, inner_diameter_mm, max_piston_stroke_mm):
+            self.calls.append(("set_syringe_param", inner_diameter_mm, max_piston_stroke_mm))
+
+        def set_fill_level(self, level, flow):
+            self.calls.append(("set_fill_level", level, flow))
+            self.pumping = True
+
+        def generate_flow(self, flow):
+            self.calls.append(("generate_flow", flow))
+            self.pumping = True
+
+        def stop_pumping(self):
+            self.calls.append(("stop_pumping",))
+            self.pumping = False
+
+        def calibrate(self):
+            self.calls.append(("calibrate",))
+
+        def is_calibration_finished(self):
+            self.calls.append(("is_calibration_finished",))
+            return True
+
+        def is_pumping(self):
+            self.calls.append(("is_pumping",))
+            return self.pumping
+
+
+def test_qmix_pump_backend_initializes_and_dispatches(tmp_path):
+    FakeQmixPumpModule.Pump.instances = []
+    backend = QmixPumpBackend(
+        qmixbus=FakeQmixBusModule,
+        qmixpump=FakeQmixPumpModule,
+        pump_name="Pump A",
+    )
+    config = tmp_path / "qmix-config"
+
+    backend.initialize(config)
+    backend.configure_syringe({"name": "BD 1ml"})
+    backend.generate_flow(-5000.0)
+    assert backend.read_status()
+    backend.set_fill_level(0.5)
+    backend.reference_move()
+    backend.empty()
+    backend.refill()
+    backend.close()
+
+    pump = FakeQmixPumpModule.Pump.instances[0]
+    diameter, stroke = SYRINGE_PRESETS["BD 1ml"]
+    assert ("lookup_by_name", "Pump A") in pump.calls
+    assert ("enable", True) in pump.calls
+    assert ("set_flow_unit", FakeQmixPumpModule.UnitPrefix.micro, FakeQmixPumpModule.VolumeUnit.litres, FakeQmixPumpModule.TimeUnit.per_minute) in pump.calls
+    assert ("set_volume_unit", FakeQmixPumpModule.UnitPrefix.milli, FakeQmixPumpModule.VolumeUnit.litres) in pump.calls
+    assert ("set_syringe_param", diameter, stroke) in pump.calls
+    assert ("generate_flow", -5000.0) in pump.calls
+    assert ("set_fill_level", 5.0, 5000.0) in pump.calls
+    assert ("calibrate",) in pump.calls
+    assert ("set_fill_level", 0.0, 5000.0) in pump.calls
+    assert ("set_fill_level", 10.0, 5000.0) in pump.calls
 
 
 class FakeCameraBackend:

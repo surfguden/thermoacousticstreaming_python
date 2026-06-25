@@ -37,9 +37,10 @@ Hardware support currently works in three layers:
 - Valve and Z-stage serial devices: real COM-port text command transport is
   implemented with `pyserial` and is selected by clearing the relevant simulate
   toggle or enabling the Z-stage.
-- Hamamatsu camera and Cetoni/Qmix pump: app protocols and simulated behavior
-  are implemented. Real operation requires plugging vendor SDK adapters into
-  `CameraBackend` and `PumpBackend` in `thermo_acoustic.instruments`.
+- Hamamatsu camera and Cetoni/Qmix pump: real SDK backends are implemented in
+  `thermo_acoustic.hamamatsu_dcam` and `thermo_acoustic.qmix_backend`, with
+  simulator paths still available through the UI toggles. Real operation still
+  needs hardware validation with the installed SDKs and device configurations.
 
 The UI runs hardware actions on worker threads, persists settings in
 `.thermo_acoustic_ui.json`, and performs cleanup on Exit.

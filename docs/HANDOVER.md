@@ -86,7 +86,11 @@ Instrument status:
   files named `frame_00000.tiff`, `frame_00001.tiff`, etc.
 - Camera smoke test: `tools/test_hamamatsu_camera.py` opens the real camera,
   captures a snapshot, and saves `hamamatsu_snapshot.tiff`.
-- Pump: simulated API exists. Real Cetoni/Qmix vendor SDK adapter is still TBD.
+- Pump: simulated API exists and `QmixPumpBackend` provides the real
+  Cetoni/Qmix SDK adapter. It opens the Qmix bus, looks up a pump by name or
+  index, starts communication, clears faults, enables the drive, configures
+  uL/min flow units, supports syringe presets/explicit geometry, and dispatches
+  refill/empty/flow/fill-level/reference commands.
 - Valve/Z-stage: serial text backend exists through `pyserial`, but real command
   strings, baud, line endings, and response parsing still need validation on the
   actual hardware.
@@ -161,8 +165,8 @@ Do not expose or commit the private key.
 4. Validate TIFF output bit depth and metadata expectations against downstream
    analysis.
 5. Run MSO hardware tests across all trigger-source options.
-6. Implement the real Cetoni/Qmix pump backend.
+6. Validate the real Cetoni/Qmix pump backend with the installed SDK, actual
+   device configuration, and confirmed syringe geometry.
 7. Validate valve serial commands on the MX valve.
 8. Run the full Experiment tab end-to-end with AD2, Hamamatsu, pump, and valve.
 9. Decide packaging/startup path for the operator.
-

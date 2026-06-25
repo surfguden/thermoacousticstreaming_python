@@ -21,7 +21,7 @@ validation or operator-facing polish before calling the Python app finished.
 - **Hamamatsu real camera validation**: Run `tools/test_hamamatsu_camera.py` against the connected camera and verify open, exposure, ROI/subarray, snapshot, sequence capture, software trigger, and cleanup behavior.
 - **Camera image handling**: Verify that the Python TIFF output matches the LabVIEW image output needs, including bit depth, frame naming, metadata, and any TDMS sidecar data expected by downstream analysis.
 - **Camera UI preview**: Add a live/snapshot image display in the Camera tab if the operator needs the Python UI to replace LabVIEW's image window behavior.
-- **Cetoni/Qmix real pump backend**: The pump API surface is ported and simulated, but the real vendor SDK adapter still needs to be connected and tested with the installed Qmix/Cetoni stack.
+- **Cetoni/Qmix real pump backend**: The Qmix/Cetoni backend is implemented through `QmixPumpBackend`, but it still needs to be validated with the installed Qmix/Cetoni stack, real syringe geometry, safe flow limits, and the user's device configuration.
 - **Valve serial validation**: Confirm real valve commands, baud rate, line endings, and response parsing on the connected MX valve hardware.
 - **Analog Discovery MSO hardware validation**: Exercise all MSO trigger source options on the real AD2/AD3 hardware and check that channel enable, sample rate, duration, x-axis scale, and y-axis scale match the physical oscilloscope signal.
 - **End-to-end experiment execution**: Run the Experiment tab with the real AD2, Hamamatsu camera, pump, and valve together, then compare folder output, saved settings, image data, trigger timing, flush timing, abort cleanup, and status messages against the LabVIEW behavior.

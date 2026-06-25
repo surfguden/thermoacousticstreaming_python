@@ -35,6 +35,7 @@ from .application import Application
 from .camera import SubRegion
 from .hamamatsu_dcam import HamamatsuDcamBackend
 from .instruments import AD2Sdk, CetoniPump, HamamatsuCamera, PriorZMotor, SerialTextCommandBackend, SimulatedAD2Sdk, Valve
+from .qmix_backend import QmixPumpBackend
 from .workflows import Experiment2, ExperimentSeries2, FlushSettings
 
 
@@ -819,6 +820,7 @@ class MainWindow(QMainWindow):
                 enabled=bool(config["pump_enabled"]),
                 simulate=bool(config["sim_pump"]),
                 configuration_path=Path(str(config["cetoni_config_path"])),
+                backend=None if bool(config["sim_pump"]) else QmixPumpBackend(),
             )
         )
         self.app.set_valve(

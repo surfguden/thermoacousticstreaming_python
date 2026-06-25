@@ -594,6 +594,8 @@ class CetoniPump:
     referenced: bool = False
 
     def initialize(self) -> None:
+        if not self.enabled:
+            return
         if self.backend is not None:
             self.backend.initialize(self.configuration_path)
         self.referenced = True
