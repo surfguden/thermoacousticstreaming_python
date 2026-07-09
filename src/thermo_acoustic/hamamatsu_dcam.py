@@ -27,6 +27,8 @@ class HamamatsuDcamBackend:
     dcam_module: Any = None
     initialized: bool = False
     sequence_settings: dict[str, Any] | None = None
+    capture_active: bool = False
+    allocated_buffer_frames: int = 0
 
     def _load_sdk(self) -> None:
         if self.dcam_module is not None:
@@ -119,35 +121,45 @@ class HamamatsuDcamBackend:
 
     def start_capture(self) -> None:
         self.open_camera()
-        self._ensure_buffer(self.buffer_frames)
+        self._ensure_buffer(self._sequence_buffer_frame_count())
         self._check(self.dcam.cap_start(True), "Dcam.cap_start")
+        self.capture_active = True
 
     def stop_capture(self) -> None:
         if self.dcam is not None and self.dcam.is_opened():
             self.dcam.cap_stop()
+        self.capture_active = False
 
     def capture_snapshot(self) -> object:
         self.open_camera()
         self._ensure_buffer(1)
         self._check(self.dcam.cap_snapshot(), "Dcam.cap_snapshot")
+        self.capture_active = True
         try:
             self._wait_frame()
             return self._last_frame_copy()
         finally:
             self.dcam.cap_stop()
+            self.capture_active = False
 
     def image_sequence(self, frame_count: int = 0) -> list[object]:
         self.open_camera()
         count = max(int(frame_count), 1)
-        self._ensure_buffer(max(count, self.buffer_frames))
         frames: list[object] = []
-        self._check(self.dcam.cap_start(True), "Dcam.cap_start sequence")
+        started_here = False
+        if not self.capture_active:
+            self._ensure_buffer(max(count, self.buffer_frames))
+            self._check(self.dcam.cap_start(True), "Dcam.cap_start sequence")
+            self.capture_active = True
+            started_here = True
         try:
             for _ in range(count):
                 self._wait_frame()
                 frames.append(self._last_frame_copy())
         finally:
-            self.dcam.cap_stop()
+            if started_here:
+                self.dcam.cap_stop()
+                self.capture_active = False
         return frames
 
     def save_sequence(self, image_data: object, folder: Path) -> None:
@@ -200,9 +212,16 @@ class HamamatsuDcamBackend:
     def close(self) -> None:
         if self.dcam is not None:
             try:
+                if self.dcam.is_opened():
+                    self.dcam.cap_stop()
+            except Exception:
+                pass
+            self.capture_active = False
+            try:
                 self.dcam.buf_release()
             except Exception:
                 pass
+            self.allocated_buffer_frames = 0
             self.dcam.dev_close()
             self.dcam = None
         if self.initialized and self.dcamapi is not None:
@@ -210,11 +229,27 @@ class HamamatsuDcamBackend:
             self.initialized = False
 
     def _ensure_buffer(self, frames: int) -> None:
+        requested = max(int(frames), 1)
+        if self.capture_active:
+            if self.allocated_buffer_frames >= requested:
+                return
+            raise HamamatsuDcamError(
+                "Cannot reallocate DCAM buffer while capture is active "
+                f"(requested {requested}, allocated {self.allocated_buffer_frames})."
+            )
         try:
             self.dcam.buf_release()
         except Exception:
             pass
-        self._check(self.dcam.buf_alloc(max(int(frames), 1)), "Dcam.buf_alloc")
+        self.allocated_buffer_frames = 0
+        self._check(self.dcam.buf_alloc(requested), f"Dcam.buf_alloc({requested})")
+        self.allocated_buffer_frames = requested
+
+    def _sequence_buffer_frame_count(self) -> int:
+        frame_count = 0
+        if self.sequence_settings:
+            frame_count = int(self.sequence_settings.get("frames", 0) or 0)
+        return max(frame_count, self.buffer_frames)
 
     def _wait_frame(self) -> None:
         while True:
