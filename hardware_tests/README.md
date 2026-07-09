@@ -133,3 +133,19 @@ semantics, and operator confirmation.
   check, with movement tests separated and explicitly confirmed.
 - `hardware_tests/test_ad2_low_output_confirmed.py`: later low-amplitude AD2
   loopback test requiring confirmation and guaranteed output shutdown.
+
+## Z-Stage Discovery Result
+
+- The configured Prior Z-stage serial path is not valid for the currently
+  connected device: `COM7` is not present.
+- Windows Device Manager shows an `APT USB Device`.
+- Thorlabs/Kinesis is installed under
+  `C:\Program Files\Thorlabs\Kinesis`.
+- `pylablib` passive enumeration found one Kinesis/APT device.
+- Detected device:
+  - serial: `44533854`
+  - type: `APT Piezo Controller`
+- No controller was opened, no motor was enabled, no polling was started, and
+  no motion, home, jog, identify, or settings commands were sent.
+- Future Z-stage integration should use a Thorlabs/APT/Kinesis path, not the
+  current Prior serial `COM7` implementation.
