@@ -225,7 +225,8 @@ class Application:
             experiment.cleanup()
             return False
 
-        self.flush(experiment.flush_settings)
+        if experiment.flush_enabled:
+            self.flush(experiment.flush_settings)
         self.camera.save_sequence(image_data, experiment_folder)
         experiment.save_image_data(image_data)
         experiment.save_camera_settings(

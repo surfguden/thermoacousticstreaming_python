@@ -282,6 +282,7 @@ class MainWindow(QMainWindow):
         self.exp_flush_flowrate = _spin(0.0, decimals=3)
         self.exp_flush_volume = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_wait_after_flush = _spin(0.0, decimals=3, minimum=0.0)
+        self.exp_flush_enabled = QCheckBox("Enable")
         self.camera_start_array = [_spin(0.0, decimals=3, minimum=0.0) for _ in range(10)]
         self.global_exposure = QCheckBox("Off/On")
         self.dynamic_camera_start = QCheckBox("Off/On")
@@ -716,6 +717,7 @@ class MainWindow(QMainWindow):
     def _experiment_flush_group(self) -> QGroupBox:
         group = QGroupBox("Flush Settings 2")
         form = QFormLayout(group)
+        form.addRow("Flush after capture", self.exp_flush_enabled)
         form.addRow("Flush Flowrate(uL)", self.exp_flush_flowrate)
         form.addRow("flush volume (ml)", self.exp_flush_volume)
         form.addRow("WaitAfterFlush", self.exp_wait_after_flush)
@@ -961,6 +963,7 @@ class MainWindow(QMainWindow):
                     repeat_id=repeat,
                     experiment_folder=folder,
                     flush_settings=self._flush_settings(experiment=True),
+                    flush_enabled=self.exp_flush_enabled.isChecked(),
                     global_exposure_ms=self.exp_exposure_ms.value(),
                     sequence_settings={
                         "frames": self.exp_frames.value(),
@@ -1204,6 +1207,7 @@ class MainWindow(QMainWindow):
                 "exposure_ms": self.exp_exposure_ms.value(),
                 "ch1_frequency": self.exp_ch1_freq.value(),
                 "ch1_amplitude": self.exp_ch1_amp.value(),
+                "flush_enabled": self.exp_flush_enabled.isChecked(),
                 "flush_flowrate": self.exp_flush_flowrate.value(),
                 "flush_volume": self.exp_flush_volume.value(),
                 "wait_after_flush": self.exp_wait_after_flush.value(),
@@ -1296,6 +1300,8 @@ class MainWindow(QMainWindow):
             for key, widget in mapping.items():
                 if key in experiment:
                     widget.setValue(experiment[key])
+            if "flush_enabled" in experiment:
+                self.exp_flush_enabled.setChecked(bool(experiment["flush_enabled"]))
         self._set_status("Settings loaded")
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API name

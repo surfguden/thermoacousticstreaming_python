@@ -30,6 +30,7 @@ class Experiment2:
     repeat_id: int = 0
     experiment_folder: Path = Path()
     flush_settings: FlushSettings = field(default_factory=lambda: FlushSettings(0.0, 0.0, 0.0))
+    flush_enabled: bool = False
     global_exposure_ms: float = 0.0
     sequence_settings: dict[str, Any] | None = None
     wfg_config: dict[str, Any] | None = None

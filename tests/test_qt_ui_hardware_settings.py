@@ -95,3 +95,19 @@ def test_qt_ui_save_and_restore_passive_hardware_fields(monkeypatch, tmp_path):
     assert second_window.qmix_sdk_python_path.text() == r"C:\sdk\python"
     assert second_window.qmix_qmixsdk_path.text() == r"C:\sdk\dll"
     assert second_window.cetoni_config_path.text() == r"C:\configs\one-pump"
+
+
+def test_qt_ui_experiment_flush_is_disabled_by_default_and_explicitly_enabled(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    window.series_path.setText(str(tmp_path / "series"))
+
+    series, _total_frames, _config = window._build_experiment_series()
+
+    assert series.experiments is not None
+    assert [experiment.flush_enabled for experiment in series.experiments] == [False]
+
+    window.exp_flush_enabled.setChecked(True)
+    series, _total_frames, _config = window._build_experiment_series()
+
+    assert series.experiments is not None
+    assert [experiment.flush_enabled for experiment in series.experiments] == [True]

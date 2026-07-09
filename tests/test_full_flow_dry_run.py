@@ -166,10 +166,8 @@ class RecordingExperiment(Experiment2):
         self.calls.append(("experiment", "cleanup"))
 
 
-def test_application_full_flow_dry_run_uses_fake_hardware_only(tmp_path):
-    imported_before = {name for name in REAL_HARDWARE_MODULES if name in sys.modules}
-    calls = []
-    app = Application(
+def make_fake_app(calls, tmp_path):
+    return Application(
         ad2=FakeAD2(calls),
         camera=FakeCamera(calls),
         pump=FakePump(calls),
@@ -177,7 +175,10 @@ def test_application_full_flow_dry_run_uses_fake_hardware_only(tmp_path):
         z_motor=FakeZStage(calls),
         experiment_series=ExperimentSeries2(series_path=tmp_path),
     )
-    experiment = RecordingExperiment(
+
+
+def make_recording_experiment(calls, tmp_path, *, flush_enabled=False):
+    return RecordingExperiment(
         calls,
         experiment_folder=tmp_path / "repeat_001",
         flush_settings=FlushSettings(
@@ -185,11 +186,19 @@ def test_application_full_flow_dry_run_uses_fake_hardware_only(tmp_path):
             flush_volume_ml=0.0,
             wait_after_flush_s=0.0,
         ),
+        flush_enabled=flush_enabled,
         global_exposure_ms=12.5,
         sequence_settings={"frames": 3},
         wfg_config={"running": False, "channels": []},
         do_clock_settings={"running": False, "channels": []},
     )
+
+
+def test_application_full_flow_dry_run_skips_flush_by_default(tmp_path):
+    imported_before = {name for name in REAL_HARDWARE_MODULES if name in sys.modules}
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+    experiment = make_recording_experiment(calls, tmp_path)
     app.experiment_series.enqueue_experiments([experiment])
 
     app.initialize()
@@ -221,11 +230,10 @@ def test_application_full_flow_dry_run_uses_fake_hardware_only(tmp_path):
     assert ("camera", "start_capture") in calls
     assert ("camera", "image_sequence", 3) in calls
     assert ("camera", "stop_capture") in calls
-    assert ("valve", "set_position", 1) in calls
-    assert ("pump", "set_fill_level", 1.0) in calls
-    assert ("pump", "generate_flow", 0.0) in calls
-    assert ("pump", "read_status") in calls
-    assert ("valve", "set_position", 2) in calls
+    assert not any(call[:2] == ("valve", "set_position") for call in calls)
+    assert not any(call[:2] == ("pump", "set_fill_level") for call in calls)
+    assert not any(call[:2] == ("pump", "generate_flow") for call in calls)
+    assert not any(call[:2] == ("pump", "read_status") for call in calls)
     assert calls[-5:] == [
         ("camera", "cleanup"),
         ("pump", "cleanup"),
@@ -234,5 +242,31 @@ def test_application_full_flow_dry_run_uses_fake_hardware_only(tmp_path):
         ("ad2", "cleanup"),
     ]
 
+    assert isinstance(app.pump, FakePump)
+    assert isinstance(app.valve, FakeValve)
+
+
+def test_application_full_flow_dry_run_can_opt_into_fake_flush(tmp_path):
+    imported_before = {name for name in REAL_HARDWARE_MODULES if name in sys.modules}
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+    experiment = make_recording_experiment(calls, tmp_path, flush_enabled=True)
+    app.experiment_series.enqueue_experiments([experiment])
+
+    ok = app.run_experiment2()
+
+    imported_after = {name for name in REAL_HARDWARE_MODULES if name in sys.modules}
+    assert imported_after == imported_before
+    assert ok is True
+    assert experiment.saved_image_data == ["fake-frame-0", "fake-frame-1", "fake-frame-2"]
+    assert ("camera", "start_capture") in calls
+    assert ("camera", "image_sequence", 3) in calls
+    assert ("camera", "stop_capture") in calls
+    assert ("camera", "save_sequence", ("fake-frame-0", "fake-frame-1", "fake-frame-2"), tmp_path / "repeat_001") in calls
+    assert ("valve", "set_position", 1) in calls
+    assert ("pump", "set_fill_level", 1.0) in calls
+    assert ("pump", "generate_flow", 0.0) in calls
+    assert ("pump", "read_status") in calls
+    assert ("valve", "set_position", 2) in calls
     assert isinstance(app.pump, FakePump)
     assert isinstance(app.valve, FakeValve)
