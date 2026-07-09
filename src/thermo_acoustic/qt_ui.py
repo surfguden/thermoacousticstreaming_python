@@ -33,10 +33,9 @@ from PySide6.QtWidgets import (
 from .ad2 import CarrierSettings, TriggerSettings, TriggerSource, WaveformFunction, WfgChannelConfig, WfgConfig
 from .application import Application
 from .camera import SubRegion
-from .hamamatsu_dcam import HamamatsuDcamBackend
+from .hardware_factory import HardwareRuntimeConfig, apply_hardware_bundle, build_hardware_bundle
 from .hardware_config import ZStageBackend, default_hardware_config
-from .instruments import AD2Sdk, CetoniPump, HamamatsuCamera, PriorZMotor, SerialTextCommandBackend, SimulatedAD2Sdk, Valve
-from .qmix_backend import QmixPumpBackend
+from .instruments import SimulatedAD2Sdk
 from .workflows import Experiment2, ExperimentSeries2, FlushSettings
 
 
@@ -794,65 +793,30 @@ class MainWindow(QMainWindow):
         )
 
     def _start_initialize(self) -> None:
-        config = {
-            "ad2_enabled": self.ad2_enabled.isChecked(),
-            "sim_ad2": self.sim_ad2.isChecked(),
-            "camera_enabled": self.camera_enabled.isChecked(),
-            "sim_camera": self.sim_camera.isChecked(),
-            "pump_enabled": self.pump_enabled.isChecked(),
-            "sim_pump": self.sim_pump.isChecked(),
-            "valve_enabled": self.valve_enabled.isChecked(),
-            "sim_valve": self.sim_valve.isChecked(),
-            "z_enabled": self.z_enabled.isChecked(),
-            "prior_resource": self.prior_resource.text(),
-            "valve_resource": self.valve_resource.text(),
-            "cetoni_config_path": self.cetoni_config_path.text(),
-        }
+        config = HardwareRuntimeConfig(
+            ad2_enabled=self.ad2_enabled.isChecked(),
+            sim_ad2=self.sim_ad2.isChecked(),
+            camera_enabled=self.camera_enabled.isChecked(),
+            sim_camera=self.sim_camera.isChecked(),
+            pump_enabled=self.pump_enabled.isChecked(),
+            sim_pump=self.sim_pump.isChecked(),
+            valve_enabled=self.valve_enabled.isChecked(),
+            sim_valve=self.sim_valve.isChecked(),
+            z_enabled=self.z_enabled.isChecked(),
+            prior_resource=self.prior_resource.text(),
+            valve_resource=self.valve_resource.text(),
+            cetoni_config_path=self.cetoni_config_path.text(),
+        )
         self._run_action(lambda progress: self._initialize_system(config, progress), "Initializing")
 
-    def _initialize_system(self, config: dict[str, object], progress=None) -> str:
+    def _initialize_system(self, config: HardwareRuntimeConfig, progress=None) -> str:
         if progress:
             progress("status", "Opening selected hardware")
         try:
             self.app.cleanup()
         except Exception as exc:
             self.app.check_loop_error(exc)
-        ad2 = (
-            SimulatedAD2Sdk(enabled=bool(config["ad2_enabled"]))
-            if bool(config["sim_ad2"])
-            else AD2Sdk(enabled=bool(config["ad2_enabled"]))
-        )
-        self.app.set_ad2_sdk(ad2)
-        self.app.set_hamamatsu(
-            HamamatsuCamera(
-                enabled=bool(config["camera_enabled"]),
-                simulate=bool(config["sim_camera"]),
-                backend=None if bool(config["sim_camera"]) else HamamatsuDcamBackend(),
-            )
-        )
-        self.app.set_cetoni_pump(
-            CetoniPump(
-                enabled=bool(config["pump_enabled"]),
-                simulate=bool(config["sim_pump"]),
-                configuration_path=Path(str(config["cetoni_config_path"])),
-                backend=None if bool(config["sim_pump"]) else QmixPumpBackend(),
-            )
-        )
-        self.app.set_valve(
-            Valve(
-                enabled=bool(config["valve_enabled"]),
-                simulate=bool(config["sim_valve"]),
-                visa_resource=str(config["valve_resource"]),
-                backend=None if bool(config["sim_valve"]) else SerialTextCommandBackend(),
-            )
-        )
-        self.app.set_prior_zmotor(
-            PriorZMotor(
-                enabled=bool(config["z_enabled"]),
-                visa_resource=str(config["prior_resource"]),
-                backend=None if not bool(config["z_enabled"]) else SerialTextCommandBackend(),
-            )
-        )
+        apply_hardware_bundle(self.app, build_hardware_bundle(config))
         self.app.initialize()
         return "System Initialized"
 
