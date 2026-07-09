@@ -89,6 +89,34 @@ def real_camera_only_plan() -> SmokePlan:
     )
 
 
+def real_camera_real_ad2_low_risk_plan() -> SmokePlan:
+    defaults = default_hardware_config()
+    return SmokePlan(
+        name="real-camera-real-ad2-low-risk",
+        description=(
+            "Combined smoke using real Hamamatsu camera and real AD2 low-risk "
+            "output, with pump simulated/disabled, valve simulated/disabled, "
+            "Z-stage disabled, Qmix untouched, and experiment flush disabled."
+        ),
+        config=HardwareRuntimeConfig(
+            ad2_enabled=True,
+            sim_ad2=False,
+            camera_enabled=True,
+            sim_camera=False,
+            pump_enabled=False,
+            sim_pump=True,
+            valve_enabled=False,
+            sim_valve=True,
+            z_enabled=False,
+            prior_resource=defaults.z_stage.prior_resource,
+            valve_resource="COM6",
+            cetoni_config_path=defaults.qmix.config_path,
+        ),
+        flush_enabled=False,
+        requires_confirmation=True,
+    )
+
+
 def resolve_smoke_settings(
     preset_name: str | None,
     frames: int | None,
@@ -320,11 +348,11 @@ def print_plan(plan: SmokePlan, output_dir: Path, settings: SmokeRunSettings) ->
     print_value("requires confirmation", plan.requires_confirmation)
     print_step("hardware modes")
     print_value("camera", "real Hamamatsu DCAM backend")
-    print_value("AD2", "simulated")
+    print_value("AD2", "real low-risk" if not plan.config.sim_ad2 else "simulated")
     print_value("pump", "simulated/disabled; no Qmix backend")
     print_value("valve", "simulated/disabled; no serial backend")
     print_value("Z-stage", "disabled; no Prior COM7 or Thorlabs/APT motion")
-    print_value("AD2 output", "not real; SimulatedAD2Sdk only")
+    print_value("AD2 output", "real low-risk only" if not plan.config.sim_ad2 else "not real; SimulatedAD2Sdk only")
     print_value("pump/valve flush", "disabled")
     if settings.preset is not None:
         print_labview_preset_summary(settings.preset)
@@ -439,6 +467,85 @@ def run_real_camera_only(
         app.cleanup()
 
 
+def run_real_camera_real_ad2_low_risk(
+    output_dir: Path,
+    frames: int | None,
+    exposure_ms: float | None,
+    preset_name: str | None = None,
+    apply_roi: bool = False,
+    device_index: int = 0,
+) -> Path:
+    _ = device_index
+    plan = real_camera_real_ad2_low_risk_plan()
+    settings = resolve_smoke_settings(preset_name, frames, exposure_ms, apply_roi)
+    run_dir = output_dir / f"camera_ad2_lowrisk_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    print_plan(plan, run_dir, settings)
+    print_low_risk_ad2_output_parameters()
+    print_step("combined smoke uses Application.run_experiment2 with flush_enabled=False")
+    print_step("pump, valve, Qmix, Z-stage, Thorlabs/APT, and Prior COM7 remain disabled or unused")
+
+    app = Application()
+    bundle = build_hardware_bundle(plan.config)
+    camera_backend = bundle.camera.backend
+    buffer_frames = getattr(camera_backend, "buffer_frames", "<unknown>")
+    allocation_frames = max(settings.frames, int(buffer_frames) if isinstance(buffer_frames, int) else 1)
+    print_step("combined acquisition diagnostics")
+    print_value("camera trigger source", settings.trigger_source)
+    print_value("camera exposure_ms", settings.exposure_ms)
+    print_value("camera requested frame count", settings.frames)
+    print_value("camera backend buffer_frames", buffer_frames)
+    print_value("camera planned buffer allocation frames", allocation_frames)
+    print_value("AD2 low-risk config", "CH0 1000 Hz sine, 0.1 V amplitude, 0 V offset, 0.5 s")
+    print_value("LabVIEW acoustic output", "not used: no 1.975 MHz, 2.0 V, 60 s output")
+
+    apply_hardware_bundle(app, bundle)
+    experiment = Experiment2(
+        experiment_folder=run_dir,
+        flush_settings=FlushSettings(0.0, 0.0, 0.0),
+        flush_enabled=False,
+        global_exposure_ms=settings.exposure_ms,
+        sequence_settings={
+            "frames": settings.frames,
+            "trigger_source": settings.trigger_source,
+            "exposure_ms": settings.exposure_ms,
+        },
+        wfg_config=low_risk_wfg_config(),
+        do_clock_settings={"running": False, "channels": []},
+    )
+    app.experiment_series = ExperimentSeries2(output_dir, [experiment])
+
+    try:
+        app.initialize()
+        if settings.roi is not None and settings.apply_roi:
+            if hasattr(app.camera, "configure_roi"):
+                print_step("applying LabVIEW screenshot ROI to real camera because --apply-roi was provided")
+                print_camera_roi_diagnostics(app.camera, settings.roi, "before configure_roi")
+                app.camera.configure_roi(settings.roi)
+                print_camera_roi_diagnostics(app.camera, settings.roi, "after configure_roi")
+            else:
+                print_step("LabVIEW screenshot ROI is known but not applied: camera wrapper has no configure_roi")
+        elif settings.roi is not None:
+            print_step("LabVIEW screenshot ROI is known but not applied; pass --apply-roi for explicit ROI validation")
+
+        print_step("running combined real-camera + real-AD2 low-risk experiment")
+        ok = app.run_experiment2()
+        print_value("experiment ok", ok)
+        print_value("experiment folder", run_dir)
+        return run_dir
+    finally:
+        print_step("combined smoke cleanup")
+        ad2_backend = getattr(app.ad2, "backend", None)
+        ad2_handle = getattr(app.ad2, "device_handle", None)
+        if isinstance(ad2_backend, WaveFormsBackend) and ad2_handle is not None:
+            safe_disable_ad2_outputs(ad2_backend, int(ad2_handle))
+        try:
+            if hasattr(app.camera, "stop_capture"):
+                app.camera.stop_capture()
+        except Exception as exc:
+            print_step(f"cleanup warning: camera stop_capture failed: {exc}")
+        app.cleanup()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -454,6 +561,11 @@ def parse_args() -> argparse.Namespace:
         "--real-ad2-low-risk-output",
         action="store_true",
         help="Run a deliberately low-risk AD2 output smoke. Requires --confirm.",
+    )
+    mode.add_argument(
+        "--real-camera-real-ad2-low-risk",
+        action="store_true",
+        help="Run combined real camera plus real AD2 low-risk workflow. Requires --confirm.",
     )
     mode.add_argument(
         "--real-camera-only",
@@ -491,6 +603,18 @@ def main() -> int:
         if args.confirm != CONFIRM_TEXT:
             raise SystemExit(f"This mode requires --confirm {CONFIRM_TEXT}")
         run_real_ad2_low_risk_output(args.device_index)
+        return 0
+    if args.real_camera_real_ad2_low_risk:
+        if args.confirm != CONFIRM_TEXT:
+            raise SystemExit(f"This mode requires --confirm {CONFIRM_TEXT}")
+        run_real_camera_real_ad2_low_risk(
+            args.output_dir,
+            args.frames,
+            args.exposure_ms,
+            args.preset,
+            args.apply_roi,
+            args.device_index,
+        )
         return 0
     if args.real_camera_only:
         require_confirmation_if_needed(plan, args.confirm)

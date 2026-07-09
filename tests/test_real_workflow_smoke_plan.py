@@ -38,6 +38,25 @@ def test_real_camera_only_plan_is_safe_by_default():
     assert plan.config.z_enabled is False
 
 
+def test_combined_camera_ad2_low_risk_plan_keeps_other_hardware_disabled():
+    module = load_smoke_module()
+
+    plan = module.real_camera_real_ad2_low_risk_plan()
+
+    assert plan.name == "real-camera-real-ad2-low-risk"
+    assert plan.flush_enabled is False
+    assert plan.requires_confirmation is True
+    assert plan.config.camera_enabled is True
+    assert plan.config.sim_camera is False
+    assert plan.config.ad2_enabled is True
+    assert plan.config.sim_ad2 is False
+    assert plan.config.pump_enabled is False
+    assert plan.config.sim_pump is True
+    assert plan.config.valve_enabled is False
+    assert plan.config.sim_valve is True
+    assert plan.config.z_enabled is False
+
+
 def test_plan_only_main_does_not_call_real_camera_runner(monkeypatch, capsys, tmp_path):
     module = load_smoke_module()
 
@@ -228,6 +247,34 @@ def test_real_ad2_low_risk_output_requires_confirmation(monkeypatch):
         raise AssertionError("missing confirmation should raise SystemExit")
 
 
+def test_combined_camera_ad2_low_risk_requires_confirmation(monkeypatch, tmp_path):
+    module = load_smoke_module()
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("combined smoke should not run without confirmation")
+
+    monkeypatch.setattr(module, "run_real_camera_real_ad2_low_risk", fail_if_called)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "test_real_workflow_smoke.py",
+            "--real-camera-real-ad2-low-risk",
+            "--preset",
+            "labview-screenshot",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+
+    try:
+        module.main()
+    except SystemExit as exc:
+        assert "CONFIRM_REAL_HARDWARE" in str(exc)
+    else:
+        raise AssertionError("missing confirmation should raise SystemExit")
+
+
 def test_real_ad2_open_close_runs_only_with_confirmation(monkeypatch):
     module = load_smoke_module()
     calls = []
@@ -276,6 +323,39 @@ def test_real_ad2_low_risk_output_runs_only_with_confirmation(monkeypatch):
 
     assert module.main() == 0
     assert calls == [0]
+
+
+def test_combined_camera_ad2_low_risk_runs_only_with_confirmation(monkeypatch, tmp_path):
+    module = load_smoke_module()
+    calls = []
+
+    def fake_runner(output_dir, frames, exposure_ms, preset_name=None, apply_roi=False, device_index=0):
+        calls.append((output_dir, frames, exposure_ms, preset_name, apply_roi, device_index))
+        return output_dir / "fake-run"
+
+    monkeypatch.setattr(module, "run_real_camera_real_ad2_low_risk", fake_runner)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "test_real_workflow_smoke.py",
+            "--real-camera-real-ad2-low-risk",
+            "--preset",
+            "labview-screenshot",
+            "--apply-roi",
+            "--frames",
+            "20",
+            "--output-dir",
+            str(tmp_path),
+            "--confirm",
+            "CONFIRM_REAL_HARDWARE",
+            "--device-index",
+            "1",
+        ],
+    )
+
+    assert module.main() == 0
+    assert calls == [(tmp_path, 20, None, "labview-screenshot", True, 1)]
 
 
 def test_low_risk_ad2_output_parameters_are_not_labview_acoustic_candidate():
