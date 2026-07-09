@@ -34,6 +34,7 @@ from .ad2 import CarrierSettings, TriggerSettings, TriggerSource, WaveformFuncti
 from .application import Application
 from .camera import SubRegion
 from .hamamatsu_dcam import HamamatsuDcamBackend
+from .hardware_config import ZStageBackend, default_hardware_config
 from .instruments import AD2Sdk, CetoniPump, HamamatsuCamera, PriorZMotor, SerialTextCommandBackend, SimulatedAD2Sdk, Valve
 from .qmix_backend import QmixPumpBackend
 from .workflows import Experiment2, ExperimentSeries2, FlushSettings
@@ -184,6 +185,7 @@ class MainWindow(QMainWindow):
         self._refresh_status()
 
     def _build_state(self) -> None:
+        hardware_defaults = default_hardware_config()
         self.ad2_enabled = QCheckBox("Off/On")
         self.ad2_enabled.setChecked(True)
         self.z_enabled = QCheckBox("Off/On")
@@ -202,9 +204,16 @@ class MainWindow(QMainWindow):
         self.sim_ad2 = QCheckBox("Off/On")
         self.sim_ad2.setChecked(True)
 
-        self.prior_resource = QLineEdit("COM7")
+        self.z_backend = _combo([item.value for item in ZStageBackend], hardware_defaults.z_stage.backend.value)
+        self.prior_resource = QLineEdit(hardware_defaults.z_stage.prior_resource)
+        self.thorlabs_apt_serial = QLineEdit(hardware_defaults.z_stage.thorlabs_apt_serial)
+        self.thorlabs_apt_backend = QLineEdit(hardware_defaults.z_stage.thorlabs_apt_backend)
+        self.thorlabs_apt_discovery_only = QCheckBox("Discovery only")
+        self.thorlabs_apt_discovery_only.setChecked(hardware_defaults.z_stage.thorlabs_apt_discovery_only)
         self.valve_resource = QLineEdit("COM6")
-        self.cetoni_config_path = QLineEdit(r"C:\Users\Public\Documents\QmixElements\Projects")
+        self.qmix_sdk_python_path = QLineEdit(str(hardware_defaults.qmix.sdk_python_path))
+        self.qmix_qmixsdk_path = QLineEdit(str(hardware_defaults.qmix.qmixsdk_path))
+        self.cetoni_config_path = QLineEdit(str(hardware_defaults.qmix.config_path))
 
         self.wfg_running = QCheckBox("ON")
         self.wfg_running.setChecked(True)
@@ -362,9 +371,15 @@ class MainWindow(QMainWindow):
         form = QFormLayout(group)
         form.addRow("Analog Discovery 3", self.ad2_enabled)
         form.addRow("Z stage", self.z_enabled)
+        form.addRow("Z stage backend", self.z_backend)
         form.addRow("Prior VISA resource name", self.prior_resource)
+        form.addRow("Thorlabs/APT serial", self.thorlabs_apt_serial)
+        form.addRow("Thorlabs/APT backend", self.thorlabs_apt_backend)
+        form.addRow("Thorlabs/APT discovery only", self.thorlabs_apt_discovery_only)
         form.addRow("Hamamatsu", self.camera_enabled)
         form.addRow("Cetoni Pump", self.pump_enabled)
+        form.addRow("Qmix SDK Python Path", self.qmix_sdk_python_path)
+        form.addRow("Qmix QMIXSDK Path", self.qmix_qmixsdk_path)
         form.addRow("Cetoni Device Configuration Path", self.cetoni_config_path)
         form.addRow("MX Valve 2", self.valve_enabled)
         form.addRow("Valve VISA resource name", self.valve_resource)
@@ -1186,8 +1201,14 @@ class MainWindow(QMainWindow):
             "sim_camera": self.sim_camera.isChecked(),
             "sim_pump": self.sim_pump.isChecked(),
             "sim_valve": self.sim_valve.isChecked(),
+            "z_backend": self.z_backend.currentText(),
             "prior_resource": self.prior_resource.text(),
+            "thorlabs_apt_serial": self.thorlabs_apt_serial.text(),
+            "thorlabs_apt_backend": self.thorlabs_apt_backend.text(),
+            "thorlabs_apt_discovery_only": self.thorlabs_apt_discovery_only.isChecked(),
             "valve_resource": self.valve_resource.text(),
+            "qmix_sdk_python_path": self.qmix_sdk_python_path.text(),
+            "qmix_qmixsdk_path": self.qmix_qmixsdk_path.text(),
             "cetoni_config_path": self.cetoni_config_path.text(),
             "series_path": self.series_path.text(),
             "sequence_path": self.sequence_path.text(),
@@ -1243,12 +1264,21 @@ class MainWindow(QMainWindow):
             ("sim_camera", self.sim_camera),
             ("sim_pump", self.sim_pump),
             ("sim_valve", self.sim_valve),
+            ("thorlabs_apt_discovery_only", self.thorlabs_apt_discovery_only),
         ):
             if name in data:
                 widget.setChecked(bool(data[name]))
+        if "z_backend" in data:
+            index = self.z_backend.findText(str(data["z_backend"]))
+            if index >= 0:
+                self.z_backend.setCurrentIndex(index)
         for name, widget in (
             ("prior_resource", self.prior_resource),
+            ("thorlabs_apt_serial", self.thorlabs_apt_serial),
+            ("thorlabs_apt_backend", self.thorlabs_apt_backend),
             ("valve_resource", self.valve_resource),
+            ("qmix_sdk_python_path", self.qmix_sdk_python_path),
+            ("qmix_qmixsdk_path", self.qmix_qmixsdk_path),
             ("cetoni_config_path", self.cetoni_config_path),
             ("series_path", self.series_path),
             ("sequence_path", self.sequence_path),
