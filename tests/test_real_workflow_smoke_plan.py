@@ -57,6 +57,47 @@ def test_combined_camera_ad2_low_risk_plan_keeps_other_hardware_disabled():
     assert plan.config.z_enabled is False
 
 
+def test_combined_camera_ad2_acoustic_short_plan_keeps_other_hardware_disabled():
+    module = load_smoke_module()
+
+    plan = module.real_camera_real_ad2_acoustic_short_plan()
+
+    assert plan.name == "real-camera-real-ad2-acoustic-short"
+    assert plan.flush_enabled is False
+    assert plan.requires_confirmation is True
+    assert plan.config.camera_enabled is True
+    assert plan.config.sim_camera is False
+    assert plan.config.ad2_enabled is True
+    assert plan.config.sim_ad2 is False
+    assert plan.config.pump_enabled is False
+    assert plan.config.sim_pump is True
+    assert plan.config.valve_enabled is False
+    assert plan.config.sim_valve is True
+    assert plan.config.z_enabled is False
+
+
+def test_real_full_workflow_short_plan_uses_real_pump_valve_and_keeps_z_disabled():
+    module = load_smoke_module()
+
+    plan = module.real_full_workflow_short_plan("COM6", flush_enabled=True)
+
+    assert plan.name == "real-full-workflow-short"
+    assert plan.flush_enabled is True
+    assert plan.requires_confirmation is True
+    assert plan.config.camera_enabled is True
+    assert plan.config.sim_camera is False
+    assert plan.config.ad2_enabled is True
+    assert plan.config.sim_ad2 is False
+    assert plan.config.pump_enabled is True
+    assert plan.config.sim_pump is False
+    assert plan.config.valve_enabled is True
+    assert plan.config.sim_valve is False
+    assert plan.config.valve_resource == "COM6"
+    assert plan.config.z_enabled is False
+    assert "Cetoni_1pump_config_FM" in str(plan.config.cetoni_config_path)
+    assert "two_pumps" not in str(plan.config.cetoni_config_path).lower()
+
+
 def test_plan_only_main_does_not_call_real_camera_runner(monkeypatch, capsys, tmp_path):
     module = load_smoke_module()
 
@@ -379,6 +420,190 @@ def test_combined_camera_ad2_low_risk_requires_confirmation(monkeypatch, tmp_pat
         raise AssertionError("missing confirmation should raise SystemExit")
 
 
+def test_combined_camera_ad2_acoustic_short_requires_confirmation(monkeypatch, tmp_path):
+    module = load_smoke_module()
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("combined acoustic-short smoke should not run without confirmation")
+
+    monkeypatch.setattr(module, "run_real_camera_real_ad2_acoustic_short", fail_if_called)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "test_real_workflow_smoke.py",
+            "--real-camera-real-ad2-acoustic-short",
+            "--preset",
+            "labview-screenshot",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+
+    try:
+        module.main()
+    except SystemExit as exc:
+        assert "CONFIRM_REAL_HARDWARE" in str(exc)
+    else:
+        raise AssertionError("missing confirmation should raise SystemExit")
+
+
+def test_combined_camera_ad2_acoustic_short_requires_timing_acknowledgement(monkeypatch, tmp_path):
+    module = load_smoke_module()
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("combined acoustic-short smoke should not run without timing acknowledgement")
+
+    monkeypatch.setattr(module, "run_real_camera_real_ad2_acoustic_short", fail_if_called)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "test_real_workflow_smoke.py",
+            "--real-camera-real-ad2-acoustic-short",
+            "--preset",
+            "labview-screenshot",
+            "--output-dir",
+            str(tmp_path),
+            "--confirm",
+            "CONFIRM_REAL_HARDWARE",
+        ],
+    )
+
+    try:
+        module.main()
+    except SystemExit as exc:
+        message = str(exc)
+        assert "--acknowledge-timing-uncertain" in message
+        assert "AD2 WFG start timing vs pc_trigger is not yet fully confirmed" in message
+        assert "CH2/index 1 purpose is unknown and remains disabled" in message
+    else:
+        raise AssertionError("missing timing acknowledgement should raise SystemExit")
+
+
+def test_real_full_workflow_short_requires_confirmation(monkeypatch, tmp_path):
+    module = load_smoke_module()
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("full workflow should not run without confirmation")
+
+    monkeypatch.setattr(module, "run_real_full_workflow_short", fail_if_called)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "test_real_workflow_smoke.py",
+            "--real-full-workflow-short",
+            "--valve-port",
+            "COM6",
+            "--acknowledge-timing-uncertain",
+            "--acknowledge-pump-valve-real",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+
+    try:
+        module.main()
+    except SystemExit as exc:
+        assert "CONFIRM_REAL_HARDWARE" in str(exc)
+    else:
+        raise AssertionError("missing confirmation should raise SystemExit")
+
+
+def test_real_full_workflow_short_requires_timing_acknowledgement(monkeypatch, tmp_path):
+    module = load_smoke_module()
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("full workflow should not run without timing acknowledgement")
+
+    monkeypatch.setattr(module, "run_real_full_workflow_short", fail_if_called)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "test_real_workflow_smoke.py",
+            "--real-full-workflow-short",
+            "--valve-port",
+            "COM6",
+            "--confirm",
+            "CONFIRM_REAL_HARDWARE",
+            "--acknowledge-pump-valve-real",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+
+    try:
+        module.main()
+    except SystemExit as exc:
+        assert "--acknowledge-timing-uncertain" in str(exc)
+    else:
+        raise AssertionError("missing timing acknowledgement should raise SystemExit")
+
+
+def test_real_full_workflow_short_requires_pump_valve_acknowledgement_when_flush_enabled(monkeypatch, tmp_path):
+    module = load_smoke_module()
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("full workflow should not run without pump/valve acknowledgement")
+
+    monkeypatch.setattr(module, "run_real_full_workflow_short", fail_if_called)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "test_real_workflow_smoke.py",
+            "--real-full-workflow-short",
+            "--flush-enabled",
+            "--valve-port",
+            "COM6",
+            "--confirm",
+            "CONFIRM_REAL_HARDWARE",
+            "--acknowledge-timing-uncertain",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+
+    try:
+        module.main()
+    except SystemExit as exc:
+        assert "--acknowledge-pump-valve-real" in str(exc)
+    else:
+        raise AssertionError("missing pump/valve acknowledgement should raise SystemExit")
+
+
+def test_real_full_workflow_short_requires_explicit_valve_port(monkeypatch, tmp_path):
+    module = load_smoke_module()
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("full workflow should not run without explicit valve port")
+
+    monkeypatch.setattr(module, "run_real_full_workflow_short", fail_if_called)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "test_real_workflow_smoke.py",
+            "--real-full-workflow-short",
+            "--confirm",
+            "CONFIRM_REAL_HARDWARE",
+            "--acknowledge-timing-uncertain",
+            "--acknowledge-pump-valve-real",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+
+    try:
+        module.main()
+    except SystemExit as exc:
+        assert "--valve-port COM5 or COM6" in str(exc)
+    else:
+        raise AssertionError("missing explicit valve port should raise SystemExit")
+
+
 def test_real_ad2_open_close_runs_only_with_confirmation(monkeypatch):
     module = load_smoke_module()
     calls = []
@@ -521,6 +746,92 @@ def test_combined_camera_ad2_low_risk_runs_only_with_confirmation(monkeypatch, t
     assert calls == [(tmp_path, 20, None, "labview-screenshot", True, 1)]
 
 
+def test_combined_camera_ad2_acoustic_short_runs_only_with_confirmation_and_acknowledgement(monkeypatch, tmp_path):
+    module = load_smoke_module()
+    calls = []
+
+    def fake_runner(output_dir, frames, exposure_ms, preset_name=None, apply_roi=False, device_index=0, duration_s=None):
+        calls.append((output_dir, frames, exposure_ms, preset_name, apply_roi, device_index, duration_s))
+        return output_dir / "fake-run"
+
+    monkeypatch.setattr(module, "run_real_camera_real_ad2_acoustic_short", fake_runner)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "test_real_workflow_smoke.py",
+            "--real-camera-real-ad2-acoustic-short",
+            "--preset",
+            "labview-screenshot",
+            "--apply-roi",
+            "--frames",
+            "20",
+            "--duration-s",
+            "0.5",
+            "--output-dir",
+            str(tmp_path),
+            "--confirm",
+            "CONFIRM_REAL_HARDWARE",
+            "--acknowledge-timing-uncertain",
+            "--device-index",
+            "1",
+        ],
+    )
+
+    assert module.main() == 0
+    assert calls == [(tmp_path, 20, None, "labview-screenshot", True, 1, 0.5)]
+
+
+def test_real_full_workflow_short_runs_only_with_all_confirmations(monkeypatch, tmp_path):
+    module = load_smoke_module()
+    calls = []
+
+    def fake_runner(
+        output_dir,
+        frames,
+        exposure_ms,
+        preset_name,
+        apply_roi,
+        valve_port,
+        flush_enabled,
+        device_index=0,
+        duration_s=None,
+    ):
+        calls.append((output_dir, frames, exposure_ms, preset_name, apply_roi, valve_port, flush_enabled, device_index, duration_s))
+        return output_dir / "fake-run"
+
+    monkeypatch.setattr(module, "run_real_full_workflow_short", fake_runner)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "test_real_workflow_smoke.py",
+            "--real-full-workflow-short",
+            "--preset",
+            "labview-screenshot",
+            "--apply-roi",
+            "--frames",
+            "20",
+            "--duration-s",
+            "0.5",
+            "--flush-enabled",
+            "--valve-port",
+            "COM6",
+            "--output-dir",
+            str(tmp_path),
+            "--confirm",
+            "CONFIRM_REAL_HARDWARE",
+            "--acknowledge-timing-uncertain",
+            "--acknowledge-pump-valve-real",
+            "--device-index",
+            "1",
+        ],
+    )
+
+    assert module.main() == 0
+    assert calls == [(tmp_path, 20, None, "labview-screenshot", True, "COM6", True, 1, 0.5)]
+
+
 def test_low_risk_ad2_output_parameters_are_not_labview_acoustic_candidate():
     module = load_smoke_module()
 
@@ -620,6 +931,26 @@ def test_labview_acoustic_short_refuses_full_labview_duration():
             assert "Refusing to run the full LabVIEW acoustic duration" in str(exc)
         else:
             raise AssertionError("full LabVIEW duration should be refused")
+
+
+def test_real_full_workflow_short_refuses_full_labview_duration_before_hardware(tmp_path):
+    module = load_smoke_module()
+
+    try:
+        module.run_real_full_workflow_short(
+            tmp_path,
+            frames=20,
+            exposure_ms=None,
+            preset_name="labview-screenshot",
+            apply_roi=True,
+            valve_port="COM6",
+            flush_enabled=True,
+            duration_s=60.0,
+        )
+    except SystemExit as exc:
+        assert "Refusing to run the full LabVIEW acoustic duration" in str(exc)
+    else:
+        raise AssertionError("full workflow should refuse 60 s before hardware construction")
 
 
 def test_labview_acoustic_short_prints_warning_and_excludes_other_hardware(capsys):

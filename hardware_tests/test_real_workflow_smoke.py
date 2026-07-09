@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import datetime
+import os
 from pathlib import Path
 import sys
 import time
@@ -28,10 +29,15 @@ from thermo_acoustic.workflows import Experiment2, ExperimentSeries2, FlushSetti
 
 CONFIRM_TEXT = "CONFIRM_REAL_HARDWARE"
 TIMING_UNCERTAIN_ACK_FLAG = "--acknowledge-timing-uncertain"
+PUMP_VALVE_REAL_ACK_FLAG = "--acknowledge-pump-valve-real"
 TIMING_UNCERTAIN_REFUSAL = (
     f"This mode requires {TIMING_UNCERTAIN_ACK_FLAG} because AD2 WFG start timing vs pc_trigger is "
     "not yet fully confirmed. trigsrcNone may mean output starts at config_wfg rather than pc_trigger. "
     "CH2/index 1 purpose is unknown and remains disabled. This mode is AD2 CH0 only."
+)
+PUMP_VALVE_REAL_REFUSAL = (
+    f"This mode requires {PUMP_VALVE_REAL_ACK_FLAG} because it opens the real one-pump Qmix backend "
+    "and real valve serial backend. Pump flow and valve switching are only allowed when explicitly acknowledged."
 )
 AD2_LOW_RISK_CHANNEL = 0
 AD2_LOW_RISK_FREQUENCY_HZ = 1000.0
@@ -138,6 +144,65 @@ def real_camera_real_ad2_low_risk_plan() -> SmokePlan:
             cetoni_config_path=defaults.qmix.config_path,
         ),
         flush_enabled=False,
+        requires_confirmation=True,
+    )
+
+
+def real_camera_real_ad2_acoustic_short_plan() -> SmokePlan:
+    defaults = default_hardware_config()
+    return SmokePlan(
+        name="real-camera-real-ad2-acoustic-short",
+        description=(
+            "Combined smoke using real Hamamatsu camera and real AD2 "
+            "LabVIEW acoustic candidate short-duration CH0 output, with pump "
+            "simulated/disabled, valve simulated/disabled, Z-stage disabled, "
+            "Qmix untouched, and experiment flush disabled."
+        ),
+        config=HardwareRuntimeConfig(
+            ad2_enabled=True,
+            sim_ad2=False,
+            camera_enabled=True,
+            sim_camera=False,
+            pump_enabled=False,
+            sim_pump=True,
+            valve_enabled=False,
+            sim_valve=True,
+            z_enabled=False,
+            prior_resource=defaults.z_stage.prior_resource,
+            valve_resource="COM6",
+            cetoni_config_path=defaults.qmix.config_path,
+        ),
+        flush_enabled=False,
+        requires_confirmation=True,
+    )
+
+
+def real_full_workflow_short_plan(valve_port: str, *, flush_enabled: bool = False) -> SmokePlan:
+    if valve_port not in {"COM5", "COM6"}:
+        raise SystemExit("This mode requires explicit --valve-port COM5 or COM6")
+    defaults = default_hardware_config()
+    return SmokePlan(
+        name="real-full-workflow-short",
+        description=(
+            "Short full workflow using real Hamamatsu camera, real AD2 "
+            "LabVIEW acoustic candidate short-duration CH0 output, real "
+            "one-pump Qmix backend, and real serial valve, with Z-stage disabled."
+        ),
+        config=HardwareRuntimeConfig(
+            ad2_enabled=True,
+            sim_ad2=False,
+            camera_enabled=True,
+            sim_camera=False,
+            pump_enabled=True,
+            sim_pump=False,
+            valve_enabled=True,
+            sim_valve=False,
+            z_enabled=False,
+            prior_resource=defaults.z_stage.prior_resource,
+            valve_resource=valve_port,
+            cetoni_config_path=defaults.qmix.config_path,
+        ),
+        flush_enabled=flush_enabled,
         requires_confirmation=True,
     )
 
@@ -744,6 +809,235 @@ def run_real_camera_real_ad2_low_risk(
         app.cleanup()
 
 
+def run_real_camera_real_ad2_acoustic_short(
+    output_dir: Path,
+    frames: int | None,
+    exposure_ms: float | None,
+    preset_name: str | None = None,
+    apply_roi: bool = False,
+    device_index: int = 0,
+    duration_s: float | None = None,
+) -> Path:
+    _ = device_index
+    plan = real_camera_real_ad2_acoustic_short_plan()
+    settings = resolve_smoke_settings(preset_name, frames, exposure_ms, apply_roi)
+    acoustic_parameters = labview_acoustic_short_parameters(duration_s)
+    run_dir = output_dir / f"camera_ad2_acoustic_short_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    print_plan(plan, run_dir, settings)
+    print_labview_acoustic_short_output_parameters(acoustic_parameters)
+    print_step("combined acoustic-short smoke uses Application.run_experiment2 with flush_enabled=False")
+    print_step("CH2/index 1 remains disabled; DO Clock and DO Custom are not used")
+    print_step("pump, valve, Qmix, Z-stage, Thorlabs/APT, and Prior COM7 remain disabled or unused")
+
+    app = Application()
+    bundle = build_hardware_bundle(plan.config)
+    camera_backend = bundle.camera.backend
+    buffer_frames = getattr(camera_backend, "buffer_frames", "<unknown>")
+    allocation_frames = max(settings.frames, int(buffer_frames) if isinstance(buffer_frames, int) else 1)
+    print_step("combined acoustic-short acquisition diagnostics")
+    print_value("camera trigger source", settings.trigger_source)
+    print_value("camera exposure_ms", settings.exposure_ms)
+    print_value("camera requested frame count", settings.frames)
+    print_value("camera backend buffer_frames", buffer_frames)
+    print_value("camera planned buffer allocation frames", allocation_frames)
+    print_value(
+        "AD2 acoustic-short config",
+        (
+            f"CH{acoustic_parameters.channel} {acoustic_parameters.frequency_hz} Hz sine, "
+            f"{acoustic_parameters.amplitude_v} V amplitude, {acoustic_parameters.offset_v} V offset, "
+            f"{acoustic_parameters.duration_s} s"
+        ),
+    )
+    print_value("CH2/index 1", "disabled")
+    print_value("DO Clock", "not used")
+    print_value("DO Custom", "not used")
+    print_value("pump/valve flush", "disabled")
+
+    apply_hardware_bundle(app, bundle)
+    experiment = Experiment2(
+        experiment_folder=run_dir,
+        flush_settings=FlushSettings(0.0, 0.0, 0.0),
+        flush_enabled=False,
+        global_exposure_ms=settings.exposure_ms,
+        sequence_settings={
+            "frames": settings.frames,
+            "trigger_source": settings.trigger_source,
+            "exposure_ms": settings.exposure_ms,
+        },
+        wfg_config=ad2_output_wfg_config(acoustic_parameters),
+        do_clock_settings={"running": False, "channels": []},
+    )
+    app.experiment_series = ExperimentSeries2(output_dir, [experiment])
+
+    try:
+        app.initialize()
+        if settings.roi is not None and settings.apply_roi:
+            if hasattr(app.camera, "configure_roi"):
+                print_step("applying LabVIEW screenshot ROI to real camera because --apply-roi was provided")
+                print_camera_roi_diagnostics(app.camera, settings.roi, "before configure_roi")
+                app.camera.configure_roi(settings.roi)
+                print_camera_roi_diagnostics(app.camera, settings.roi, "after configure_roi")
+            else:
+                print_step("LabVIEW screenshot ROI is known but not applied: camera wrapper has no configure_roi")
+        elif settings.roi is not None:
+            print_step("LabVIEW screenshot ROI is known but not applied; pass --apply-roi for explicit ROI validation")
+
+        print_step("running combined real-camera + real-AD2 LabVIEW acoustic-short experiment")
+        ok = app.run_experiment2()
+        print_value("experiment ok", ok)
+        print_value("experiment folder", run_dir)
+        return run_dir
+    finally:
+        print_step("combined acoustic-short smoke cleanup")
+        ad2_backend = getattr(app.ad2, "backend", None)
+        ad2_handle = getattr(app.ad2, "device_handle", None)
+        if isinstance(ad2_backend, WaveFormsBackend) and ad2_handle is not None:
+            safe_disable_ad2_outputs(ad2_backend, int(ad2_handle))
+        try:
+            if hasattr(app.camera, "stop_capture"):
+                app.camera.stop_capture()
+        except Exception as exc:
+            print_step(f"cleanup warning: camera stop_capture failed: {exc}")
+        app.cleanup()
+
+
+def run_real_full_workflow_short(
+    output_dir: Path,
+    frames: int | None,
+    exposure_ms: float | None,
+    preset_name: str | None,
+    apply_roi: bool,
+    valve_port: str,
+    flush_enabled: bool,
+    device_index: int = 0,
+    duration_s: float | None = None,
+) -> Path:
+    _ = device_index
+    defaults = default_hardware_config()
+    plan = real_full_workflow_short_plan(valve_port, flush_enabled=flush_enabled)
+    settings = resolve_smoke_settings(preset_name, frames, exposure_ms, apply_roi)
+    acoustic_parameters = labview_acoustic_short_parameters(duration_s)
+    preset = settings.preset or labview_screenshot_working_preset()
+    flush_settings = FlushSettings(
+        flush_flowrate=preset.flush.experiment_flush_flowrate_ul,
+        flush_volume_ml=preset.flush.experiment_flush_volume_ml,
+        wait_after_flush_s=preset.flush.experiment_wait_after_flush_s,
+    )
+    run_dir = output_dir / f"full_workflow_short_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+    print_step("REAL FULL WORKFLOW SHORT: camera + AD2 + one-pump Qmix + valve; Z-stage disabled")
+    print_value("description", plan.description)
+    print_value("frames", settings.frames)
+    print_value("exposure_ms", settings.exposure_ms)
+    print_value("trigger source", settings.trigger_source)
+    if settings.roi is None:
+        print_value("ROI", "not preset")
+    else:
+        print_value("LabVIEW ROI candidate", settings.roi)
+        print_value(
+            "ROI application",
+            "enabled explicitly by --apply-roi" if settings.apply_roi else "disabled by default; pass --apply-roi",
+        )
+    print_value("camera", "real Hamamatsu DCAM backend")
+    print_value("AD2", "real WaveForms backend")
+    print_value("pump", "real one-pump Qmix backend")
+    print_value("valve", "real serial valve backend")
+    print_value("Z-stage", "disabled; no Prior COM7 and no Thorlabs/APT motion")
+    print_value("flush_enabled", flush_enabled)
+    print_value("output directory", run_dir)
+    print_value("Qmix SDK Python path", defaults.qmix.sdk_python_path)
+    print_value("QMIXSDK path", defaults.qmix.qmixsdk_path)
+    print_value("Qmix config path", defaults.qmix.config_path)
+    print_value("Qmix active_units", defaults.qmix.active_units)
+    print_value("legacy two-pump config allowed", defaults.qmix.legacy_two_pump_config_allowed)
+    print_value("legacy two-pump config selected", "no")
+    print_value("selected valve port", valve_port)
+    print_value("valve position sequence if flush runs", "position 1 -> pump flow -> position 2")
+    print_value("flush flowrate", f"{flush_settings.flush_flowrate} uL/min candidate")
+    print_value("flush volume", f"{flush_settings.flush_volume_ml} ml")
+    print_value("flush wait_after_flush_s", flush_settings.wait_after_flush_s)
+    print_value("Pump&Valve tab wait_after_flush conflict", f"{preset.flush.pump_tab_wait_after_flush_s} s candidate, not used")
+    print_labview_acoustic_short_output_parameters(acoustic_parameters)
+    print_value("CH2/index 1", "disabled")
+    print_value("DO Clock", "not used")
+    print_value("DO Custom", "not used")
+    print_step("full workflow uses Application.run_experiment2")
+
+    os.environ["QMIXSDK"] = str(defaults.qmix.qmixsdk_path)
+    print_value("QMIXSDK set for this process", os.environ["QMIXSDK"])
+
+    app = Application()
+    bundle = build_hardware_bundle(plan.config)
+    pump_backend = getattr(bundle.pump, "backend", None)
+    if pump_backend is not None and hasattr(pump_backend, "sdk_python_path"):
+        pump_backend.sdk_python_path = defaults.qmix.sdk_python_path
+        print_value("Qmix backend sdk_python_path", pump_backend.sdk_python_path)
+    camera_backend = bundle.camera.backend
+    buffer_frames = getattr(camera_backend, "buffer_frames", "<unknown>")
+    allocation_frames = max(settings.frames, int(buffer_frames) if isinstance(buffer_frames, int) else 1)
+    print_step("full workflow acquisition diagnostics")
+    print_value("camera trigger source", settings.trigger_source)
+    print_value("camera exposure_ms", settings.exposure_ms)
+    print_value("camera requested frame count", settings.frames)
+    print_value("camera backend buffer_frames", buffer_frames)
+    print_value("camera planned buffer allocation frames", allocation_frames)
+    print_value(
+        "AD2 acoustic-short config",
+        (
+            f"CH{acoustic_parameters.channel} {acoustic_parameters.frequency_hz} Hz sine, "
+            f"{acoustic_parameters.amplitude_v} V amplitude, {acoustic_parameters.offset_v} V offset, "
+            f"{acoustic_parameters.duration_s} s"
+        ),
+    )
+
+    apply_hardware_bundle(app, bundle)
+    experiment = Experiment2(
+        experiment_folder=run_dir,
+        flush_settings=flush_settings,
+        flush_enabled=flush_enabled,
+        global_exposure_ms=settings.exposure_ms,
+        sequence_settings={
+            "frames": settings.frames,
+            "trigger_source": settings.trigger_source,
+            "exposure_ms": settings.exposure_ms,
+        },
+        wfg_config=ad2_output_wfg_config(acoustic_parameters),
+        do_clock_settings={"running": False, "channels": []},
+    )
+    app.experiment_series = ExperimentSeries2(output_dir, [experiment])
+
+    try:
+        app.initialize()
+        if settings.roi is not None and settings.apply_roi:
+            if hasattr(app.camera, "configure_roi"):
+                print_step("applying LabVIEW screenshot ROI to real camera because --apply-roi was provided")
+                print_camera_roi_diagnostics(app.camera, settings.roi, "before configure_roi")
+                app.camera.configure_roi(settings.roi)
+                print_camera_roi_diagnostics(app.camera, settings.roi, "after configure_roi")
+            else:
+                print_step("LabVIEW screenshot ROI is known but not applied: camera wrapper has no configure_roi")
+        elif settings.roi is not None:
+            print_step("LabVIEW screenshot ROI is known but not applied; pass --apply-roi for explicit ROI validation")
+
+        print_step("running real full workflow short experiment")
+        ok = app.run_experiment2()
+        print_value("experiment ok", ok)
+        print_value("experiment folder", run_dir)
+        return run_dir
+    finally:
+        print_step("real full workflow short cleanup")
+        ad2_backend = getattr(app.ad2, "backend", None)
+        ad2_handle = getattr(app.ad2, "device_handle", None)
+        if isinstance(ad2_backend, WaveFormsBackend) and ad2_handle is not None:
+            safe_disable_ad2_outputs(ad2_backend, int(ad2_handle))
+        try:
+            if hasattr(app.camera, "stop_capture"):
+                app.camera.stop_capture()
+        except Exception as exc:
+            print_step(f"cleanup warning: camera stop_capture failed: {exc}")
+        app.cleanup()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -776,6 +1070,22 @@ def parse_args() -> argparse.Namespace:
         help="Run combined real camera plus real AD2 low-risk workflow. Requires --confirm.",
     )
     mode.add_argument(
+        "--real-camera-real-ad2-acoustic-short",
+        action="store_true",
+        help=(
+            "Run combined real camera plus real AD2 LabVIEW acoustic candidate "
+            "short-duration workflow. Requires --confirm and --acknowledge-timing-uncertain."
+        ),
+    )
+    mode.add_argument(
+        "--real-full-workflow-short",
+        action="store_true",
+        help=(
+            "Run short real camera + AD2 acoustic CH0 + one-pump Qmix + valve workflow "
+            "with Z disabled. Requires explicit confirmations and --valve-port."
+        ),
+    )
+    mode.add_argument(
         "--real-camera-only",
         action="store_true",
         help="Run a real Hamamatsu camera-only acquisition. AD2/pump/valve are simulated and Z-stage is disabled.",
@@ -787,6 +1097,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frames", type=int, default=None)
     parser.add_argument("--exposure-ms", type=float, default=None)
     parser.add_argument("--device-index", type=int, default=0, help="WaveForms device index for real AD2 smoke modes. Default: 0.")
+    parser.add_argument("--valve-port", choices=["COM5", "COM6"], default=None, help="Explicit real valve serial port for full workflow mode.")
+    parser.add_argument("--flush-enabled", action="store_true", help="Enable the controlled pump/valve flush in full workflow mode.")
     parser.add_argument(
         "--duration-s",
         type=float,
@@ -803,9 +1115,14 @@ def parse_args() -> argparse.Namespace:
         TIMING_UNCERTAIN_ACK_FLAG,
         action="store_true",
         help=(
-            "Required extra acknowledgement for --real-ad2-labview-acoustic-short. "
+            "Required extra acknowledgement for LabVIEW acoustic short modes. "
             "AD2 WFG start timing versus pc_trigger is not yet fully confirmed."
         ),
+    )
+    parser.add_argument(
+        PUMP_VALVE_REAL_ACK_FLAG,
+        action="store_true",
+        help="Required acknowledgement for modes that open real Qmix pump and real valve backends.",
     )
     parser.add_argument(
         "--apply-roi",
@@ -855,6 +1172,44 @@ def main() -> int:
             args.preset,
             args.apply_roi,
             args.device_index,
+        )
+        return 0
+    if args.real_camera_real_ad2_acoustic_short:
+        if args.confirm != CONFIRM_TEXT:
+            raise SystemExit(f"This mode requires --confirm {CONFIRM_TEXT}")
+        if not args.acknowledge_timing_uncertain:
+            raise SystemExit(TIMING_UNCERTAIN_REFUSAL)
+        run_real_camera_real_ad2_acoustic_short(
+            args.output_dir,
+            args.frames,
+            args.exposure_ms,
+            args.preset,
+            args.apply_roi,
+            args.device_index,
+            args.duration_s,
+        )
+        return 0
+    if args.real_full_workflow_short:
+        if args.confirm != CONFIRM_TEXT:
+            raise SystemExit(f"This mode requires --confirm {CONFIRM_TEXT}")
+        if not args.acknowledge_timing_uncertain:
+            raise SystemExit(TIMING_UNCERTAIN_REFUSAL)
+        if not args.acknowledge_pump_valve_real:
+            raise SystemExit(PUMP_VALVE_REAL_REFUSAL)
+        if args.valve_port is None:
+            raise SystemExit("This mode requires explicit --valve-port COM5 or COM6")
+        if args.flush_enabled and not args.acknowledge_pump_valve_real:
+            raise SystemExit(PUMP_VALVE_REAL_REFUSAL)
+        run_real_full_workflow_short(
+            args.output_dir,
+            args.frames,
+            args.exposure_ms,
+            args.preset,
+            args.apply_roi,
+            args.valve_port,
+            args.flush_enabled,
+            args.device_index,
+            args.duration_s,
         )
         return 0
     if args.real_camera_only:
