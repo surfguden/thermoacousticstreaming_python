@@ -162,6 +162,143 @@ def test_ad2_plan_only_prints_without_running_hardware(monkeypatch, capsys, tmp_
     assert "This mode is print-only" in output
 
 
+def test_plan_only_can_include_ad2_candidate_plan(monkeypatch, capsys, tmp_path):
+    module = load_smoke_module()
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("real hardware runner should not be called in plan-only mode")
+
+    monkeypatch.setattr(module, "run_real_camera_only", fail_if_called)
+    monkeypatch.setattr(module, "run_real_ad2_open_close", fail_if_called)
+    monkeypatch.setattr(module, "run_real_ad2_low_risk_output", fail_if_called)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "test_real_workflow_smoke.py",
+            "--plan-only",
+            "--preset",
+            "labview-screenshot",
+            "--ad2-plan",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+
+    assert module.main() == 0
+    output = capsys.readouterr().out
+    assert "plan: real-camera-only" in output
+    assert "AD2 LabVIEW screenshot plan only" in output
+    assert "frequency=1975000.0 Hz" in output
+    assert "amplitude=2.0 V" in output
+    assert "real AD2 initialized: False" in output
+
+
+def test_real_ad2_open_close_requires_confirmation(monkeypatch):
+    module = load_smoke_module()
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("AD2 open-close should not run without confirmation")
+
+    monkeypatch.setattr(module, "run_real_ad2_open_close", fail_if_called)
+    monkeypatch.setattr(module.sys, "argv", ["test_real_workflow_smoke.py", "--real-ad2-open-close"])
+
+    try:
+        module.main()
+    except SystemExit as exc:
+        assert "CONFIRM_REAL_HARDWARE" in str(exc)
+    else:
+        raise AssertionError("missing confirmation should raise SystemExit")
+
+
+def test_real_ad2_low_risk_output_requires_confirmation(monkeypatch):
+    module = load_smoke_module()
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("AD2 output should not run without confirmation")
+
+    monkeypatch.setattr(module, "run_real_ad2_low_risk_output", fail_if_called)
+    monkeypatch.setattr(module.sys, "argv", ["test_real_workflow_smoke.py", "--real-ad2-low-risk-output"])
+
+    try:
+        module.main()
+    except SystemExit as exc:
+        assert "CONFIRM_REAL_HARDWARE" in str(exc)
+    else:
+        raise AssertionError("missing confirmation should raise SystemExit")
+
+
+def test_real_ad2_open_close_runs_only_with_confirmation(monkeypatch):
+    module = load_smoke_module()
+    calls = []
+
+    def fake_runner(device_index=0):
+        calls.append(device_index)
+        return 0
+
+    monkeypatch.setattr(module, "run_real_ad2_open_close", fake_runner)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "test_real_workflow_smoke.py",
+            "--real-ad2-open-close",
+            "--confirm",
+            "CONFIRM_REAL_HARDWARE",
+            "--device-index",
+            "1",
+        ],
+    )
+
+    assert module.main() == 0
+    assert calls == [1]
+
+
+def test_real_ad2_low_risk_output_runs_only_with_confirmation(monkeypatch):
+    module = load_smoke_module()
+    calls = []
+
+    def fake_runner(device_index=0):
+        calls.append(device_index)
+        return 0
+
+    monkeypatch.setattr(module, "run_real_ad2_low_risk_output", fake_runner)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "test_real_workflow_smoke.py",
+            "--real-ad2-low-risk-output",
+            "--confirm",
+            "CONFIRM_REAL_HARDWARE",
+        ],
+    )
+
+    assert module.main() == 0
+    assert calls == [0]
+
+
+def test_low_risk_ad2_output_parameters_are_not_labview_acoustic_candidate():
+    module = load_smoke_module()
+
+    assert module.AD2_LOW_RISK_CHANNEL == 0
+    assert module.AD2_LOW_RISK_FREQUENCY_HZ == 1000.0
+    assert module.AD2_LOW_RISK_AMPLITUDE_V == 0.1
+    assert module.AD2_LOW_RISK_OFFSET_V == 0.0
+    assert module.AD2_LOW_RISK_DURATION_S == 0.5
+    assert module.AD2_LOW_RISK_FREQUENCY_HZ != 1.975e6
+    assert module.AD2_LOW_RISK_AMPLITUDE_V < 2.0
+
+    config = module.low_risk_wfg_config()
+    assert config.running is True
+    assert len(config.channels) == 1
+    channel = config.channels[0]
+    assert channel.carrier.frequency_hz == 1000.0
+    assert channel.carrier.amplitude_v == 0.1
+    assert channel.trigger.sec_run == 0.5
+    assert channel.trigger.repeat_count == 1
+
+
 def test_real_camera_only_main_uses_safe_plan_and_runner(monkeypatch, tmp_path):
     module = load_smoke_module()
     calls = []

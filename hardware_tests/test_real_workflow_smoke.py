@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import sys
+import time
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +14,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from thermo_acoustic.application import Application
+from thermo_acoustic.ad2 import CarrierSettings, TriggerSettings, WaveformFunction, WfgChannelConfig, WfgConfig
 from thermo_acoustic.experiment_presets import (
     LABVIEW_SCREENSHOT_PRESET_NAME,
     LabviewWorkingPreset,
@@ -20,10 +22,16 @@ from thermo_acoustic.experiment_presets import (
 )
 from thermo_acoustic.hardware_config import default_hardware_config
 from thermo_acoustic.hardware_factory import HardwareRuntimeConfig, apply_hardware_bundle, build_hardware_bundle
+from thermo_acoustic.waveforms import WaveFormsBackend
 from thermo_acoustic.workflows import Experiment2, ExperimentSeries2, FlushSettings
 
 
 CONFIRM_TEXT = "CONFIRM_REAL_HARDWARE"
+AD2_LOW_RISK_CHANNEL = 0
+AD2_LOW_RISK_FREQUENCY_HZ = 1000.0
+AD2_LOW_RISK_AMPLITUDE_V = 0.1
+AD2_LOW_RISK_OFFSET_V = 0.0
+AD2_LOW_RISK_DURATION_S = 0.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +156,149 @@ def print_ad2_plan(settings: SmokeRunSettings) -> None:
     print_value("WFG secRun/secWait/cRepeat shown", f"{preset.ad2.wfg_sec_run_s}/{preset.ad2.wfg_sec_wait_s}/{preset.ad2.wfg_repeat_count}")
     print_value("experiment ch1/ch2 run_s", f"{preset.ad2.experiment_ch1_run_s}/{preset.ad2.experiment_ch2_run_s}")
     print_step("This mode is print-only and does not initialize hardware.")
+
+
+def print_ad2_labview_candidate(settings: SmokeRunSettings) -> None:
+    print_ad2_plan(settings)
+
+
+def read_ad2_identity(backend: WaveFormsBackend, device_index: int) -> None:
+    print_step(f"reading AD2 identity for device index {device_index}")
+    try:
+        device_count = backend.enum_devices()
+    except Exception as exc:
+        print_value("device count", f"unavailable: {exc}")
+        return
+    print_value("device count", device_count)
+    if device_count <= 0:
+        return
+    if device_index < 0 or device_index >= device_count:
+        print_value("selected device index", f"{device_index} outside available range 0..{device_count - 1}")
+        return
+    for label, reader in (
+        ("device name", backend.enum_device_name),
+        ("serial number", backend.enum_device_serial_number),
+        ("opened before open", backend.enum_device_is_opened),
+    ):
+        try:
+            print_value(label, reader(device_index))
+        except Exception as exc:
+            print_value(label, f"unavailable: {exc}")
+
+
+def safe_backend_call(label: str, action: object) -> None:
+    try:
+        action()
+        print_step(f"cleanup ok: {label}")
+    except Exception as exc:
+        print_step(f"cleanup warning: {label} failed: {exc}")
+
+
+def safe_disable_ad2_outputs(backend: WaveFormsBackend, handle: int) -> None:
+    print_step("safe AD2 output disable/reset")
+    for channel in (0, 1):
+        safe_backend_call(
+            f"FDwfAnalogOutConfigure channel {channel} stop",
+            lambda channel=channel: backend.analog_out_configure(handle, channel, False),
+        )
+        for node in (0, 1):
+            safe_backend_call(
+                f"FDwfAnalogOutNodeEnableSet channel {channel} node {node} false",
+                lambda channel=channel, node=node: backend.analog_out_node_enable_set(handle, channel, node, False),
+            )
+    safe_backend_call("FDwfDigitalOutConfigure stop", lambda: backend.digital_out_configure(handle, False))
+    safe_backend_call("FDwfDigitalOutReset", lambda: backend.reset_do(handle))
+    safe_backend_call("FDwfDeviceReset", lambda: backend.reset_device(handle))
+
+
+def run_real_ad2_open_close(device_index: int = 0) -> int:
+    print_step("real AD2 open-close smoke")
+    print_step("no analog output, digital output, trigger output, PC trigger, camera, pump, valve, or Z-stage action will be run")
+    backend: WaveFormsBackend | None = None
+    handle: int | None = None
+    try:
+        backend = WaveFormsBackend()
+        print_value("WaveForms DLL", backend.library_path)
+        read_ad2_identity(backend, device_index)
+        print_step(f"opening AD2 device index {device_index}")
+        handle = backend.open_device(device_index)
+        print_value("handle", handle)
+        print_step("device opened; outputs remain disabled and no configure/start/trigger/output calls are made")
+        return 0
+    finally:
+        print_step("AD2 open-close cleanup")
+        if backend is not None and handle is not None:
+            safe_disable_ad2_outputs(backend, handle)
+            safe_backend_call("FDwfDeviceClose", lambda: backend.close(handle))
+        if backend is not None:
+            safe_backend_call("FDwfDeviceCloseAll", backend.close_all)
+
+
+def low_risk_wfg_config() -> WfgConfig:
+    return WfgConfig(
+        running=True,
+        channels=[
+            WfgChannelConfig(
+                channel_index=AD2_LOW_RISK_CHANNEL,
+                carrier=CarrierSettings(
+                    frequency_hz=AD2_LOW_RISK_FREQUENCY_HZ,
+                    amplitude_v=AD2_LOW_RISK_AMPLITUDE_V,
+                    offset_v=AD2_LOW_RISK_OFFSET_V,
+                    symmetry_percent=50.0,
+                    phase_deg=0.0,
+                    function=WaveformFunction.SINE,
+                    enable=True,
+                ),
+                trigger=TriggerSettings(
+                    sec_run=AD2_LOW_RISK_DURATION_S,
+                    sec_wait=0.0,
+                    repeat_count=1,
+                    repeat_trigger=False,
+                ),
+            )
+        ],
+        synchronize_state="Independent",
+    )
+
+
+def print_low_risk_ad2_output_parameters() -> None:
+    print_step("real AD2 low-risk output parameters")
+    print_value("channel", AD2_LOW_RISK_CHANNEL)
+    print_value("frequency_hz", AD2_LOW_RISK_FREQUENCY_HZ)
+    print_value("amplitude_v", AD2_LOW_RISK_AMPLITUDE_V)
+    print_value("offset_v", AD2_LOW_RISK_OFFSET_V)
+    print_value("function", "Sine")
+    print_value("duration_s", AD2_LOW_RISK_DURATION_S)
+    print_value("repeat_count", 1)
+    print_value("LabVIEW acoustic output", "not used: no 1.975 MHz, 2.0 V, 60 s output in this mode")
+
+
+def run_real_ad2_low_risk_output(device_index: int = 0) -> int:
+    print_step("real AD2 low-risk output smoke")
+    print_step("camera, pump, valve, Qmix, Z-stage, Thorlabs/APT, and Prior COM7 are not used")
+    print_low_risk_ad2_output_parameters()
+    backend: WaveFormsBackend | None = None
+    handle: int | None = None
+    try:
+        backend = WaveFormsBackend()
+        print_value("WaveForms DLL", backend.library_path)
+        read_ad2_identity(backend, device_index)
+        print_step(f"opening AD2 device index {device_index}")
+        handle = backend.open_device(device_index)
+        print_value("handle", handle)
+        safe_disable_ad2_outputs(backend, handle)
+        print_step("configuring and starting low-risk analog output")
+        backend.configure_wfg(handle, low_risk_wfg_config())
+        print_step("waiting for low-risk output duration")
+        time.sleep(AD2_LOW_RISK_DURATION_S + 0.1)
+        return 0
+    finally:
+        print_step("AD2 low-risk output cleanup")
+        if backend is not None and handle is not None:
+            safe_disable_ad2_outputs(backend, handle)
+            safe_backend_call("FDwfDeviceClose", lambda: backend.close(handle))
+        if backend is not None:
+            safe_backend_call("FDwfDeviceCloseAll", backend.close_all)
 
 
 def print_plan(plan: SmokePlan, output_dir: Path, settings: SmokeRunSettings) -> None:
@@ -298,15 +449,23 @@ def parse_args() -> argparse.Namespace:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--plan-only", action="store_true", help="Print the staged smoke-test plan without touching hardware.")
     mode.add_argument("--ad2-plan-only", action="store_true", help="Print LabVIEW screenshot AD2 parameters without touching hardware.")
+    mode.add_argument("--real-ad2-open-close", action="store_true", help="Open and close the real AD2 with safe reset/disable cleanup. Requires --confirm.")
+    mode.add_argument(
+        "--real-ad2-low-risk-output",
+        action="store_true",
+        help="Run a deliberately low-risk AD2 output smoke. Requires --confirm.",
+    )
     mode.add_argument(
         "--real-camera-only",
         action="store_true",
         help="Run a real Hamamatsu camera-only acquisition. AD2/pump/valve are simulated and Z-stage is disabled.",
     )
     parser.add_argument("--preset", choices=[LABVIEW_SCREENSHOT_PRESET_NAME], default=None)
+    parser.add_argument("--ad2-plan", action="store_true", help="Also print LabVIEW screenshot AD2 candidate parameters in plan-only mode.")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "hardware_tests" / "_smoke_output")
     parser.add_argument("--frames", type=int, default=None)
     parser.add_argument("--exposure-ms", type=float, default=None)
+    parser.add_argument("--device-index", type=int, default=0, help="WaveForms device index for real AD2 smoke modes. Default: 0.")
     parser.add_argument(
         "--apply-roi",
         action="store_true",
@@ -321,7 +480,17 @@ def main() -> int:
     plan = real_camera_only_plan()
     settings = resolve_smoke_settings(args.preset, args.frames, args.exposure_ms, args.apply_roi)
     if args.ad2_plan_only:
-        print_ad2_plan(settings)
+        print_ad2_labview_candidate(settings)
+        return 0
+    if args.real_ad2_open_close:
+        if args.confirm != CONFIRM_TEXT:
+            raise SystemExit(f"This mode requires --confirm {CONFIRM_TEXT}")
+        run_real_ad2_open_close(args.device_index)
+        return 0
+    if args.real_ad2_low_risk_output:
+        if args.confirm != CONFIRM_TEXT:
+            raise SystemExit(f"This mode requires --confirm {CONFIRM_TEXT}")
+        run_real_ad2_low_risk_output(args.device_index)
         return 0
     if args.real_camera_only:
         require_confirmation_if_needed(plan, args.confirm)
@@ -329,6 +498,8 @@ def main() -> int:
         return 0
 
     print_plan(plan, args.output_dir, settings)
+    if args.ad2_plan:
+        print_ad2_labview_candidate(settings)
     return 0
 
 
