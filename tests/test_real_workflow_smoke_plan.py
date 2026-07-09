@@ -190,6 +190,7 @@ def test_plan_only_can_include_ad2_candidate_plan(monkeypatch, capsys, tmp_path)
     monkeypatch.setattr(module, "run_real_camera_only", fail_if_called)
     monkeypatch.setattr(module, "run_real_ad2_open_close", fail_if_called)
     monkeypatch.setattr(module, "run_real_ad2_low_risk_output", fail_if_called)
+    monkeypatch.setattr(module, "run_real_ad2_timing_check", fail_if_called)
     monkeypatch.setattr(
         module.sys,
         "argv",
@@ -211,6 +212,44 @@ def test_plan_only_can_include_ad2_candidate_plan(monkeypatch, capsys, tmp_path)
     assert "frequency=1975000.0 Hz" in output
     assert "amplitude=2.0 V" in output
     assert "real AD2 initialized: False" in output
+
+
+def test_plan_only_can_include_ad2_timing_plan(monkeypatch, capsys, tmp_path):
+    module = load_smoke_module()
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("real AD2 timing check should not run in plan-only mode")
+
+    monkeypatch.setattr(module, "run_real_ad2_timing_check", fail_if_called)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "test_real_workflow_smoke.py",
+            "--plan-only",
+            "--ad2-timing-plan",
+            "--pre-trigger-wait-s",
+            "2.5",
+            "--duration-s",
+            "1.0",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+
+    assert module.main() == 0
+    output = capsys.readouterr().out
+    assert "AD2 timing verification plan" in output
+    assert "open AD2" in output
+    assert "configure WFG: CH0 1000 Hz sine, 0.1 V amplitude, 0 V offset, trigsrcNone, running=True" in output
+    assert "wait 2.5 s before pc_trigger" in output
+    assert "send pc_trigger" in output
+    assert "wait output duration 1.0 s" in output
+    assert "CH2/index 1: disabled" in output
+    assert "DO Clock: not used" in output
+    assert "DO Custom: not used" in output
+    assert "if waveform appears during pre-trigger wait: trigsrcNone/config_wfg starts output immediately" in output
+    assert "if waveform appears only after pc_trigger: PC trigger controls start for this configuration" in output
 
 
 def test_real_ad2_open_close_requires_confirmation(monkeypatch):
@@ -245,6 +284,71 @@ def test_real_ad2_low_risk_output_requires_confirmation(monkeypatch):
         assert "CONFIRM_REAL_HARDWARE" in str(exc)
     else:
         raise AssertionError("missing confirmation should raise SystemExit")
+
+
+def test_real_ad2_timing_check_requires_confirmation(monkeypatch):
+    module = load_smoke_module()
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("AD2 timing check should not run without confirmation")
+
+    monkeypatch.setattr(module, "run_real_ad2_timing_check", fail_if_called)
+    monkeypatch.setattr(module.sys, "argv", ["test_real_workflow_smoke.py", "--real-ad2-timing-check"])
+
+    try:
+        module.main()
+    except SystemExit as exc:
+        assert "CONFIRM_REAL_HARDWARE" in str(exc)
+    else:
+        raise AssertionError("missing confirmation should raise SystemExit")
+
+
+def test_real_ad2_labview_acoustic_short_requires_confirmation(monkeypatch):
+    module = load_smoke_module()
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("LabVIEW acoustic short should not run without confirmation")
+
+    monkeypatch.setattr(module, "run_real_ad2_labview_acoustic_short", fail_if_called)
+    monkeypatch.setattr(module.sys, "argv", ["test_real_workflow_smoke.py", "--real-ad2-labview-acoustic-short"])
+
+    try:
+        module.main()
+    except SystemExit as exc:
+        assert "CONFIRM_REAL_HARDWARE" in str(exc)
+    else:
+        raise AssertionError("missing confirmation should raise SystemExit")
+
+
+def test_real_ad2_labview_acoustic_short_requires_timing_acknowledgement(monkeypatch):
+    module = load_smoke_module()
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("LabVIEW acoustic short should not run without timing acknowledgement")
+
+    monkeypatch.setattr(module, "run_real_ad2_labview_acoustic_short", fail_if_called)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "test_real_workflow_smoke.py",
+            "--real-ad2-labview-acoustic-short",
+            "--confirm",
+            "CONFIRM_REAL_HARDWARE",
+        ],
+    )
+
+    try:
+        module.main()
+    except SystemExit as exc:
+        message = str(exc)
+        assert "--acknowledge-timing-uncertain" in message
+        assert "AD2 WFG start timing vs pc_trigger is not yet fully confirmed" in message
+        assert "trigsrcNone may mean output starts at config_wfg rather than pc_trigger" in message
+        assert "CH2/index 1 purpose is unknown and remains disabled" in message
+        assert "AD2 CH0 only" in message
+    else:
+        raise AssertionError("missing timing acknowledgement should raise SystemExit")
 
 
 def test_combined_camera_ad2_low_risk_requires_confirmation(monkeypatch, tmp_path):
@@ -325,6 +429,65 @@ def test_real_ad2_low_risk_output_runs_only_with_confirmation(monkeypatch):
     assert calls == [0]
 
 
+def test_real_ad2_timing_check_runs_only_with_confirmation(monkeypatch):
+    module = load_smoke_module()
+    calls = []
+
+    def fake_runner(device_index=0, pre_trigger_wait_s=2.0, duration_s=None):
+        calls.append((device_index, pre_trigger_wait_s, duration_s))
+        return 0
+
+    monkeypatch.setattr(module, "run_real_ad2_timing_check", fake_runner)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "test_real_workflow_smoke.py",
+            "--real-ad2-timing-check",
+            "--pre-trigger-wait-s",
+            "2.5",
+            "--duration-s",
+            "1.0",
+            "--confirm",
+            "CONFIRM_REAL_HARDWARE",
+            "--device-index",
+            "1",
+        ],
+    )
+
+    assert module.main() == 0
+    assert calls == [(1, 2.5, 1.0)]
+
+
+def test_real_ad2_labview_acoustic_short_runs_only_with_confirmation_and_timing_acknowledgement(monkeypatch):
+    module = load_smoke_module()
+    calls = []
+
+    def fake_runner(device_index=0, duration_s=None):
+        calls.append((device_index, duration_s))
+        return 0
+
+    monkeypatch.setattr(module, "run_real_ad2_labview_acoustic_short", fake_runner)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "test_real_workflow_smoke.py",
+            "--real-ad2-labview-acoustic-short",
+            "--duration-s",
+            "1.0",
+            "--confirm",
+            "CONFIRM_REAL_HARDWARE",
+            "--acknowledge-timing-uncertain",
+            "--device-index",
+            "1",
+        ],
+    )
+
+    assert module.main() == 0
+    assert calls == [(1, 1.0)]
+
+
 def test_combined_camera_ad2_low_risk_runs_only_with_confirmation(monkeypatch, tmp_path):
     module = load_smoke_module()
     calls = []
@@ -377,6 +540,107 @@ def test_low_risk_ad2_output_parameters_are_not_labview_acoustic_candidate():
     assert channel.carrier.amplitude_v == 0.1
     assert channel.trigger.sec_run == 0.5
     assert channel.trigger.repeat_count == 1
+
+
+def test_ad2_timing_check_uses_low_risk_ch0_only_parameters():
+    module = load_smoke_module()
+
+    parameters = module.ad2_timing_check_parameters()
+
+    assert parameters.name == "timing-check"
+    assert parameters.channel == 0
+    assert parameters.frequency_hz == 1000.0
+    assert parameters.amplitude_v == 0.1
+    assert parameters.offset_v == 0.0
+    assert parameters.duration_s == 0.5
+    assert parameters.frequency_hz != 1.975e6
+    assert parameters.amplitude_v < 2.0
+
+    config = module.ad2_timing_check_wfg_config()
+    assert config.running is True
+    assert len(config.channels) == 1
+    channel = config.channels[0]
+    assert channel.channel_index == 0
+    assert [configured_channel.channel_index for configured_channel in config.channels] == [0]
+    assert str(channel.trigger.source) in {"TriggerSource.NONE", "trigsrcNone"}
+    assert channel.trigger.sec_run == 0.5
+
+
+def test_ad2_timing_check_refuses_long_duration_and_negative_wait():
+    module = load_smoke_module()
+
+    try:
+        module.ad2_timing_check_parameters(60.0)
+    except SystemExit as exc:
+        assert "Refusing to use a long duration" in str(exc)
+    else:
+        raise AssertionError("long timing-check duration should be refused")
+
+    try:
+        module.print_ad2_timing_check_plan(-0.1)
+    except SystemExit as exc:
+        assert "--pre-trigger-wait-s" in str(exc)
+    else:
+        raise AssertionError("negative pre-trigger wait should be refused")
+
+
+def test_labview_acoustic_short_parameters_are_short_candidate():
+    module = load_smoke_module()
+
+    parameters = module.labview_acoustic_short_parameters()
+
+    assert parameters.name == "labview-acoustic-short"
+    assert parameters.channel == 0
+    assert parameters.frequency_hz == 1.975e6
+    assert parameters.amplitude_v == 2.0
+    assert parameters.offset_v == 0.0
+    assert parameters.duration_s == 0.5
+    assert parameters.repeat_count == 1
+    assert parameters.duration_s != 60.0
+
+    config = module.ad2_output_wfg_config(parameters)
+    assert config.running is True
+    assert len(config.channels) == 1
+    channel = config.channels[0]
+    assert channel.channel_index == 0
+    assert [configured_channel.channel_index for configured_channel in config.channels] == [0]
+    assert channel.carrier.frequency_hz == 1.975e6
+    assert channel.carrier.amplitude_v == 2.0
+    assert channel.trigger.sec_run == 0.5
+    assert channel.trigger.repeat_count == 1
+
+
+def test_labview_acoustic_short_refuses_full_labview_duration():
+    module = load_smoke_module()
+
+    for duration in (60.0, 61.0):
+        try:
+            module.labview_acoustic_short_parameters(duration)
+        except SystemExit as exc:
+            assert "Refusing to run the full LabVIEW acoustic duration" in str(exc)
+        else:
+            raise AssertionError("full LabVIEW duration should be refused")
+
+
+def test_labview_acoustic_short_prints_warning_and_excludes_other_hardware(capsys):
+    module = load_smoke_module()
+    parameters = module.labview_acoustic_short_parameters()
+
+    module.print_labview_acoustic_short_output_parameters(parameters)
+
+    output = capsys.readouterr().out
+    assert "WARNING: LabVIEW acoustic candidate frequency/amplitude" in output
+    assert "frequency_hz: 1975000.0" in output
+    assert "amplitude_v: 2.0" in output
+    assert "duration_s: 0.5" in output
+    assert "original LabVIEW experiment run_s: 60.0" in output
+    assert "camera: not used" in output
+    assert "pump: not used" in output
+    assert "valve: not used" in output
+    assert "Qmix: not used" in output
+    assert "Z-stage: not used" in output
+    assert "Thorlabs/APT: not used" in output
+    assert "Prior COM7: not used" in output
 
 
 def test_real_camera_only_main_uses_safe_plan_and_runner(monkeypatch, tmp_path):

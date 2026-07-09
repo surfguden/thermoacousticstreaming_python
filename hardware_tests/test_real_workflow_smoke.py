@@ -27,11 +27,24 @@ from thermo_acoustic.workflows import Experiment2, ExperimentSeries2, FlushSetti
 
 
 CONFIRM_TEXT = "CONFIRM_REAL_HARDWARE"
+TIMING_UNCERTAIN_ACK_FLAG = "--acknowledge-timing-uncertain"
+TIMING_UNCERTAIN_REFUSAL = (
+    f"This mode requires {TIMING_UNCERTAIN_ACK_FLAG} because AD2 WFG start timing vs pc_trigger is "
+    "not yet fully confirmed. trigsrcNone may mean output starts at config_wfg rather than pc_trigger. "
+    "CH2/index 1 purpose is unknown and remains disabled. This mode is AD2 CH0 only."
+)
 AD2_LOW_RISK_CHANNEL = 0
 AD2_LOW_RISK_FREQUENCY_HZ = 1000.0
 AD2_LOW_RISK_AMPLITUDE_V = 0.1
 AD2_LOW_RISK_OFFSET_V = 0.0
 AD2_LOW_RISK_DURATION_S = 0.5
+AD2_TIMING_DEFAULT_PRE_TRIGGER_WAIT_S = 2.0
+AD2_LABVIEW_ACOUSTIC_CHANNEL = 0
+AD2_LABVIEW_ACOUSTIC_FREQUENCY_HZ = 1.975e6
+AD2_LABVIEW_ACOUSTIC_AMPLITUDE_V = 2.0
+AD2_LABVIEW_ACOUSTIC_OFFSET_V = 0.0
+AD2_LABVIEW_ACOUSTIC_SHORT_DURATION_S = 0.5
+AD2_LABVIEW_ACOUSTIC_ORIGINAL_DURATION_S = 60.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +64,18 @@ class SmokeRunSettings:
     roi: dict[str, int] | None = None
     apply_roi: bool = False
     preset: LabviewWorkingPreset | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Ad2OutputSmokeParameters:
+    name: str
+    channel: int
+    frequency_hz: float
+    amplitude_v: float
+    offset_v: float
+    duration_s: float
+    repeat_count: int = 1
+    waveform: WaveformFunction = WaveformFunction.SINE
 
 
 def print_step(message: str) -> None:
@@ -262,25 +287,71 @@ def run_real_ad2_open_close(device_index: int = 0) -> int:
             safe_backend_call("FDwfDeviceCloseAll", backend.close_all)
 
 
-def low_risk_wfg_config() -> WfgConfig:
+def low_risk_ad2_parameters() -> Ad2OutputSmokeParameters:
+    return Ad2OutputSmokeParameters(
+        name="low-risk",
+        channel=AD2_LOW_RISK_CHANNEL,
+        frequency_hz=AD2_LOW_RISK_FREQUENCY_HZ,
+        amplitude_v=AD2_LOW_RISK_AMPLITUDE_V,
+        offset_v=AD2_LOW_RISK_OFFSET_V,
+        duration_s=AD2_LOW_RISK_DURATION_S,
+    )
+
+
+def ad2_timing_check_parameters(duration_s: float | None = None) -> Ad2OutputSmokeParameters:
+    duration = AD2_LOW_RISK_DURATION_S if duration_s is None else float(duration_s)
+    if duration <= 0:
+        raise SystemExit("--duration-s must be greater than 0")
+    if duration >= AD2_LABVIEW_ACOUSTIC_ORIGINAL_DURATION_S:
+        raise SystemExit("Refusing to use a long duration in the AD2 timing check; keep this smoke test short.")
+    return Ad2OutputSmokeParameters(
+        name="timing-check",
+        channel=AD2_LOW_RISK_CHANNEL,
+        frequency_hz=AD2_LOW_RISK_FREQUENCY_HZ,
+        amplitude_v=AD2_LOW_RISK_AMPLITUDE_V,
+        offset_v=AD2_LOW_RISK_OFFSET_V,
+        duration_s=duration,
+    )
+
+
+def labview_acoustic_short_parameters(duration_s: float | None = None) -> Ad2OutputSmokeParameters:
+    duration = AD2_LABVIEW_ACOUSTIC_SHORT_DURATION_S if duration_s is None else float(duration_s)
+    if duration <= 0:
+        raise SystemExit("--duration-s must be greater than 0")
+    if duration >= AD2_LABVIEW_ACOUSTIC_ORIGINAL_DURATION_S:
+        raise SystemExit(
+            "Refusing to run the full LabVIEW acoustic duration in this staged smoke mode "
+            f"({AD2_LABVIEW_ACOUSTIC_ORIGINAL_DURATION_S:g} s)."
+        )
+    return Ad2OutputSmokeParameters(
+        name="labview-acoustic-short",
+        channel=AD2_LABVIEW_ACOUSTIC_CHANNEL,
+        frequency_hz=AD2_LABVIEW_ACOUSTIC_FREQUENCY_HZ,
+        amplitude_v=AD2_LABVIEW_ACOUSTIC_AMPLITUDE_V,
+        offset_v=AD2_LABVIEW_ACOUSTIC_OFFSET_V,
+        duration_s=duration,
+    )
+
+
+def ad2_output_wfg_config(parameters: Ad2OutputSmokeParameters) -> WfgConfig:
     return WfgConfig(
         running=True,
         channels=[
             WfgChannelConfig(
-                channel_index=AD2_LOW_RISK_CHANNEL,
+                channel_index=parameters.channel,
                 carrier=CarrierSettings(
-                    frequency_hz=AD2_LOW_RISK_FREQUENCY_HZ,
-                    amplitude_v=AD2_LOW_RISK_AMPLITUDE_V,
-                    offset_v=AD2_LOW_RISK_OFFSET_V,
+                    frequency_hz=parameters.frequency_hz,
+                    amplitude_v=parameters.amplitude_v,
+                    offset_v=parameters.offset_v,
                     symmetry_percent=50.0,
                     phase_deg=0.0,
-                    function=WaveformFunction.SINE,
+                    function=parameters.waveform,
                     enable=True,
                 ),
                 trigger=TriggerSettings(
-                    sec_run=AD2_LOW_RISK_DURATION_S,
+                    sec_run=parameters.duration_s,
                     sec_wait=0.0,
-                    repeat_count=1,
+                    repeat_count=parameters.repeat_count,
                     repeat_trigger=False,
                 ),
             )
@@ -289,16 +360,75 @@ def low_risk_wfg_config() -> WfgConfig:
     )
 
 
+def low_risk_wfg_config() -> WfgConfig:
+    return ad2_output_wfg_config(low_risk_ad2_parameters())
+
+
+def ad2_timing_check_wfg_config(duration_s: float | None = None) -> WfgConfig:
+    return ad2_output_wfg_config(ad2_timing_check_parameters(duration_s))
+
+
+def print_ad2_output_parameters(parameters: Ad2OutputSmokeParameters) -> None:
+    print_step(f"real AD2 {parameters.name} output parameters")
+    print_value("channel", parameters.channel)
+    print_value("frequency_hz", parameters.frequency_hz)
+    print_value("amplitude_v", parameters.amplitude_v)
+    print_value("offset_v", parameters.offset_v)
+    print_value("function", parameters.waveform.value)
+    print_value("duration_s", parameters.duration_s)
+    print_value("repeat_count", parameters.repeat_count)
+
+
 def print_low_risk_ad2_output_parameters() -> None:
-    print_step("real AD2 low-risk output parameters")
-    print_value("channel", AD2_LOW_RISK_CHANNEL)
-    print_value("frequency_hz", AD2_LOW_RISK_FREQUENCY_HZ)
-    print_value("amplitude_v", AD2_LOW_RISK_AMPLITUDE_V)
-    print_value("offset_v", AD2_LOW_RISK_OFFSET_V)
-    print_value("function", "Sine")
-    print_value("duration_s", AD2_LOW_RISK_DURATION_S)
-    print_value("repeat_count", 1)
+    print_ad2_output_parameters(low_risk_ad2_parameters())
     print_value("LabVIEW acoustic output", "not used: no 1.975 MHz, 2.0 V, 60 s output in this mode")
+
+
+def print_ad2_timing_check_plan(
+    pre_trigger_wait_s: float,
+    duration_s: float | None = None,
+    *,
+    plan_only: bool = True,
+) -> None:
+    if pre_trigger_wait_s < 0:
+        raise SystemExit("--pre-trigger-wait-s must be greater than or equal to 0")
+    parameters = ad2_timing_check_parameters(duration_s)
+    print_step("AD2 timing verification plan")
+    print_value("real hardware initialized in plan", False if plan_only else "after this printout")
+    print_value("purpose", "observe whether trigsrcNone output starts during config_wfg or waits for pc_trigger")
+    print_ad2_output_parameters(parameters)
+    print_value("trigger source", "trigsrcNone")
+    print_value("pre_trigger_wait_s", pre_trigger_wait_s)
+    print_value("CH2/index 1", "disabled")
+    print_value("DO Clock", "not used")
+    print_value("DO Custom", "not used")
+    print_value("LabVIEW acoustic output", "not used: no 1.975 MHz, 2.0 V, 60 s output")
+    print_step("timing sequence")
+    print_value("1", "open AD2")
+    print_value("2", "reset/disable AO ch0/ch1 and DO")
+    print_value("3", "configure WFG: CH0 1000 Hz sine, 0.1 V amplitude, 0 V offset, trigsrcNone, running=True")
+    print_value("4", f"wait {pre_trigger_wait_s} s before pc_trigger")
+    print_value("5", "send pc_trigger")
+    print_value("6", f"wait output duration {parameters.duration_s} s")
+    print_value("7", "stop/disable AO ch0/ch1, reset DO, reset device, close, FDwfDeviceCloseAll")
+    print_step("expected oscilloscope/MSO interpretation")
+    print_value("if waveform appears during pre-trigger wait", "trigsrcNone/config_wfg starts output immediately")
+    print_value("if waveform appears only after pc_trigger", "PC trigger controls start for this configuration")
+    print_step("pump, valve, Qmix, Z-stage, Thorlabs/APT, Prior COM7, camera, DO Clock, and DO Custom are not used")
+
+
+def print_labview_acoustic_short_output_parameters(parameters: Ad2OutputSmokeParameters) -> None:
+    print_step("WARNING: LabVIEW acoustic candidate frequency/amplitude selected for short-duration AD2-only smoke")
+    print_value("original LabVIEW experiment run_s", AD2_LABVIEW_ACOUSTIC_ORIGINAL_DURATION_S)
+    print_value("short smoke duration_s", parameters.duration_s)
+    print_ad2_output_parameters(parameters)
+    print_value("camera", "not used")
+    print_value("pump", "not used")
+    print_value("valve", "not used")
+    print_value("Qmix", "not used")
+    print_value("Z-stage", "not used")
+    print_value("Thorlabs/APT", "not used")
+    print_value("Prior COM7", "not used")
 
 
 def run_real_ad2_low_risk_output(device_index: int = 0) -> int:
@@ -322,6 +452,74 @@ def run_real_ad2_low_risk_output(device_index: int = 0) -> int:
         return 0
     finally:
         print_step("AD2 low-risk output cleanup")
+        if backend is not None and handle is not None:
+            safe_disable_ad2_outputs(backend, handle)
+            safe_backend_call("FDwfDeviceClose", lambda: backend.close(handle))
+        if backend is not None:
+            safe_backend_call("FDwfDeviceCloseAll", backend.close_all)
+
+
+def run_real_ad2_timing_check(
+    device_index: int = 0,
+    pre_trigger_wait_s: float = AD2_TIMING_DEFAULT_PRE_TRIGGER_WAIT_S,
+    duration_s: float | None = None,
+) -> int:
+    if pre_trigger_wait_s < 0:
+        raise SystemExit("--pre-trigger-wait-s must be greater than or equal to 0")
+    parameters = ad2_timing_check_parameters(duration_s)
+    print_step("real AD2 timing verification smoke")
+    print_step("camera, pump, valve, Qmix, Z-stage, Thorlabs/APT, Prior COM7, DO Clock, and DO Custom are not used")
+    print_ad2_timing_check_plan(pre_trigger_wait_s, parameters.duration_s, plan_only=False)
+    backend: WaveFormsBackend | None = None
+    handle: int | None = None
+    try:
+        backend = WaveFormsBackend()
+        print_value("WaveForms DLL", backend.library_path)
+        read_ad2_identity(backend, device_index)
+        print_step(f"opening AD2 device index {device_index}")
+        handle = backend.open_device(device_index)
+        print_value("handle", handle)
+        safe_disable_ad2_outputs(backend, handle)
+        print_step("configuring timing-check WFG now; watch for waveform during the pre-trigger wait")
+        backend.configure_wfg(handle, ad2_timing_check_wfg_config(parameters.duration_s))
+        print_step(f"pre-trigger observation wait: {pre_trigger_wait_s} s")
+        time.sleep(pre_trigger_wait_s)
+        print_step("sending AD2 PC trigger now")
+        backend.trigger_pc(handle)
+        print_step(f"post-trigger observation wait: {parameters.duration_s} s")
+        time.sleep(parameters.duration_s + 0.1)
+        return 0
+    finally:
+        print_step("AD2 timing check cleanup")
+        if backend is not None and handle is not None:
+            safe_disable_ad2_outputs(backend, handle)
+            safe_backend_call("FDwfDeviceClose", lambda: backend.close(handle))
+        if backend is not None:
+            safe_backend_call("FDwfDeviceCloseAll", backend.close_all)
+
+
+def run_real_ad2_labview_acoustic_short(device_index: int = 0, duration_s: float | None = None) -> int:
+    parameters = labview_acoustic_short_parameters(duration_s)
+    print_step("real AD2 LabVIEW acoustic short-duration smoke")
+    print_step("camera, pump, valve, Qmix, Z-stage, Thorlabs/APT, and Prior COM7 are not used")
+    print_labview_acoustic_short_output_parameters(parameters)
+    backend: WaveFormsBackend | None = None
+    handle: int | None = None
+    try:
+        backend = WaveFormsBackend()
+        print_value("WaveForms DLL", backend.library_path)
+        read_ad2_identity(backend, device_index)
+        print_step(f"opening AD2 device index {device_index}")
+        handle = backend.open_device(device_index)
+        print_value("handle", handle)
+        safe_disable_ad2_outputs(backend, handle)
+        print_step("configuring and starting LabVIEW acoustic candidate short-duration analog output")
+        backend.configure_wfg(handle, ad2_output_wfg_config(parameters))
+        print_step("waiting for short acoustic smoke output duration")
+        time.sleep(parameters.duration_s + 0.1)
+        return 0
+    finally:
+        print_step("AD2 LabVIEW acoustic short cleanup")
         if backend is not None and handle is not None:
             safe_disable_ad2_outputs(backend, handle)
             safe_backend_call("FDwfDeviceClose", lambda: backend.close(handle))
@@ -563,6 +761,16 @@ def parse_args() -> argparse.Namespace:
         help="Run a deliberately low-risk AD2 output smoke. Requires --confirm.",
     )
     mode.add_argument(
+        "--real-ad2-timing-check",
+        action="store_true",
+        help="Run low-risk AD2 timing check for oscilloscope/MSO observation. Requires --confirm.",
+    )
+    mode.add_argument(
+        "--real-ad2-labview-acoustic-short",
+        action="store_true",
+        help="Run the LabVIEW acoustic candidate frequency/amplitude for a short AD2-only smoke. Requires --confirm.",
+    )
+    mode.add_argument(
         "--real-camera-real-ad2-low-risk",
         action="store_true",
         help="Run combined real camera plus real AD2 low-risk workflow. Requires --confirm.",
@@ -574,10 +782,31 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--preset", choices=[LABVIEW_SCREENSHOT_PRESET_NAME], default=None)
     parser.add_argument("--ad2-plan", action="store_true", help="Also print LabVIEW screenshot AD2 candidate parameters in plan-only mode.")
+    parser.add_argument("--ad2-timing-plan", action="store_true", help="Print low-risk AD2 timing verification sequence without touching hardware.")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "hardware_tests" / "_smoke_output")
     parser.add_argument("--frames", type=int, default=None)
     parser.add_argument("--exposure-ms", type=float, default=None)
     parser.add_argument("--device-index", type=int, default=0, help="WaveForms device index for real AD2 smoke modes. Default: 0.")
+    parser.add_argument(
+        "--duration-s",
+        type=float,
+        default=None,
+        help="Duration override for AD2 timing/acoustic short modes. Must remain short.",
+    )
+    parser.add_argument(
+        "--pre-trigger-wait-s",
+        type=float,
+        default=AD2_TIMING_DEFAULT_PRE_TRIGGER_WAIT_S,
+        help="Observation wait after AD2 timing-check config_wfg and before pc_trigger. Default: 2.0.",
+    )
+    parser.add_argument(
+        TIMING_UNCERTAIN_ACK_FLAG,
+        action="store_true",
+        help=(
+            "Required extra acknowledgement for --real-ad2-labview-acoustic-short. "
+            "AD2 WFG start timing versus pc_trigger is not yet fully confirmed."
+        ),
+    )
     parser.add_argument(
         "--apply-roi",
         action="store_true",
@@ -604,6 +833,18 @@ def main() -> int:
             raise SystemExit(f"This mode requires --confirm {CONFIRM_TEXT}")
         run_real_ad2_low_risk_output(args.device_index)
         return 0
+    if args.real_ad2_timing_check:
+        if args.confirm != CONFIRM_TEXT:
+            raise SystemExit(f"This mode requires --confirm {CONFIRM_TEXT}")
+        run_real_ad2_timing_check(args.device_index, args.pre_trigger_wait_s, args.duration_s)
+        return 0
+    if args.real_ad2_labview_acoustic_short:
+        if args.confirm != CONFIRM_TEXT:
+            raise SystemExit(f"This mode requires --confirm {CONFIRM_TEXT}")
+        if not args.acknowledge_timing_uncertain:
+            raise SystemExit(TIMING_UNCERTAIN_REFUSAL)
+        run_real_ad2_labview_acoustic_short(args.device_index, args.duration_s)
+        return 0
     if args.real_camera_real_ad2_low_risk:
         if args.confirm != CONFIRM_TEXT:
             raise SystemExit(f"This mode requires --confirm {CONFIRM_TEXT}")
@@ -624,6 +865,8 @@ def main() -> int:
     print_plan(plan, args.output_dir, settings)
     if args.ad2_plan:
         print_ad2_labview_candidate(settings)
+    if args.ad2_timing_plan:
+        print_ad2_timing_check_plan(args.pre_trigger_wait_s, args.duration_s)
     return 0
 
 
