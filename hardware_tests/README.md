@@ -136,6 +136,10 @@ semantics, and operator confirmation.
 
 ## Z-Stage Discovery Result
 
+- The old Z-stage path in the converted Python code assumes a Prior serial
+  stage on `COM7`.
+- That old stage is no longer the current hardware.
+- The Z-axis stage has been replaced.
 - The configured Prior Z-stage serial path is not valid for the currently
   connected device: `COM7` is not present.
 - Windows Device Manager shows an `APT USB Device`.
@@ -147,5 +151,18 @@ semantics, and operator confirmation.
   - type: `APT Piezo Controller`
 - No controller was opened, no motor was enabled, no polling was started, and
   no motion, home, jog, identify, or settings commands were sent.
-- Future Z-stage integration should use a Thorlabs/APT/Kinesis path, not the
-  current Prior serial `COM7` implementation.
+- Future Z-stage integration should add a Thorlabs/APT/Kinesis piezo Z-stage
+  backend instead of trying to make the old Prior `COM7` backend work with the
+  new hardware.
+
+## Pump Hardware History
+
+- The pump system is still the original neMESYS/Qmix pump system.
+- It was previously configured or used as a two-unit/two-pump setup.
+- The two-unit setup did not work reliably.
+- The current physical setup has only one pump unit connected.
+- Current active Python validation should use the one-pump QmixElements
+  configuration:
+  `C:\Users\Lab user\Desktop\Franzi\video paper 2\Paper 2 slow flow\Configurations\Cetoni_1pump_config_FM`
+- The previous `two_pumps` configuration is not suitable for the current
+  connected hardware.
