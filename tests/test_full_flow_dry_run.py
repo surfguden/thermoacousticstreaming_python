@@ -53,6 +53,9 @@ class FakeCamera:
         self.sequence_config = settings
         self.calls.append(("camera", "configure_sequence", settings))
 
+    def configure_trigger_global_exposure(self, enabled):
+        self.calls.append(("camera", "configure_trigger_global_exposure", enabled))
+
     def start_capture(self):
         self.capturing = True
         self.calls.append(("camera", "start_capture"))
@@ -60,6 +63,10 @@ class FakeCamera:
     def image_sequence(self, frame_count=0):
         self.calls.append(("camera", "image_sequence", frame_count))
         return [f"fake-frame-{index}" for index in range(frame_count)]
+
+    def read_frame_timestamps(self):
+        self.calls.append(("camera", "read_frame_timestamps"))
+        return []
 
     def stop_capture(self):
         self.capturing = False
@@ -94,9 +101,12 @@ class FakePump:
     def initialize(self):
         self.calls.append(("pump", "initialize"))
 
-    def set_fill_level(self, fill_level):
+    def set_fill_level(self, fill_level, flow_rate=None):
         self.fill_level = fill_level
-        self.calls.append(("pump", "set_fill_level", fill_level))
+        if flow_rate is None:
+            self.calls.append(("pump", "set_fill_level", fill_level))
+        else:
+            self.calls.append(("pump", "set_fill_level", fill_level, flow_rate))
 
     def generate_flow(self, flow_rate):
         self.dosing = False
@@ -148,14 +158,17 @@ class RecordingExperiment(Experiment2):
         self.calls.append(("experiment", "create_folder_and_tdms", self.experiment_folder))
         return super().create_folder_and_tdms()
 
+    def _write_tdms(self):
+        self.experiment_folder.mkdir(parents=True, exist_ok=True)
+
     def save_settings(self):
         self.calls.append(("experiment", "save_settings"))
         super().save_settings()
 
-    def save_image_data(self, image_data):
+    def save_image_data(self, image_data, frame_timestamps=None):
         self.saved_image_data = image_data
         self.calls.append(("experiment", "save_image_data", tuple(image_data)))
-        super().save_image_data(image_data)
+        super().save_image_data(image_data, frame_timestamps=frame_timestamps)
 
     def save_camera_settings(self, settings):
         self.saved_camera_settings = settings
@@ -188,10 +201,24 @@ def make_recording_experiment(calls, tmp_path, *, flush_enabled=False):
         ),
         flush_enabled=flush_enabled,
         global_exposure_ms=12.5,
+        trigger_global_exposure=True,
         sequence_settings={"frames": 3},
         wfg_config={"running": False, "channels": []},
         do_clock_settings={"running": False, "channels": []},
     )
+
+
+def finite_wfg_config(*, sec_run=0.5, sec_wait=0.2, enabled=True):
+    return {
+        "running": True,
+        "channels": [
+            {
+                "channel_index": 0,
+                "carrier": {"enable": enabled},
+                "trigger": {"secRun": sec_run, "secWait": sec_wait},
+            }
+        ],
+    }
 
 
 def test_application_full_flow_dry_run_skips_flush_by_default(tmp_path):
@@ -226,6 +253,7 @@ def test_application_full_flow_dry_run_skips_flush_by_default(tmp_path):
     ]
     assert ("ad2", "config_wfg", {"running": False, "channels": []}) in calls
     assert ("ad2", "config_do_clock_special", {"running": False, "channels": []}) in calls
+    assert ("camera", "configure_trigger_global_exposure", True) in calls
     assert ("ad2", "pc_trigger") in calls
     assert ("camera", "start_capture") in calls
     assert ("camera", "image_sequence", 3) in calls
@@ -246,6 +274,126 @@ def test_application_full_flow_dry_run_skips_flush_by_default(tmp_path):
     assert isinstance(app.valve, FakeValve)
 
 
+def test_application_full_flow_waits_only_for_remaining_ad2_time(tmp_path, monkeypatch):
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+    experiment = make_recording_experiment(calls, tmp_path)
+    experiment.wfg_config = finite_wfg_config(sec_run=1.0, sec_wait=0.5)
+    app.experiment_series.enqueue_experiments([experiment])
+
+    clock = {"now": 100.0}
+    monkeypatch.setattr("thermo_acoustic.application.time.monotonic", lambda: clock["now"])
+
+    original_image_sequence = app.camera.image_sequence
+
+    def image_sequence_with_elapsed_capture(frame_count=0):
+        frames = original_image_sequence(frame_count)
+        clock["now"] += 1.2
+        return frames
+
+    app.camera.image_sequence = image_sequence_with_elapsed_capture
+
+    def record_wait(self, seconds):
+        calls.append(("app", "wait", seconds))
+        return None
+
+    monkeypatch.setattr(Application, "wait", record_wait)
+
+    ok = app.run_experiment2()
+
+    assert ok is True
+    wait_calls = [call for call in calls if call[:2] == ("app", "wait")]
+    assert len(wait_calls) == 1
+    assert abs(wait_calls[0][2] - 0.3) < 1e-9
+    assert calls.index(("camera", "image_sequence", 3)) < calls.index(wait_calls[0])
+    assert calls.index(wait_calls[0]) < calls.index(
+        ("camera", "save_sequence", ("fake-frame-0", "fake-frame-1", "fake-frame-2"), tmp_path / "repeat_001")
+    )
+
+
+def test_application_full_flow_rejects_continuous_ad2_before_hardware_start(tmp_path):
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+    experiment = make_recording_experiment(calls, tmp_path)
+    experiment.wfg_config = finite_wfg_config(sec_run=0.0, sec_wait=0.5)
+    app.experiment_series.enqueue_experiments([experiment])
+
+    try:
+        app.run_experiment2()
+    except ValueError as exc:
+        assert "configured for continuous output" in str(exc)
+        assert "finite Run Duration" in str(exc)
+    else:
+        raise AssertionError("continuous AD2 output should be rejected")
+
+    assert not any(call[:2] == ("ad2", "config_wfg") for call in calls)
+    assert ("camera", "start_capture") not in calls
+
+
+def test_initialize_rolls_back_already_initialized_devices_when_later_device_fails(tmp_path):
+    calls = []
+
+    class FailingValve(FakeValve):
+        def initialize(self):
+            super().initialize()
+            raise RuntimeError("valve init failed")
+
+    app = Application(
+        ad2=FakeAD2(calls),
+        camera=FakeCamera(calls),
+        pump=FakePump(calls),
+        valve=FailingValve(calls),
+        z_motor=FakeZStage(calls),
+        experiment_series=ExperimentSeries2(series_path=tmp_path),
+    )
+
+    try:
+        app.initialize()
+    except RuntimeError as exc:
+        assert "valve initialize failed" in str(exc)
+    else:
+        raise AssertionError("partial initialization failure should be reported")
+
+    assert calls[:4] == [
+        ("ad2", "initialize"),
+        ("camera", "initialize"),
+        ("pump", "initialize"),
+        ("valve", "initialize"),
+    ]
+    assert ("z_stage", "initialize") not in calls
+    assert calls[-3:] == [
+        ("ad2", "cleanup"),
+        ("camera", "cleanup"),
+        ("pump", "cleanup"),
+    ]
+
+
+def test_run_experiment2_stops_capture_when_image_sequence_raises(tmp_path):
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+    experiment = make_recording_experiment(calls, tmp_path)
+    app.experiment_series.enqueue_experiments([experiment])
+
+    def failing_image_sequence(frame_count=0):
+        calls.append(("camera", "image_sequence", frame_count))
+        raise RuntimeError("camera read failed")
+
+    app.camera.image_sequence = failing_image_sequence
+
+    try:
+        app.run_experiment2()
+    except RuntimeError as exc:
+        assert "camera read failed" in str(exc)
+    else:
+        raise AssertionError("camera read failure should propagate")
+
+    assert ("camera", "start_capture") in calls
+    assert ("camera", "image_sequence", 3) in calls
+    assert ("camera", "stop_capture") in calls
+    assert calls.index(("camera", "image_sequence", 3)) < calls.index(("camera", "stop_capture"))
+    assert not any(call[:2] == ("camera", "save_sequence") for call in calls)
+
+
 def test_application_full_flow_dry_run_can_opt_into_fake_flush(tmp_path):
     imported_before = {name for name in REAL_HARDWARE_MODULES if name in sys.modules}
     calls = []
@@ -264,9 +412,28 @@ def test_application_full_flow_dry_run_can_opt_into_fake_flush(tmp_path):
     assert ("camera", "stop_capture") in calls
     assert ("camera", "save_sequence", ("fake-frame-0", "fake-frame-1", "fake-frame-2"), tmp_path / "repeat_001") in calls
     assert ("valve", "set_position", 1) in calls
-    assert ("pump", "set_fill_level", 1.0) in calls
-    assert ("pump", "generate_flow", 0.0) in calls
+    assert ("pump", "set_fill_level", 1.0, 0.0) in calls
+    assert ("pump", "generate_flow", 0.0) not in calls
     assert ("pump", "read_status") in calls
     assert ("valve", "set_position", 2) in calls
     assert isinstance(app.pump, FakePump)
     assert isinstance(app.valve, FakeValve)
+
+
+def test_run_experiment2_reports_flush_failure_instead_of_completing(tmp_path, monkeypatch, caplog):
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+    experiment = make_recording_experiment(calls, tmp_path, flush_enabled=True)
+    app.experiment_series.enqueue_experiments([experiment])
+
+    monkeypatch.setattr(Application, "flush", lambda self, settings: False)
+
+    with caplog.at_level("ERROR", logger="thermo_acoustic.application"):
+        ok = app.run_experiment2()
+
+    assert ok is False
+    assert app.status == "ExperimentFlushFailed"
+    assert any("Flush failed for experiment repeat" in str(error) for error in app.errors)
+    assert any("Flush failed for experiment repeat" in record.message for record in caplog.records)
+    assert not any(call[:2] == ("camera", "save_sequence") for call in calls)
+    assert ("experiment", "cleanup") in calls

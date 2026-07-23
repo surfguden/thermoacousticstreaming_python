@@ -1,0 +1,1 @@
+26-07-20 15:06:00:018 TRACE [29964]: DLL_PROCESS_DETACH in ..\..\..\..\usl\env\qt\qtcoreaddons\qtcoreaddons_global.cpp:155

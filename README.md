@@ -15,7 +15,8 @@ python -m pytest -q
 
 ## Application Status
 
-The runnable application is `tools/run_ui.py`. It reconstructs the LabVIEW
+The runnable application is `tools/run_ui.py`, which launches
+`thermo_acoustic.qt_ui` (`MainWindow`). It reconstructs the LabVIEW
 front panel tabs that are still in scope:
 
 - Initialization
@@ -26,6 +27,10 @@ front panel tabs that are still in scope:
 - Experiment
 
 The DOCustom, DOClock, and Zstack tabs are intentionally omitted.
+`src/thermo_acoustic/qt_ui_v2.py` (`MainWindowV2`) is an in-development
+preview UI that reuses `qt_ui.py`'s widget-building and manual-test-panel
+code (WFG/MSO/Pump&Valve/Camera open as dialogs from a sidebar). It is not
+yet hardware-verified and is not the default launch target until approved.
 
 Hardware support currently works in three layers:
 

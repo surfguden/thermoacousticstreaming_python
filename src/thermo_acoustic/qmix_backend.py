@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import queue
 from dataclasses import dataclass, field
 from pathlib import Path
 import sys
+import threading
 import time
 from typing import Any
 
@@ -41,6 +43,7 @@ class QmixPumpBackend:
     initialized: bool = False
     max_flow_rate_ul_min: float | None = None
     max_volume_ml: float | None = None
+    close_timeout_s: float = 5.0
 
     def _load_sdk(self) -> None:
         if self.qmixbus is not None and self.qmixpump is not None:
@@ -62,19 +65,28 @@ class QmixPumpBackend:
     def initialize(self, configuration_path: Path) -> None:
         self._load_sdk()
         self.bus = self.qmixbus.Bus()
-        self.bus.open(str(configuration_path), 0)
-        self.pump = self.qmixpump.Pump()
-        if self.pump_name:
-            self.pump.lookup_by_name(self.pump_name)
-        else:
-            self.pump.lookup_by_device_index(self.pump_index)
-        self.bus.start()
-        self._enable_pump()
-        self.configure_flow_unit("ul/min")
-        self.pump.set_volume_unit(self.qmixpump.UnitPrefix.milli, self.qmixpump.VolumeUnit.litres)
-        self.max_flow_rate_ul_min = float(self.pump.get_flow_rate_max())
-        self.max_volume_ml = float(self.pump.get_volume_max())
-        self.initialized = True
+        try:
+            self.bus.open(str(configuration_path), 0)
+            self.pump = self.qmixpump.Pump()
+            if self.pump_name:
+                self.pump.lookup_by_name(self.pump_name)
+            else:
+                self.pump.lookup_by_device_index(self.pump_index)
+            self.bus.start()
+            self._enable_pump()
+            self.configure_flow_unit("ul/min")
+            self.pump.set_volume_unit(self.qmixpump.UnitPrefix.milli, self.qmixpump.VolumeUnit.litres)
+            self.max_flow_rate_ul_min = float(self.pump.get_flow_rate_max())
+            self.max_volume_ml = float(self.pump.get_volume_max())
+            self.initialized = True
+        except Exception as exc:
+            try:
+                self.close()
+            except Exception as rollback_exc:
+                raise QmixPumpError(
+                    f"Qmix initialization failed: {exc}; rollback close failed: {rollback_exc}"
+                ) from exc
+            raise
 
     def _require_pump(self) -> Any:
         if self.pump is None:
@@ -123,10 +135,13 @@ class QmixPumpBackend:
         self._enable_pump()
         pump.generate_flow(float(flow_rate))
 
-    def set_fill_level(self, fill_level: float) -> None:
+    def set_fill_level(self, fill_level: float, flow_rate: float | None = None) -> None:
         pump = self._require_pump()
         self._enable_pump()
-        pump.set_fill_level(self._coerce_fill_level_ml(fill_level), self._fill_flow_rate())
+        pump.set_fill_level(
+            self._coerce_fill_level_ml(fill_level),
+            self._fill_flow_rate() if flow_rate is None else float(flow_rate),
+        )
 
     def configure_syringe(self, config: dict | None) -> None:
         if not config:
@@ -189,14 +204,37 @@ class QmixPumpBackend:
         return bool(self.pump.is_pumping())
 
     def close(self) -> None:
+        errors: list[str] = []
+        errors.extend(self._run_close_step("pump stop", self.stop))
+        if self.bus is not None:
+            errors.extend(self._run_close_step("bus stop", self.bus.stop))
+            errors.extend(self._run_close_step("bus close", self.bus.close))
+        self.bus = None
+        self.pump = None
+        self.initialized = False
+        if errors:
+            raise QmixPumpError("; ".join(errors))
+
+    def _run_close_step(self, name: str, action) -> list[str]:
+        result_queue: queue.Queue[BaseException | None] = queue.Queue(maxsize=1)
+
+        def run() -> None:
+            try:
+                action()
+            except BaseException as exc:  # pragma: no cover - defensive SDK cleanup path
+                result_queue.put(exc)
+            else:
+                result_queue.put(None)
+
+        worker = threading.Thread(target=run, name=f"qmix-close-{name}", daemon=True)
+        worker.start()
+        worker.join(max(self.close_timeout_s, 0.0))
+        if worker.is_alive():
+            return [f"Qmix {name} timed out after {self.close_timeout_s:.1f}s."]
         try:
-            self.stop()
-        finally:
-            if self.bus is not None:
-                try:
-                    self.bus.stop()
-                finally:
-                    self.bus.close()
-            self.bus = None
-            self.pump = None
-            self.initialized = False
+            error = result_queue.get_nowait()
+        except queue.Empty:  # pragma: no cover - thread completed without reporting
+            return [f"Qmix {name} finished without reporting a result."]
+        if error is not None:
+            return [f"Qmix {name} failed: {error}"]
+        return []

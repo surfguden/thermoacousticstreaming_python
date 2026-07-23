@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+import logging
+import queue
 from dataclasses import dataclass, field
+import math
+import threading
 import time
 
+from .ad2 import coerce_do_config, coerce_wfg_config
 from .instruments import AD2Sdk, CetoniPump, HamamatsuCamera, PriorZMotor, Valve
 from .messages import Message, MessageName, QueueResult, UiEvent
 from .queues import LabViewQueue
 from .workflows import Experiment2, ExperimentSeries2, FlushSettings
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -24,6 +32,8 @@ class Application:
     errors: list[BaseException | str] = field(default_factory=list)
     stop_fired: bool = False
     _running: bool = False
+    cleanup_device_timeout_s: float = 5.0
+    cleanup_total_timeout_s: float = 15.0
 
     def create_queues(self) -> None:
         self.main_queue = LabViewQueue("Main Queue")
@@ -138,15 +148,81 @@ class Application:
         self.create_queues()
         self.register_events()
         self.fire_status_event("Initializing")
-        for instrument in (self.ad2, self.camera, self.pump, self.valve, self.z_motor):
-            instrument.initialize()
+        initialized: list[tuple[str, object]] = []
+        for name, instrument in (
+            ("ad2", self.ad2),
+            ("camera", self.camera),
+            ("pump", self.pump),
+            ("valve", self.valve),
+            ("z_motor", self.z_motor),
+        ):
+            try:
+                instrument.initialize()
+            except Exception as exc:
+                rollback_errors = self._cleanup_instruments(initialized)
+                details = [f"{name} initialize failed: {exc}"]
+                details.extend(rollback_errors)
+                raise RuntimeError("; ".join(details)) from exc
+            initialized.append((name, instrument))
         self.fire_status_event("System Initialized")
 
     def cleanup(self) -> None:
-        for instrument in (self.camera, self.pump, self.valve, self.z_motor, self.ad2):
-            instrument.cleanup()
+        errors = self._cleanup_instruments(
+            (
+                ("camera", self.camera),
+                ("pump", self.pump),
+                ("valve", self.valve),
+                ("z_motor", self.z_motor),
+                ("ad2", self.ad2),
+            )
+        )
         self.fire_stop_event()
         self.fire_status_event("System Not Initialized")
+        if errors:
+            raise RuntimeError("; ".join(errors))
+
+    def _cleanup_instruments(self, instruments) -> list[str]:
+        errors: list[str] = []
+        deadline = time.monotonic() + max(self.cleanup_total_timeout_s, 0.0)
+        for name, instrument in instruments:
+            remaining_s = deadline - time.monotonic()
+            if remaining_s <= 0:
+                message = f"{name} cleanup skipped because overall cleanup timed out."
+                logger.error(message)
+                self.check_loop_error(message)
+                errors.append(message)
+                continue
+            timeout_s = min(max(self.cleanup_device_timeout_s, 0.0), remaining_s)
+            error = self._run_cleanup_call_with_timeout(name, instrument.cleanup, timeout_s)
+            if error is not None:
+                logger.error(error)
+                self.check_loop_error(error)
+                errors.append(error)
+        return errors
+
+    def _run_cleanup_call_with_timeout(self, name: str, action, timeout_s: float) -> str | None:
+        result_queue: queue.Queue[BaseException | None] = queue.Queue(maxsize=1)
+
+        def run() -> None:
+            try:
+                action()
+            except BaseException as exc:  # pragma: no cover - defensive hardware cleanup path
+                result_queue.put(exc)
+            else:
+                result_queue.put(None)
+
+        worker = threading.Thread(target=run, name=f"cleanup-{name}", daemon=True)
+        worker.start()
+        worker.join(max(timeout_s, 0.0))
+        if worker.is_alive():
+            return f"{name} cleanup timed out after {timeout_s:.1f}s."
+        try:
+            error = result_queue.get_nowait()
+        except queue.Empty:  # pragma: no cover - thread completed without reporting
+            return f"{name} cleanup finished without reporting a result."
+        if error is not None:
+            return f"{name} cleanup failed: {error}"
+        return None
 
     def wait(self, seconds: float) -> Message | None:
         deadline = time.monotonic() + max(seconds, 0.0)
@@ -162,6 +238,53 @@ class Application:
         if result.message is None:
             return False
         return result.message.name in (MessageName.ABORT, MessageName.EXIT, "Abort", "Exit")
+
+    def _is_abort_exit_or_error(self, message: Message | None) -> bool:
+        if message is None:
+            return False
+        return message.name in (MessageName.ABORT, MessageName.EXIT, "Abort", "Exit", "Error")
+
+    def _ad2_completion_wait_seconds(self, experiment: Experiment2) -> float:
+        wfg_config = coerce_wfg_config(experiment.wfg_config)
+        wait_seconds = 0.0
+        if wfg_config.running:
+            for channel in wfg_config.channels:
+                if not channel.carrier.enable:
+                    continue
+                wait_seconds = max(
+                    wait_seconds,
+                    self._ad2_trigger_completion_seconds(
+                        label=f"AD2 channel {channel.channel_index}",
+                        sec_run=float(channel.trigger.sec_run),
+                        sec_wait=float(channel.trigger.sec_wait),
+                    ),
+                )
+
+        do_config = coerce_do_config(experiment.do_clock_settings)
+        if do_config.running:
+            for channel in do_config.channels:
+                if not channel.enable:
+                    continue
+                wait_seconds = max(
+                    wait_seconds,
+                    self._ad2_trigger_completion_seconds(
+                        label=f"AD2 digital channel {channel.channel_index}",
+                        sec_run=float(channel.trigger.sec_run),
+                        sec_wait=float(channel.trigger.sec_wait),
+                    ),
+                )
+        return wait_seconds
+
+    def _ad2_trigger_completion_seconds(self, *, label: str, sec_run: float, sec_wait: float) -> float:
+        if sec_run == 0:
+            raise ValueError(
+                f"{label} is configured for continuous output (sec_run=0), which has no "
+                "defined completion time -- flush/save cannot safely proceed. Set a finite "
+                "Run Duration before starting this experiment."
+            )
+        if not math.isfinite(sec_run) or not math.isfinite(sec_wait):
+            raise ValueError(f"{label} has non-finite run/wait timing; flush/save cannot safely proceed.")
+        return max(sec_run, 0.0) + max(sec_wait, 0.0)
 
     def wait_for_pump(self, timeout_s: float) -> bool:
         self.fire_status_event("Waiting for Pump")
@@ -180,8 +303,7 @@ class Application:
         self.wait(1.0)
 
         new_fill_level = self.pump.fill_level - settings.fill_level_delta
-        self.pump.set_fill_level(new_fill_level)
-        self.pump.generate_flow(settings.flush_flowrate)
+        self.pump.set_fill_level(new_fill_level, settings.flush_flowrate)
 
         completed = self.wait_for_pump(settings.timeout_s)
         if not completed:
@@ -199,6 +321,8 @@ class Application:
             self.fire_status_event("NoExperiment")
             return False
 
+        ad2_wait_seconds = self._ad2_completion_wait_seconds(experiment)
+
         self.fire_status_event("Initializing Experiment")
         experiment_folder = experiment.create_folder_and_tdms()
         experiment.save_settings()
@@ -208,27 +332,57 @@ class Application:
 
         self.camera.configure(exposure_ms=experiment.global_exposure_ms)
         self.camera.configure_sequence(experiment.sequence_settings)
+        self.fire_status_event(
+            "Configuring camera trigger global exposure; this may only take effect with compatible trigger source settings"
+        )
+        self.camera.configure_trigger_global_exposure(experiment.trigger_global_exposure)
+        image_data = []
+        aborted = False
         self.camera.start_capture()
-        self.ad2.pc_trigger()
+        try:
+            self.ad2.pc_trigger()
+            ad2_triggered_at = time.monotonic()
 
-        self.fire_status_event("Running Experiment Frame")
-        frame_count = 0
-        if experiment.sequence_settings:
-            frame_count = int(experiment.sequence_settings.get("frames", 0) or 0)
-        image_data = self.camera.image_sequence(frame_count=frame_count)
+            self.fire_status_event("Running Experiment Frame")
+            frame_count = 0
+            if experiment.sequence_settings:
+                frame_count = int(experiment.sequence_settings.get("frames", 0) or 0)
+            image_data = self.camera.image_sequence(frame_count=frame_count)
+            frame_timestamps = self.camera.read_frame_timestamps()
 
-        aborted = self.listen_abort()
-        self.camera.stop_capture()
+            aborted = self.listen_abort()
+        finally:
+            self.camera.stop_capture()
 
         if aborted:
             self.fire_status_event("ExperimentAborted")
             experiment.cleanup()
             return False
 
+        remaining_ad2_wait_s = max(ad2_wait_seconds - (time.monotonic() - ad2_triggered_at), 0.0)
+        if remaining_ad2_wait_s > 0:
+            self.fire_status_event("Waiting for AD2 completion")
+            if self._is_abort_exit_or_error(self.wait(remaining_ad2_wait_s)):
+                self.fire_status_event("ExperimentAborted")
+                experiment.cleanup()
+                return False
+
         if experiment.flush_enabled:
-            self.flush(experiment.flush_settings)
+            flush_completed = self.flush(experiment.flush_settings)
+            if not flush_completed:
+                message = (
+                    f"Flush failed for experiment repeat {experiment.repeat_id}: "
+                    f"flush_flowrate={experiment.flush_settings.flush_flowrate}, "
+                    f"flush_volume_ml={experiment.flush_settings.flush_volume_ml}, "
+                    f"wait_after_flush_s={experiment.flush_settings.wait_after_flush_s}"
+                )
+                logger.error(message)
+                self.check_loop_error(message)
+                self.fire_status_event("ExperimentFlushFailed")
+                experiment.cleanup()
+                return False
         self.camera.save_sequence(image_data, experiment_folder)
-        experiment.save_image_data(image_data)
+        experiment.save_image_data(image_data, frame_timestamps=frame_timestamps)
         experiment.save_camera_settings(
             {
                 "buffer_size": self.camera.get_camera_buffer_size(),

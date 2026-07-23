@@ -35,9 +35,10 @@ class TextCommandBackend(Protocol):
 
 @dataclass(slots=True)
 class SerialTextCommandBackend:
-    baud_rate: int = 9600
+    baud_rate: int = 19200
     timeout_s: float = 1.0
-    line_ending: str = "\r\n"
+    write_timeout_s: float = 5.0
+    line_ending: str = "\r"
     port: object | None = None
 
     def _open(self, resource: str) -> None:
@@ -47,7 +48,12 @@ class SerialTextCommandBackend:
             import serial
         except ImportError as exc:  # pragma: no cover - depends on optional runtime package
             raise RuntimeError("pyserial is required for real serial hardware. Install with: python -m pip install pyserial") from exc
-        self.port = serial.Serial(resource, baudrate=self.baud_rate, timeout=self.timeout_s)
+        self.port = serial.Serial(
+            resource,
+            baudrate=self.baud_rate,
+            timeout=self.timeout_s,
+            write_timeout=self.write_timeout_s,
+        )
 
     def write(self, command: str) -> None:
         text = command.strip()
@@ -81,7 +87,7 @@ class PumpBackend(Protocol):
 
     def generate_flow(self, flow_rate: float) -> None: ...
 
-    def set_fill_level(self, fill_level: float) -> None: ...
+    def set_fill_level(self, fill_level: float, flow_rate: float | None = None) -> None: ...
 
     def configure_syringe(self, config: dict | None) -> None: ...
 
@@ -105,6 +111,8 @@ class CameraBackend(Protocol):
 
     def configure_sequence(self, settings: dict | None) -> None: ...
 
+    def configure_trigger_global_exposure(self, enabled: bool) -> None: ...
+
     def start_capture(self) -> None: ...
 
     def stop_capture(self) -> None: ...
@@ -112,6 +120,8 @@ class CameraBackend(Protocol):
     def capture_snapshot(self) -> object: ...
 
     def image_sequence(self, frame_count: int = 0) -> list[object]: ...
+
+    def read_frame_timestamps(self) -> list[str]: ...
 
     def save_sequence(self, image_data: object, folder: Path) -> None: ...
 
@@ -506,6 +516,10 @@ class HamamatsuCamera:
             self.backend.configure_sequence(settings)
         self.sequence_config = settings
 
+    def configure_trigger_global_exposure(self, enabled: bool) -> None:
+        if self.backend is not None:
+            self.backend.configure_trigger_global_exposure(enabled)
+
     def start_capture(self) -> None:
         if self.backend is not None:
             self.backend.start_capture()
@@ -521,6 +535,11 @@ class HamamatsuCamera:
             return self.backend.image_sequence(frame_count)
         count = max(frame_count, 0)
         return [object() for _ in range(count)]
+
+    def read_frame_timestamps(self) -> list[str]:
+        if self.backend is not None:
+            return self.backend.read_frame_timestamps()
+        return []
 
     def capture_snapshot(self) -> object:
         if self.backend is not None:
@@ -622,9 +641,9 @@ class CetoniPump:
         if self.simulate:
             self.dosing = False
 
-    def set_fill_level(self, fill_level: float) -> None:
+    def set_fill_level(self, fill_level: float, flow_rate: float | None = None) -> None:
         if self.backend is not None:
-            self.backend.set_fill_level(fill_level)
+            self.backend.set_fill_level(fill_level, flow_rate)
         self.fill_level = fill_level
 
     def configure_syringe(self, config: dict | None) -> None:
@@ -656,21 +675,52 @@ class CetoniPump:
             self.backend.close()
 
 
+class ValveError(RuntimeError):
+    pass
+
+
 @dataclass(slots=True)
 class Valve:
     enabled: bool = True
     simulate: bool = True
     visa_resource: str = "COM6"
     backend: TextCommandBackend | None = None
-    command_position_1: str = "1"
-    command_position_2: str = "2"
+    command_position_1: str = "P01"
+    command_position_2: str = "P02"
+    status_query_command: str = "S"
     position: int = 1
     initialized: bool = False
+    status_note: str = ""
 
     def initialize(self) -> None:
-        self.initialized = True
+        self.status_note = ""
         if self.backend is not None:
             self.backend.write(f"OPEN {self.visa_resource}")
+            raw_response = self.backend.query(self.status_query_command)
+            self._apply_status_response(raw_response)
+        self.initialized = True
+
+    def _apply_status_response(self, raw_response: str) -> None:
+        # Protocol confirmed against IDEX MX Series II driver docs (via the
+        # linnarsson-lab/MXII-valve reference driver): "S\r" queries status.
+        # Zero bytes back within the read timeout means nothing is on the
+        # other end of the port -- that is the real disconnect signal, so it
+        # must be checked before any stripping collapses it into a lone "\r".
+        if raw_response == "":
+            raise ValveError(f"Valve did not respond on {self.visa_resource}")
+        text = raw_response.strip()
+        if text in ("*", "**"):
+            self.status_note = "busy"
+            return
+        if text == "":
+            self.status_note = "ready"
+            return
+        digits = "".join(ch for ch in text if ch.isdigit())
+        if digits and int(digits) in (1, 2):
+            self.position = int(digits)
+            self.status_note = "confirmed"
+            return
+        self.status_note = f"unverified position response: {text!r}"
 
     def set_position(self, position: int) -> None:
         if position not in (1, 2):
@@ -684,6 +734,7 @@ class Valve:
         if self.backend is not None:
             self.backend.close()
         self.initialized = False
+        self.status_note = ""
 
 
 @dataclass(slots=True)

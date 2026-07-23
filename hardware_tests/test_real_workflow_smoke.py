@@ -51,6 +51,14 @@ AD2_LABVIEW_ACOUSTIC_AMPLITUDE_V = 2.0
 AD2_LABVIEW_ACOUSTIC_OFFSET_V = 0.0
 AD2_LABVIEW_ACOUSTIC_SHORT_DURATION_S = 0.5
 AD2_LABVIEW_ACOUSTIC_ORIGINAL_DURATION_S = 60.0
+LASER_AD2_CHANNEL = AD2_LABVIEW_ACOUSTIC_CHANNEL
+LASER_AD2_PATH = "existing AD2 WFG CH0 path in Application.run_experiment2"
+LED_TRIGGER_CHANNEL = AD2_LOW_RISK_CHANNEL
+LED_TRIGGER_FREQUENCY_HZ = AD2_LOW_RISK_FREQUENCY_HZ
+LED_TRIGGER_AMPLITUDE_V = AD2_LOW_RISK_AMPLITUDE_V
+LED_TRIGGER_OFFSET_V = AD2_LOW_RISK_OFFSET_V
+LED_TRIGGER_DURATION_S = AD2_LOW_RISK_DURATION_S
+LED_TRIGGER_AD2_PATH = "AD2 WFG CH0 via the green wire illumination trigger line"
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +165,35 @@ def real_camera_real_ad2_acoustic_short_plan() -> SmokePlan:
             "LabVIEW acoustic candidate short-duration CH0 output, with pump "
             "simulated/disabled, valve simulated/disabled, Z-stage disabled, "
             "Qmix untouched, and experiment flush disabled."
+        ),
+        config=HardwareRuntimeConfig(
+            ad2_enabled=True,
+            sim_ad2=False,
+            camera_enabled=True,
+            sim_camera=False,
+            pump_enabled=False,
+            sim_pump=True,
+            valve_enabled=False,
+            sim_valve=True,
+            z_enabled=False,
+            prior_resource=defaults.z_stage.prior_resource,
+            valve_resource="COM6",
+            cetoni_config_path=defaults.qmix.config_path,
+        ),
+        flush_enabled=False,
+        requires_confirmation=True,
+    )
+
+
+def real_camera_led_trigger_check_plan() -> SmokePlan:
+    defaults = default_hardware_config()
+    return SmokePlan(
+        name="real-camera-led-trigger-check",
+        description=(
+            "Observation smoke using the real Hamamatsu camera and real AD2 "
+            "LED trigger path. The LED is driven by the AD2 green wire. Pump, "
+            "valve, Qmix, Z-stage, Thorlabs/APT, and Prior COM7 remain unused, "
+            "and experiment flush is disabled."
         ),
         config=HardwareRuntimeConfig(
             ad2_enabled=True,
@@ -379,6 +416,22 @@ def ad2_timing_check_parameters(duration_s: float | None = None) -> Ad2OutputSmo
     )
 
 
+def led_trigger_check_parameters(duration_s: float | None = None) -> Ad2OutputSmokeParameters:
+    duration = LED_TRIGGER_DURATION_S if duration_s is None else float(duration_s)
+    if duration <= 0:
+        raise SystemExit("--duration-s must be greater than 0")
+    if duration >= AD2_LABVIEW_ACOUSTIC_ORIGINAL_DURATION_S:
+        raise SystemExit("Refusing to use a long duration in the LED trigger check; keep this smoke test short.")
+    return Ad2OutputSmokeParameters(
+        name="led-trigger-check",
+        channel=LED_TRIGGER_CHANNEL,
+        frequency_hz=LED_TRIGGER_FREQUENCY_HZ,
+        amplitude_v=LED_TRIGGER_AMPLITUDE_V,
+        offset_v=LED_TRIGGER_OFFSET_V,
+        duration_s=duration,
+    )
+
+
 def labview_acoustic_short_parameters(duration_s: float | None = None) -> Ad2OutputSmokeParameters:
     duration = AD2_LABVIEW_ACOUSTIC_SHORT_DURATION_S if duration_s is None else float(duration_s)
     if duration <= 0:
@@ -433,6 +486,10 @@ def ad2_timing_check_wfg_config(duration_s: float | None = None) -> WfgConfig:
     return ad2_output_wfg_config(ad2_timing_check_parameters(duration_s))
 
 
+def led_trigger_check_wfg_config(duration_s: float | None = None) -> WfgConfig:
+    return ad2_output_wfg_config(led_trigger_check_parameters(duration_s))
+
+
 def print_ad2_output_parameters(parameters: Ad2OutputSmokeParameters) -> None:
     print_step(f"real AD2 {parameters.name} output parameters")
     print_value("channel", parameters.channel)
@@ -447,6 +504,53 @@ def print_ad2_output_parameters(parameters: Ad2OutputSmokeParameters) -> None:
 def print_low_risk_ad2_output_parameters() -> None:
     print_ad2_output_parameters(low_risk_ad2_parameters())
     print_value("LabVIEW acoustic output", "not used: no 1.975 MHz, 2.0 V, 60 s output in this mode")
+
+
+def print_led_trigger_check_plan(
+    settings: SmokeRunSettings,
+    output_dir: Path,
+    duration_s: float | None = None,
+    *,
+    plan_only: bool = True,
+) -> None:
+    parameters = led_trigger_check_parameters(duration_s)
+    print_step("LED trigger verification plan")
+    print_value("real hardware initialized in plan", False if plan_only else "after this printout")
+    print_value("output directory", output_dir)
+    print_value("camera", "real Hamamatsu DCAM backend")
+    print_value("camera exposure_ms", settings.exposure_ms)
+    print_value("camera frames", settings.frames)
+    print_value("camera trigger source", settings.trigger_source)
+    if settings.roi is None:
+        print_value("ROI", "not preset")
+    else:
+        print_value("LabVIEW ROI candidate", settings.roi)
+        print_value(
+            "ROI application",
+            "enabled explicitly by --apply-roi" if settings.apply_roi else "disabled by default; pass --apply-roi",
+        )
+    print_value("LED trigger path", LED_TRIGGER_AD2_PATH)
+    print_value("LED is driven by", "AD2 green wire")
+    print_value("AD2 output path used for LED", "WFG CH0 only; trigger source trigsrcNone; pc_trigger sent by Application.run_experiment2")
+    print_ad2_output_parameters(parameters)
+    print_value("CH2/index 1", "disabled")
+    print_value("DO Clock", "not used")
+    print_value("DO Custom", "not used")
+    print_value("LabVIEW acoustic output", "not used: no 1.975 MHz, 2.0 V, 60 s output")
+    print_value("flush_enabled", False)
+    print_value("pump", "not used")
+    print_value("valve", "not used")
+    print_value("Qmix", "not used")
+    print_value("Z-stage", "not used")
+    print_value("Thorlabs/APT", "not used")
+    print_value("Prior COM7", "not used")
+    print_step("expected LED/camera timing")
+    print_value("1", "Application.run_experiment2 configures AD2 WFG before camera start_capture")
+    print_value("2", "camera start_capture is called")
+    print_value("3", "Application.run_experiment2 sends AD2 pc_trigger")
+    print_value("4", "camera frames are read while the LED green-wire path should be observable")
+    print_value("interpretation", "if the LED turns on before pc_trigger, trigsrcNone/config_wfg is starting output early")
+    print_value("post-check", "LED should be off after cleanup disables/resets AD2 outputs")
 
 
 def print_ad2_timing_check_plan(
@@ -494,6 +598,19 @@ def print_labview_acoustic_short_output_parameters(parameters: Ad2OutputSmokePar
     print_value("Z-stage", "not used")
     print_value("Thorlabs/APT", "not used")
     print_value("Prior COM7", "not used")
+
+
+def print_ad2_laser_summary(include_ad2_laser: bool, parameters: Ad2OutputSmokeParameters) -> None:
+    if include_ad2_laser:
+        print_step("AD2-controlled laser path enabled for this smoke run")
+        print_value("separate laser backend", "not used")
+        print_value("laser AD2 channel/line", f"CH{LASER_AD2_CHANNEL}: {LASER_AD2_PATH}")
+        print_value("laser follows AD2 output", f"CH{parameters.channel} {parameters.frequency_hz} Hz sine for {parameters.duration_s} s")
+        print_value("laser mapping source", "operator clarification: laser is controlled by the existing AD2 path")
+    else:
+        print_step("AD2-controlled laser path is not explicitly enabled")
+        print_value("laser AD2 channel/line candidate", f"CH{LASER_AD2_CHANNEL}: {LASER_AD2_PATH}")
+        print_value("how to include laser", "pass --include-ad2-laser only if the laser is wired to the existing AD2 WFG CH0 path")
 
 
 def run_real_ad2_low_risk_output(device_index: int = 0) -> int:
@@ -620,7 +737,7 @@ def print_plan(plan: SmokePlan, output_dir: Path, settings: SmokeRunSettings) ->
     if settings.preset is not None:
         print_labview_preset_summary(settings.preset)
         print_value("smoke frame override", f"{settings.frames} frame(s); LabVIEW experiment preset uses {settings.preset.experiment.frames}")
-    print_step("default behavior is plan-only; no hardware is initialized unless --real-camera-only is passed")
+    print_step("default behavior is plan-only; no hardware is initialized unless an explicit real-hardware mode is passed")
 
 
 def print_camera_roi_diagnostics(camera: object, requested_roi: dict[str, int], label: str) -> None:
@@ -901,6 +1018,99 @@ def run_real_camera_real_ad2_acoustic_short(
         app.cleanup()
 
 
+def run_real_camera_led_trigger_check(
+    output_dir: Path,
+    frames: int | None,
+    exposure_ms: float | None,
+    preset_name: str | None = None,
+    apply_roi: bool = False,
+    device_index: int = 0,
+    duration_s: float | None = None,
+) -> Path:
+    _ = device_index
+    plan = real_camera_led_trigger_check_plan()
+    settings = resolve_smoke_settings(preset_name, frames, exposure_ms, apply_roi)
+    led_parameters = led_trigger_check_parameters(duration_s)
+    run_dir = output_dir / f"led_trigger_check_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    print_plan(plan, run_dir, settings)
+    print_led_trigger_check_plan(settings, run_dir, duration_s, plan_only=False)
+    print_step("LED trigger check uses Application.run_experiment2 with flush_enabled=False")
+    print_step("LED is driven by the AD2 green wire; this is not a separate device backend")
+    print_step("CH2/index 1 remains disabled; DO Clock and DO Custom are not used")
+    print_step("pump, valve, Qmix, Z-stage, Thorlabs/APT, and Prior COM7 remain disabled or unused")
+
+    app = Application()
+    bundle = build_hardware_bundle(plan.config)
+    camera_backend = bundle.camera.backend
+    buffer_frames = getattr(camera_backend, "buffer_frames", "<unknown>")
+    allocation_frames = max(settings.frames, int(buffer_frames) if isinstance(buffer_frames, int) else 1)
+    print_step("LED trigger acquisition diagnostics")
+    print_value("camera trigger source", settings.trigger_source)
+    print_value("camera exposure_ms", settings.exposure_ms)
+    print_value("camera requested frame count", settings.frames)
+    print_value("camera backend buffer_frames", buffer_frames)
+    print_value("camera planned buffer allocation frames", allocation_frames)
+    print_value(
+        "AD2 LED trigger config",
+        (
+            f"CH{led_parameters.channel} {led_parameters.frequency_hz} Hz sine, "
+            f"{led_parameters.amplitude_v} V amplitude, {led_parameters.offset_v} V offset, "
+            f"{led_parameters.duration_s} s via green wire"
+        ),
+    )
+    print_value("CH2/index 1", "disabled")
+    print_value("pump/valve flush", "disabled")
+
+    apply_hardware_bundle(app, bundle)
+    experiment = Experiment2(
+        experiment_folder=run_dir,
+        flush_settings=FlushSettings(0.0, 0.0, 0.0),
+        flush_enabled=False,
+        global_exposure_ms=settings.exposure_ms,
+        sequence_settings={
+            "frames": settings.frames,
+            "trigger_source": settings.trigger_source,
+            "exposure_ms": settings.exposure_ms,
+        },
+        wfg_config=ad2_output_wfg_config(led_parameters),
+        do_clock_settings={"running": False, "channels": []},
+    )
+    app.experiment_series = ExperimentSeries2(output_dir, [experiment])
+
+    try:
+        app.initialize()
+        if settings.roi is not None and settings.apply_roi:
+            if hasattr(app.camera, "configure_roi"):
+                print_step("applying LabVIEW screenshot ROI to real camera because --apply-roi was provided")
+                print_camera_roi_diagnostics(app.camera, settings.roi, "before configure_roi")
+                app.camera.configure_roi(settings.roi)
+                print_camera_roi_diagnostics(app.camera, settings.roi, "after configure_roi")
+            else:
+                print_step("LabVIEW screenshot ROI is known but not applied: camera wrapper has no configure_roi")
+        elif settings.roi is not None:
+            print_step("LabVIEW screenshot ROI is known but not applied; pass --apply-roi for explicit ROI validation")
+
+        print_step("pre-run observation: watch the LED before camera start and before AD2 pc_trigger")
+        print_step("running real-camera + AD2 green-wire LED trigger check")
+        ok = app.run_experiment2()
+        print_value("experiment ok", ok)
+        print_step("post-run observation: LED should be off after AD2 cleanup/reset")
+        print_value("experiment folder", run_dir)
+        return run_dir
+    finally:
+        print_step("LED trigger check cleanup")
+        ad2_backend = getattr(app.ad2, "backend", None)
+        ad2_handle = getattr(app.ad2, "device_handle", None)
+        if isinstance(ad2_backend, WaveFormsBackend) and ad2_handle is not None:
+            safe_disable_ad2_outputs(ad2_backend, int(ad2_handle))
+        try:
+            if hasattr(app.camera, "stop_capture"):
+                app.camera.stop_capture()
+        except Exception as exc:
+            print_step(f"cleanup warning: camera stop_capture failed: {exc}")
+        app.cleanup()
+
+
 def run_real_full_workflow_short(
     output_dir: Path,
     frames: int | None,
@@ -911,6 +1121,7 @@ def run_real_full_workflow_short(
     flush_enabled: bool,
     device_index: int = 0,
     duration_s: float | None = None,
+    include_ad2_laser: bool = False,
 ) -> Path:
     _ = device_index
     defaults = default_hardware_config()
@@ -958,6 +1169,7 @@ def run_real_full_workflow_short(
     print_value("flush wait_after_flush_s", flush_settings.wait_after_flush_s)
     print_value("Pump&Valve tab wait_after_flush conflict", f"{preset.flush.pump_tab_wait_after_flush_s} s candidate, not used")
     print_labview_acoustic_short_output_parameters(acoustic_parameters)
+    print_ad2_laser_summary(include_ad2_laser, acoustic_parameters)
     print_value("CH2/index 1", "disabled")
     print_value("DO Clock", "not used")
     print_value("DO Custom", "not used")
@@ -989,6 +1201,10 @@ def run_real_full_workflow_short(
             f"{acoustic_parameters.duration_s} s"
         ),
     )
+    if include_ad2_laser:
+        print_value("AD2-controlled laser", f"enabled on CH{LASER_AD2_CHANNEL}; no separate laser backend")
+    else:
+        print_value("AD2-controlled laser", "not explicitly enabled")
 
     apply_hardware_bundle(app, bundle)
     experiment = Experiment2(
@@ -1078,6 +1294,14 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     mode.add_argument(
+        "--real-camera-led-trigger-check",
+        action="store_true",
+        help=(
+            "Run real camera plus real AD2 green-wire LED trigger verification. "
+            "Requires --confirm and --acknowledge-timing-uncertain."
+        ),
+    )
+    mode.add_argument(
         "--real-full-workflow-short",
         action="store_true",
         help=(
@@ -1093,12 +1317,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--preset", choices=[LABVIEW_SCREENSHOT_PRESET_NAME], default=None)
     parser.add_argument("--ad2-plan", action="store_true", help="Also print LabVIEW screenshot AD2 candidate parameters in plan-only mode.")
     parser.add_argument("--ad2-timing-plan", action="store_true", help="Print low-risk AD2 timing verification sequence without touching hardware.")
+    parser.add_argument("--led-trigger-plan", action="store_true", help="Print the real camera + AD2 green-wire LED trigger check plan without touching hardware.")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "hardware_tests" / "_smoke_output")
     parser.add_argument("--frames", type=int, default=None)
     parser.add_argument("--exposure-ms", type=float, default=None)
     parser.add_argument("--device-index", type=int, default=0, help="WaveForms device index for real AD2 smoke modes. Default: 0.")
     parser.add_argument("--valve-port", choices=["COM5", "COM6"], default=None, help="Explicit real valve serial port for full workflow mode.")
     parser.add_argument("--flush-enabled", action="store_true", help="Enable the controlled pump/valve flush in full workflow mode.")
+    parser.add_argument(
+        "--include-ad2-laser",
+        action="store_true",
+        help="Explicitly mark the existing full-workflow AD2 WFG CH0 path as also driving the laser. No separate laser backend is used.",
+    )
     parser.add_argument(
         "--duration-s",
         type=float,
@@ -1189,6 +1419,21 @@ def main() -> int:
             args.duration_s,
         )
         return 0
+    if args.real_camera_led_trigger_check:
+        if args.confirm != CONFIRM_TEXT:
+            raise SystemExit(f"This mode requires --confirm {CONFIRM_TEXT}")
+        if not args.acknowledge_timing_uncertain:
+            raise SystemExit(TIMING_UNCERTAIN_REFUSAL)
+        run_real_camera_led_trigger_check(
+            args.output_dir,
+            args.frames,
+            args.exposure_ms,
+            args.preset,
+            args.apply_roi,
+            args.device_index,
+            args.duration_s,
+        )
+        return 0
     if args.real_full_workflow_short:
         if args.confirm != CONFIRM_TEXT:
             raise SystemExit(f"This mode requires --confirm {CONFIRM_TEXT}")
@@ -1210,6 +1455,7 @@ def main() -> int:
             args.flush_enabled,
             args.device_index,
             args.duration_s,
+            args.include_ad2_laser,
         )
         return 0
     if args.real_camera_only:
@@ -1222,6 +1468,8 @@ def main() -> int:
         print_ad2_labview_candidate(settings)
     if args.ad2_timing_plan:
         print_ad2_timing_check_plan(args.pre_trigger_wait_s, args.duration_s)
+    if args.led_trigger_plan:
+        print_led_trigger_check_plan(settings, args.output_dir, args.duration_s)
     return 0
 
 

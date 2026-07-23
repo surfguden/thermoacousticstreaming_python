@@ -76,6 +76,25 @@ def test_combined_camera_ad2_acoustic_short_plan_keeps_other_hardware_disabled()
     assert plan.config.z_enabled is False
 
 
+def test_led_trigger_check_plan_keeps_other_hardware_disabled():
+    module = load_smoke_module()
+
+    plan = module.real_camera_led_trigger_check_plan()
+
+    assert plan.name == "real-camera-led-trigger-check"
+    assert plan.flush_enabled is False
+    assert plan.requires_confirmation is True
+    assert plan.config.camera_enabled is True
+    assert plan.config.sim_camera is False
+    assert plan.config.ad2_enabled is True
+    assert plan.config.sim_ad2 is False
+    assert plan.config.pump_enabled is False
+    assert plan.config.sim_pump is True
+    assert plan.config.valve_enabled is False
+    assert plan.config.sim_valve is True
+    assert plan.config.z_enabled is False
+
+
 def test_real_full_workflow_short_plan_uses_real_pump_valve_and_keeps_z_disabled():
     module = load_smoke_module()
 
@@ -293,6 +312,47 @@ def test_plan_only_can_include_ad2_timing_plan(monkeypatch, capsys, tmp_path):
     assert "if waveform appears only after pc_trigger: PC trigger controls start for this configuration" in output
 
 
+def test_plan_only_can_include_led_trigger_plan(monkeypatch, capsys, tmp_path):
+    module = load_smoke_module()
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("real LED trigger check should not run in plan-only mode")
+
+    monkeypatch.setattr(module, "run_real_camera_led_trigger_check", fail_if_called)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "test_real_workflow_smoke.py",
+            "--plan-only",
+            "--preset",
+            "labview-screenshot",
+            "--apply-roi",
+            "--frames",
+            "20",
+            "--led-trigger-plan",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+
+    assert module.main() == 0
+    output = capsys.readouterr().out
+    assert "LED trigger verification plan" in output
+    assert "LED is driven by: AD2 green wire" in output
+    assert "LED trigger path: AD2 WFG CH0 via the green wire illumination trigger line" in output
+    assert "AD2 output path used for LED: WFG CH0 only" in output
+    assert "camera frames: 20" in output
+    assert "ROI application: enabled explicitly by --apply-roi" in output
+    assert "CH2/index 1: disabled" in output
+    assert "pump: not used" in output
+    assert "valve: not used" in output
+    assert "Qmix: not used" in output
+    assert "Z-stage: not used" in output
+    assert "Thorlabs/APT: not used" in output
+    assert "Prior COM7: not used" in output
+
+
 def test_real_ad2_open_close_requires_confirmation(monkeypatch):
     module = load_smoke_module()
 
@@ -461,6 +521,67 @@ def test_combined_camera_ad2_acoustic_short_requires_timing_acknowledgement(monk
         [
             "test_real_workflow_smoke.py",
             "--real-camera-real-ad2-acoustic-short",
+            "--preset",
+            "labview-screenshot",
+            "--output-dir",
+            str(tmp_path),
+            "--confirm",
+            "CONFIRM_REAL_HARDWARE",
+        ],
+    )
+
+    try:
+        module.main()
+    except SystemExit as exc:
+        message = str(exc)
+        assert "--acknowledge-timing-uncertain" in message
+        assert "AD2 WFG start timing vs pc_trigger is not yet fully confirmed" in message
+        assert "CH2/index 1 purpose is unknown and remains disabled" in message
+    else:
+        raise AssertionError("missing timing acknowledgement should raise SystemExit")
+
+
+def test_led_trigger_check_requires_confirmation(monkeypatch, tmp_path):
+    module = load_smoke_module()
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("LED trigger check should not run without confirmation")
+
+    monkeypatch.setattr(module, "run_real_camera_led_trigger_check", fail_if_called)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "test_real_workflow_smoke.py",
+            "--real-camera-led-trigger-check",
+            "--preset",
+            "labview-screenshot",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+
+    try:
+        module.main()
+    except SystemExit as exc:
+        assert "CONFIRM_REAL_HARDWARE" in str(exc)
+    else:
+        raise AssertionError("missing confirmation should raise SystemExit")
+
+
+def test_led_trigger_check_requires_timing_acknowledgement(monkeypatch, tmp_path):
+    module = load_smoke_module()
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("LED trigger check should not run without timing acknowledgement")
+
+    monkeypatch.setattr(module, "run_real_camera_led_trigger_check", fail_if_called)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "test_real_workflow_smoke.py",
+            "--real-camera-led-trigger-check",
             "--preset",
             "labview-screenshot",
             "--output-dir",
@@ -782,6 +903,42 @@ def test_combined_camera_ad2_acoustic_short_runs_only_with_confirmation_and_ackn
     assert calls == [(tmp_path, 20, None, "labview-screenshot", True, 1, 0.5)]
 
 
+def test_led_trigger_check_runs_only_with_confirmation_and_acknowledgement(monkeypatch, tmp_path):
+    module = load_smoke_module()
+    calls = []
+
+    def fake_runner(output_dir, frames, exposure_ms, preset_name=None, apply_roi=False, device_index=0, duration_s=None):
+        calls.append((output_dir, frames, exposure_ms, preset_name, apply_roi, device_index, duration_s))
+        return output_dir / "fake-run"
+
+    monkeypatch.setattr(module, "run_real_camera_led_trigger_check", fake_runner)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "test_real_workflow_smoke.py",
+            "--real-camera-led-trigger-check",
+            "--preset",
+            "labview-screenshot",
+            "--apply-roi",
+            "--frames",
+            "20",
+            "--duration-s",
+            "0.5",
+            "--output-dir",
+            str(tmp_path),
+            "--confirm",
+            "CONFIRM_REAL_HARDWARE",
+            "--acknowledge-timing-uncertain",
+            "--device-index",
+            "1",
+        ],
+    )
+
+    assert module.main() == 0
+    assert calls == [(tmp_path, 20, None, "labview-screenshot", True, 1, 0.5)]
+
+
 def test_real_full_workflow_short_runs_only_with_all_confirmations(monkeypatch, tmp_path):
     module = load_smoke_module()
     calls = []
@@ -796,8 +953,22 @@ def test_real_full_workflow_short_runs_only_with_all_confirmations(monkeypatch, 
         flush_enabled,
         device_index=0,
         duration_s=None,
+        include_ad2_laser=False,
     ):
-        calls.append((output_dir, frames, exposure_ms, preset_name, apply_roi, valve_port, flush_enabled, device_index, duration_s))
+        calls.append(
+            (
+                output_dir,
+                frames,
+                exposure_ms,
+                preset_name,
+                apply_roi,
+                valve_port,
+                flush_enabled,
+                device_index,
+                duration_s,
+                include_ad2_laser,
+            )
+        )
         return output_dir / "fake-run"
 
     monkeypatch.setattr(module, "run_real_full_workflow_short", fake_runner)
@@ -829,7 +1000,57 @@ def test_real_full_workflow_short_runs_only_with_all_confirmations(monkeypatch, 
     )
 
     assert module.main() == 0
-    assert calls == [(tmp_path, 20, None, "labview-screenshot", True, "COM6", True, 1, 0.5)]
+    assert calls == [(tmp_path, 20, None, "labview-screenshot", True, "COM6", True, 1, 0.5, False)]
+
+
+def test_real_full_workflow_short_can_explicitly_include_ad2_laser(monkeypatch, tmp_path):
+    module = load_smoke_module()
+    calls = []
+
+    def fake_runner(
+        output_dir,
+        frames,
+        exposure_ms,
+        preset_name,
+        apply_roi,
+        valve_port,
+        flush_enabled,
+        device_index=0,
+        duration_s=None,
+        include_ad2_laser=False,
+    ):
+        calls.append((output_dir, frames, exposure_ms, preset_name, apply_roi, valve_port, flush_enabled, device_index, duration_s, include_ad2_laser))
+        return output_dir / "fake-run"
+
+    monkeypatch.setattr(module, "run_real_full_workflow_short", fake_runner)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "test_real_workflow_smoke.py",
+            "--real-full-workflow-short",
+            "--preset",
+            "labview-screenshot",
+            "--apply-roi",
+            "--frames",
+            "100",
+            "--duration-s",
+            "2.0",
+            "--flush-enabled",
+            "--valve-port",
+            "COM6",
+            "--include-ad2-laser",
+            "--output-dir",
+            str(tmp_path),
+            "--confirm",
+            "CONFIRM_REAL_HARDWARE",
+            "--acknowledge-timing-uncertain",
+            "--acknowledge-pump-valve-real",
+        ],
+    )
+
+    assert module.main() == 0
+    assert calls == [(tmp_path, 100, None, "labview-screenshot", True, "COM6", True, 0, 2.0, True)]
 
 
 def test_low_risk_ad2_output_parameters_are_not_labview_acoustic_candidate():
@@ -895,6 +1116,42 @@ def test_ad2_timing_check_refuses_long_duration_and_negative_wait():
         raise AssertionError("negative pre-trigger wait should be refused")
 
 
+def test_led_trigger_check_uses_ch0_only_low_risk_parameters():
+    module = load_smoke_module()
+
+    parameters = module.led_trigger_check_parameters()
+
+    assert parameters.name == "led-trigger-check"
+    assert parameters.channel == 0
+    assert parameters.frequency_hz == 1000.0
+    assert parameters.amplitude_v == 0.1
+    assert parameters.offset_v == 0.0
+    assert parameters.duration_s == 0.5
+    assert parameters.frequency_hz != 1.975e6
+    assert parameters.amplitude_v < 2.0
+
+    config = module.led_trigger_check_wfg_config()
+    assert config.running is True
+    assert len(config.channels) == 1
+    channel = config.channels[0]
+    assert channel.channel_index == 0
+    assert [configured_channel.channel_index for configured_channel in config.channels] == [0]
+    assert channel.carrier.frequency_hz == 1000.0
+    assert channel.carrier.amplitude_v == 0.1
+    assert channel.trigger.sec_run == 0.5
+
+
+def test_led_trigger_check_refuses_long_duration():
+    module = load_smoke_module()
+
+    try:
+        module.led_trigger_check_parameters(60.0)
+    except SystemExit as exc:
+        assert "Refusing to use a long duration" in str(exc)
+    else:
+        raise AssertionError("long LED trigger duration should be refused")
+
+
 def test_labview_acoustic_short_parameters_are_short_candidate():
     module = load_smoke_module()
 
@@ -919,6 +1176,25 @@ def test_labview_acoustic_short_parameters_are_short_candidate():
     assert channel.carrier.amplitude_v == 2.0
     assert channel.trigger.sec_run == 0.5
     assert channel.trigger.repeat_count == 1
+
+
+def test_ad2_laser_path_reuses_existing_ch0_acoustic_workflow_path(capsys):
+    module = load_smoke_module()
+    parameters = module.labview_acoustic_short_parameters(2.0)
+
+    module.print_ad2_laser_summary(True, parameters)
+
+    output = capsys.readouterr().out
+    assert module.LASER_AD2_CHANNEL == 0
+    assert module.LASER_AD2_CHANNEL == parameters.channel
+    assert "AD2-controlled laser path enabled" in output
+    assert "separate laser backend: not used" in output
+    assert "laser AD2 channel/line: CH0: existing AD2 WFG CH0 path in Application.run_experiment2" in output
+    assert "laser follows AD2 output: CH0 1975000.0 Hz sine for 2.0 s" in output
+
+    config = module.ad2_output_wfg_config(parameters)
+    assert len(config.channels) == 1
+    assert [configured_channel.channel_index for configured_channel in config.channels] == [0]
 
 
 def test_labview_acoustic_short_refuses_full_labview_duration():

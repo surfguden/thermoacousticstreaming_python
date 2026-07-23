@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
+import queue
 import sys
+import threading
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QPointF, QThread, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPen
+import numpy as np
+from PySide6.QtCore import QEvent, QObject, QPointF, QThread, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -21,16 +26,29 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
     QPlainTextEdit,
+    QScrollArea,
     QSpinBox,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from .ad2 import CarrierSettings, TriggerSettings, TriggerSource, WaveformFunction, WfgChannelConfig, WfgConfig
+from .ad2 import (
+    CarrierSettings,
+    DigitalOutIdleState,
+    DigitalOutType,
+    DoConfig,
+    DoSingleChannelConfig,
+    TriggerSettings,
+    TriggerSource,
+    WaveformFunction,
+    WfgChannelConfig,
+    WfgConfig,
+)
 from .application import Application
 from .camera import SubRegion
 from .hardware_factory import HardwareRuntimeConfig, apply_hardware_bundle, build_hardware_bundle
@@ -39,7 +57,11 @@ from .instruments import SimulatedAD2Sdk
 from .workflows import Experiment2, ExperimentSeries2, FlushSettings
 
 
+logger = logging.getLogger(__name__)
+
 SETTINGS_PATH = Path(__file__).resolve().parents[2] / ".thermo_acoustic_ui.json"
+WFG_TRIGGER_SOURCE_OPTIONS = ["trigsrcNone", "trigsrcPC", "trigsrcAnalogIn", "trigsrcDigitalIn"]
+CONVERSION_METHOD_OPTIONS = ["Full Dynamic", "90% Dynamic", "Downshift"]
 
 
 def _spin(value: float = 0.0, *, decimals: int = 3, minimum: float = -1e12, maximum: float = 1e12) -> QDoubleSpinBox:
@@ -68,6 +90,40 @@ def _combo(values: list[str], value: str) -> QComboBox:
     if index >= 0:
         widget.setCurrentIndex(index)
     return widget
+
+
+def _set_combo_text(widget: QComboBox, value: str) -> None:
+    index = widget.findText(value)
+    if index >= 0:
+        widget.setCurrentIndex(index)
+
+
+class FocusWheelGuard(QObject):
+    """Let scroll pages handle wheel events unless numeric/dropdown widgets are focused."""
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 - Qt API name
+        if event.type() != QEvent.Type.Wheel:
+            return super().eventFilter(obj, event)
+        if not isinstance(obj, (QSpinBox, QDoubleSpinBox, QComboBox)):
+            return super().eventFilter(obj, event)
+        if obj.hasFocus():
+            return super().eventFilter(obj, event)
+
+        parent = obj.parentWidget()
+        while parent is not None and not isinstance(parent, QScrollArea):
+            parent = parent.parentWidget()
+        if isinstance(parent, QScrollArea):
+            QApplication.sendEvent(parent.viewport(), event)
+        event.ignore()
+        return True
+
+
+def install_focus_wheel_guard(app: QApplication | None) -> None:
+    if app is None or getattr(app, "_thermo_acoustic_focus_wheel_guard", None) is not None:
+        return
+    guard = FocusWheelGuard(app)
+    app.installEventFilter(guard)
+    app._thermo_acoustic_focus_wheel_guard = guard
 
 
 class WaveformGraph(QWidget):
@@ -150,6 +206,130 @@ class WaveformGraph(QWidget):
             painter.drawText(pad_l + 8, pad_t + 18 + series_index * 18, label)
 
 
+class ImagePreviewWindow(QDialog):
+    closed = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Camera Preview")
+        self.setModal(False)
+        self.resize(820, 620)
+        self._last_qimage: QImage | None = None
+        self._last_display_range: tuple[float, float] | None = None
+        layout = QVBoxLayout(self)
+        self.image_label = QLabel("No image captured yet")
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_label.setMinimumSize(640, 480)
+        self.image_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        layout.addWidget(self.image_label)
+
+    def show_frame(self, frame: np.ndarray, *, method: str = "Full Dynamic", shifts: int = 0) -> tuple[float, float] | None:
+        self._last_qimage = self._convert_to_display_image(frame, method=method, shifts=shifts)
+        self._update_pixmap()
+        return self._last_display_range
+
+    def show_message(self, message: str) -> None:
+        self._last_qimage = None
+        self._last_display_range = None
+        self.image_label.setPixmap(QPixmap())
+        self.image_label.setText(message)
+
+    def _convert_to_display_image(self, frame: np.ndarray, *, method: str = "Full Dynamic", shifts: int = 0) -> QImage:
+        array = np.asarray(frame)
+        if array.size == 0:
+            raise ValueError("empty camera frame")
+        if array.ndim > 2:
+            array = array[..., 0]
+        if method == "Full Dynamic":
+            display, display_range = self._display_full_dynamic(array)
+        elif method == "90% Dynamic":
+            display, display_range = self._display_90_percent_dynamic(array)
+        elif method == "Downshift":
+            display, display_range = self._display_downshift(array, shifts)
+        else:
+            raise ValueError(f"unknown conversion method: {method}")
+        self._last_display_range = display_range
+        display = np.ascontiguousarray(display)
+        height, width = display.shape
+        image = QImage(display.data, width, height, display.strides[0], QImage.Format.Format_Grayscale8)
+        return image.copy()
+
+    def _finite_display_array(self, array: np.ndarray) -> np.ndarray:
+        if array.size == 0:
+            raise ValueError("empty camera frame")
+        finite = array[np.isfinite(array)]
+        if finite.size == 0:
+            raise ValueError("camera frame contains no finite display range")
+        return finite
+
+    def _display_full_dynamic(self, array: np.ndarray) -> tuple[np.ndarray, tuple[float, float]]:
+        finite = self._finite_display_array(array)
+        minimum = float(np.min(finite))
+        maximum = float(np.max(finite))
+        return self._linear_stretch(array, minimum, maximum), (minimum, maximum)
+
+    def _display_90_percent_dynamic(self, array: np.ndarray) -> tuple[np.ndarray, tuple[float, float]]:
+        finite = self._finite_display_array(array)
+        minimum, maximum = self._middle_percentile_range(finite, 0.90)
+        return self._linear_stretch(array, minimum, maximum), (minimum, maximum)
+
+    def _display_downshift(self, array: np.ndarray, shifts: int) -> tuple[np.ndarray, tuple[float, float] | None]:
+        clipped_shifts = max(int(shifts), 0)
+        shifted = np.right_shift(np.clip(array, 0, np.iinfo(np.uint16).max).astype(np.uint16), clipped_shifts)
+        return np.clip(shifted, 0, 255).astype(np.uint8), None
+
+    def _middle_percentile_range(self, values: np.ndarray, fraction: float) -> tuple[float, float]:
+        lower_fraction = (1.0 - fraction) / 2.0
+        upper_fraction = 1.0 - lower_fraction
+        if np.issubdtype(values.dtype, np.integer) and values.size:
+            minimum = int(np.min(values))
+            maximum = int(np.max(values))
+            if minimum >= 0 and maximum <= 65535:
+                counts = np.bincount(values.astype(np.uint16), minlength=maximum + 1)
+                cumulative = np.cumsum(counts)
+                total = int(cumulative[-1])
+                lower_count = max(int(np.floor(total * lower_fraction + 1e-12)) + 1, 1)
+                upper_count = max(int(np.ceil(total * upper_fraction)), 1)
+                lower = int(np.searchsorted(cumulative, lower_count, side="left"))
+                upper = int(np.searchsorted(cumulative, upper_count, side="left"))
+                return float(lower), float(upper)
+        return (
+            float(np.quantile(values.astype(np.float64), lower_fraction)),
+            float(np.quantile(values.astype(np.float64), upper_fraction)),
+        )
+
+    def _linear_stretch(self, array: np.ndarray, minimum: float, maximum: float) -> np.ndarray:
+        minimum = float(minimum)
+        maximum = float(maximum)
+        if not np.isfinite(minimum) or not np.isfinite(maximum):
+            raise ValueError("camera frame contains no finite display range")
+        if maximum > minimum:
+            scaled = (array.astype(np.float32) - minimum) * (255.0 / (maximum - minimum))
+            return np.clip(scaled, 0, 255).astype(np.uint8)
+        return np.zeros(array.shape, dtype=np.uint8)
+
+    def _update_pixmap(self) -> None:
+        if self._last_qimage is None:
+            return
+        pixmap = QPixmap.fromImage(self._last_qimage)
+        self.image_label.setText("")
+        self.image_label.setPixmap(
+            pixmap.scaled(
+                self.image_label.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API name
+        super().resizeEvent(event)
+        self._update_pixmap()
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt API name
+        self.closed.emit()
+        super().closeEvent(event)
+
+
 class ActionWorker(QObject):
     finished = Signal(bool, str, str)
     progress = Signal(str, object)
@@ -161,7 +341,7 @@ class ActionWorker(QObject):
     def run(self) -> None:
         try:
             result = self.action(self.progress.emit)
-            status = str(result) if result else "Ready"
+            status = str(result) if result is not None else "Ready"
             self.finished.emit(True, status, "")
         except Exception as exc:  # pragma: no cover - Qt worker feedback path
             self.finished.emit(False, "Error", str(exc))
@@ -170,6 +350,7 @@ class ActionWorker(QObject):
 class MainWindow(QMainWindow):
     def __init__(self, app: Application | None = None) -> None:
         super().__init__()
+        install_focus_wheel_guard(QApplication.instance())
         self.app = app or Application(ad2=SimulatedAD2Sdk())
         self.setWindowTitle("Thermo Acoustic Streaming")
         self.resize(1280, 820)
@@ -177,6 +358,26 @@ class MainWindow(QMainWindow):
         self._threads: list[QThread] = []
         self._workers: list[ActionWorker] = []
         self._busy_count = 0
+        self._shutdown_in_progress = False
+        self._close_after_shutdown = False
+        self._shutdown_thread: threading.Thread | None = None
+        self._shutdown_result_queue: queue.Queue[tuple[bool, str, str]] | None = None
+        self._shutdown_poll_timer = QTimer(self)
+        self._shutdown_poll_timer.timeout.connect(self._poll_shutdown_cleanup)
+        self._shutdown_timeout_timer = QTimer(self)
+        self._shutdown_timeout_timer.setSingleShot(True)
+        self._shutdown_timeout_timer.timeout.connect(self._handle_shutdown_timeout)
+        self._shutdown_timeout_s = 30.0
+        self._cleanup_complete_for_close = False
+        self._controls_disabled_for_action = False
+        self._timed_out_threads: dict[QThread, str] = {}
+        self._window_was_shown = False
+        self._last_camera_image_data: object | None = None
+        self._camera_preview: ImagePreviewWindow | None = None
+        self._camera_preview_active = False
+        self._camera_preview_timer = QTimer(self)
+        self._camera_preview_timer.setInterval(100)
+        self._camera_preview_timer.timeout.connect(self._capture_camera_image_continuous)
 
         self._build_state()
         self._build_layout()
@@ -250,21 +451,23 @@ class MainWindow(QMainWindow):
         self.center_roi = QCheckBox("Off/On")
         self.center_roi.setChecked(True)
         self.image_continuous = QCheckBox("Off/On")
-        self.image_continuous.setChecked(True)
-        self.conversion_method = _combo(["Default", "Minimum/Maximum", "Shift"], "Default")
+        self.image_continuous.setChecked(False)
+        self.conversion_method = _combo(CONVERSION_METHOD_OPTIONS, "Full Dynamic")
         self.conversion_min = _spin(0.0, decimals=3)
+        self.conversion_min.setReadOnly(True)
         self.conversion_max = _spin(0.0, decimals=3)
-        self.conversion_shifts = _int_spin(0)
+        self.conversion_max.setReadOnly(True)
+        self.conversion_shifts = _int_spin(0, minimum=0, maximum=16)
         self.sequence_path = QLineEdit("")
-        self.sequence_mode = _combo(["Continuous", "Finite"], "Continuous")
-        self.sequence_source = _combo(["External", "Internal"], "External")
-        self.sequence_interval = _spin(1.0, decimals=3, minimum=0.0)
-        self.sequence_burst = _int_spin(0, minimum=0)
+        self.sequence_mode = _combo(["Continuous", "Start (single)", "Burst"], "Continuous")
+        self.sequence_source = _combo(["External", "Software"], "External")
+        self.sequence_interval = _spin(1.0, decimals=6, minimum=0.000005, maximum=10.0)
+        self.sequence_burst = _int_spin(1, minimum=1, maximum=65535)
         self.capture_mode = _combo(["Snap", "Sequence"], "Snap")
         self.sequence_frames = _int_spin(0, minimum=0)
-        self.dcam_source = _combo(["Internal", "External"], "Internal")
+        self.dcam_source = _combo(["Internal", "External", "Software", "MasterPulse"], "Internal")
         self.external_polarity = _combo(["Negative", "Positive"], "Negative")
-        self.external_delay = _spin(0.0, decimals=3, minimum=0.0)
+        self.external_delay = _spin(0.0, decimals=6, minimum=0.0, maximum=10.000002)
         self.sequence_exposure_ms = _spin(0.0, decimals=3, minimum=0.0)
 
         self.series_path = QLineEdit(r"C:\test\firstrunpulsed")
@@ -272,10 +475,47 @@ class MainWindow(QMainWindow):
         self.exp_camera_start = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_ch1_freq = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_ch1_amp = _spin(0.0, decimals=3)
+        self.exp_ch1_offset = _spin(0.0, decimals=3)
+        self.exp_ch1_function = _combo([item.value for item in WaveformFunction], WaveformFunction.SINE.value)
+        self.exp_ch1_enable = QCheckBox("Enable")
         self.exp_ch1_start = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_ch1_run = _spin(0.0, decimals=3, minimum=0.0)
+        self.exp_ch1_repeat = _int_spin(0, minimum=0)
+        self.exp_ch1_trigger_source = _combo(WFG_TRIGGER_SOURCE_OPTIONS, "trigsrcNone")
+        self.exp_ch2_freq = _spin(1000.0, decimals=3, minimum=0.0)
+        self.exp_ch2_amp = _spin(1.0, decimals=3)
+        self.exp_ch2_offset = _spin(0.0, decimals=3)
+        self.exp_ch2_function = _combo([item.value for item in WaveformFunction], WaveformFunction.SINE.value)
+        self.exp_ch2_enable = QCheckBox("Enable")
         self.exp_ch2_start = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_ch2_run = _spin(0.0, decimals=3, minimum=0.0)
+        self.exp_ch2_repeat = _int_spin(0, minimum=0)
+        self.exp_ch2_trigger_source = _combo(WFG_TRIGGER_SOURCE_OPTIONS, "trigsrcNone")
+        self.exp_ad2_channels = [
+            {
+                "frequency": self.exp_ch1_freq,
+                "amplitude": self.exp_ch1_amp,
+                "offset": self.exp_ch1_offset,
+                "function": self.exp_ch1_function,
+                "enable": self.exp_ch1_enable,
+                "sec_wait": self.exp_ch1_start,
+                "sec_run": self.exp_ch1_run,
+                "repeat": self.exp_ch1_repeat,
+                "trigger_source": self.exp_ch1_trigger_source,
+            },
+            {
+                "frequency": self.exp_ch2_freq,
+                "amplitude": self.exp_ch2_amp,
+                "offset": self.exp_ch2_offset,
+                "function": self.exp_ch2_function,
+                "enable": self.exp_ch2_enable,
+                "sec_wait": self.exp_ch2_start,
+                "sec_run": self.exp_ch2_run,
+                "repeat": self.exp_ch2_repeat,
+                "trigger_source": self.exp_ch2_trigger_source,
+            },
+        ]
+        self._experiment_ad2_seeded = False
         self.exp_repeats = _int_spin(1, minimum=1)
         self.exp_frames = _int_spin(1, minimum=0)
         self.exp_exposure_ms = _spin(0.0, decimals=3, minimum=0.0)
@@ -302,7 +542,7 @@ class MainWindow(QMainWindow):
             "sec_wait": _spin(0.0, decimals=3, minimum=0.0),
             "repeat": _int_spin(0, minimum=0),
             "repeat_trigger": QCheckBox("Repeat Trigger"),
-            "trigger_source": _combo(["trigsrcNone", "trigsrcPC", "trigsrcAnalogIn", "trigsrcDigitalIn"], "trigsrcNone"),
+            "trigger_source": _combo(WFG_TRIGGER_SOURCE_OPTIONS, "trigsrcNone"),
             "fm_frequency": _spin(1000.0, decimals=3, minimum=0.0),
             "fm_amplitude": _spin(1.0, decimals=3),
             "fm_offset": _spin(0.0, decimals=3),
@@ -348,6 +588,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._pump_tab(), "Pump&Valve")
         self.tabs.addTab(self._camera_tab(), "Camera")
         self.tabs.addTab(self._experiment_tab(), "Experiment")
+        self.tabs.currentChanged.connect(self._seed_experiment_ad2_if_experiment_tab)
         body.addWidget(self.tabs, 1)
         body.addWidget(self._error_panel())
         layout.addLayout(body, 1)
@@ -397,11 +638,16 @@ class MainWindow(QMainWindow):
     def _wfg_tab(self) -> QWidget:
         tab = QWidget()
         layout = QVBoxLayout(tab)
+        note = QLabel("Manual AD2 test tool -- independent from Experiment tab. Settings here do NOT affect experiment runs.")
+        note.setWordWrap(True)
+        layout.addWidget(note)
         header = QHBoxLayout()
         header.addWidget(QLabel("WFGConfig"))
         header.addWidget(self.wfg_running)
         header.addStretch()
         header.addWidget(QLabel("SynchronizeState"))
+        self.wfg_sync.setEnabled(False)
+        self.wfg_sync.setToolTip("Not implemented: SynchronizeState is currently a non-functional stub.")
         header.addWidget(self.wfg_sync)
         layout.addLayout(header)
         channels = QHBoxLayout()
@@ -420,7 +666,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(group)
         form = QFormLayout()
         for label, key in (
-            ("idxChannel", "idx"),
+            ("Channel index", "idx"),
             ("Frequency (Hz) Carrier", "frequency"),
             ("Amplitude (V)", "amplitude"),
             ("Offset(V)", "offset"),
@@ -433,13 +679,13 @@ class MainWindow(QMainWindow):
         layout.addLayout(form)
         trigger = QFormLayout()
         for label, key in (
-            ("secRun(0=Cont)", "sec_run"),
+            ("Run duration (s)   [0 = continuous]", "sec_run"),
             ("secWait", "sec_wait"),
-            ("cRepeat(0=inf)", "repeat"),
+            ("Repeat count   [0 = infinite]", "repeat"),
         ):
             trigger.addRow(label, state[key])
         trigger.addRow(state["repeat_trigger"])
-        trigger.addRow("TrigrSrc", state["trigger_source"])
+        trigger.addRow("Trigger source", state["trigger_source"])
         layout.addWidget(QLabel("Trigger"))
         layout.addLayout(trigger)
         fm = QFormLayout()
@@ -515,7 +761,7 @@ class MainWindow(QMainWindow):
         go = QPushButton("GO")
         go.clicked.connect(self._start_go_level)
         ref = QPushButton("Ref Move")
-        ref.clicked.connect(lambda: self._run_action(lambda progress: self.app.pump.reference_move(), "Reference move"))
+        ref.clicked.connect(self._start_reference_move)
         flush = QPushButton("Flush")
         flush.clicked.connect(self._start_flush)
         stop = QPushButton("STOP")
@@ -534,7 +780,7 @@ class MainWindow(QMainWindow):
         grid.addWidget(self.syringe, 3, 2)
         grid.addWidget(QLabel("ConfigureSyringe"), 2, 4)
         grid.addWidget(configure, 3, 4)
-        grid.addWidget(QLabel("Flow Rate"), 5, 2)
+        grid.addWidget(QLabel("Flow Rate (-=aspirate, +=dispense)"), 5, 2)
         grid.addWidget(self.flow_rate, 6, 2)
         grid.addWidget(QLabel("Generate Flow"), 5, 4)
         grid.addWidget(generate, 6, 4)
@@ -577,7 +823,8 @@ class MainWindow(QMainWindow):
         group = QGroupBox("Image")
         row = QHBoxLayout(group)
         image = QPushButton("Image")
-        image.clicked.connect(lambda: self._run_action(lambda progress: self.app.camera.capture_snapshot(), "Capturing image"))
+        image.clicked.connect(self._start_capture_camera_image)
+        self.image_continuous.toggled.connect(self._set_image_continuous)
         row.addWidget(image)
         row.addWidget(QLabel("Image Continous"))
         row.addWidget(self.image_continuous)
@@ -614,11 +861,13 @@ class MainWindow(QMainWindow):
         form.addRow("Maximum Value", self.conversion_max)
         form.addRow("# Shifts", self.conversion_shifts)
         adjust = QPushButton("Adjust")
-        adjust.clicked.connect(lambda: self._set_status("Image intensity adjusted"))
+        adjust.clicked.connect(self._adjust_camera_preview)
+        self.conversion_method.currentTextChanged.connect(lambda _value: self._update_conversion_controls())
         layout.addLayout(form)
         layout.addWidget(QLabel("Adjust Intensity in image"))
         layout.addWidget(adjust, alignment=Qt.AlignmentFlag.AlignLeft)
         layout.addStretch()
+        self._update_conversion_controls()
         return group
 
     def _sequence_group(self) -> QGroupBox:
@@ -674,7 +923,7 @@ class MainWindow(QMainWindow):
         browse.clicked.connect(lambda: self._browse_folder(self.series_path))
         grid.addWidget(QLabel("Start Experiment series"), 3, 0)
         grid.addWidget(start, 4, 0)
-        grid.addWidget(QLabel("SeriesPath 2"), 5, 0)
+        grid.addWidget(QLabel("Series path"), 5, 0)
         grid.addWidget(self.series_path, 6, 0, 1, 5)
         grid.addWidget(browse, 6, 5)
         grid.addWidget(self._ad_settings_group(), 7, 0, 1, 2)
@@ -696,14 +945,29 @@ class MainWindow(QMainWindow):
     def _ad_settings_group(self) -> QGroupBox:
         group = QGroupBox("Analog Discovery Settings")
         form = QFormLayout(group)
+        note = QLabel("These settings fully control AD2 output during experiment runs, independent of the WFG tab.")
+        note.setWordWrap(True)
+        form.addRow(note)
         form.addRow("Camera FPS", self.exp_camera_fps)
         form.addRow("Camera Start (s)", self.exp_camera_start)
-        form.addRow("Ch1 Frequency (Hz)", self.exp_ch1_freq)
-        form.addRow("Ch1.Carrier.Amplitude (V)", self.exp_ch1_amp)
-        form.addRow("Ch1 Start (s)", self.exp_ch1_start)
-        form.addRow("Ch1 Run (s) (0=Cont)", self.exp_ch1_run)
-        form.addRow("Ch2 Start(s)", self.exp_ch2_start)
-        form.addRow("Ch2 Run (s)(0=Cont)", self.exp_ch2_run)
+        form.addRow("CH0 Enable", self.exp_ch1_enable)
+        form.addRow("CH0 Function", self.exp_ch1_function)
+        form.addRow("CH0 Frequency (Hz)", self.exp_ch1_freq)
+        form.addRow("CH0 Amplitude (V)", self.exp_ch1_amp)
+        form.addRow("CH0 Offset (V)", self.exp_ch1_offset)
+        form.addRow("CH0 Start (s)", self.exp_ch1_start)
+        form.addRow("CH0 Run (s) (0=Cont)", self.exp_ch1_run)
+        form.addRow("CH0 cRepeat (0=inf)", self.exp_ch1_repeat)
+        form.addRow("CH0 Trigger Source", self.exp_ch1_trigger_source)
+        form.addRow("CH1 Enable", self.exp_ch2_enable)
+        form.addRow("CH1 Function", self.exp_ch2_function)
+        form.addRow("CH1 Frequency (Hz)", self.exp_ch2_freq)
+        form.addRow("CH1 Amplitude (V)", self.exp_ch2_amp)
+        form.addRow("CH1 Offset (V)", self.exp_ch2_offset)
+        form.addRow("CH1 Start (s)", self.exp_ch2_start)
+        form.addRow("CH1 Run (s)(0=Cont)", self.exp_ch2_run)
+        form.addRow("CH1 cRepeat (0=inf)", self.exp_ch2_repeat)
+        form.addRow("CH1 Trigger Source", self.exp_ch2_trigger_source)
         return group
 
     def _experiment_numbers_group(self) -> QGroupBox:
@@ -711,11 +975,11 @@ class MainWindow(QMainWindow):
         form = QFormLayout(group)
         form.addRow("Repeats", self.exp_repeats)
         form.addRow("Frames", self.exp_frames)
-        form.addRow("ExposureTime(ms) 2", self.exp_exposure_ms)
+        form.addRow("Exposure time (ms)", self.exp_exposure_ms)
         return group
 
     def _experiment_flush_group(self) -> QGroupBox:
-        group = QGroupBox("Flush Settings 2")
+        group = QGroupBox("Flush settings")
         form = QFormLayout(group)
         form.addRow("Flush after capture", self.exp_flush_enabled)
         form.addRow("Flush Flowrate(uL)", self.exp_flush_flowrate)
@@ -781,6 +1045,55 @@ class MainWindow(QMainWindow):
             synchronize_state=self.wfg_sync.currentText(),
         )
 
+    def _seed_experiment_ad2_from_wfg_once(self) -> None:
+        if self._experiment_ad2_seeded:
+            return
+        for experiment_state, wfg_state in zip(self.exp_ad2_channels, self.wfg_channels):
+            experiment_state["frequency"].setValue(wfg_state["frequency"].value())
+            experiment_state["amplitude"].setValue(wfg_state["amplitude"].value())
+            experiment_state["offset"].setValue(wfg_state["offset"].value())
+            _set_combo_text(experiment_state["function"], wfg_state["function"].currentText())
+            experiment_state["enable"].setChecked(wfg_state["enable"].isChecked())
+            experiment_state["sec_wait"].setValue(wfg_state["sec_wait"].value())
+            experiment_state["sec_run"].setValue(wfg_state["sec_run"].value())
+            experiment_state["repeat"].setValue(wfg_state["repeat"].value())
+            _set_combo_text(experiment_state["trigger_source"], wfg_state["trigger_source"].currentText())
+        self._experiment_ad2_seeded = True
+
+    def _seed_experiment_ad2_if_experiment_tab(self, index: int) -> None:
+        if self.tabs.tabText(index) == "Experiment":
+            self._seed_experiment_ad2_from_wfg_once()
+
+    def _experiment_channel_config(self, index: int, state: dict[str, object]) -> WfgChannelConfig:
+        return WfgChannelConfig(
+            channel_index=index,
+            carrier=CarrierSettings(
+                frequency_hz=state["frequency"].value(),
+                amplitude_v=state["amplitude"].value(),
+                offset_v=state["offset"].value(),
+                symmetry_percent=50.0,
+                phase_deg=0.0,
+                function=WaveformFunction(state["function"].currentText()),
+                enable=state["enable"].isChecked(),
+            ),
+            trigger=TriggerSettings(
+                sec_run=state["sec_run"].value(),
+                sec_wait=state["sec_wait"].value(),
+                repeat_count=state["repeat"].value(),
+                repeat_trigger=False,
+                source=state["trigger_source"].currentText(),
+            ),
+            fm_mod=CarrierSettings(
+                frequency_hz=1000.0,
+                amplitude_v=1.0,
+                offset_v=0.0,
+                symmetry_percent=50.0,
+                phase_deg=0.0,
+                function=WaveformFunction.SINE,
+                enable=False,
+            ),
+        )
+
     def _flush_settings(self, *, experiment: bool = False) -> FlushSettings:
         if experiment:
             return FlushSettings(
@@ -795,6 +1108,7 @@ class MainWindow(QMainWindow):
         )
 
     def _start_initialize(self) -> None:
+        self._seed_experiment_ad2_from_wfg_once()
         config = HardwareRuntimeConfig(
             ad2_enabled=self.ad2_enabled.isChecked(),
             sim_ad2=self.sim_ad2.isChecked(),
@@ -902,7 +1216,20 @@ class MainWindow(QMainWindow):
 
     def _start_go_level(self) -> None:
         level = self.level_ml.value()
-        self._run_action(lambda progress: self.app.pump.set_fill_level(level), "Setting pump level")
+        flow_rate = self.flow_rate.value()
+        self._run_action(lambda progress: self.app.pump.set_fill_level(level, flow_rate), "Setting pump level")
+
+    def _start_reference_move(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Confirm Reference Move",
+            "This will run the pump's reference/calibration move. Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._run_action(lambda progress: self.app.pump.reference_move(), "Reference move")
 
     def _start_flush(self) -> None:
         settings = self._flush_settings()
@@ -925,11 +1252,28 @@ class MainWindow(QMainWindow):
         )
         exposure_ms = self.exposure_ms.value()
         center = self.center_roi.isChecked()
-        self._run_action(lambda progress: self._configure_camera(roi, exposure_ms, center), "Configuring Camera")
+        sequence_settings = self._camera_sequence_settings()
+        self._run_action(
+            lambda progress: self._configure_camera(roi, exposure_ms, center, sequence_settings),
+            "Configuring Camera",
+        )
 
-    def _configure_camera(self, roi: SubRegion, exposure_ms: float, center: bool) -> str:
+    def _camera_sequence_settings(self) -> dict[str, object]:
+        return {
+            "masterpulse_mode": self.sequence_mode.currentText(),
+            "masterpulse_source": self.sequence_source.currentText(),
+            "masterpulse_interval_s": self.sequence_interval.value(),
+            "masterpulse_burst_times": self.sequence_burst.value(),
+            "frames": self.sequence_frames.value(),
+            "trigger_source": self.dcam_source.currentText(),
+            "trigger_polarity": self.external_polarity.currentText(),
+            "trigger_delay_s": self.external_delay.value(),
+        }
+
+    def _configure_camera(self, roi: SubRegion, exposure_ms: float, center: bool, sequence_settings: dict[str, object] | None = None) -> str:
         self.app.camera.configure_exposure_time(exposure_ms)
         self.app.camera.configure_roi(roi)
+        self.app.camera.configure_sequence(sequence_settings)
         if center:
             self.app.camera.center_roi()
         return "Camera configured"
@@ -939,8 +1283,119 @@ class MainWindow(QMainWindow):
         self._run_action(lambda progress: self._save_sequence(folder), "Saving sequence")
 
     def _save_sequence(self, folder: Path) -> str:
-        self.app.camera.save_sequence([], folder)
+        if self._last_camera_image_data is None:
+            return "No image captured yet"
+        self.app.camera.save_sequence(self._last_camera_image_data, folder)
         return "Sequence saved"
+
+    def _start_capture_camera_image(self) -> None:
+        self._ensure_camera_preview()
+        self._run_action(lambda progress: self._capture_camera_image(progress), "Capturing image")
+
+    def _capture_camera_image_continuous(self) -> None:
+        if not self._camera_preview_active or not self.image_continuous.isChecked():
+            self._camera_preview_timer.stop()
+            return
+        if self._busy_count:
+            return
+        self._ensure_camera_preview()
+        self._run_action(lambda progress: self._capture_camera_image(progress), "Capturing image")
+
+    def _set_image_continuous(self, checked: bool) -> None:
+        if checked:
+            self._ensure_camera_preview()
+            self._camera_preview_timer.start()
+            self._capture_camera_image_continuous()
+        else:
+            self._camera_preview_timer.stop()
+
+    def _ensure_camera_preview(self) -> ImagePreviewWindow:
+        self._camera_preview_active = True
+        should_show = False
+        if self._camera_preview is None:
+            self._camera_preview = ImagePreviewWindow(self)
+            self._camera_preview.closed.connect(self._camera_preview_closed)
+            should_show = True
+        elif not self._camera_preview.isVisible():
+            should_show = True
+        if should_show:
+            self._camera_preview.show()
+            self._camera_preview.raise_()
+        return self._camera_preview
+
+    def _camera_preview_closed(self) -> None:
+        self._camera_preview_active = False
+        self._camera_preview = None
+        self._camera_preview_timer.stop()
+        if self.image_continuous.isChecked():
+            self.image_continuous.blockSignals(True)
+            self.image_continuous.setChecked(False)
+            self.image_continuous.blockSignals(False)
+
+    def _conversion_policy(self) -> tuple[str, int]:
+        return self.conversion_method.currentText(), self.conversion_shifts.value()
+
+    def _update_conversion_controls(self) -> None:
+        method = self.conversion_method.currentText()
+        dynamic_range = method in {"Full Dynamic", "90% Dynamic"}
+        self.conversion_min.setReadOnly(True)
+        self.conversion_max.setReadOnly(True)
+        self.conversion_min.setEnabled(dynamic_range)
+        self.conversion_max.setEnabled(dynamic_range)
+        self.conversion_shifts.setEnabled(method == "Downshift")
+
+    def _set_conversion_range(self, display_range: tuple[float, float] | None) -> None:
+        if display_range is None:
+            return
+        minimum, maximum = display_range
+        self.conversion_min.setValue(float(minimum))
+        self.conversion_max.setValue(float(maximum))
+
+    def _adjust_camera_preview(self) -> None:
+        if not self._last_camera_image_data:
+            self._set_status("No image captured yet")
+            return
+        self._ensure_camera_preview()
+        method, shifts = self._conversion_policy()
+        try:
+            display_range = self._camera_preview.show_frame(
+                np.asarray(self._last_camera_image_data[-1]),
+                method=method,
+                shifts=shifts,
+            )
+            self._set_conversion_range(display_range)
+            self._set_status("Image intensity adjusted")
+        except Exception as exc:
+            self._camera_preview.show_message(f"Capture display failed: {exc}")
+            self._set_status("Image intensity adjustment failed")
+
+    def _show_camera_preview(self, image: object) -> None:
+        if not self._camera_preview_active or self._camera_preview is None:
+            return
+        preview = self._camera_preview
+        method, shifts = self._conversion_policy()
+        try:
+            display_range = preview.show_frame(np.asarray(image), method=method, shifts=shifts)
+            self._set_conversion_range(display_range)
+        except Exception as exc:
+            preview.show_message(f"Capture display failed: {exc}")
+
+    def _show_camera_capture_failed(self) -> None:
+        if not self._camera_preview_active or self._camera_preview is None:
+            return
+        self._camera_preview.show_message("Capture failed")
+
+    def _capture_camera_image(self, progress=None) -> object:
+        image = self.app.camera.capture_snapshot()
+        if image is None:
+            self._last_camera_image_data = None
+            if progress:
+                progress("camera_capture_failed", "Capture failed")
+            return "Capture failed"
+        self._last_camera_image_data = [image]
+        if progress:
+            progress("camera_image", image)
+        return image
 
     def _start_experiment(self) -> None:
         series, total_frames, config = self._build_experiment_series()
@@ -965,15 +1420,49 @@ class MainWindow(QMainWindow):
                     flush_settings=self._flush_settings(experiment=True),
                     flush_enabled=self.exp_flush_enabled.isChecked(),
                     global_exposure_ms=self.exp_exposure_ms.value(),
+                    trigger_global_exposure=self.global_exposure.isChecked(),
                     sequence_settings={
                         "frames": self.exp_frames.value(),
                         "camera_start_s": [widget.value() for widget in self.camera_start_array],
                     },
                     wfg_config=config,
-                    do_clock_settings={},
+                    do_clock_settings=self._experiment_do_clock_config(repeat),
                 )
             )
         return ExperimentSeries2(Path(self.series_path.text()), experiments), self.exp_frames.value() * self.exp_repeats.value(), config
+
+    def _experiment_do_clock_config(self, repeat_index: int) -> DoConfig:
+        camera_fps = float(self.exp_camera_fps.value())
+        if camera_fps <= 0:
+            raise ValueError("Camera FPS must be greater than 0 to derive the AD2 DIO1 LED clock.")
+        frames = int(self.exp_frames.value())
+        if self.dynamic_camera_start.isChecked():
+            if repeat_index >= len(self.camera_start_array):
+                raise ValueError("Dynamic Camera Start Time has more repeats than Camera Start Array entries.")
+            camera_start_s = float(self.camera_start_array[repeat_index].value())
+        else:
+            camera_start_s = float(self.exp_camera_start.value())
+        # LabVIEW CreateExperiments only wires DO secRun/secWait. Repeat count,
+        # repeat-trigger, and trigger source intentionally remain AD2 SDK defaults.
+        trigger = TriggerSettings(sec_run=frames / camera_fps, sec_wait=camera_start_s)
+        return DoConfig(
+            running=True,
+            channels=[
+                DoSingleChannelConfig(
+                    channel_index=1,
+                    enable=True,
+                    clock_frequency_hz=camera_fps,
+                    output_type=DigitalOutType.PULSE,
+                    output_mode="PushPull",
+                    idle_state=DigitalOutIdleState.INITIAL,
+                    counter_high_bits=1,
+                    counter_low_bits=1,
+                    counter_initial_bits=0,
+                    start_high=True,
+                    trigger=trigger,
+                )
+            ],
+        )
 
     def _run_experiment_series(
         self,
@@ -987,11 +1476,20 @@ class MainWindow(QMainWindow):
         if progress:
             progress("queue_count", self.app.experiment_series.see_elements_left())
             progress("waveform", self._preview_points(config))
+        repeat_index = 0
         while self.app.experiment_series.see_elements_left():
-            self.app.run_experiment2()
+            completed = self.app.run_experiment2()
+            repeat_index += 1
             if progress:
                 progress("queue_count", self.app.experiment_series.see_elements_left())
                 progress("status", self.app.status)
+            if not completed:
+                message = (
+                    f"Experiment series stopped at repeat {repeat_index}: "
+                    f"run_experiment2 did not complete (status={self.app.status!r})."
+                )
+                logger.error(message)
+                raise RuntimeError(message)
         elapsed = max(time.monotonic() - started_at, 0.001)
         if progress:
             fps = total_frames / elapsed
@@ -999,14 +1497,14 @@ class MainWindow(QMainWindow):
         return "ExperimentComplete"
 
     def _experiment_wfg_config(self) -> WfgConfig:
-        config = self._wfg_config()
-        config.channels[0].carrier.frequency_hz = self.exp_ch1_freq.value()
-        config.channels[0].carrier.amplitude_v = self.exp_ch1_amp.value()
-        config.channels[0].trigger.sec_wait = self.exp_ch1_start.value()
-        config.channels[0].trigger.sec_run = self.exp_ch1_run.value()
-        config.channels[1].trigger.sec_wait = self.exp_ch2_start.value()
-        config.channels[1].trigger.sec_run = self.exp_ch2_run.value()
-        return config
+        return WfgConfig(
+            running=any(state["enable"].isChecked() for state in self.exp_ad2_channels),
+            channels=[
+                self._experiment_channel_config(0, self.exp_ad2_channels[0]),
+                self._experiment_channel_config(1, self.exp_ad2_channels[1]),
+            ],
+            synchronize_state="Independent",
+        )
 
     def _browse_folder(self, target: QLineEdit) -> None:
         selected = QFileDialog.getExistingDirectory(self, "Select folder", target.text() or str(Path.cwd()))
@@ -1015,36 +1513,111 @@ class MainWindow(QMainWindow):
 
     def _abort(self) -> None:
         self.app.fire_stop_event()
-        try:
-            self.app.pump.stop()
-            self.app.camera.stop_capture()
-            self.app.ad2.wfg_start_stop_all_ch(False)
-        except Exception as exc:  # pragma: no cover - best-effort emergency path
-            self.app.check_loop_error(exc)
-        self._set_status("Aborted")
+        self._run_action(
+            lambda progress: self._abort_hardware(),
+            "Aborting...",
+            force=True,
+            timeout_s=10.0,
+            disable_controls=True,
+        )
+
+    def _abort_hardware(self) -> str:
+        errors: list[str] = []
+        for name, action in (
+            ("pump stop", self.app.pump.stop),
+            ("camera stop_capture", self.app.camera.stop_capture),
+            ("AD2 WFG stop", lambda: self.app.ad2.wfg_start_stop_all_ch(False)),
+        ):
+            try:
+                action()
+            except Exception as exc:  # pragma: no cover - hardware failure path
+                message = f"{name} failed during abort: {exc}"
+                self.app.check_loop_error(message)
+                errors.append(message)
+        if errors:
+            raise RuntimeError("; ".join(errors))
+        return "Aborted"
 
     def _exit_app(self) -> None:
-        if self._busy_count:
-            self._abort()
-        else:
+        self._start_shutdown(close_after=True)
+
+    def _start_shutdown(self, *, close_after: bool) -> None:
+        if self._shutdown_in_progress:
+            self._close_after_shutdown = self._close_after_shutdown or close_after
+            self._set_status("Shutdown already in progress")
+            return
+        self._shutdown_in_progress = True
+        self._close_after_shutdown = close_after
+        self.app.fire_stop_event()
+        self._set_status("Shutting down...")
+        self._set_controls_enabled(False)
+        self._shutdown_result_queue = queue.Queue(maxsize=1)
+
+        def run_cleanup() -> None:
             try:
                 self.app.cleanup()
-            except Exception as exc:  # pragma: no cover - shutdown cleanup path
-                self.app.check_loop_error(exc)
-        self.close()
+            except Exception as exc:  # pragma: no cover - hardware cleanup failure path
+                self._shutdown_result_queue.put((False, "Error", str(exc)))
+            else:
+                self._shutdown_result_queue.put((True, "System Not Initialized", ""))
 
-    def _run_action(self, action, starting_status: str) -> None:
-        if self._busy_count:
+        self._shutdown_thread = threading.Thread(target=run_cleanup, name="hardware-shutdown", daemon=True)
+        self._shutdown_thread.start()
+        self._shutdown_poll_timer.start(50)
+        self._shutdown_timeout_timer.start(max(int(self._shutdown_timeout_s * 1000), 1))
+
+    def _poll_shutdown_cleanup(self) -> None:
+        if self._shutdown_result_queue is None:
+            return
+        try:
+            ok, status, error = self._shutdown_result_queue.get_nowait()
+        except queue.Empty:
+            return
+        self._shutdown_poll_timer.stop()
+        self._shutdown_timeout_timer.stop()
+        self._handle_shutdown_finished(ok, status, error)
+
+    def _handle_shutdown_timeout(self) -> None:
+        message = f"Shutdown timed out after {self._shutdown_timeout_s:.1f}s; forcing window close."
+        self.app.check_loop_error(message)
+        self.error_status.setText("ERROR")
+        self.error_code.setText("1")
+        self.error_source.setText(message)
+        self._set_status(message)
+        self._shutdown_poll_timer.stop()
+        self._handle_shutdown_finished(False, "Error", message, force_close=True)
+
+    def _run_action(
+        self,
+        action,
+        starting_status: str,
+        *,
+        force: bool = False,
+        timeout_s: float | None = None,
+        disable_controls: bool = False,
+        shutdown: bool = False,
+    ) -> None:
+        if self._busy_count and not force:
             self._set_status("Busy")
             return
         self._busy_count += 1
         self._set_status(starting_status)
+        if disable_controls:
+            self._set_controls_enabled(False)
         thread = QThread(self)
         worker = ActionWorker(action)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.progress.connect(self._handle_worker_progress)
-        worker.finished.connect(self._handle_worker_finished)
+        worker.finished.connect(
+            lambda ok, status, error, thread=thread, shutdown=shutdown: self._handle_worker_finished_for_thread(
+                thread,
+                ok,
+                status,
+                error,
+                shutdown=shutdown,
+            )
+        )
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
         thread.finished.connect(lambda: self._threads.remove(thread) if thread in self._threads else None)
@@ -1052,7 +1625,71 @@ class MainWindow(QMainWindow):
         thread.finished.connect(thread.deleteLater)
         self._threads.append(thread)
         self._workers.append(worker)
+        if timeout_s is not None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(lambda: self._handle_action_timeout(thread, starting_status, timeout_s))
+            worker.finished.connect(timer.stop)
+            worker.finished.connect(timer.deleteLater)
+            timer.start(max(int(timeout_s * 1000), 1))
         thread.start()
+
+    def _set_controls_enabled(self, enabled: bool) -> None:
+        self._controls_disabled_for_action = not enabled
+        widget = self.centralWidget()
+        if widget is not None:
+            widget.setEnabled(enabled)
+
+    def _handle_action_timeout(self, thread: QThread, starting_status: str, timeout_s: float) -> None:
+        if not thread.isRunning():
+            return
+        message = f"{starting_status} timed out after {timeout_s:.1f}s; hardware worker is still running."
+        self._timed_out_threads[thread] = message
+        self.app.check_loop_error(message)
+        self.error_status.setText("ERROR")
+        self.error_code.setText("1")
+        self.error_source.setText(message)
+        self._set_status(message)
+
+    def _handle_worker_finished_for_thread(
+        self,
+        thread: QThread,
+        ok: bool,
+        status: str,
+        error: str,
+        *,
+        shutdown: bool,
+    ) -> None:
+        timeout_error = self._timed_out_threads.pop(thread, None)
+        effective_ok = ok and timeout_error is None
+        effective_status = status
+        effective_error = error
+        if timeout_error is not None:
+            effective_status = "Error"
+            effective_error = timeout_error if ok else f"{timeout_error}; worker later failed: {error}"
+        self._handle_worker_finished(effective_ok, effective_status, effective_error)
+        if shutdown:
+            self._handle_shutdown_finished(effective_ok, effective_status, effective_error)
+
+    def _handle_shutdown_finished(self, ok: bool, status: str, error: str, *, force_close: bool = False) -> None:
+        self._shutdown_in_progress = False
+        if ok:
+            self.error_status.setText("OK")
+            self.error_code.setText("0")
+            self.error_source.setText("")
+            self._set_status(status)
+        else:
+            self.error_status.setText("ERROR")
+            self.error_code.setText("1")
+            self.error_source.setText(error)
+            self._set_status("Error")
+        if (ok or force_close) and self._close_after_shutdown:
+            self._cleanup_complete_for_close = True
+            self.close()
+        elif not ok:
+            self._close_after_shutdown = False
+        if self._busy_count == 0 and self._controls_disabled_for_action and not self._shutdown_in_progress:
+            self._set_controls_enabled(True)
 
     def _handle_worker_progress(self, kind: str, value: object) -> None:
         if kind == "status":
@@ -1074,6 +1711,10 @@ class MainWindow(QMainWindow):
             self._set_mso_stats(captures, sample_frequency_hz, str(value.get("trigger_source", "")))
         elif kind == "mso_stats":
             self.mso_stats.setText(str(value))
+        elif kind == "camera_image":
+            self._show_camera_preview(value)
+        elif kind == "camera_capture_failed":
+            self._show_camera_capture_failed()
 
     def _handle_worker_finished(self, ok: bool, status: str, error: str) -> None:
         self._busy_count = max(self._busy_count - 1, 0)
@@ -1091,6 +1732,12 @@ class MainWindow(QMainWindow):
             self.error_code.setText("1")
             self.error_source.setText(error)
             self._set_status("Error")
+        if self._busy_count == 0 and self._controls_disabled_for_action and not self._shutdown_in_progress:
+            self._set_controls_enabled(True)
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt API name
+        self._window_was_shown = True
+        super().showEvent(event)
 
     def _safe_call(self, action) -> None:
         try:
@@ -1207,6 +1854,22 @@ class MainWindow(QMainWindow):
                 "exposure_ms": self.exp_exposure_ms.value(),
                 "ch1_frequency": self.exp_ch1_freq.value(),
                 "ch1_amplitude": self.exp_ch1_amp.value(),
+                "ch1_offset": self.exp_ch1_offset.value(),
+                "ch1_function": self.exp_ch1_function.currentText(),
+                "ch1_enable": self.exp_ch1_enable.isChecked(),
+                "ch1_start": self.exp_ch1_start.value(),
+                "ch1_run": self.exp_ch1_run.value(),
+                "ch1_repeat": self.exp_ch1_repeat.value(),
+                "ch1_trigger_source": self.exp_ch1_trigger_source.currentText(),
+                "ch2_frequency": self.exp_ch2_freq.value(),
+                "ch2_amplitude": self.exp_ch2_amp.value(),
+                "ch2_offset": self.exp_ch2_offset.value(),
+                "ch2_function": self.exp_ch2_function.currentText(),
+                "ch2_enable": self.exp_ch2_enable.isChecked(),
+                "ch2_start": self.exp_ch2_start.value(),
+                "ch2_run": self.exp_ch2_run.value(),
+                "ch2_repeat": self.exp_ch2_repeat.value(),
+                "ch2_trigger_source": self.exp_ch2_trigger_source.currentText(),
                 "flush_enabled": self.exp_flush_enabled.isChecked(),
                 "flush_flowrate": self.exp_flush_flowrate.value(),
                 "flush_volume": self.exp_flush_volume.value(),
@@ -1293,6 +1956,16 @@ class MainWindow(QMainWindow):
                 "exposure_ms": self.exp_exposure_ms,
                 "ch1_frequency": self.exp_ch1_freq,
                 "ch1_amplitude": self.exp_ch1_amp,
+                "ch1_offset": self.exp_ch1_offset,
+                "ch1_start": self.exp_ch1_start,
+                "ch1_run": self.exp_ch1_run,
+                "ch1_repeat": self.exp_ch1_repeat,
+                "ch2_frequency": self.exp_ch2_freq,
+                "ch2_amplitude": self.exp_ch2_amp,
+                "ch2_offset": self.exp_ch2_offset,
+                "ch2_start": self.exp_ch2_start,
+                "ch2_run": self.exp_ch2_run,
+                "ch2_repeat": self.exp_ch2_repeat,
                 "flush_flowrate": self.exp_flush_flowrate,
                 "flush_volume": self.exp_flush_volume,
                 "wait_after_flush": self.exp_wait_after_flush,
@@ -1300,17 +1973,77 @@ class MainWindow(QMainWindow):
             for key, widget in mapping.items():
                 if key in experiment:
                     widget.setValue(experiment[key])
+            for key, widget in (
+                ("ch1_function", self.exp_ch1_function),
+                ("ch1_trigger_source", self.exp_ch1_trigger_source),
+                ("ch2_function", self.exp_ch2_function),
+                ("ch2_trigger_source", self.exp_ch2_trigger_source),
+            ):
+                if key in experiment:
+                    _set_combo_text(widget, str(experiment[key]))
+            for key, widget in (
+                ("ch1_enable", self.exp_ch1_enable),
+                ("ch2_enable", self.exp_ch2_enable),
+            ):
+                if key in experiment:
+                    widget.setChecked(bool(experiment[key]))
             if "flush_enabled" in experiment:
                 self.exp_flush_enabled.setChecked(bool(experiment["flush_enabled"]))
+            if any(
+                key in experiment
+                for key in (
+                    "ch1_frequency",
+                    "ch1_amplitude",
+                    "ch1_offset",
+                    "ch1_function",
+                    "ch1_enable",
+                    "ch1_start",
+                    "ch1_run",
+                    "ch1_repeat",
+                    "ch1_trigger_source",
+                    "ch2_frequency",
+                    "ch2_amplitude",
+                    "ch2_offset",
+                    "ch2_function",
+                    "ch2_enable",
+                    "ch2_start",
+                    "ch2_run",
+                    "ch2_repeat",
+                    "ch2_trigger_source",
+                )
+            ):
+                self._experiment_ad2_seeded = True
         self._set_status("Settings loaded")
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API name
-        if self._busy_count:
-            self.app.fire_stop_event()
+        if not self._cleanup_complete_for_close:
+            if not self._window_was_shown:
+                try:
+                    self.app.cleanup()
+                except Exception as exc:  # pragma: no cover - hidden-window teardown path
+                    self.app.check_loop_error(exc)
+                    self.error_status.setText("ERROR")
+                    self.error_code.setText("1")
+                    self.error_source.setText(str(exc))
+                self._cleanup_complete_for_close = True
+            else:
+                event.ignore()
+                self._start_shutdown(close_after=True)
+                return
+        self._camera_preview_active = False
+        self._camera_preview_timer.stop()
+        if self._camera_preview is not None:
+            self._camera_preview.close()
+            self._camera_preview = None
         self._save_settings()
+        self._cleanup_complete_for_close = False
         super().closeEvent(event)
 
 
+# Standalone entry point for the day-to-day application (see tools/run_ui.py
+# and launch_gui.bat). qt_ui_v2.MainWindowV2 subclasses MainWindow and reuses
+# its tab-building methods (WFG, MSO, Pump&Valve, Camera) as sidebar dialogs,
+# but is an in-development preview and not yet the default launch target.
 def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     window = MainWindow()

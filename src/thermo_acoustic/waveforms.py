@@ -453,15 +453,25 @@ class WaveFormsBackend:
 
     def configure_do(self, handle: int, config: DoConfig) -> None:
         h = c_int(handle)
+        trigger = None
         trigger_source = TriggerSource.NONE
         for channel in config.channels:
             idx = c_int(channel.channel_index)
+            trigger = channel.trigger
             trigger_source = channel.trigger.source
             bits = channel.custom_data.bits
+            clock_divider = channel.clock_divider
+            if channel.clock_frequency_hz is not None:
+                if channel.clock_frequency_hz <= 0:
+                    raise WaveFormsError("Digital output clock frequency must be greater than 0 Hz.")
+                internal_clock_hz = self.digital_out_internal_clock_info(handle)
+                if internal_clock_hz <= 0:
+                    raise WaveFormsError("Digital output internal clock frequency is not available.")
+                clock_divider = int((internal_clock_hz / channel.clock_frequency_hz) / 2.0)
 
             self._check(self._dwf.FDwfDigitalOutEnableSet(h, idx, c_int(int(channel.enable))), "FDwfDigitalOutEnableSet")
             self._check(
-                self._dwf.FDwfDigitalOutDividerSet(h, idx, c_uint(max(channel.clock_divider, 0))),
+                self._dwf.FDwfDigitalOutDividerSet(h, idx, c_uint(max(clock_divider, 0))),
                 "FDwfDigitalOutDividerSet",
             )
             self._check(
@@ -513,6 +523,14 @@ class WaveFormsBackend:
                     "FDwfDigitalOutDataSet",
                 )
 
+        if trigger is not None:
+            self._check(self._dwf.FDwfDigitalOutWaitSet(h, c_double(trigger.sec_wait)), "FDwfDigitalOutWaitSet")
+            self._check(self._dwf.FDwfDigitalOutRunSet(h, c_double(trigger.sec_run)), "FDwfDigitalOutRunSet")
+            self._check(self._dwf.FDwfDigitalOutRepeatSet(h, c_int(trigger.repeat_count)), "FDwfDigitalOutRepeatSet")
+            self._check(
+                self._dwf.FDwfDigitalOutRepeatTriggerSet(h, c_int(int(trigger.repeat_trigger))),
+                "FDwfDigitalOutRepeatTriggerSet",
+            )
         self._check(
             self._dwf.FDwfDigitalOutTriggerSourceSet(
                 h,

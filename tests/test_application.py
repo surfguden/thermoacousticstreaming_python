@@ -1,11 +1,17 @@
 from pathlib import Path
+import sys
+import threading
+import time
+from types import SimpleNamespace
 
 from thermo_acoustic.application import Application
 from thermo_acoustic.ad2 import (
+    CarrierSettings,
     DigitalOutIdleState,
     DigitalOutType,
     DoConfig,
     DoSingleChannelConfig,
+    TriggerSettings,
     TriggerSource,
     WaveformFunction,
     WfgChannelConfig,
@@ -81,6 +87,55 @@ from thermo_acoustic.utilities import (
 )
 from thermo_acoustic.waveforms import WaveFormsBackend
 from thermo_acoustic.workflows import Experiment2, ExperimentSeries2, FlushSettings
+
+
+def install_fake_nptdms(monkeypatch):
+    writes = {}
+
+    class FakeRootObject:
+        def __init__(self, properties=None):
+            self.kind = "root"
+            self.properties = properties or {}
+
+    class FakeGroupObject:
+        def __init__(self, name, properties=None):
+            self.kind = "group"
+            self.name = name
+            self.properties = properties or {}
+
+    class FakeChannelObject:
+        def __init__(self, group, name, data):
+            self.kind = "channel"
+            self.group = group
+            self.name = name
+            self.data = list(data)
+
+    class FakeTdmsWriter:
+        def __init__(self, path):
+            self.path = Path(path)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def write_segment(self, objects):
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_bytes(b"fake tdms")
+            writes[str(self.path)] = objects
+
+    monkeypatch.setitem(
+        sys.modules,
+        "nptdms",
+        SimpleNamespace(
+            ChannelObject=FakeChannelObject,
+            GroupObject=FakeGroupObject,
+            RootObject=FakeRootObject,
+            TdmsWriter=FakeTdmsWriter,
+        ),
+    )
+    return writes
 
 
 def test_initialize_updates_status():
@@ -254,6 +309,51 @@ def test_application_instrument_accessors():
     assert app.get_experiment_series_general() is series
 
 
+def test_cleanup_times_out_blocked_device_and_continues_to_later_devices():
+    calls = []
+    cleanup_started = threading.Event()
+
+    class BlockingCleanupInstrument:
+        def cleanup(self):
+            calls.append(("camera", "cleanup_started"))
+            cleanup_started.set()
+            threading.Event().wait()
+
+    class RecordingCleanupInstrument:
+        def __init__(self, name):
+            self.name = name
+
+        def cleanup(self):
+            calls.append((self.name, "cleanup"))
+
+    app = Application(
+        camera=BlockingCleanupInstrument(),
+        pump=RecordingCleanupInstrument("pump"),
+        valve=RecordingCleanupInstrument("valve"),
+        z_motor=RecordingCleanupInstrument("z_motor"),
+        ad2=RecordingCleanupInstrument("ad2"),
+    )
+    app.cleanup_device_timeout_s = 0.05
+    app.cleanup_total_timeout_s = 0.5
+
+    started_at = time.perf_counter()
+    try:
+        app.cleanup()
+    except RuntimeError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("blocked cleanup should be reported")
+    elapsed_s = time.perf_counter() - started_at
+
+    assert cleanup_started.is_set()
+    assert elapsed_s < 0.5
+    assert "camera cleanup timed out" in message
+    assert ("pump", "cleanup") in calls
+    assert ("valve", "cleanup") in calls
+    assert ("z_motor", "cleanup") in calls
+    assert ("ad2", "cleanup") in calls
+
+
 def test_application_error_handlers_and_z_stack():
     app = Application(ad2=SimulatedAD2Sdk())
 
@@ -275,7 +375,8 @@ def test_application_error_handlers_and_z_stack():
     assert app.status == "ZStackComplete"
 
 
-def test_run_experiment2_processes_one_experiment(tmp_path):
+def test_run_experiment2_processes_one_experiment(tmp_path, monkeypatch):
+    install_fake_nptdms(monkeypatch)
     app = Application(ad2=SimulatedAD2Sdk())
     app.pump.fill_level = 1.0
     experiment = Experiment2(
@@ -380,12 +481,43 @@ class FakeTextBackend:
 
 
 def test_valve_and_prior_backend_commands():
-    valve_backend = FakeTextBackend()
+    valve_backend = FakeTextBackend({"S": "1\r"})
     valve = Valve(backend=valve_backend, command_position_1="P1", command_position_2="P2")
     valve.initialize()
+    assert valve.initialized
+    assert valve.status_note == "confirmed"
     valve.set_position(2)
     valve.cleanup()
-    assert valve_backend.commands == [("write", "OPEN COM6"), ("write", "P2"), ("close",)]
+    assert valve_backend.commands == [
+        ("write", "OPEN COM6"),
+        ("query", "S"),
+        ("write", "P2"),
+        ("close",),
+    ]
+
+
+def test_valve_initialize_raises_on_empty_status_response():
+    valve_backend = FakeTextBackend({"S": ""})
+    valve = Valve(backend=valve_backend, visa_resource="COM6")
+
+    try:
+        valve.initialize()
+    except Exception as exc:
+        assert "COM6" in str(exc)
+    else:
+        raise AssertionError("expected initialize() to raise when the valve does not respond")
+
+    assert not valve.initialized
+
+
+def test_valve_initialize_flags_unparseable_status_response():
+    valve_backend = FakeTextBackend({"S": "??\r"})
+    valve = Valve(backend=valve_backend)
+
+    valve.initialize()
+
+    assert valve.initialized
+    assert "unverified" in valve.status_note
 
     motor_backend = FakeTextBackend({"P": "12.5", "$": "IDLE"})
     motor = PriorZMotor(backend=motor_backend)
@@ -403,6 +535,15 @@ def test_valve_and_prior_backend_commands():
         ("write", "Z"),
         ("close",),
     ]
+
+
+def test_serial_text_backend_has_longer_bounded_write_timeout():
+    from thermo_acoustic.instruments import SerialTextCommandBackend
+
+    backend = SerialTextCommandBackend()
+
+    assert backend.timeout_s == 1.0
+    assert backend.write_timeout_s == 5.0
 
 
 class FakePumpBackend:
@@ -427,8 +568,11 @@ class FakePumpBackend:
         self.calls.append(("generate_flow", flow_rate))
         self.status = True
 
-    def set_fill_level(self, fill_level):
-        self.calls.append(("set_fill_level", fill_level))
+    def set_fill_level(self, fill_level, flow_rate=None):
+        if flow_rate is None:
+            self.calls.append(("set_fill_level", fill_level))
+        else:
+            self.calls.append(("set_fill_level", fill_level, flow_rate))
 
     def configure_syringe(self, config):
         self.calls.append(("configure_syringe", config))
@@ -799,6 +943,7 @@ def test_ad2_nested_dict_config_coercion():
                     "channel": 2,
                     "enable": True,
                     "clockDivider": 8,
+                    "clockFrequencyHz": 25.0,
                     "outputType": "Custom",
                     "idleState": "High",
                     "highBits": 4,
@@ -814,6 +959,7 @@ def test_ad2_nested_dict_config_coercion():
     assert channel.channel_index == 2
     assert channel.enable
     assert channel.clock_divider == 8
+    assert channel.clock_frequency_hz == 25.0
     assert channel.output_type == DigitalOutType.CUSTOM
     assert channel.idle_state == DigitalOutIdleState.HIGH
     assert channel.custom_data.count_of_bits == 4
@@ -965,6 +1111,22 @@ def test_waveforms_low_level_wrappers():
     backend.digital_out_repeat_trigger_set(123, True)
     backend.digital_out_trigger_source_set(123, TriggerSource.PC)
     backend.digital_out_configure(123, True)
+    backend.configure_do(
+        123,
+        DoConfig(
+            running=True,
+            channels=[
+                DoSingleChannelConfig(
+                    channel_index=1,
+                    enable=True,
+                    clock_frequency_hz=10.0,
+                    counter_high_bits=1,
+                    counter_low_bits=1,
+                    trigger=TriggerSettings(sec_run=0.2, sec_wait=0.1),
+                )
+            ],
+        ),
+    )
     backend.analog_in_trigger_source_set(123, TriggerSource.ANALOG_IN)
     captures = backend.capture_analog_in_channels(
         123,
@@ -985,6 +1147,101 @@ def test_waveforms_low_level_wrappers():
     called = {name for name, _args in fake.calls}
     assert "FDwfAnalogOutNodeEnableSet" in called
     assert "FDwfDigitalOutConfigure" in called
+    divider_calls = [args for name, args in fake.calls if name == "FDwfDigitalOutDividerSet"]
+    assert any(args[1].value == 1 and args[2].value == 5 for args in divider_calls)
+    assert "FDwfDigitalOutRunSet" in called
+    assert "FDwfDigitalOutWaitSet" in called
+
+
+def test_experiment2_writes_labview_metadata_tdms(tmp_path, monkeypatch):
+    writes = install_fake_nptdms(monkeypatch)
+
+    experiment = Experiment2(
+        repeat_id=2,
+        experiment_folder=tmp_path / "repeat_003",
+        flush_settings=FlushSettings(flush_flowrate=-5000.0, flush_volume_ml=0.2, wait_after_flush_s=1.5),
+        global_exposure_ms=40.0,
+        trigger_global_exposure=True,
+        wfg_config=WfgConfig(
+            running=True,
+            channels=[
+                WfgChannelConfig(
+                    0,
+                    carrier=CarrierSettings(frequency_hz=1_975_000.0, amplitude_v=2.0),
+                    trigger=TriggerSettings(sec_run=0.5, sec_wait=0.1, repeat_count=1),
+                ),
+                WfgChannelConfig(
+                    1,
+                    carrier=CarrierSettings(frequency_hz=1000.0, amplitude_v=1.0),
+                    trigger=TriggerSettings(sec_run=0.25, sec_wait=0.2, repeat_count=0),
+                ),
+            ],
+        ),
+        do_clock_settings=DoConfig(
+            running=True,
+            channels=[
+                DoSingleChannelConfig(
+                    channel_index=1,
+                    enable=True,
+                    clock_frequency_hz=100.0,
+                    trigger=TriggerSettings(sec_run=0.2, sec_wait=0.05),
+                )
+            ],
+        ),
+    )
+
+    experiment.create_folder_and_tdms()
+    experiment.save_settings()
+    experiment.save_image_data(["frame-a", "frame-b"])
+    experiment.save_camera_settings(
+        {
+            "readout_time": 0.012,
+            "sub_region": {
+                "horizontal_size": 2304,
+                "vertical_size": 740,
+                "horizontal_offset": 0,
+                "vertical_offset": 792,
+            },
+        }
+    )
+
+    tdms_path = tmp_path / "repeat_003" / "data.tdms"
+    assert tdms_path.exists()
+    objects = writes[str(tdms_path)]
+    experiment_group = next(item for item in objects if getattr(item, "kind", "") == "group" and item.name == "Experiment")
+    properties = experiment_group.properties
+    for field in (
+        "WFGFreqCh1",
+        "WFGAmpCh1",
+        "WFGRunCh1",
+        "WFGWaitCh1",
+        "RepeatCh1",
+        "WFGFreqCh2",
+        "WFGAmpCh2",
+        "WFGRunCh2",
+        "WFGWaitCh2",
+        "RepeatCh2",
+        "DORun",
+        "DOWait",
+        "DOFreq",
+        "ExposureTime",
+        "GlobalExposure",
+        "Repeat ID",
+        "Experiment started",
+        "FlushFlowrate",
+        "FlushVolume",
+        "WaitAfterFlush",
+        "ReadoutTime",
+        "HorizontalSize",
+        "VerticalSize",
+        "HorizontalOffset",
+        "VerticalOffset",
+    ):
+        assert field in properties
+    assert properties["DOFreq"] == 100.0
+    channels = {item.name: item for item in objects if getattr(item, "kind", "") == "channel"}
+    assert channels["ImageName"].data == ["frame_00000.tiff", "frame_00001.tiff"]
+    assert len(channels["Timestamp"].data) == 2
 
 
 def test_ad2_real_class_dispatches_to_waveforms_backend():
@@ -1146,6 +1403,9 @@ class FakeDcamModule:
             import numpy as np
 
             return np.arange(12, dtype="uint16").reshape(3, 4)
+
+        def dev_getcapability(self):
+            return False
 
         def cap_firetrigger(self):
             self.calls.append(("cap_firetrigger",))

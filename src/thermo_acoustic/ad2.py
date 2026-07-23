@@ -93,6 +93,7 @@ class DoSingleChannelConfig:
     channel_index: int = 0
     enable: bool = False
     clock_divider: int = 0
+    clock_frequency_hz: float | None = None
     output_type: DigitalOutType = DigitalOutType.PULSE
     output_mode: str = "PushPull"
     idle_state: DigitalOutIdleState = DigitalOutIdleState.INITIAL
@@ -261,6 +262,11 @@ def coerce_do_channel_config(config: DoSingleChannelConfig | dict[str, Any] | No
         channel_index=int(_first_present(config, "channel_index", "channelIndex", "channel", "idx", default=index) or 0),
         enable=bool(_first_present(config, "enable", "enabled", default=False)),
         clock_divider=int(_first_present(config, "clock_divider", "clockDivider", "divider", default=0) or 0),
+        clock_frequency_hz=(
+            None
+            if _first_present(config, "clock_frequency_hz", "clockFrequencyHz", "frequency_hz", "frequencyHz", "frequency", default=None) is None
+            else float(_first_present(config, "clock_frequency_hz", "clockFrequencyHz", "frequency_hz", "frequencyHz", "frequency", default=0.0) or 0.0)
+        ),
         output_type=_coerce_enum(
             DigitalOutType,
             _first_present(config, "output_type", "outputType", "type", default=DigitalOutType.PULSE),
