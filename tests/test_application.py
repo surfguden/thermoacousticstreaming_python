@@ -4,6 +4,8 @@ import threading
 import time
 from types import SimpleNamespace
 
+import pytest
+
 from thermo_acoustic.application import Application
 from thermo_acoustic.ad2 import (
     CarrierSettings,
@@ -11,6 +13,7 @@ from thermo_acoustic.ad2 import (
     DigitalOutType,
     DoConfig,
     DoSingleChannelConfig,
+    FmSweepSettings,
     TriggerSettings,
     TriggerSource,
     WaveformFunction,
@@ -273,15 +276,48 @@ def test_serial_imaq_and_typedef_ports(tmp_path):
     assert copied.disposed
 
 
+def test_fm_sweep_settings_match_martens_et_al_reference_case():
+    # Martens et al., PhysRevApplied.23.024043: "actuation frequency centered
+    # at 1.934 MHz with a sweep of 50 kHz and a sweep time of 1 ms."
+    sweep = FmSweepSettings(center_hz=1_934_000.0, width_hz=50_000.0, sweep_time_ms=1.0)
+
+    assert sweep.fm_amplitude_pct == pytest.approx(2.585, abs=1e-3)
+    assert sweep.fm_frequency_hz == 1000.0
+    assert sweep.top_hz == pytest.approx(1_959_000.0)
+    assert sweep.bottom_hz == pytest.approx(1_909_000.0)
+
+    fm_mod = sweep.fm_mod_settings()
+    assert fm_mod.frequency_hz == 1000.0
+    assert fm_mod.amplitude_v == pytest.approx(2.585, abs=1e-3)
+    assert fm_mod.function == WaveformFunction.TRIANGLE
+    assert fm_mod.enable is True
+
+
+def test_fm_sweep_settings_rejects_non_positive_sweep_time():
+    try:
+        FmSweepSettings(center_hz=1_934_000.0, width_hz=50_000.0, sweep_time_ms=0.0)
+    except ValueError as exc:
+        assert "Sweep Time" in str(exc)
+    else:
+        raise AssertionError("expected a clear ValueError, not a silent division by zero")
+
+    try:
+        FmSweepSettings(center_hz=1_934_000.0, width_hz=50_000.0, sweep_time_ms=-1.0)
+    except ValueError as exc:
+        assert "Sweep Time" in str(exc)
+    else:
+        raise AssertionError("expected a clear ValueError for negative sweep time too")
+
+
 def test_flush_sets_valve_and_status():
     app = Application()
-    app.pump.fill_level = 1.0
+    app.pump.fill_level = 60.0
 
     ok = app.flush(FlushSettings(flush_flowrate=10.0, flush_volume_ml=6.0, wait_after_flush_s=0.0))
 
     assert ok
     assert app.valve.position == 2
-    assert app.pump.fill_level == 0.9
+    assert app.pump.fill_level == 54.0
     assert app.status == "FlushComplete"
 
 
@@ -519,6 +555,19 @@ def test_valve_initialize_flags_unparseable_status_response():
     assert valve.initialized
     assert "unverified" in valve.status_note
 
+
+def test_valve_wait_until_ready_polls_until_confirmed_and_is_bounded_when_busy():
+    ready_valve = Valve(backend=FakeTextBackend({"S": "1\r"}))
+    assert ready_valve.wait_until_ready(timeout_s=1.0, poll_interval_s=0.01) is True
+
+    busy_valve = Valve(backend=FakeTextBackend({"S": "*\r"}))
+    started_at = time.monotonic()
+    result = busy_valve.wait_until_ready(timeout_s=0.2, poll_interval_s=0.02)
+    elapsed_s = time.monotonic() - started_at
+
+    assert result is False
+    assert elapsed_s < 0.5, "a persistently busy valve must not hang past roughly its timeout"
+
     motor_backend = FakeTextBackend({"P": "12.5", "$": "IDLE"})
     motor = PriorZMotor(backend=motor_backend)
     motor.initialize()
@@ -728,6 +777,35 @@ class FakeQmixPumpModule:
             return self.pumping
 
 
+def test_syringe_presets_match_authoritative_bd_inner_diameters():
+    # Confirmed real BD syringe inner diameters (mm): 1mL=4.78, 5mL=12.07, 10mL=14.5.
+    # These feed set_syringe_param() on the real Qmix SDK pump object directly
+    # (qmixsdk/qmixpump.py:149-158, LCP_SetSyringeParam) -- there is no
+    # internal model database on the SDK side, so a wrong diameter here
+    # silently miscalibrates flow-rate/volume conversion on real hardware.
+    expected_diameters_mm = {
+        "BD 1ml": 4.78,
+        "BD 5ml": 12.07,
+        "BD 10ml": 14.5,
+    }
+    expected_volumes_ml = {
+        "BD 1ml": 1.0,
+        "BD 5ml": 5.0,
+        "BD 10ml": 10.0,
+    }
+    for name, expected_diameter_mm in expected_diameters_mm.items():
+        diameter_mm, stroke_mm = SYRINGE_PRESETS[name]
+        assert diameter_mm == pytest.approx(expected_diameter_mm)
+
+        # Stroke length is not an independently-sourced BD spec value; it is
+        # derived assuming the nominal volume fills the full piston travel
+        # in a cylindrical bore. Re-derive independently here (not via the
+        # module's own helper) to confirm the preset is internally consistent.
+        area_mm2 = 3.141592653589793 * (diameter_mm / 2.0) ** 2
+        expected_stroke_mm = expected_volumes_ml[name] * 1000.0 / area_mm2
+        assert stroke_mm == pytest.approx(expected_stroke_mm)
+
+
 def test_qmix_pump_backend_initializes_and_dispatches(tmp_path):
     FakeQmixPumpModule.Pump.instances = []
     backend = QmixPumpBackend(
@@ -755,10 +833,28 @@ def test_qmix_pump_backend_initializes_and_dispatches(tmp_path):
     assert ("set_volume_unit", FakeQmixPumpModule.UnitPrefix.milli, FakeQmixPumpModule.VolumeUnit.litres) in pump.calls
     assert ("set_syringe_param", diameter, stroke) in pump.calls
     assert ("generate_flow", -5000.0) in pump.calls
-    assert ("set_fill_level", 5.0, 5000.0) in pump.calls
+    assert ("set_fill_level", 0.5, 5000.0) in pump.calls
     assert ("calibrate",) in pump.calls
     assert ("set_fill_level", 0.0, 5000.0) in pump.calls
     assert ("set_fill_level", 10.0, 5000.0) in pump.calls
+
+
+def test_qmix_set_fill_level_treats_value_as_absolute_ml_not_fraction(tmp_path):
+    FakeQmixPumpModule.Pump.instances = []
+    backend = QmixPumpBackend(
+        qmixbus=FakeQmixBusModule,
+        qmixpump=FakeQmixPumpModule,
+        pump_name="Pump B",
+    )
+    backend.initialize(tmp_path / "qmix-config")
+    backend.configure_syringe({"name": "BD 5ml"})
+
+    backend.set_fill_level(0.5, flow_rate=1000.0)
+
+    pump = FakeQmixPumpModule.Pump.instances[0]
+    assert ("set_fill_level", 0.5, 1000.0) in pump.calls, (
+        "0.5 mL must be sent as-is, not scaled by syringe capacity as if it were a 50% fraction"
+    )
 
 
 class FakeCameraBackend:
@@ -798,7 +894,7 @@ class FakeCameraBackend:
         self.calls.append(("capture_snapshot",))
         return "snapshot"
 
-    def image_sequence(self, frame_count=0):
+    def image_sequence(self, frame_count=0, partial_capture_folder=None):
         self.calls.append(("image_sequence", frame_count))
         return [f"frame-{i}" for i in range(frame_count)]
 
@@ -1242,6 +1338,15 @@ def test_experiment2_writes_labview_metadata_tdms(tmp_path, monkeypatch):
     channels = {item.name: item for item in objects if getattr(item, "kind", "") == "channel"}
     assert channels["ImageName"].data == ["frame_00000.tiff", "frame_00001.tiff"]
     assert len(channels["Timestamp"].data) == 2
+
+
+def test_experiment_settings_properties_include_git_commit_hash(monkeypatch, tmp_path):
+    monkeypatch.setattr("thermo_acoustic.workflows._git_commit_hash", lambda: "deadbeef-dirty")
+
+    experiment = Experiment2(experiment_folder=tmp_path / "repeat_001")
+    properties = experiment._settings_properties()
+
+    assert properties["GitCommitHash"] == "deadbeef-dirty"
 
 
 def test_ad2_real_class_dispatches_to_waveforms_backend():

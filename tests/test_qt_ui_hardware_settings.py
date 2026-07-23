@@ -8,6 +8,7 @@ import time
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
+import pytest
 from PySide6.QtCore import QEvent
 from PySide6.QtWidgets import QDoubleSpinBox
 from PySide6.QtWidgets import QApplication
@@ -164,6 +165,71 @@ def test_qt_ui_experiment_flush_is_disabled_by_default_and_explicitly_enabled(mo
     assert series.experiments is not None
     assert [experiment.flush_enabled for experiment in series.experiments] == [True]
     assert [experiment.trigger_global_exposure for experiment in series.experiments] == [True]
+
+
+def test_experiment_sequence_settings_set_explicit_deterministic_trigger_source(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    window.series_path.setText(str(tmp_path / "series"))
+    window.exp_camera_fps.setValue(100.0)
+    window.exp_frames.setValue(5)
+
+    series, _total_frames, _config = window._build_experiment_series()
+
+    assert series.experiments[0].sequence_settings["trigger_source"] == "Internal"
+
+
+def test_fm_sweep_toggle_off_preserves_existing_experiment_behavior(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    window.series_path.setText(str(tmp_path / "series"))
+    window.exp_camera_fps.setValue(100.0)
+    window.exp_frames.setValue(5)
+    # exp_sweep_enable is off by default -- do not touch it.
+
+    series, _total_frames, _config = window._build_experiment_series()
+    experiment = series.experiments[0]
+    ch0 = experiment.wfg_config.channels[0]
+
+    assert ch0.fm_mod.enable is False
+    assert ch0.fm_mod.frequency_hz == 1000.0
+    assert ch0.fm_mod.amplitude_v == 1.0
+    assert ch0.fm_mod.function == qt_ui.WaveformFunction.SINE
+    assert experiment.fm_sweep is None
+
+
+def test_fm_sweep_toggle_on_carries_settings_into_experiment_wfg_config(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    window.series_path.setText(str(tmp_path / "series"))
+    window.exp_camera_fps.setValue(100.0)
+    window.exp_frames.setValue(5)
+
+    window.exp_sweep_enable.setChecked(True)
+    window.exp_sweep_center_mhz.setValue(1.934)
+    window.exp_sweep_width_khz.setValue(50.0)
+    window.exp_sweep_time_ms.setValue(1.0)
+    window.exp_sweep_type.setCurrentText("Symmetric")
+
+    series, _total_frames, _config = window._build_experiment_series()
+    experiment = series.experiments[0]
+    ch0 = experiment.wfg_config.channels[0]
+
+    assert ch0.carrier.frequency_hz == 1_934_000.0
+    assert ch0.carrier.enable is True
+    assert ch0.fm_mod.enable is True
+    assert ch0.fm_mod.frequency_hz == 1000.0
+    assert ch0.fm_mod.amplitude_v == pytest.approx(2.585, abs=1e-3)
+    assert ch0.fm_mod.function == qt_ui.WaveformFunction.TRIANGLE
+
+    assert experiment.fm_sweep is not None
+    assert experiment.fm_sweep.center_hz == 1_934_000.0
+    assert experiment.fm_sweep.width_hz == 50_000.0
+    assert experiment.fm_sweep.sweep_time_ms == 1.0
+
+    properties = experiment._settings_properties()
+    assert properties["FMSweepEnabled"] is True
+    assert properties["FMSweepCenterHz"] == 1_934_000.0
+    assert properties["FMSweepWidthKHz"] == 50.0
+    assert properties["FMSweepTimeMs"] == 1.0
+    assert properties["FMSweepType"] == "Symmetric"
 
 
 def test_qt_ui_experiment_do_clock_config_uses_camera_timing_fields(monkeypatch, tmp_path):
@@ -857,5 +923,52 @@ def test_run_experiment_series_stops_after_failed_repeat(monkeypatch, tmp_path, 
 
         assert call_count["n"] == 1
         assert any("repeat 1" in record.message for record in caplog.records)
+    finally:
+        window.close()
+
+
+def test_start_experiment_blocks_on_existing_data_until_confirmed(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        series_dir = tmp_path / "series"
+        (series_dir / "repeat_001").mkdir(parents=True)
+        (series_dir / "repeat_001" / "data.tdms").write_text("existing data", encoding="utf-8")
+        window.series_path.setText(str(series_dir))
+
+        run_action_calls = []
+        monkeypatch.setattr(window, "_run_action", lambda *args, **kwargs: run_action_calls.append((args, kwargs)))
+
+        monkeypatch.setattr(qt_ui.QMessageBox, "question", staticmethod(lambda *a, **k: qt_ui.QMessageBox.StandardButton.No))
+        window._start_experiment()
+        assert run_action_calls == [], "declining the overwrite confirmation must not start the experiment"
+        assert not (series_dir / "repeat_002").exists(), "no new side effects should occur when the user declines"
+
+        window.exp_camera_fps.setValue(100.0)
+        monkeypatch.setattr(qt_ui.QMessageBox, "question", staticmethod(lambda *a, **k: qt_ui.QMessageBox.StandardButton.Yes))
+        window._start_experiment()
+        assert len(run_action_calls) == 1, "confirming the overwrite should proceed as normal"
+    finally:
+        window.close()
+
+
+def test_syringe_selection_and_custom_volume_flow_into_flush_settings(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        window.syringe.setCurrentText("BD 1ml")
+        window.flush_volume.setValue(5.0)
+        settings = window._flush_settings()
+        assert settings.syringe_volume_ml == 1.0
+
+        try:
+            window.app.flush(settings)
+        except ValueError as exc:
+            assert "exceeds syringe capacity" in str(exc)
+        else:
+            raise AssertionError("expected flush() to refuse when volume exceeds syringe capacity")
+
+        window.syringe.setCurrentText("Custom")
+        window.custom_syringe_volume_ml.setValue(2.5)
+        custom_settings = window._flush_settings()
+        assert custom_settings.syringe_volume_ml == 2.5
     finally:
         window.close()

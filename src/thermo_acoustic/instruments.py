@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import math
 from pathlib import Path
+import time
 from typing import Protocol
 
 from .ad2 import (
@@ -119,7 +120,7 @@ class CameraBackend(Protocol):
 
     def capture_snapshot(self) -> object: ...
 
-    def image_sequence(self, frame_count: int = 0) -> list[object]: ...
+    def image_sequence(self, frame_count: int = 0, partial_capture_folder: Path | None = None) -> list[object]: ...
 
     def read_frame_timestamps(self) -> list[str]: ...
 
@@ -530,9 +531,9 @@ class HamamatsuCamera:
             self.backend.stop_capture()
         self.capturing = False
 
-    def image_sequence(self, frame_count: int = 0) -> list[object]:
+    def image_sequence(self, frame_count: int = 0, partial_capture_folder: Path | None = None) -> list[object]:
         if self.backend is not None:
-            return self.backend.image_sequence(frame_count)
+            return self.backend.image_sequence(frame_count, partial_capture_folder)
         count = max(frame_count, 0)
         return [object() for _ in range(count)]
 
@@ -729,6 +730,27 @@ class Valve:
         if self.backend is not None:
             command = self.command_position_1 if position == 1 else self.command_position_2
             self.backend.write(command)
+
+    def wait_until_ready(self, timeout_s: float = 1.0, poll_interval_s: float = 0.05) -> bool:
+        # Bounded poll of the same "S\r" handshake used at initialize() time,
+        # so a real mechanical-transition confirmation replaces a fixed sleep
+        # after set_position(). A real disconnect (empty response) still
+        # raises ValveError immediately via _apply_status_response -- only a
+        # "still busy" result is tolerated up to the timeout, at which point
+        # this returns False and the caller proceeds anyway (matching the
+        # previous fixed-sleep behavior, so this cannot hang longer than
+        # timeout_s).
+        if self.backend is None:
+            return True
+        deadline = time.monotonic() + max(timeout_s, 0.0)
+        while True:
+            raw_response = self.backend.query(self.status_query_command)
+            self._apply_status_response(raw_response)
+            if self.status_note in ("ready", "confirmed"):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(max(poll_interval_s, 0.0))
 
     def cleanup(self) -> None:
         if self.backend is not None:

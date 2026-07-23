@@ -210,7 +210,7 @@ class HamamatsuDcamBackend:
         finally:
             self._stop_capture_if_active()
 
-    def image_sequence(self, frame_count: int = 0) -> list[object]:
+    def image_sequence(self, frame_count: int = 0, partial_capture_folder: Path | None = None) -> list[object]:
         self.open_camera()
         count = max(int(frame_count), 1)
         frames: list[object] = []
@@ -227,6 +227,10 @@ class HamamatsuDcamBackend:
                 pixel_copy, timestamp = self._last_frame_copy()
                 frames.append(pixel_copy)
                 timestamps.append(timestamp)
+        except Exception:
+            if frames and partial_capture_folder is not None:
+                self._save_partial_capture(frames, len(frames), count, partial_capture_folder)
+            raise
         finally:
             if started_here:
                 self._stop_capture_if_active()
@@ -235,6 +239,19 @@ class HamamatsuDcamBackend:
         # metadata for the whole experiment otherwise (see workflows.py).
         self.last_frame_timestamps = timestamps if timestamps and all(ts is not None for ts in timestamps) else []
         return frames
+
+    def _save_partial_capture(self, frames: list[object], captured: int, total: int, folder: Path) -> None:
+        partial_folder = folder / f"partial_{captured}_of_{total}"
+        logger.error(
+            "Hamamatsu image_sequence faulted after %d/%d frames; saving already-captured frames to %s",
+            captured,
+            total,
+            partial_folder,
+        )
+        try:
+            self.save_sequence(frames, partial_folder)
+        except Exception as exc:  # pragma: no cover - best-effort rescue path
+            logger.error("Failed to save partial capture to %s: %s", partial_folder, exc)
 
     def read_frame_timestamps(self) -> list[str]:
         return list(self.last_frame_timestamps)

@@ -3,12 +3,44 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+from functools import lru_cache
 from pathlib import Path
+import subprocess
 from typing import Any
 
 import numpy as np
 
-from .ad2 import DoConfig, WfgConfig, coerce_do_config, coerce_wfg_config
+from .ad2 import DoConfig, FmSweepSettings, WfgConfig, coerce_do_config, coerce_wfg_config
+
+
+@lru_cache(maxsize=1)
+def _git_commit_hash() -> str:
+    repo_root = Path(__file__).resolve().parents[2]
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        ).stdout.strip()
+    except Exception:
+        return "unknown"
+    try:
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        ).stdout
+        if status.strip():
+            commit += "-dirty"
+    except Exception:
+        pass
+    return commit
 
 
 @dataclass(slots=True)
@@ -17,12 +49,6 @@ class FlushSettings:
     flush_volume_ml: float
     wait_after_flush_s: float
     syringe_volume_ml: float = 60.0
-
-    @property
-    def fill_level_delta(self) -> float:
-        if self.syringe_volume_ml <= 0:
-            return 0.0
-        return self.flush_volume_ml / self.syringe_volume_ml
 
     @property
     def timeout_s(self) -> float:
@@ -42,6 +68,7 @@ class Experiment2:
     sequence_settings: dict[str, Any] | None = None
     wfg_config: WfgConfig | dict[str, Any] | None = None
     do_clock_settings: DoConfig | dict[str, Any] | None = None
+    fm_sweep: FmSweepSettings | None = None
     _tdms_properties: dict[str, Any] = field(default_factory=dict, init=False)
     _tdms_image_names: list[str] = field(default_factory=list, init=False)
     _tdms_timestamps: list[str] = field(default_factory=list, init=False)
@@ -103,6 +130,7 @@ class Experiment2:
             "FlushFlowrate": self.flush_settings.flush_flowrate,
             "FlushVolume": self.flush_settings.flush_volume_ml,
             "WaitAfterFlush": self.flush_settings.wait_after_flush_s,
+            "GitCommitHash": _git_commit_hash(),
         }
         properties.update(self._wfg_properties("Ch1", ch1))
         properties.update(self._wfg_properties("Ch2", ch2))
@@ -113,7 +141,25 @@ class Experiment2:
                 "DOFreq": do_channel.clock_frequency_hz if do_channel is not None and do_channel.clock_frequency_hz is not None else "",
             }
         )
+        properties.update(self._fm_sweep_properties())
         return properties
+
+    def _fm_sweep_properties(self) -> dict[str, Any]:
+        if self.fm_sweep is None:
+            return {
+                "FMSweepEnabled": False,
+                "FMSweepCenterHz": "",
+                "FMSweepWidthKHz": "",
+                "FMSweepTimeMs": "",
+                "FMSweepType": "",
+            }
+        return {
+            "FMSweepEnabled": True,
+            "FMSweepCenterHz": self.fm_sweep.center_hz,
+            "FMSweepWidthKHz": self.fm_sweep.width_hz / 1000.0,
+            "FMSweepTimeMs": self.fm_sweep.sweep_time_ms,
+            "FMSweepType": str(self.fm_sweep.sweep_type),
+        }
 
     def _wfg_properties(self, suffix: str, channel: Any | None) -> dict[str, Any]:
         if channel is None:

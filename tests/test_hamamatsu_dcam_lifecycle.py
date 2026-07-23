@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 
+import numpy as np
 import pytest
 
 from thermo_acoustic.hamamatsu_dcam import HamamatsuDcamBackend, HamamatsuDcamError
@@ -104,6 +105,41 @@ class FakeDcamModule:
 
         def dev_getcapability(self):
             self.calls.append(("dev_getcapability",))
+            return False
+
+
+class FakeNumpyFrame:
+    def __init__(self, fill_value):
+        self._fill_value = fill_value
+
+    def copy(self):
+        return np.full((2, 2), self._fill_value, dtype="uint16")
+
+
+class FakeMidSequenceFaultDcamModule(FakeDcamModule):
+    instances = []
+
+    class Dcam(FakeDcamModule.Dcam):
+        def __init__(self, index):
+            self.index = index
+            self.opened = False
+            self.calls = []
+            self._wait_count = 0
+            FakeMidSequenceFaultDcamModule.instances.append(self)
+
+        def wait_capevent_frameready(self, timeout):
+            self._wait_count += 1
+            self.calls.append(("wait", timeout))
+            return self._wait_count < 3
+
+        def lasterr(self):
+            return "device fault"
+
+        def buf_getlastframedata(self):
+            self.calls.append(("buf_getlastframedata",))
+            return FakeNumpyFrame(self._wait_count)
+
+        def dev_getcapability(self):
             return False
 
 
@@ -227,6 +263,26 @@ def test_image_sequence_captures_real_dcam_timestamps_when_supported():
     assert ("dev_getcapability",) in camera.calls
     assert ("buf_getframe", -1) in camera.calls
     assert ("buf_getlastframedata",) not in camera.calls
+
+
+def test_image_sequence_saves_partial_capture_on_mid_sequence_fault(tmp_path):
+    FakeMidSequenceFaultDcamModule.instances = []
+    backend = HamamatsuDcamBackend(buffer_frames=5)
+    backend.dcam_module = FakeMidSequenceFaultDcamModule
+    backend.dcamapi = FakeDcamApi
+
+    try:
+        backend.image_sequence(5, partial_capture_folder=tmp_path)
+    except HamamatsuDcamError as exc:
+        assert "wait frame ready failed" in str(exc)
+    else:
+        raise AssertionError("expected the mid-sequence fault to propagate")
+    finally:
+        backend.close()
+
+    partial_dir = tmp_path / "partial_2_of_5"
+    saved_files = sorted(partial_dir.glob("frame_*.tiff"))
+    assert len(saved_files) == 2, "the 2 frames captured before the fault should be saved, tagged as partial"
 
 
 def test_wait_frame_timeout_stops_capture_releases_buffer_and_raises():

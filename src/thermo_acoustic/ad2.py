@@ -82,6 +82,85 @@ class WfgConfig:
         return all(not channel.out_of_range for channel in self.channels)
 
 
+_FM_SWEEP_TYPE_TO_FUNCTION: dict[str, WaveformFunction] = {
+    "Symmetric": WaveformFunction.TRIANGLE,
+    "RampUp": WaveformFunction.RAMP_UP,
+    "RampDown": WaveformFunction.RAMP_DOWN,
+}
+
+
+@dataclass(slots=True)
+class FmSweepSettings:
+    """Millisecond-timescale FM sweep calibration parameters, translated
+    into the AD2's native FM modulation node (waveforms.py's node=1 path,
+    already wired for the manual WFG tab's "FM Mod" group).
+
+    Reference test case (Martens et al., PhysRevApplied.23.024043):
+    "actuation frequency centered at 1.934 MHz with a sweep of 50 kHz and
+    a sweep time of 1 ms" -> center_hz=1_934_000, width_hz=50_000,
+    sweep_time_ms=1.0.
+
+    Distinct from Frequency Scanning / Dynamic Frequency, which runs one
+    full experiment per discrete frequency point across Repeats -- this
+    sweeps continuously within a single acoustic drive.
+
+    Unverified against real hardware or LabVIEW's compiled block diagram
+    (investigation could only read front-panel control names, not wiring
+    logic -- see WfgConfigureSweepCh1.vi / BasicSweepSettings.ctl):
+    - The exact Sweep Type -> Function 2 enum correspondence below
+      (Symmetric->Triangle, RampUp->RampUp, RampDown->RampDown) is the
+      most architecturally plausible mapping, not a confirmed one.
+    - Whether enabling the sweep should force Carrier.enable=True in
+      addition to fm_mod.enable=True (this class's own convention, per
+      this feature's spec) matches LabVIEW's actual wiring.
+    """
+
+    center_hz: float
+    width_hz: float
+    sweep_time_ms: float
+    sweep_type: str = "Symmetric"
+
+    def __post_init__(self) -> None:
+        if self.sweep_time_ms <= 0:
+            raise ValueError(f"Sweep Time must be greater than 0 ms; got {self.sweep_time_ms}.")
+
+    @property
+    def top_hz(self) -> float:
+        return self.center_hz + self.width_hz / 2.0
+
+    @property
+    def bottom_hz(self) -> float:
+        return self.center_hz - self.width_hz / 2.0
+
+    @property
+    def fm_frequency_hz(self) -> float:
+        return 1000.0 / self.sweep_time_ms
+
+    @property
+    def fm_amplitude_pct(self) -> float:
+        if self.center_hz == 0:
+            raise ValueError("Center Frequency must be non-zero to compute sweep amplitude.")
+        return (self.width_hz / self.center_hz) * 100.0
+
+    @property
+    def fm_function(self) -> WaveformFunction:
+        try:
+            return _FM_SWEEP_TYPE_TO_FUNCTION[self.sweep_type]
+        except KeyError:
+            raise ValueError(f"Unsupported Sweep Type: {self.sweep_type!r}") from None
+
+    def fm_mod_settings(self) -> CarrierSettings:
+        return CarrierSettings(
+            frequency_hz=self.fm_frequency_hz,
+            amplitude_v=self.fm_amplitude_pct,
+            offset_v=0.0,
+            symmetry_percent=50.0,
+            phase_deg=0.0,
+            function=self.fm_function,
+            enable=True,
+        )
+
+
 @dataclass(slots=True)
 class DoCustomData:
     count_of_bits: int = 0

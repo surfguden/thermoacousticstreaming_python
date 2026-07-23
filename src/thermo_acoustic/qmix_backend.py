@@ -23,8 +23,15 @@ def _syringe_stroke_mm(volume_ml: float, inner_diameter_mm: float) -> float:
 
 
 SYRINGE_PRESETS: dict[str, tuple[float, float]] = {
+    # Inner diameters are BD syringe spec values (confirmed authoritative:
+    # 1mL=4.78mm, 5mL=12.07mm, 10mL=14.5mm). Stroke length is not an
+    # independently-sourced BD spec value -- it is derived here assuming
+    # the full nominal volume is delivered over the full piston travel
+    # with a cylindrical bore (stroke = volume / cross-sectional area).
+    # No authoritative real BD stroke-length figure was available to
+    # verify this assumption against.
     "BD 1ml": (4.78, _syringe_stroke_mm(1.0, 4.78)),
-    "BD 5ml": (12.06, _syringe_stroke_mm(5.0, 12.06)),
+    "BD 5ml": (12.07, _syringe_stroke_mm(5.0, 12.07)),
     "BD 10ml": (14.50, _syringe_stroke_mm(10.0, 14.50)),
 }
 
@@ -109,14 +116,6 @@ class QmixPumpBackend:
             self.max_flow_rate_ul_min = float(self._require_pump().get_flow_rate_max())
         return self.max_flow_rate_ul_min
 
-    def _coerce_fill_level_ml(self, fill_level: float) -> float:
-        value = float(fill_level)
-        if 0.0 <= value <= 1.0:
-            if self.max_volume_ml is None:
-                self.max_volume_ml = float(self._require_pump().get_volume_max())
-            return value * self.max_volume_ml
-        return value
-
     def refill(self) -> None:
         pump = self._require_pump()
         max_volume = self.max_volume_ml if self.max_volume_ml is not None else float(pump.get_volume_max())
@@ -136,10 +135,13 @@ class QmixPumpBackend:
         pump.generate_flow(float(flow_rate))
 
     def set_fill_level(self, fill_level: float, flow_rate: float | None = None) -> None:
+        # fill_level is always an absolute mL value -- no auto-detection against
+        # a 0.0-1.0 fraction. That heuristic previously misread legitimate small
+        # absolute values (e.g. 0.5 mL on a 5 mL syringe) as "50% of capacity".
         pump = self._require_pump()
         self._enable_pump()
         pump.set_fill_level(
-            self._coerce_fill_level_ml(fill_level),
+            float(fill_level),
             self._fill_flow_rate() if flow_rate is None else float(flow_rate),
         )
 

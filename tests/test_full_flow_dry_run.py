@@ -60,7 +60,7 @@ class FakeCamera:
         self.capturing = True
         self.calls.append(("camera", "start_capture"))
 
-    def image_sequence(self, frame_count=0):
+    def image_sequence(self, frame_count=0, partial_capture_folder=None):
         self.calls.append(("camera", "image_sequence", frame_count))
         return [f"fake-frame-{index}" for index in range(frame_count)]
 
@@ -131,6 +131,10 @@ class FakeValve:
     def set_position(self, position):
         self.position = position
         self.calls.append(("valve", "set_position", position))
+
+    def wait_until_ready(self, timeout_s=1.0):
+        self.calls.append(("valve", "wait_until_ready", timeout_s))
+        return True
 
     def cleanup(self):
         self.calls.append(("valve", "cleanup"))
@@ -286,8 +290,8 @@ def test_application_full_flow_waits_only_for_remaining_ad2_time(tmp_path, monke
 
     original_image_sequence = app.camera.image_sequence
 
-    def image_sequence_with_elapsed_capture(frame_count=0):
-        frames = original_image_sequence(frame_count)
+    def image_sequence_with_elapsed_capture(frame_count=0, partial_capture_folder=None):
+        frames = original_image_sequence(frame_count, partial_capture_folder)
         clock["now"] += 1.2
         return frames
 
@@ -374,7 +378,7 @@ def test_run_experiment2_stops_capture_when_image_sequence_raises(tmp_path):
     experiment = make_recording_experiment(calls, tmp_path)
     app.experiment_series.enqueue_experiments([experiment])
 
-    def failing_image_sequence(frame_count=0):
+    def failing_image_sequence(frame_count=0, partial_capture_folder=None):
         calls.append(("camera", "image_sequence", frame_count))
         raise RuntimeError("camera read failed")
 

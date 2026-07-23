@@ -298,11 +298,18 @@ class Application:
         return True
 
     def flush(self, settings: FlushSettings) -> bool:
+        if settings.flush_volume_ml > settings.syringe_volume_ml:
+            raise ValueError(
+                f"Flush volume {settings.flush_volume_ml} ml exceeds syringe capacity "
+                f"{settings.syringe_volume_ml} ml; refusing to flush."
+            )
         self.fire_status_event("Flushing")
         self.valve.set_position(1)
-        self.wait(1.0)
+        self.valve.wait_until_ready(timeout_s=1.0)
 
-        new_fill_level = self.pump.fill_level - settings.fill_level_delta
+        # fill_level and flush_volume_ml are both absolute mL -- see
+        # QmixPumpBackend.set_fill_level(), which no longer auto-detects units.
+        new_fill_level = self.pump.fill_level - settings.flush_volume_ml
         self.pump.set_fill_level(new_fill_level, settings.flush_flowrate)
 
         completed = self.wait_for_pump(settings.timeout_s)
@@ -310,6 +317,7 @@ class Application:
             return False
 
         self.valve.set_position(2)
+        self.valve.wait_until_ready(timeout_s=1.0)
         self.wait(settings.wait_after_flush_s)
         self.pump.set_fill_level(new_fill_level)
         self.fire_status_event("FlushComplete")
@@ -347,7 +355,7 @@ class Application:
             frame_count = 0
             if experiment.sequence_settings:
                 frame_count = int(experiment.sequence_settings.get("frames", 0) or 0)
-            image_data = self.camera.image_sequence(frame_count=frame_count)
+            image_data = self.camera.image_sequence(frame_count=frame_count, partial_capture_folder=experiment_folder)
             frame_timestamps = self.camera.read_frame_timestamps()
 
             aborted = self.listen_abort()

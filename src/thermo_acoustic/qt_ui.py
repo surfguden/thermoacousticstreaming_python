@@ -43,6 +43,7 @@ from .ad2 import (
     DigitalOutType,
     DoConfig,
     DoSingleChannelConfig,
+    FmSweepSettings,
     TriggerSettings,
     TriggerSource,
     WaveformFunction,
@@ -436,6 +437,7 @@ class MainWindow(QMainWindow):
         self.mso_samples: list[float] = []
 
         self.syringe = _combo(["BD 1ml", "BD 5ml", "BD 10ml", "Custom"], "BD 1ml")
+        self.custom_syringe_volume_ml = _spin(1.0, decimals=3, minimum=0.001)
         self.flow_rate = _spin(-5000.0, decimals=1)
         self.level_ml = _spin(0.0, decimals=3, minimum=0.0)
         self.flush_flowrate = _spin(0.0, decimals=3)
@@ -482,6 +484,11 @@ class MainWindow(QMainWindow):
         self.exp_ch1_run = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_ch1_repeat = _int_spin(0, minimum=0)
         self.exp_ch1_trigger_source = _combo(WFG_TRIGGER_SOURCE_OPTIONS, "trigsrcNone")
+        self.exp_sweep_enable = QCheckBox("Enable Frequency Sweep During Experiment")
+        self.exp_sweep_center_mhz = _spin(1.934, decimals=6, minimum=0.0)
+        self.exp_sweep_width_khz = _spin(50.0, decimals=3, minimum=0.0)
+        self.exp_sweep_time_ms = _spin(1.0, decimals=3, minimum=0.0)
+        self.exp_sweep_type = _combo(["Symmetric", "RampUp", "RampDown"], "Symmetric")
         self.exp_ch2_freq = _spin(1000.0, decimals=3, minimum=0.0)
         self.exp_ch2_amp = _spin(1.0, decimals=3)
         self.exp_ch2_offset = _spin(0.0, decimals=3)
@@ -550,6 +557,13 @@ class MainWindow(QMainWindow):
             "fm_phase": _spin(0.0, decimals=3),
             "fm_function": _combo([item.value for item in WaveformFunction], WaveformFunction.SINE.value),
             "fm_enable": QCheckBox("Enable"),
+            "sweep_enable": QCheckBox("Enable Sweep"),
+            "sweep_center_mhz": _spin(frequency / 1_000_000.0, decimals=6, minimum=0.0),
+            "sweep_width_khz": _spin(50.0, decimals=3, minimum=0.0),
+            "sweep_time_ms": _spin(1.0, decimals=3, minimum=0.0),
+            "sweep_type": _combo(["Symmetric", "RampUp", "RampDown"], "Symmetric"),
+            "sweep_top_hz": QLabel("--"),
+            "sweep_bottom_hz": QLabel("--"),
         }
 
     def _build_layout(self) -> None:
@@ -701,7 +715,40 @@ class MainWindow(QMainWindow):
         fm.addRow(state["fm_enable"])
         layout.addWidget(QLabel("FM Mod"))
         layout.addLayout(fm)
+        sweep = QFormLayout()
+        for label, key in (
+            ("Center Frequency (MHz)", "sweep_center_mhz"),
+            ("Sweep Width (kHz)", "sweep_width_khz"),
+            ("Sweep Time (ms)", "sweep_time_ms"),
+            ("Sweep Type", "sweep_type"),
+        ):
+            sweep.addRow(label, state[key])
+        sweep.addRow(state["sweep_enable"])
+        sweep.addRow("Top Frequency (Hz)", state["sweep_top_hz"])
+        sweep.addRow("Bottom Frequency (Hz)", state["sweep_bottom_hz"])
+        layout.addWidget(QLabel("Sweep (FM modulation calibration -- distinct from Frequency Scanning)"))
+        layout.addLayout(sweep)
+        self._connect_sweep_bounds_refresh(state)
+        self._refresh_sweep_bounds(state)
         return group
+
+    def _connect_sweep_bounds_refresh(self, state: dict[str, object]) -> None:
+        for key in ("sweep_center_mhz", "sweep_width_khz"):
+            state[key].valueChanged.connect(lambda _value, state=state: self._refresh_sweep_bounds(state))
+
+    def _refresh_sweep_bounds(self, state: dict[str, object]) -> None:
+        center_hz = state["sweep_center_mhz"].value() * 1_000_000.0
+        width_hz = state["sweep_width_khz"].value() * 1_000.0
+        state["sweep_top_hz"].setText(f"{center_hz + width_hz / 2.0:.1f}")
+        state["sweep_bottom_hz"].setText(f"{center_hz - width_hz / 2.0:.1f}")
+
+    def _fm_sweep_settings_from_state(self, state: dict[str, object]) -> FmSweepSettings:
+        return FmSweepSettings(
+            center_hz=state["sweep_center_mhz"].value() * 1_000_000.0,
+            width_hz=state["sweep_width_khz"].value() * 1_000.0,
+            sweep_time_ms=state["sweep_time_ms"].value(),
+            sweep_type=state["sweep_type"].currentText(),
+        )
 
     def _mso_tab(self) -> QWidget:
         tab = QWidget()
@@ -778,6 +825,8 @@ class MainWindow(QMainWindow):
         grid.addWidget(empty, 1, 3)
         grid.addWidget(QLabel("Syringe"), 2, 2)
         grid.addWidget(self.syringe, 3, 2)
+        grid.addWidget(QLabel("Custom Volume (ml)"), 2, 3)
+        grid.addWidget(self.custom_syringe_volume_ml, 3, 3)
         grid.addWidget(QLabel("ConfigureSyringe"), 2, 4)
         grid.addWidget(configure, 3, 4)
         grid.addWidget(QLabel("Flow Rate (-=aspirate, +=dispense)"), 5, 2)
@@ -959,6 +1008,11 @@ class MainWindow(QMainWindow):
         form.addRow("CH0 Run (s) (0=Cont)", self.exp_ch1_run)
         form.addRow("CH0 cRepeat (0=inf)", self.exp_ch1_repeat)
         form.addRow("CH0 Trigger Source", self.exp_ch1_trigger_source)
+        form.addRow(self.exp_sweep_enable)
+        form.addRow("CH0 Sweep Center Frequency (MHz)", self.exp_sweep_center_mhz)
+        form.addRow("CH0 Sweep Width (kHz)", self.exp_sweep_width_khz)
+        form.addRow("CH0 Sweep Time (ms)", self.exp_sweep_time_ms)
+        form.addRow("CH0 Sweep Type", self.exp_sweep_type)
         form.addRow("CH1 Enable", self.exp_ch2_enable)
         form.addRow("CH1 Function", self.exp_ch2_function)
         form.addRow("CH1 Frequency (Hz)", self.exp_ch2_freq)
@@ -1009,17 +1063,32 @@ class MainWindow(QMainWindow):
         return group
 
     def _channel_config(self, state: dict[str, object]) -> WfgChannelConfig:
+        carrier = CarrierSettings(
+            frequency_hz=state["frequency"].value(),
+            amplitude_v=state["amplitude"].value(),
+            offset_v=state["offset"].value(),
+            symmetry_percent=state["symmetry"].value(),
+            phase_deg=state["phase"].value(),
+            function=WaveformFunction(state["function"].currentText()),
+            enable=state["enable"].isChecked(),
+        )
+        fm_mod = CarrierSettings(
+            frequency_hz=state["fm_frequency"].value(),
+            amplitude_v=state["fm_amplitude"].value(),
+            offset_v=state["fm_offset"].value(),
+            symmetry_percent=state["fm_symmetry"].value(),
+            phase_deg=state["fm_phase"].value(),
+            function=WaveformFunction(state["fm_function"].currentText()),
+            enable=state["fm_enable"].isChecked(),
+        )
+        if state["sweep_enable"].isChecked():
+            sweep = self._fm_sweep_settings_from_state(state)
+            carrier.frequency_hz = sweep.center_hz
+            carrier.enable = True
+            fm_mod = sweep.fm_mod_settings()
         return WfgChannelConfig(
             channel_index=state["idx"].value(),
-            carrier=CarrierSettings(
-                frequency_hz=state["frequency"].value(),
-                amplitude_v=state["amplitude"].value(),
-                offset_v=state["offset"].value(),
-                symmetry_percent=state["symmetry"].value(),
-                phase_deg=state["phase"].value(),
-                function=WaveformFunction(state["function"].currentText()),
-                enable=state["enable"].isChecked(),
-            ),
+            carrier=carrier,
             trigger=TriggerSettings(
                 sec_run=state["sec_run"].value(),
                 sec_wait=state["sec_wait"].value(),
@@ -1027,15 +1096,7 @@ class MainWindow(QMainWindow):
                 repeat_trigger=state["repeat_trigger"].isChecked(),
                 source=state["trigger_source"].currentText(),
             ),
-            fm_mod=CarrierSettings(
-                frequency_hz=state["fm_frequency"].value(),
-                amplitude_v=state["fm_amplitude"].value(),
-                offset_v=state["fm_offset"].value(),
-                symmetry_percent=state["fm_symmetry"].value(),
-                phase_deg=state["fm_phase"].value(),
-                function=WaveformFunction(state["fm_function"].currentText()),
-                enable=state["fm_enable"].isChecked(),
-            ),
+            fm_mod=fm_mod,
         )
 
     def _wfg_config(self) -> WfgConfig:
@@ -1065,17 +1126,35 @@ class MainWindow(QMainWindow):
             self._seed_experiment_ad2_from_wfg_once()
 
     def _experiment_channel_config(self, index: int, state: dict[str, object]) -> WfgChannelConfig:
+        carrier = CarrierSettings(
+            frequency_hz=state["frequency"].value(),
+            amplitude_v=state["amplitude"].value(),
+            offset_v=state["offset"].value(),
+            symmetry_percent=50.0,
+            phase_deg=0.0,
+            function=WaveformFunction(state["function"].currentText()),
+            enable=state["enable"].isChecked(),
+        )
+        fm_mod = CarrierSettings(
+            frequency_hz=1000.0,
+            amplitude_v=1.0,
+            offset_v=0.0,
+            symmetry_percent=50.0,
+            phase_deg=0.0,
+            function=WaveformFunction.SINE,
+            enable=False,
+        )
+        # FM sweep calibration only applies to CH0 (index 0), matching
+        # WfgConfigureSweepCh1.vi's own hardcoded-Ch1 scope. Toggle off
+        # leaves carrier/fm_mod exactly as computed above, unchanged.
+        if index == 0 and self.exp_sweep_enable.isChecked():
+            sweep = self._experiment_fm_sweep_settings()
+            carrier.frequency_hz = sweep.center_hz
+            carrier.enable = True
+            fm_mod = sweep.fm_mod_settings()
         return WfgChannelConfig(
             channel_index=index,
-            carrier=CarrierSettings(
-                frequency_hz=state["frequency"].value(),
-                amplitude_v=state["amplitude"].value(),
-                offset_v=state["offset"].value(),
-                symmetry_percent=50.0,
-                phase_deg=0.0,
-                function=WaveformFunction(state["function"].currentText()),
-                enable=state["enable"].isChecked(),
-            ),
+            carrier=carrier,
             trigger=TriggerSettings(
                 sec_run=state["sec_run"].value(),
                 sec_wait=state["sec_wait"].value(),
@@ -1083,28 +1162,41 @@ class MainWindow(QMainWindow):
                 repeat_trigger=False,
                 source=state["trigger_source"].currentText(),
             ),
-            fm_mod=CarrierSettings(
-                frequency_hz=1000.0,
-                amplitude_v=1.0,
-                offset_v=0.0,
-                symmetry_percent=50.0,
-                phase_deg=0.0,
-                function=WaveformFunction.SINE,
-                enable=False,
-            ),
+            fm_mod=fm_mod,
         )
 
+    def _experiment_fm_sweep_settings(self) -> FmSweepSettings:
+        return FmSweepSettings(
+            center_hz=self.exp_sweep_center_mhz.value() * 1_000_000.0,
+            width_hz=self.exp_sweep_width_khz.value() * 1_000.0,
+            sweep_time_ms=self.exp_sweep_time_ms.value(),
+            sweep_type=self.exp_sweep_type.currentText(),
+        )
+
+    _SYRINGE_VOLUMES_ML = {
+        "BD 1ml": 1.0,
+        "BD 5ml": 5.0,
+        "BD 10ml": 10.0,
+    }
+
+    def _syringe_volume_ml(self) -> float:
+        name = self.syringe.currentText()
+        return self._SYRINGE_VOLUMES_ML.get(name, float(self.custom_syringe_volume_ml.value()))
+
     def _flush_settings(self, *, experiment: bool = False) -> FlushSettings:
+        syringe_volume_ml = self._syringe_volume_ml()
         if experiment:
             return FlushSettings(
                 flush_flowrate=self.exp_flush_flowrate.value(),
                 flush_volume_ml=self.exp_flush_volume.value(),
                 wait_after_flush_s=self.exp_wait_after_flush.value(),
+                syringe_volume_ml=syringe_volume_ml,
             )
         return FlushSettings(
             flush_flowrate=self.flush_flowrate.value(),
             flush_volume_ml=self.flush_volume.value(),
             wait_after_flush_s=self.wait_after_flush.value(),
+            syringe_volume_ml=syringe_volume_ml,
         )
 
     def _start_initialize(self) -> None:
@@ -1398,6 +1490,19 @@ class MainWindow(QMainWindow):
         return image
 
     def _start_experiment(self) -> None:
+        series_path = Path(self.series_path.text())
+        if self._series_path_has_existing_data(series_path):
+            answer = QMessageBox.question(
+                self,
+                "Confirm Overwrite",
+                f"The series path already contains experiment data:\n{series_path}\n\n"
+                "Continuing will overwrite existing data.tdms/frame files. Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+
         series, total_frames, config = self._build_experiment_series()
         self.queue_count.setText(str(series.see_elements_left()))
         self.waveform_graph.set_points(self._preview_points(config))
@@ -1406,8 +1511,15 @@ class MainWindow(QMainWindow):
             "Running experiment",
         )
 
+    @staticmethod
+    def _series_path_has_existing_data(series_path: Path) -> bool:
+        if not series_path.exists():
+            return False
+        return any(series_path.rglob("data.tdms")) or any(series_path.rglob("frame_*.tiff"))
+
     def _build_experiment_series(self) -> tuple[ExperimentSeries2, int, WfgConfig]:
         config = self._experiment_wfg_config()
+        fm_sweep = self._experiment_fm_sweep_settings() if self.exp_sweep_enable.isChecked() else None
         started_at = time.monotonic()
         _ = started_at
         experiments = []
@@ -1424,9 +1536,18 @@ class MainWindow(QMainWindow):
                     sequence_settings={
                         "frames": self.exp_frames.value(),
                         "camera_start_s": [widget.value() for widget in self.camera_start_array],
+                        # Explicit and deterministic so experiment runs never inherit
+                        # whatever trigger source a prior manual Camera tab session left
+                        # the DCAM device in. Whether this should be "External" (paced by
+                        # the AD2 DIO pulse train, matching the DIO0/DIO1-triggered
+                        # transducer and LED) instead of "Internal" is still an open
+                        # question pending oscilloscope verification -- this only removes
+                        # the undefined-leftover-state risk, it does not answer that.
+                        "trigger_source": "Internal",
                     },
                     wfg_config=config,
                     do_clock_settings=self._experiment_do_clock_config(repeat),
+                    fm_sweep=fm_sweep,
                 )
             )
         return ExperimentSeries2(Path(self.series_path.text()), experiments), self.exp_frames.value() * self.exp_repeats.value(), config
