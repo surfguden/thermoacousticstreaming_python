@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from thermo_acoustic import hardware_factory
+from thermo_acoustic.hardware_config import default_hardware_config
 from thermo_acoustic.hardware_factory import HardwareRuntimeConfig, build_hardware_bundle
 from thermo_acoustic.instruments import AD2Sdk, PriorZMotor, SimulatedAD2Sdk
 
@@ -81,3 +83,27 @@ def test_factory_keeps_prior_z_serial_backend_disabled_when_z_is_off(monkeypatch
 
     assert isinstance(bundle.valve.backend, FakeSerialBackend)
     assert bundle.z_motor.backend is None
+
+
+def test_build_hardware_bundle_sets_qmixsdk_env_for_real_pump(monkeypatch):
+    monkeypatch.delenv("QMIXSDK", raising=False)
+
+    build_hardware_bundle(runtime_config(sim_pump=False))
+
+    assert os.environ["QMIXSDK"] == str(default_hardware_config().qmix.qmixsdk_path)
+
+
+def test_build_hardware_bundle_does_not_override_existing_qmixsdk_env(monkeypatch):
+    monkeypatch.setenv("QMIXSDK", r"C:\already\set\by\operator")
+
+    build_hardware_bundle(runtime_config(sim_pump=False))
+
+    assert os.environ["QMIXSDK"] == r"C:\already\set\by\operator"
+
+
+def test_build_hardware_bundle_leaves_qmixsdk_env_unset_for_simulated_pump(monkeypatch):
+    monkeypatch.delenv("QMIXSDK", raising=False)
+
+    build_hardware_bundle(runtime_config(sim_pump=True))
+
+    assert "QMIXSDK" not in os.environ

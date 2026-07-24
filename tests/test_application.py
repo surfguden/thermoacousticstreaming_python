@@ -364,6 +364,24 @@ def test_flush_sets_valve_and_status():
     assert app.status == "FlushComplete"
 
 
+def test_flush_settings_timeout_converts_ul_per_minute_to_seconds():
+    # Real-hardware regression: this exact combination (0.05 ml / 200 uL/min)
+    # was declared a flush failure after ~5.25s on a real Qmix pump that was
+    # still genuinely mid-move -- the real move needs ~15s at that flow rate
+    # ((0.05 ml -> 50 uL) / 200 uL/min = 0.25 min = 15 s). The formula was
+    # missing the minutes-to-seconds x60 conversion.
+    settings = FlushSettings(flush_flowrate=200.0, flush_volume_ml=0.05, wait_after_flush_s=0.0)
+
+    assert settings.timeout_s == pytest.approx(20.0)
+    real_move_duration_s = (settings.flush_volume_ml * 1000.0 / settings.flush_flowrate) * 60.0
+    assert settings.timeout_s > real_move_duration_s, "computed timeout must exceed the real move duration"
+
+
+def test_flush_settings_timeout_is_zero_for_nonpositive_flowrate():
+    assert FlushSettings(flush_flowrate=0.0, flush_volume_ml=1.0, wait_after_flush_s=0.0).timeout_s == 0.0
+    assert FlushSettings(flush_flowrate=-1.0, flush_volume_ml=1.0, wait_after_flush_s=0.0).timeout_s == 0.0
+
+
 def test_application_instrument_accessors():
     app = Application(ad2=SimulatedAD2Sdk())
     ad2 = SimulatedAD2Sdk()

@@ -9,8 +9,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
 import pytest
-from PySide6.QtCore import QEvent
-from PySide6.QtWidgets import QDoubleSpinBox
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+from PySide6.QtGui import QWheelEvent
+from PySide6.QtWidgets import QCheckBox, QComboBox, QDoubleSpinBox, QGroupBox, QLabel, QScrollArea, QSpinBox
 from PySide6.QtWidgets import QApplication
 
 from thermo_acoustic import qt_ui
@@ -56,6 +57,180 @@ def test_focus_wheel_guard_ignores_unfocused_spinbox_wheel():
         assert not event.isAccepted()
     finally:
         spin.close()
+
+
+def _experiment_ad_settings_group(window: qt_ui.MainWindow) -> QGroupBox:
+    for index in range(window.tabs.count()):
+        if window.tabs.tabText(index) == "Experiment":
+            window.tabs.setCurrentIndex(index)
+            break
+    QApplication.processEvents()
+    QApplication.processEvents()
+    return next(
+        group for group in window.tabs.currentWidget().findChildren(QGroupBox)
+        if group.title() == "Analog Discovery Settings"
+    )
+
+
+def _synthetic_wheel_event(target, dy: int = 120) -> QWheelEvent:
+    pos = QPointF(max(target.width(), 1) / 2, max(target.height(), 1) / 2)
+    return QWheelEvent(
+        pos, QPointF(target.mapToGlobal(pos.toPoint())),
+        QPoint(0, 0), QPoint(0, dy),
+        Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase, False,
+    )
+
+
+def test_ad_settings_group_fields_render_at_visible_heights(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    window.show()
+    QApplication.processEvents()
+
+    group = _experiment_ad_settings_group(window)
+    scroll = group.findChild(QScrollArea)
+    assert scroll is not None, "Analog Discovery Settings group must wrap its content in a QScrollArea"
+    assert scroll.maximumHeight() <= 400, "scroll area should have a fixed, reasonable maximum height"
+
+    # Previously these collapsed to 0-1px tall when the group was squeezed below
+    # its minimumSizeHint by the surrounding grid; confirm they now render at
+    # their real, natural height inside the scroll area.
+    for widget in (
+        window.exp_ch1_enable, window.exp_ch1_freq, window.exp_ch1_amp,
+        window.exp_ch1_symmetry, window.exp_ch1_phase, window.exp_ch1_repeat_trigger,
+        window.exp_ch2_phase, window.exp_ch2_repeat_trigger,
+    ):
+        assert widget.geometry().height() > 5, f"{widget} rendered collapsed (height={widget.geometry().height()})"
+
+
+def test_ad_settings_scroll_area_wheel_guard_interaction(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    window.show()
+    QApplication.processEvents()
+
+    group = _experiment_ad_settings_group(window)
+    scroll = group.findChild(QScrollArea)
+    vbar = scroll.verticalScrollBar()
+
+    # Unfocused spin box: wheel must scroll the area, not change the value.
+    window.exp_ch1_freq.clearFocus()
+    vbar.setValue(0)
+    QApplication.processEvents()
+    before_value = window.exp_ch1_freq.value()
+    QApplication.sendEvent(window.exp_ch1_freq, _synthetic_wheel_event(window.exp_ch1_freq, dy=-120))
+    QApplication.processEvents()
+    assert window.exp_ch1_freq.value() == before_value
+    assert vbar.value() > 0, "wheel over an unfocused spin box should scroll the containing QScrollArea"
+
+    # Focused spin box: wheel should still edit its own value (existing, unchanged behavior).
+    vbar.setValue(0)
+    window.exp_ch1_freq.setFocus(Qt.FocusReason.OtherFocusReason)
+    QApplication.processEvents()
+    assert window.exp_ch1_freq.hasFocus()
+    before_focused_value = window.exp_ch1_freq.value()
+    QApplication.sendEvent(window.exp_ch1_freq, _synthetic_wheel_event(window.exp_ch1_freq, dy=120))
+    QApplication.processEvents()
+    assert window.exp_ch1_freq.value() != before_focused_value
+
+
+def test_no_group_box_is_squeezed_below_its_minimum_size_hint(monkeypatch, tmp_path):
+    # Systematic re-audit (Task C): the same collapse symptom that hit
+    # "Analog Discovery Settings" (Session 28) and "Ch1"/"Ch2" (this session --
+    # this session's own longer live-use labels pushed the WFG tab's groups
+    # over the same edge) is checked here across every QGroupBox in every tab,
+    # generically via findChildren() -- not a hardcoded list -- so it stays
+    # valid as new groups/fields are added later.
+    window = make_window(monkeypatch, tmp_path)
+    window.resize(1280, 820)  # the app's real default size
+    window.show()
+    QApplication.processEvents()
+
+    failures = []
+    for index in range(window.tabs.count()):
+        window.tabs.setCurrentIndex(index)
+        QApplication.processEvents()
+        QApplication.processEvents()
+        for group in window.tabs.currentWidget().findChildren(QGroupBox):
+            geometry = group.geometry()
+            min_hint = group.minimumSizeHint()
+            if min_hint.height() > 0 and geometry.height() < min_hint.height():
+                failures.append(
+                    (window.tabs.tabText(index), group.title(), geometry.height(), min_hint.height())
+                )
+
+    assert not failures, (
+        f"group box(es) squeezed below their own minimumSizeHint (rows collapsing "
+        f"to 0-1px): {failures}"
+    )
+
+
+def test_focus_wheel_guard_covers_every_spin_and_combo_widget(monkeypatch, tmp_path):
+    # Completeness test, not a spot check: enumerate every QSpinBox/QDoubleSpinBox/
+    # QComboBox in the real widget tree via findChildren() -- not a hardcoded list --
+    # so this stays valid and catches any future field that's ever added without
+    # going through the guarded _spin()/_int_spin()/_combo() factories.
+    window = make_window(monkeypatch, tmp_path)
+    window.show()
+    QApplication.processEvents()
+
+    targets: list = []
+    for widget_cls in (QSpinBox, QDoubleSpinBox, QComboBox):
+        targets.extend(window.findChildren(widget_cls))
+    assert len(targets) > 50, "sanity check: expected to find the app's real widget tree, not an empty one"
+
+    failures = []
+    for widget in targets:
+        widget.clearFocus()
+        QApplication.processEvents()
+        before = widget.currentIndex() if isinstance(widget, QComboBox) else widget.value()
+        QApplication.sendEvent(widget, _synthetic_wheel_event(widget))
+        QApplication.processEvents()
+        after = widget.currentIndex() if isinstance(widget, QComboBox) else widget.value()
+        if before != after:
+            failures.append(widget)
+
+    assert not failures, (
+        f"{len(failures)} of {len(targets)} spin/combo widgets changed value from an "
+        f"unfocused wheel event (FocusWheelGuard gap): {failures}"
+    )
+
+
+def test_wfg_tab_and_experiment_tab_carry_live_use_labels(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+
+    wfg_tab = None
+    for index in range(window.tabs.count()):
+        if window.tabs.tabText(index) == "WFG":
+            wfg_tab = window.tabs.widget(index)
+            break
+    assert wfg_tab is not None
+    wfg_label_texts = {lbl.text() for lbl in wfg_tab.findChildren(QLabel)}
+    wfg_checkbox_texts = {box.text() for box in wfg_tab.findChildren(QCheckBox)}
+
+    # Ch1 (task's "CH0") Frequency/Amplitude/secRun/secWait: overridden during a run.
+    assert "Frequency (kHz) Carrier (overridden during experiment run)" in wfg_label_texts
+    assert "Amplitude (V) (overridden during experiment run)" in wfg_label_texts
+    assert "Run duration (s)   [0 = continuous] (overridden during experiment run)" in wfg_label_texts
+    assert "secWait (overridden during experiment run)" in wfg_label_texts
+    # Extended, verified-accurate labeling: Enable/Trigger source are also
+    # overridden (not "active", per the trace in _wfg_channel_group()).
+    assert "Enable (overridden during experiment run)" in wfg_checkbox_texts
+    assert "Trigger source (overridden during experiment run)" in wfg_label_texts
+    # FM Mod is genuinely never read by an automated run at all.
+    assert "Frequency (kHz) (not used by automated experiment runs)" in wfg_label_texts
+
+    for index in range(window.tabs.count()):
+        if window.tabs.tabText(index) == "Experiment":
+            window.tabs.setCurrentIndex(index)
+            break
+    QApplication.processEvents()
+    exp_tab = window.tabs.currentWidget()
+    exp_label_texts = {lbl.text() for lbl in exp_tab.findChildren(QLabel)}
+
+    assert "CH0 Frequency (kHz) (overrides WFG tab)" in exp_label_texts
+    assert "CH0 Amplitude (V) (overrides WFG tab)" in exp_label_texts
+    assert "CH0 Start (s) (overrides WFG tab)" in exp_label_texts
+    assert "CH1 Run (s)(0=Cont) (overrides WFG tab)" in exp_label_texts
 
 
 def test_wfg_synchronize_state_is_visibly_disabled_stub(monkeypatch, tmp_path):
@@ -131,6 +306,42 @@ def test_qt_ui_load_settings_is_backward_compatible(monkeypatch, tmp_path):
     assert window.qmix_sdk_python_path.text().endswith(r"qmix_sdk_for_codex\python")
     assert window.qmix_qmixsdk_path.text() == r"C:\Users\Lab user\AppData\Local\CETONI_SDK"
     assert window.cetoni_config_path.text() == old_settings["cetoni_config_path"]
+
+
+def test_qt_ui_load_settings_auto_converts_legacy_hz_scale_frequencies(monkeypatch, tmp_path):
+    # Files saved before the WFG/Experiment carrier frequency fields switched
+    # to kHz have no "schema_version" key and store raw Hz values (e.g. a
+    # 1.975 MHz carrier saved as 1975000.0). Loading such a file into the
+    # now-kHz-labeled widgets must scale the value down, not misinterpret it.
+    legacy_settings = {
+        "wfg": [
+            {"idx": 0, "frequency": 1975000.0, "amplitude": 1.0, "offset": 0.0, "symmetry": 50.0, "phase": 0.0, "function": "Sine", "enable": True},
+        ],
+        "experiment": {
+            "ch1_frequency": 1975000.0,
+            "ch2_frequency": 500000.0,
+        },
+    }
+
+    window = make_window(monkeypatch, tmp_path, legacy_settings)
+
+    assert window.wfg_channels[0]["frequency"].value() == pytest.approx(1975.0)
+    assert window.exp_ch1_freq.value() == pytest.approx(1975.0)
+    assert window.exp_ch2_freq.value() == pytest.approx(500.0)
+    assert "auto-converted" in window.status.text()
+
+    # Once resaved, the file carries schema_version 2 and must not be
+    # converted again on a subsequent load (that would silently divide a
+    # correct kHz value by 1000 a second time).
+    window._save_settings()
+    resaved = json.loads(qt_ui.SETTINGS_PATH.read_text(encoding="utf-8"))
+    assert resaved["schema_version"] == 2
+    assert resaved["wfg"][0]["frequency"] == pytest.approx(1975.0)
+
+    reloaded_window = qt_ui.MainWindow()
+    assert reloaded_window.wfg_channels[0]["frequency"].value() == pytest.approx(1975.0)
+    assert reloaded_window.exp_ch1_freq.value() == pytest.approx(1975.0)
+    assert "auto-converted" not in reloaded_window.status.text()
 
 
 def test_qt_ui_save_and_restore_passive_hardware_fields(monkeypatch, tmp_path):
@@ -242,6 +453,40 @@ def test_experiment_wfg_config_carries_symmetry_phase_and_repeat_trigger(monkeyp
     assert ch0.trigger.repeat_trigger is True
 
 
+def test_frequency_fields_display_khz_but_round_trip_to_correct_hz_hardware_value(monkeypatch, tmp_path):
+    # Unification to kHz (matching the SeriesPath naming convention, e.g.
+    # "1975kHz\..."): confirms entering "1900.000" kHz produces the exact
+    # same 1_900_000.0 Hz hardware-facing value the old "1900000.000" Hz
+    # field used to, on both the manual WFG tab and the Experiment tab.
+    window = make_window(monkeypatch, tmp_path)
+
+    # Manual WFG tab: Carrier "Frequency (kHz) Carrier" and FM Mod "Frequency (kHz)".
+    manual_state = window.wfg_channels[0]
+    manual_state["frequency"].setValue(1900.0)
+    manual_state["fm_frequency"].setValue(2.5)
+    manual_config = window._channel_config(manual_state)
+    assert manual_config.carrier.frequency_hz == 1_900_000.0
+    assert manual_config.fm_mod.frequency_hz == 2500.0
+
+    # Manual WFG tab: Sweep "Center Frequency (kHz)" (Session 16 chose MHz; corrected here).
+    manual_state["sweep_center_khz"].setValue(1934.0)
+    manual_state["sweep_width_khz"].setValue(50.0)
+    sweep = window._fm_sweep_settings_from_state(manual_state)
+    assert sweep.center_hz == 1_934_000.0
+    assert sweep.width_hz == 50_000.0
+
+    # Experiment tab: Carrier "Frequency (kHz)" and Sweep "Center Frequency (kHz)".
+    window.exp_ch1_freq.setValue(1900.0)
+    experiment_config = window._experiment_channel_config(0, window.exp_ad2_channels[0])
+    assert experiment_config.carrier.frequency_hz == 1_900_000.0
+
+    window.exp_sweep_center_khz.setValue(1934.0)
+    window.exp_sweep_width_khz.setValue(50.0)
+    experiment_sweep = window._experiment_fm_sweep_settings()
+    assert experiment_sweep.center_hz == 1_934_000.0
+    assert experiment_sweep.width_hz == 50_000.0
+
+
 def test_fm_sweep_toggle_off_preserves_existing_experiment_behavior(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
     window.series_path.setText(str(tmp_path / "series"))
@@ -267,7 +512,7 @@ def test_fm_sweep_toggle_on_carries_settings_into_experiment_wfg_config(monkeypa
     window.exp_frames.setValue(5)
 
     window.exp_sweep_enable.setChecked(True)
-    window.exp_sweep_center_mhz.setValue(1.934)
+    window.exp_sweep_center_khz.setValue(1934.0)
     window.exp_sweep_width_khz.setValue(50.0)
     window.exp_sweep_time_ms.setValue(1.0)
     window.exp_sweep_type.setCurrentText("Symmetric")
@@ -402,7 +647,7 @@ def test_qt_ui_experiment_wfg_config_uses_only_experiment_ad2_fields(monkeypatch
 
     window.exp_ch1_enable.setChecked(True)
     window.exp_ch1_function.setCurrentText(qt_ui.WaveformFunction.SINE.value)
-    window.exp_ch1_freq.setValue(1_975_000.0)
+    window.exp_ch1_freq.setValue(1975.0)  # kHz -> 1_975_000.0 Hz
     window.exp_ch1_amp.setValue(2.0)
     window.exp_ch1_offset.setValue(0.0)
     window.exp_ch1_start.setValue(0.1)
@@ -411,7 +656,7 @@ def test_qt_ui_experiment_wfg_config_uses_only_experiment_ad2_fields(monkeypatch
     window.exp_ch1_trigger_source.setCurrentText("trigsrcPC")
     window.exp_ch2_enable.setChecked(False)
     window.exp_ch2_function.setCurrentText(qt_ui.WaveformFunction.SQUARE.value)
-    window.exp_ch2_freq.setValue(1000.0)
+    window.exp_ch2_freq.setValue(1.0)  # kHz -> 1000.0 Hz
     window.exp_ch2_amp.setValue(0.1)
     window.exp_ch2_offset.setValue(0.2)
     window.exp_ch2_start.setValue(0.3)
@@ -987,6 +1232,41 @@ def test_run_experiment_series_stops_after_failed_repeat(monkeypatch, tmp_path, 
 
         assert call_count["n"] == 1
         assert any("repeat 1" in record.message for record in caplog.records)
+    finally:
+        window.close()
+
+
+def test_run_experiment_series_stops_queuing_further_repeats_after_abort(monkeypatch, tmp_path):
+    from thermo_acoustic.workflows import Experiment2, ExperimentSeries2
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(qt_ui, "SETTINGS_PATH", settings_path)
+    QApplication.instance() or QApplication([])
+
+    call_count = {"n": 0}
+
+    class AbortingRunApplication(qt_ui.Application):
+        def run_experiment2(self) -> bool:
+            self.experiment_series.dequeue_experiment()
+            call_count["n"] += 1
+            self.status = "ExperimentComplete"
+            if call_count["n"] == 1:
+                # Simulate the operator pressing Abort while this repeat was
+                # running -- qt_ui.py's _abort() calls fire_stop_event().
+                self.fire_stop_event()
+            return True
+
+    window = qt_ui.MainWindow(app=AbortingRunApplication())
+    try:
+        series = ExperimentSeries2(series_path=tmp_path)
+        series.enqueue_experiments([Experiment2(), Experiment2(), Experiment2()])
+        config = window._experiment_wfg_config()
+
+        status = window._run_experiment_series(series, total_frames=1, config=config)
+
+        assert status == "ExperimentSeriesAborted"
+        assert call_count["n"] == 1, "no further repeat should have started after Abort was fired"
+        assert series.see_elements_left() == 2, "queue must not drain to completion after Abort"
     finally:
         window.close()
 

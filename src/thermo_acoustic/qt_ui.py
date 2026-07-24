@@ -490,11 +490,11 @@ class MainWindow(QMainWindow):
         self.exp_ch1_phase = _spin(0.0, decimals=3)
         self.exp_ch1_repeat_trigger = QCheckBox("Repeat Trigger")
         self.exp_sweep_enable = QCheckBox("Enable Frequency Sweep During Experiment")
-        self.exp_sweep_center_mhz = _spin(1.934, decimals=6, minimum=0.0)
+        self.exp_sweep_center_khz = _spin(1934.0, decimals=3, minimum=0.0)
         self.exp_sweep_width_khz = _spin(50.0, decimals=3, minimum=0.0)
         self.exp_sweep_time_ms = _spin(1.0, decimals=3, minimum=0.0)
         self.exp_sweep_type = _combo(["Symmetric", "RampUp", "RampDown"], "Symmetric")
-        self.exp_ch2_freq = _spin(1000.0, decimals=3, minimum=0.0)
+        self.exp_ch2_freq = _spin(1.0, decimals=3, minimum=0.0)
         self.exp_ch2_amp = _spin(1.0, decimals=3)
         self.exp_ch2_offset = _spin(0.0, decimals=3)
         self.exp_ch2_function = _combo([item.value for item in WaveformFunction], WaveformFunction.SINE.value)
@@ -550,9 +550,12 @@ class MainWindow(QMainWindow):
         self.average_fps = QLabel("0")
 
     def _make_wfg_channel_state(self, index: int, frequency: float, amplitude: float) -> dict[str, object]:
+        # frequency/amplitude are passed in Hz (caller-facing default values);
+        # all frequency-class widgets below display/store kHz -- see the
+        # kHz-unification note in _channel_config().
         return {
             "idx": _int_spin(index, minimum=0, maximum=1),
-            "frequency": _spin(frequency, decimals=3, minimum=0.0),
+            "frequency": _spin(frequency / 1000.0, decimals=3, minimum=0.0),
             "amplitude": _spin(amplitude, decimals=3),
             "offset": _spin(0.0, decimals=3),
             "symmetry": _spin(50.0, decimals=3, minimum=0.0, maximum=100.0),
@@ -564,7 +567,7 @@ class MainWindow(QMainWindow):
             "repeat": _int_spin(0, minimum=0),
             "repeat_trigger": QCheckBox("Repeat Trigger"),
             "trigger_source": _combo(WFG_TRIGGER_SOURCE_OPTIONS, "trigsrcNone"),
-            "fm_frequency": _spin(1000.0, decimals=3, minimum=0.0),
+            "fm_frequency": _spin(1.0, decimals=3, minimum=0.0),
             "fm_amplitude": _spin(1.0, decimals=3),
             "fm_offset": _spin(0.0, decimals=3),
             "fm_symmetry": _spin(50.0, decimals=3, minimum=0.0, maximum=100.0),
@@ -572,12 +575,12 @@ class MainWindow(QMainWindow):
             "fm_function": _combo([item.value for item in WaveformFunction], WaveformFunction.SINE.value),
             "fm_enable": QCheckBox("Enable"),
             "sweep_enable": QCheckBox("Enable Sweep"),
-            "sweep_center_mhz": _spin(frequency / 1_000_000.0, decimals=6, minimum=0.0),
+            "sweep_center_khz": _spin(frequency / 1000.0, decimals=3, minimum=0.0),
             "sweep_width_khz": _spin(50.0, decimals=3, minimum=0.0),
             "sweep_time_ms": _spin(1.0, decimals=3, minimum=0.0),
             "sweep_type": _combo(["Symmetric", "RampUp", "RampDown"], "Symmetric"),
-            "sweep_top_hz": QLabel("--"),
-            "sweep_bottom_hz": QLabel("--"),
+            "sweep_top_khz": QLabel("--"),
+            "sweep_bottom_khz": QLabel("--"),
         }
 
     def _build_layout(self) -> None:
@@ -690,40 +693,74 @@ class MainWindow(QMainWindow):
         return tab
 
     def _wfg_channel_group(self, title: str, state: dict[str, object]) -> QGroupBox:
+        # Live-use labeling: the Experiment tab seeds its own separate CH0/CH1
+        # widgets from these ONCE (on first tab switch) and is independent of
+        # this tab after that -- confirmed by tracing _experiment_channel_config()
+        # (reads self.exp_ad2_channels[i], never these state[...] widgets) for
+        # every field below, on BOTH channels. The task that requested this
+        # labeling described Frequency/Amplitude as CH0-only-overridden and
+        # Symmetry/Phase/Enable/Function/Trigger source/CH1 Frequency/Amplitude
+        # as "remaining active" from this tab -- that second claim did not hold
+        # up: _experiment_channel_config() reads exp_ch2_freq/exp_ch2_amp for
+        # CH1 exactly like exp_ch1_freq/exp_ch1_amp for CH0, and every other
+        # field listed there also has its own confirmed Experiment-tab widget.
+        # Labeled uniformly and accurately here instead of per that assumption.
+        overridden = " (overridden during experiment run)"
+        # This tab's Ch1/Ch2 groups (Carrier+Trigger+FM Mod+Sweep, ~25 rows) are
+        # squeezed below their own minimumSizeHint in both width and height when
+        # shown inside MainWindow's fixed-size tab page (confirmed offscreen:
+        # 541x626 actual vs 1092x820 required) -- the same collapse-risk class as
+        # _ad_settings_group() before its Session 28 fix, made measurably worse by
+        # this session's longer live-use labels. Both dimensions are short here
+        # (unlike _ad_settings_group(), where only height was short), so this uses
+        # setWidgetResizable(False) with both scrollbars as-needed -- the same
+        # pattern already proven for qt_ui_v2.py's AD2 Output Parameters table --
+        # rather than setWidgetResizable(True), which would still try to compress
+        # the width.
         group = QGroupBox(title)
-        layout = QVBoxLayout(group)
+        outer = QVBoxLayout(group)
+        content = QWidget()
+        layout = QVBoxLayout(content)
         form = QFormLayout()
         for label, key in (
             ("Channel index", "idx"),
-            ("Frequency (Hz) Carrier", "frequency"),
-            ("Amplitude (V)", "amplitude"),
-            ("Offset(V)", "offset"),
-            ("Symmetry(%)", "symmetry"),
-            ("Phase(Deg)", "phase"),
-            ("Function", "function"),
+            (f"Frequency (kHz) Carrier{overridden}", "frequency"),
+            (f"Amplitude (V){overridden}", "amplitude"),
+            (f"Offset(V){overridden}", "offset"),
+            (f"Symmetry(%){overridden}", "symmetry"),
+            (f"Phase(Deg){overridden}", "phase"),
+            (f"Function{overridden}", "function"),
         ):
             form.addRow(label, state[key])
+        state["enable"].setText(f"Enable{overridden}")
         form.addRow(state["enable"])
         layout.addLayout(form)
         trigger = QFormLayout()
         for label, key in (
-            ("Run duration (s)   [0 = continuous]", "sec_run"),
-            ("secWait", "sec_wait"),
-            ("Repeat count   [0 = infinite]", "repeat"),
+            (f"Run duration (s)   [0 = continuous]{overridden}", "sec_run"),
+            (f"secWait{overridden}", "sec_wait"),
+            (f"Repeat count   [0 = infinite]{overridden}", "repeat"),
         ):
             trigger.addRow(label, state[key])
+        state["repeat_trigger"].setText(f"Repeat Trigger{overridden}")
         trigger.addRow(state["repeat_trigger"])
-        trigger.addRow("Trigger source", state["trigger_source"])
+        trigger.addRow(f"Trigger source{overridden}", state["trigger_source"])
         layout.addWidget(QLabel("Trigger"))
         layout.addLayout(trigger)
         fm = QFormLayout()
+        # FM Mod: traced _experiment_channel_config() -- when FM Sweep is off,
+        # fm_mod is a hardcoded-disabled CarrierSettings; when FM Sweep is on
+        # (Ch1/CH0 only), fm_mod comes entirely from the Experiment tab's own
+        # Sweep fields. Either way, these FM Mod widgets are never read by an
+        # automated run -- not "active", not "overridden", simply unused.
+        fm_note = " (not used by automated experiment runs)"
         for label, key in (
-            ("Frequency (Hz)", "fm_frequency"),
-            ("Amplitude (%)", "fm_amplitude"),
-            ("Offset(V)", "fm_offset"),
-            ("Symmetry(%)", "fm_symmetry"),
-            ("Phase(Deg)", "fm_phase"),
-            ("Function 2", "fm_function"),
+            (f"Frequency (kHz){fm_note}", "fm_frequency"),
+            (f"Amplitude (%){fm_note}", "fm_amplitude"),
+            (f"Offset(V){fm_note}", "fm_offset"),
+            (f"Symmetry(%){fm_note}", "fm_symmetry"),
+            (f"Phase(Deg){fm_note}", "fm_phase"),
+            (f"Function 2{fm_note}", "fm_function"),
         ):
             fm.addRow(label, state[key])
         fm.addRow(state["fm_enable"])
@@ -731,34 +768,42 @@ class MainWindow(QMainWindow):
         layout.addLayout(fm)
         sweep = QFormLayout()
         for label, key in (
-            ("Center Frequency (MHz)", "sweep_center_mhz"),
+            ("Center Frequency (kHz)", "sweep_center_khz"),
             ("Sweep Width (kHz)", "sweep_width_khz"),
             ("Sweep Time (ms)", "sweep_time_ms"),
             ("Sweep Type", "sweep_type"),
         ):
             sweep.addRow(label, state[key])
         sweep.addRow(state["sweep_enable"])
-        sweep.addRow("Top Frequency (Hz)", state["sweep_top_hz"])
-        sweep.addRow("Bottom Frequency (Hz)", state["sweep_bottom_hz"])
+        sweep.addRow("Top Frequency (kHz)", state["sweep_top_khz"])
+        sweep.addRow("Bottom Frequency (kHz)", state["sweep_bottom_khz"])
         layout.addWidget(QLabel("Sweep (FM modulation calibration -- distinct from Frequency Scanning)"))
         layout.addLayout(sweep)
         self._connect_sweep_bounds_refresh(state)
         self._refresh_sweep_bounds(state)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(False)
+        scroll.setMaximumHeight(500)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
         return group
 
     def _connect_sweep_bounds_refresh(self, state: dict[str, object]) -> None:
-        for key in ("sweep_center_mhz", "sweep_width_khz"):
+        for key in ("sweep_center_khz", "sweep_width_khz"):
             state[key].valueChanged.connect(lambda _value, state=state: self._refresh_sweep_bounds(state))
 
     def _refresh_sweep_bounds(self, state: dict[str, object]) -> None:
-        center_hz = state["sweep_center_mhz"].value() * 1_000_000.0
-        width_hz = state["sweep_width_khz"].value() * 1_000.0
-        state["sweep_top_hz"].setText(f"{center_hz + width_hz / 2.0:.1f}")
-        state["sweep_bottom_hz"].setText(f"{center_hz - width_hz / 2.0:.1f}")
+        center_khz = state["sweep_center_khz"].value()
+        width_khz = state["sweep_width_khz"].value()
+        state["sweep_top_khz"].setText(f"{center_khz + width_khz / 2.0:.3f}")
+        state["sweep_bottom_khz"].setText(f"{center_khz - width_khz / 2.0:.3f}")
 
     def _fm_sweep_settings_from_state(self, state: dict[str, object]) -> FmSweepSettings:
         return FmSweepSettings(
-            center_hz=state["sweep_center_mhz"].value() * 1_000_000.0,
+            center_hz=state["sweep_center_khz"].value() * 1000.0,
             width_hz=state["sweep_width_khz"].value() * 1_000.0,
             sweep_time_ms=state["sweep_time_ms"].value(),
             sweep_type=state["sweep_type"].currentText(),
@@ -1014,7 +1059,17 @@ class MainWindow(QMainWindow):
 
     def _ad_settings_group(self) -> QGroupBox:
         group = QGroupBox("Analog Discovery Settings")
-        layout = QVBoxLayout(group)
+        outer = QVBoxLayout(group)
+
+        # This group's natural content height (~1000px across both channels'
+        # Carrier/Trigger/Sweep sections) far exceeds what the Experiment tab's
+        # grid can give it -- previously this squeezed the whole QVBoxLayout
+        # below its minimumSizeHint, collapsing individual field rows to 0-1px
+        # tall (visible header labels stacked with no visible values beneath
+        # them). Giving the content its own QScrollArea lets it lay out at its
+        # real size internally and scroll, instead of being compressed.
+        content = QWidget()
+        layout = QVBoxLayout(content)
         note = QLabel("These settings fully control AD2 output during experiment runs, independent of the WFG tab.")
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -1026,6 +1081,14 @@ class MainWindow(QMainWindow):
 
         self._add_experiment_channel_sections(layout, "CH0")
         self._add_experiment_channel_sections(layout, "CH1")
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setMaximumHeight(360)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
         return group
 
     def _add_experiment_channel_sections(self, layout: QVBoxLayout, channel_label: str) -> None:
@@ -1052,23 +1115,29 @@ class MainWindow(QMainWindow):
                 self.exp_ch2_trigger_source, self.exp_ch2_repeat_trigger,
             )
 
+        # Live-use labeling (mirrors the WFG tab's "(overridden during
+        # experiment run)" labels -- see _wfg_channel_group() for the trace
+        # confirming every one of these fields is independently read here,
+        # not from the WFG tab, once an automated run starts).
+        overrides = " (overrides WFG tab)"
         carrier = QFormLayout()
-        carrier.addRow(f"{channel_label} Enable", enable)
-        carrier.addRow(f"{channel_label} Function", function)
-        carrier.addRow(f"{channel_label} Frequency (Hz)", freq)
-        carrier.addRow(f"{channel_label} Amplitude (V)", amp)
-        carrier.addRow(f"{channel_label} Offset (V)", offset)
-        carrier.addRow(f"{channel_label} Symmetry (%)", symmetry)
-        carrier.addRow(f"{channel_label} Phase (Deg)", phase)
+        carrier.addRow(f"{channel_label} Enable{overrides}", enable)
+        carrier.addRow(f"{channel_label} Function{overrides}", function)
+        carrier.addRow(f"{channel_label} Frequency (kHz){overrides}", freq)
+        carrier.addRow(f"{channel_label} Amplitude (V){overrides}", amp)
+        carrier.addRow(f"{channel_label} Offset (V){overrides}", offset)
+        carrier.addRow(f"{channel_label} Symmetry (%){overrides}", symmetry)
+        carrier.addRow(f"{channel_label} Phase (Deg){overrides}", phase)
         layout.addWidget(QLabel("Carrier"))
         layout.addLayout(carrier)
 
         trigger = QFormLayout()
         run_label = "Run (s) (0=Cont)" if channel_label == "CH0" else "Run (s)(0=Cont)"
-        trigger.addRow(f"{channel_label} Start (s)", start)
-        trigger.addRow(f"{channel_label} {run_label}", run)
-        trigger.addRow(f"{channel_label} cRepeat (0=inf)", repeat)
-        trigger.addRow(f"{channel_label} Trigger Source", trigger_source)
+        trigger.addRow(f"{channel_label} Start (s){overrides}", start)
+        trigger.addRow(f"{channel_label} {run_label}{overrides}", run)
+        trigger.addRow(f"{channel_label} cRepeat (0=inf){overrides}", repeat)
+        trigger.addRow(f"{channel_label} Trigger Source{overrides}", trigger_source)
+        repeat_trigger.setText(f"Repeat Trigger{overrides}")
         trigger.addRow(repeat_trigger)
         layout.addWidget(QLabel("Trigger"))
         layout.addLayout(trigger)
@@ -1076,7 +1145,7 @@ class MainWindow(QMainWindow):
         if channel_label == "CH0":
             sweep = QFormLayout()
             sweep.addRow(self.exp_sweep_enable)
-            sweep.addRow(f"{channel_label} Sweep Center Frequency (MHz)", self.exp_sweep_center_mhz)
+            sweep.addRow(f"{channel_label} Sweep Center Frequency (kHz)", self.exp_sweep_center_khz)
             sweep.addRow(f"{channel_label} Sweep Width (kHz)", self.exp_sweep_width_khz)
             sweep.addRow(f"{channel_label} Sweep Time (ms)", self.exp_sweep_time_ms)
             sweep.addRow(f"{channel_label} Sweep Type", self.exp_sweep_type)
@@ -1122,8 +1191,13 @@ class MainWindow(QMainWindow):
         return group
 
     def _channel_config(self, state: dict[str, object]) -> WfgChannelConfig:
+        # Frequency-class widgets (Carrier/FM Mod "Frequency", Sweep "Center/Top/
+        # Bottom Frequency") display and store kHz -- matches the SeriesPath naming
+        # convention (e.g. "1975kHz\..."). CarrierSettings.frequency_hz and the
+        # actual hardware-writing calls remain in Hz internally, so widget values
+        # are multiplied by 1000 here at the point they leave the UI layer.
         carrier = CarrierSettings(
-            frequency_hz=state["frequency"].value(),
+            frequency_hz=state["frequency"].value() * 1000.0,
             amplitude_v=state["amplitude"].value(),
             offset_v=state["offset"].value(),
             symmetry_percent=state["symmetry"].value(),
@@ -1132,7 +1206,7 @@ class MainWindow(QMainWindow):
             enable=state["enable"].isChecked(),
         )
         fm_mod = CarrierSettings(
-            frequency_hz=state["fm_frequency"].value(),
+            frequency_hz=state["fm_frequency"].value() * 1000.0,
             amplitude_v=state["fm_amplitude"].value(),
             offset_v=state["fm_offset"].value(),
             symmetry_percent=state["fm_symmetry"].value(),
@@ -1188,8 +1262,11 @@ class MainWindow(QMainWindow):
             self._seed_experiment_ad2_from_wfg_once()
 
     def _experiment_channel_config(self, index: int, state: dict[str, object]) -> WfgChannelConfig:
+        # state["frequency"] displays/stores kHz (Experiment tab's own Frequency
+        # field) -- converted to Hz here, matching _channel_config()'s manual-tab
+        # equivalent conversion.
         carrier = CarrierSettings(
-            frequency_hz=state["frequency"].value(),
+            frequency_hz=state["frequency"].value() * 1000.0,
             amplitude_v=state["amplitude"].value(),
             offset_v=state["offset"].value(),
             symmetry_percent=state["symmetry"].value(),
@@ -1229,7 +1306,7 @@ class MainWindow(QMainWindow):
 
     def _experiment_fm_sweep_settings(self) -> FmSweepSettings:
         return FmSweepSettings(
-            center_hz=self.exp_sweep_center_mhz.value() * 1_000_000.0,
+            center_hz=self.exp_sweep_center_khz.value() * 1000.0,
             width_hz=self.exp_sweep_width_khz.value() * 1_000.0,
             sweep_time_ms=self.exp_sweep_time_ms.value(),
             sweep_type=self.exp_sweep_type.currentText(),
@@ -1664,11 +1741,33 @@ class MainWindow(QMainWindow):
     ) -> str:
         started_at = time.monotonic()
         self.app.set_experiment_series_general(series)
+        # Clear any abort flag left over from a previous run before starting
+        # this one, so a fresh "Start exp" click isn't immediately treated as
+        # already-aborted.
+        self.app.create_stop_event()
         if progress:
             progress("queue_count", self.app.experiment_series.see_elements_left())
             progress("waveform", self._preview_points(config))
         repeat_index = 0
         while self.app.experiment_series.see_elements_left():
+            if self.app.stop_fired:
+                # Abort was triggered (qt_ui.py:_abort()). The in-progress
+                # repeat, if any, has already run to completion or been
+                # disrupted by _abort_hardware()'s concurrent hardware stop --
+                # we deliberately do not attempt to interrupt a repeat that is
+                # mid-flight (camera/AD2/pump/valve state is safer left to
+                # finish or fail on its own than cut off partway through a
+                # flush or capture). What this check guarantees is that no
+                # *further* queued repeat starts after Abort was pressed.
+                remaining = self.app.experiment_series.see_elements_left()
+                logger.info(
+                    f"Experiment series stopped after {repeat_index} repeat(s): Abort was triggered; "
+                    f"{remaining} repeat(s) remain queued and will not run."
+                )
+                self.app.fire_status_event("ExperimentSeriesAborted")
+                if progress:
+                    progress("queue_count", remaining)
+                return "ExperimentSeriesAborted"
             completed = self.app.run_experiment2()
             repeat_index += 1
             if progress:
@@ -2003,6 +2102,11 @@ class MainWindow(QMainWindow):
 
     def _settings_dict(self) -> dict[str, object]:
         return {
+            # Bumped from the implicit version-1 (unversioned) format in the
+            # session that switched WFG/Experiment carrier frequency fields
+            # from Hz to kHz -- see the legacy-scaling branch in
+            # _load_settings() that upgrades files saved without this key.
+            "schema_version": 2,
             "ad2_enabled": self.ad2_enabled.isChecked(),
             "z_enabled": self.z_enabled.isChecked(),
             "camera_enabled": self.camera_enabled.isChecked(),
@@ -2088,6 +2192,20 @@ class MainWindow(QMainWindow):
         if not SETTINGS_PATH.exists():
             return
         data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+        legacy_hz_scale = data.get("schema_version", 1) < 2
+        if legacy_hz_scale:
+            # Pre-version-2 files were saved before WFG/Experiment carrier
+            # frequency fields switched from Hz to kHz; the raw numbers are
+            # still Hz-scale, so scale them down once to match the now-kHz
+            # widgets they're about to be loaded into.
+            for item in data.get("wfg", []):
+                if "frequency" in item:
+                    item["frequency"] = item["frequency"] / 1000.0
+            experiment_legacy = data.get("experiment")
+            if isinstance(experiment_legacy, dict):
+                for key in ("ch1_frequency", "ch2_frequency"):
+                    if key in experiment_legacy:
+                        experiment_legacy[key] = experiment_legacy[key] / 1000.0
         for name, widget in (
             ("ad2_enabled", self.ad2_enabled),
             ("z_enabled", self.z_enabled),
@@ -2228,7 +2346,13 @@ class MainWindow(QMainWindow):
                 )
             ):
                 self._experiment_ad2_seeded = True
-        self._set_status("Settings loaded")
+        if legacy_hz_scale:
+            self._set_status(
+                "Settings loaded (legacy file: WFG/Experiment carrier frequencies "
+                "auto-converted from Hz to kHz -- verify values before running)"
+            )
+        else:
+            self._set_status("Settings loaded")
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API name
         if not self._cleanup_complete_for_close:

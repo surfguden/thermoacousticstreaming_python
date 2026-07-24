@@ -244,7 +244,7 @@ class MainWindowV2(MainWindow):
         content = QWidget()
         grid = QGridLayout(content)
         headers = (
-            "Enable", "Function", "Frequency (Hz)", "Amplitude (V)", "Offset (V)",
+            "Enable", "Function", "Frequency (kHz)", "Amplitude (V)", "Offset (V)",
             "Start (s)", "Run (s)", "cRepeat", "Trigger Source",
             "Symmetry (%)", "Phase (Deg)", "Repeat Trigger",
         )

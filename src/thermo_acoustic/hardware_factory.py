@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .hamamatsu_dcam import HamamatsuDcamBackend
+from .hardware_config import default_hardware_config
 from .instruments import AD2Sdk, CetoniPump, HamamatsuCamera, PriorZMotor, SerialTextCommandBackend, SimulatedAD2Sdk, Valve
 from .qmix_backend import QmixPumpBackend
 
@@ -34,7 +36,24 @@ class HardwareBundle:
     z_motor: PriorZMotor
 
 
+def _ensure_qmixsdk_env() -> None:
+    # qmix_sdk_for_codex/python/qmixsdk/_qmixloadlib.py resolves the real Qmix
+    # SDK's native DLL directory from the QMIXSDK environment variable the
+    # first time qmixsdk is imported (falling back to a path relative to the
+    # qmixsdk package itself, which is wrong for this repo's layout). With
+    # QMIXSDK unset, ctypes.windll.LoadLibrary("labbCAN_Bus_API") looks in the
+    # process's CWD/PATH and fails -- confirmed on real hardware: the real
+    # pump could not connect via this app's own Initialize button on a clean
+    # environment, even though hardware_tests/test_real_workflow_smoke.py
+    # already sets this same variable before touching the real backend.
+    # setdefault() so an operator/CI environment that already points QMIXSDK
+    # somewhere specific is not overridden.
+    os.environ.setdefault("QMIXSDK", str(default_hardware_config().qmix.qmixsdk_path))
+
+
 def build_hardware_bundle(config: HardwareRuntimeConfig) -> HardwareBundle:
+    if not config.sim_pump:
+        _ensure_qmixsdk_env()
     ad2 = SimulatedAD2Sdk(enabled=config.ad2_enabled) if config.sim_ad2 else AD2Sdk(enabled=config.ad2_enabled)
     camera = HamamatsuCamera(
         enabled=config.camera_enabled,

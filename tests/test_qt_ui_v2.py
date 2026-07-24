@@ -5,7 +5,9 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QCheckBox, QLabel
+from PySide6.QtCore import QPoint, QPointF, Qt
+from PySide6.QtGui import QWheelEvent
+from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QLabel, QSpinBox
 
 from thermo_acoustic import qt_ui, qt_ui_v2
 from thermo_acoustic.hardware_factory import HardwareRuntimeConfig
@@ -17,6 +19,75 @@ def make_window(monkeypatch, tmp_path) -> qt_ui_v2.MainWindowV2:
     monkeypatch.setattr(qt_ui, "SETTINGS_PATH", settings_path)
     QApplication.instance() or QApplication([])
     return qt_ui_v2.MainWindowV2()
+
+
+def _synthetic_wheel_event(target, dy: int = 120) -> QWheelEvent:
+    pos = QPointF(max(target.width(), 1) / 2, max(target.height(), 1) / 2)
+    return QWheelEvent(
+        pos, QPointF(target.mapToGlobal(pos.toPoint())),
+        QPoint(0, 0), QPoint(0, dy),
+        Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase, False,
+    )
+
+
+def _sweep_for_unguarded_widgets(window) -> tuple[int, list]:
+    targets: list = []
+    for widget_cls in (QSpinBox, QDoubleSpinBox, QComboBox):
+        targets.extend(window.findChildren(widget_cls))
+    failures = []
+    for widget in targets:
+        widget.clearFocus()
+        QApplication.processEvents()
+        before = widget.currentIndex() if isinstance(widget, QComboBox) else widget.value()
+        QApplication.sendEvent(widget, _synthetic_wheel_event(widget))
+        QApplication.processEvents()
+        after = widget.currentIndex() if isinstance(widget, QComboBox) else widget.value()
+        if before != after:
+            failures.append(widget)
+    return len(targets), failures
+
+
+def test_wheel_guard_completeness_on_both_window_types_independently(monkeypatch, tmp_path):
+    # Task D: re-verify as two genuinely separate live instances -- do not
+    # assume v2 inherits v1's coverage just because it shares some widgets
+    # with itself. Each window is swept independently and reported separately.
+    v1_settings = tmp_path / "v1_settings.json"
+    v1_settings.write_text(json.dumps({}), encoding="utf-8")
+    monkeypatch.setattr(qt_ui, "SETTINGS_PATH", v1_settings)
+    QApplication.instance() or QApplication([])
+
+    window_v1 = qt_ui.MainWindow()
+    window_v1.show()
+    QApplication.processEvents()
+    try:
+        count_v1, failures_v1 = _sweep_for_unguarded_widgets(window_v1)
+        assert count_v1 > 50, "sanity check: expected the real qt_ui.MainWindow widget tree"
+        assert not failures_v1, f"qt_ui.MainWindow: {len(failures_v1)}/{count_v1} unguarded widgets: {failures_v1}"
+    finally:
+        window_v1.close()
+
+    window_v2 = make_window(monkeypatch, tmp_path)
+    window_v2.show()
+    QApplication.processEvents()
+    try:
+        count_v2, failures_v2 = _sweep_for_unguarded_widgets(window_v2)
+        assert count_v2 > 20, "sanity check: expected the real qt_ui_v2.MainWindowV2 widget tree"
+        assert not failures_v2, f"qt_ui_v2.MainWindowV2: {len(failures_v2)}/{count_v2} unguarded widgets: {failures_v2}"
+
+        # The two fields named in the original report, checked specifically
+        # through the v2 window object.
+        window_v2.exp_ch1_freq.clearFocus()
+        window_v2.exp_wait_after_flush.clearFocus()
+        QApplication.processEvents()
+        before = (window_v2.exp_ch1_freq.value(), window_v2.exp_wait_after_flush.value())
+        QApplication.sendEvent(window_v2.exp_ch1_freq, _synthetic_wheel_event(window_v2.exp_ch1_freq))
+        QApplication.sendEvent(window_v2.exp_wait_after_flush, _synthetic_wheel_event(window_v2.exp_wait_after_flush))
+        QApplication.processEvents()
+        after = (window_v2.exp_ch1_freq.value(), window_v2.exp_wait_after_flush.value())
+        assert after == before
+    finally:
+        window_v2.close()
 
 
 def test_v2_is_separate_main_window_without_old_tab_widget(monkeypatch, tmp_path):

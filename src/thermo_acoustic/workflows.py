@@ -59,7 +59,15 @@ class FlushSettings:
     def timeout_s(self) -> float:
         if self.flush_flowrate <= 0:
             return 0.0
-        return (self.flush_volume_ml / self.flush_flowrate) * 1000.0 + 5.0
+        # flush_flowrate is uL/min on the real device (QmixPumpBackend.initialize()
+        # calls configure_flow_unit("ul/min")). Convert flush_volume_ml -> uL
+        # (x1000), divide by the uL/min flow rate to get minutes, then x60 for
+        # seconds, plus a fixed safety margin. The previous formula omitted the
+        # x60 minutes-to-seconds conversion, making the computed timeout ~60x
+        # too short at realistic flow rates -- confirmed on real Qmix hardware,
+        # where a 0.05 ml / 200 uL/min flush (needing ~15s) was declared failed
+        # after only ~5.25s while the real pump was still successfully moving.
+        return (self.flush_volume_ml * 1000.0 / self.flush_flowrate) * 60.0 + 5.0
 
 
 @dataclass(slots=True)
