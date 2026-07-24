@@ -65,6 +65,25 @@ def test_wfg_synchronize_state_is_visibly_disabled_stub(monkeypatch, tmp_path):
     assert "Not implemented" in window.wfg_sync.toolTip()
 
 
+def test_camera_sequence_group_flags_live_automated_use_and_dead_capture_mode(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+
+    group = window._sequence_group()
+    grid = group.layout()
+    note_item = grid.itemAtPosition(1, 2)
+    assert note_item is not None
+    note_text = note_item.widget().text()
+    assert "applied to every automated Experiment run" in note_text
+    assert "DO affect experiment runs" in note_text
+
+    assert not window.capture_mode.isEnabled()
+    assert "Not wired to a real backend" in window.capture_mode.toolTip()
+
+    settings_layout = grid.itemAtPosition(2, 2).layout()
+    label_item = settings_layout.itemAt(4, settings_layout.ItemRole.LabelRole)
+    assert label_item.widget().text() == "Capture mode (unused)"
+
+
 def test_qt_ui_uses_passive_hardware_config_defaults(monkeypatch, tmp_path):
     defaults = default_hardware_config()
 

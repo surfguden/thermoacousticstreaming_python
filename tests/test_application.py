@@ -125,8 +125,50 @@ def install_fake_nptdms(monkeypatch):
 
         def write_segment(self, objects):
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_bytes(b"fake tdms")
+            # Padded well above _MIN_TDMS_FILE_SIZE_BYTES so the write-verification
+            # size check doesn't spuriously fail against this stand-in file.
+            self.path.write_bytes(b"fake tdms" + b"\x00" * 512)
             writes[str(self.path)] = objects
+
+    class FakeTdmsChannel:
+        def __init__(self, channel_object):
+            self._data = list(channel_object.data)
+
+        def __len__(self):
+            return len(self._data)
+
+        def __iter__(self):
+            return iter(self._data)
+
+    class FakeTdmsGroup:
+        def __init__(self, properties):
+            self.properties = dict(properties)
+            self._channels: dict[str, FakeTdmsChannel] = {}
+
+        def __getitem__(self, name):
+            return self._channels[name]
+
+    class FakeTdmsFile:
+        def __init__(self, objects):
+            self._groups: dict[str, FakeTdmsGroup] = {}
+            for item in objects:
+                if getattr(item, "kind", "") == "group":
+                    self._groups[item.name] = FakeTdmsGroup(item.properties)
+            for item in objects:
+                if getattr(item, "kind", "") == "channel":
+                    group = self._groups.setdefault(item.group, FakeTdmsGroup({}))
+                    group._channels[item.name] = FakeTdmsChannel(item)
+
+        def __getitem__(self, name):
+            return self._groups[name]
+
+    class FakeTdmsFileReader:
+        @staticmethod
+        def read(path):
+            objects = writes.get(str(path))
+            if objects is None:
+                raise FileNotFoundError(f"No fake TDMS data recorded for {path}")
+            return FakeTdmsFile(objects)
 
     monkeypatch.setitem(
         sys.modules,
@@ -136,6 +178,7 @@ def install_fake_nptdms(monkeypatch):
             GroupObject=FakeGroupObject,
             RootObject=FakeRootObject,
             TdmsWriter=FakeTdmsWriter,
+            TdmsFile=FakeTdmsFileReader,
         ),
     )
     return writes
@@ -1269,6 +1312,46 @@ def test_waveforms_low_level_wrappers():
     assert any(args[1].value == 1 and args[2].value == 5 for args in divider_calls)
     assert "FDwfDigitalOutRunSet" in called
     assert "FDwfDigitalOutWaitSet" in called
+
+
+def test_write_tdms_verification_catches_truncated_write(tmp_path, monkeypatch):
+    class TruncatingTdmsWriter:
+        def __init__(self, path):
+            self.path = Path(path)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def write_segment(self, objects):
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            # Far below _MIN_TDMS_FILE_SIZE_BYTES -- simulates a truncated/corrupted write.
+            self.path.write_bytes(b"x")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "nptdms",
+        SimpleNamespace(
+            ChannelObject=lambda group, name, data: SimpleNamespace(kind="channel", group=group, name=name, data=list(data)),
+            GroupObject=lambda name, properties=None: SimpleNamespace(kind="group", name=name, properties=properties or {}),
+            RootObject=lambda properties=None: SimpleNamespace(kind="root", properties=properties or {}),
+            TdmsWriter=TruncatingTdmsWriter,
+            TdmsFile=SimpleNamespace(read=lambda path: (_ for _ in ()).throw(RuntimeError("should not be reached"))),
+        ),
+    )
+
+    experiment = Experiment2(experiment_folder=tmp_path / "truncated")
+    tdms_path = tmp_path / "truncated" / "data.tdms"
+
+    with pytest.raises(RuntimeError, match="write verification failed"):
+        experiment.create_folder_and_tdms()
+
+    # The bad file is left on disk (not silently accepted as a valid experiment) --
+    # but the RuntimeError above is what actually protects the caller.
+    assert tdms_path.exists()
+    assert tdms_path.stat().st_size < 128
 
 
 def test_experiment2_writes_labview_metadata_tdms(tmp_path, monkeypatch):

@@ -12,6 +12,11 @@ import numpy as np
 
 from .ad2 import DoConfig, FmSweepSettings, WfgConfig, coerce_do_config, coerce_wfg_config
 
+# Cheap sanity floor for _verify_tdms_write() -- not a rigorous size model,
+# just enough to catch a silently-empty/header-only write. A real TDMS file
+# with the "Experiment" group's properties is comfortably larger than this.
+_MIN_TDMS_FILE_SIZE_BYTES = 128
+
 
 @lru_cache(maxsize=1)
 def _git_commit_hash() -> str:
@@ -196,7 +201,7 @@ class Experiment2:
     def _write_tdms(self) -> None:
         self.experiment_folder.mkdir(parents=True, exist_ok=True)
         try:
-            from nptdms import ChannelObject, GroupObject, RootObject, TdmsWriter
+            from nptdms import ChannelObject, GroupObject, RootObject, TdmsFile, TdmsWriter
         except ModuleNotFoundError as exc:
             raise RuntimeError("npTDMS is required to write LabVIEW-compatible data.tdms metadata.") from exc
 
@@ -210,6 +215,65 @@ class Experiment2:
             objects.append(ChannelObject("ImageData", "Timestamp", np.asarray(self._tdms_timestamps, dtype=str)))
         with TdmsWriter(str(self.tdms_path)) as writer:
             writer.write_segment(objects)
+
+        self._verify_tdms_write(TdmsFile, properties)
+
+    def _verify_tdms_write(self, tdms_file_cls: Any, properties: dict[str, Any]) -> None:
+        # Lightweight post-write sanity check -- previously the only "verification"
+        # was that TdmsWriter.write_segment() didn't raise. Catches truncated/
+        # corrupted writes and silently-empty files; not a full round-trip
+        # equality check of every value (that would duplicate the write-path tests).
+        try:
+            file_size = self.tdms_path.stat().st_size
+        except OSError as exc:
+            raise RuntimeError(
+                f"data.tdms write verification failed: {self.tdms_path} does not exist after write."
+            ) from exc
+        if file_size < _MIN_TDMS_FILE_SIZE_BYTES:
+            raise RuntimeError(
+                f"data.tdms write verification failed: {self.tdms_path} is only {file_size} bytes "
+                f"(expected at least {_MIN_TDMS_FILE_SIZE_BYTES}) -- looks like a silently empty or "
+                "truncated write."
+            )
+
+        try:
+            read_back = tdms_file_cls.read(str(self.tdms_path))
+        except Exception as exc:
+            raise RuntimeError(
+                f"data.tdms write verification failed: could not reopen {self.tdms_path} with npTDMS's own "
+                "reader -- the file is likely corrupted or truncated."
+            ) from exc
+
+        try:
+            group = read_back["Experiment"]
+        except Exception as exc:
+            raise RuntimeError(
+                f"data.tdms write verification failed: {self.tdms_path} has no 'Experiment' group after write."
+            ) from exc
+
+        missing_properties = set(properties) - set(group.properties)
+        if missing_properties:
+            raise RuntimeError(
+                f"data.tdms write verification failed: {self.tdms_path}'s 'Experiment' group is missing "
+                f"properties that were just written: {sorted(missing_properties)}."
+            )
+
+        if self._tdms_image_names:
+            try:
+                image_group = read_back["ImageData"]
+                image_names = image_group["ImageName"]
+                timestamps = image_group["Timestamp"]
+            except Exception as exc:
+                raise RuntimeError(
+                    f"data.tdms write verification failed: {self.tdms_path} is missing the expected "
+                    "'ImageData' group/channels after writing image data."
+                ) from exc
+            if len(image_names) != len(self._tdms_image_names) or len(timestamps) != len(self._tdms_timestamps):
+                raise RuntimeError(
+                    f"data.tdms write verification failed: {self.tdms_path}'s ImageData channel lengths "
+                    f"({len(image_names)} names, {len(timestamps)} timestamps) don't match what was written "
+                    f"({len(self._tdms_image_names)} names, {len(self._tdms_timestamps)} timestamps)."
+                )
 
     def _tdms_scalar(self, value: Any) -> Any:
         if value is None:

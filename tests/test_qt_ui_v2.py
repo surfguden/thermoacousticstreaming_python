@@ -171,3 +171,53 @@ def test_v2_reuses_existing_experiment_builder(monkeypatch, tmp_path):
         assert config.channels[0].carrier.enable is True
     finally:
         window.close()
+
+
+def test_v2_ad2_output_table_exposes_symmetry_phase_and_repeat_trigger(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        group = window._v2_ad2_output_group()
+        scroll = group.layout().itemAt(0).widget()
+        grid = scroll.widget().layout()
+
+        # Row 0 is the "Detail" sub-header spanning the Symmetry/Phase/Repeat
+        # Trigger columns; row 1 is the per-column header row (shifted down
+        # from row 0 by the addition of the sub-header row).
+        detail_item = grid.itemAtPosition(0, 10)
+        assert detail_item is not None
+        assert detail_item.widget().text() == "Detail"
+
+        headers = [grid.itemAtPosition(1, column).widget().text() for column in range(1, grid.columnCount())]
+        assert "Symmetry (%)" in headers
+        assert "Phase (Deg)" in headers
+        assert "Repeat Trigger" in headers
+
+        symmetry_col = headers.index("Symmetry (%)") + 1
+        phase_col = headers.index("Phase (Deg)") + 1
+        repeat_trigger_col = headers.index("Repeat Trigger") + 1
+
+        # Bound to the exact same widgets qt_ui.py's Experiment tab uses --
+        # not copies -- so a value set through either surface reaches the
+        # same _build_experiment_series() output.
+        assert grid.itemAtPosition(2, symmetry_col).widget() is window.exp_ch1_symmetry
+        assert grid.itemAtPosition(2, phase_col).widget() is window.exp_ch1_phase
+        assert grid.itemAtPosition(2, repeat_trigger_col).widget() is window.exp_ch1_repeat_trigger
+        assert grid.itemAtPosition(3, symmetry_col).widget() is window.exp_ch2_symmetry
+
+        window.series_path.setText(str(tmp_path / "series"))
+        window.exp_camera_fps.setValue(100.0)
+        window.exp_frames.setValue(3)
+        window.exp_ch1_enable.setChecked(True)
+        window.exp_ch1_run.setValue(0.5)
+        window.exp_ch1_symmetry.setValue(65.0)
+        window.exp_ch1_phase.setValue(12.5)
+        window.exp_ch1_repeat_trigger.setChecked(True)
+
+        _series, _total_frames, config = window._build_experiment_series()
+        ch0 = config.channels[0]
+
+        assert ch0.carrier.symmetry_percent == 65.0
+        assert ch0.carrier.phase_deg == 12.5
+        assert ch0.trigger.repeat_trigger is True
+    finally:
+        window.close()

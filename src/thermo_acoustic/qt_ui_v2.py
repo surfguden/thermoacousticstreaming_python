@@ -243,12 +243,23 @@ class MainWindowV2(MainWindow):
 
         content = QWidget()
         grid = QGridLayout(content)
-        headers = ("Enable", "Function", "Frequency (Hz)", "Amplitude (V)", "Offset (V)", "Start (s)", "Run (s)", "cRepeat", "Trigger Source")
+        headers = (
+            "Enable", "Function", "Frequency (Hz)", "Amplitude (V)", "Offset (V)",
+            "Start (s)", "Run (s)", "cRepeat", "Trigger Source",
+            "Symmetry (%)", "Phase (Deg)", "Repeat Trigger",
+        )
+        core_column_count = 9
+        # Detail cluster (Symmetry/Phase/Repeat Trigger) visually set apart from
+        # the core columns with its own spanning sub-header, mirroring the
+        # Carrier/Trigger/Sweep sub-grouping just added to qt_ui.py's Experiment
+        # tab -- purely a visual grouping, same 12 columns/widgets as before.
+        detail_label = QLabel("Detail")
+        grid.addWidget(detail_label, 0, core_column_count + 1, 1, len(headers) - core_column_count)
         for column, header in enumerate(headers, start=1):
-            grid.addWidget(QLabel(header), 0, column)
+            grid.addWidget(QLabel(header), 1, column)
 
-        self._add_experiment_ad2_row(grid, 1, "CH0", self.exp_ad2_channels[0])
-        self._add_experiment_ad2_row(grid, 2, "CH1", self.exp_ad2_channels[1])
+        self._add_experiment_ad2_row(grid, 2, "CH0", self.exp_ad2_channels[0])
+        self._add_experiment_ad2_row(grid, 3, "CH1", self.exp_ad2_channels[1])
         self._size_ad2_output_columns(grid, headers)
 
         # The outer experiment area shrinks this group's content to fit the
@@ -270,8 +281,8 @@ class MainWindowV2(MainWindow):
     def _size_ad2_output_columns(grid: QGridLayout, headers: tuple[str, ...]) -> None:
         padding = 24
         for column, header in enumerate(headers, start=1):
-            header_item = grid.itemAtPosition(0, column)
-            data_item = grid.itemAtPosition(1, column)
+            header_item = grid.itemAtPosition(1, column)
+            data_item = grid.itemAtPosition(2, column)
             header_width = header_item.widget().fontMetrics().horizontalAdvance(header) + padding
             content_width = data_item.widget().sizeHint().width() + padding
             grid.setColumnMinimumWidth(column, max(header_width, content_width, 60))
@@ -288,6 +299,9 @@ class MainWindowV2(MainWindow):
             state["sec_run"],
             state["repeat"],
             state["trigger_source"],
+            state["symmetry"],
+            state["phase"],
+            state["repeat_trigger"],
         )
         for column, widget in enumerate(widgets, start=1):
             grid.addWidget(widget, row, column)

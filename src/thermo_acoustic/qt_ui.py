@@ -466,6 +466,8 @@ class MainWindow(QMainWindow):
         self.sequence_interval = _spin(1.0, decimals=6, minimum=0.000005, maximum=10.0)
         self.sequence_burst = _int_spin(1, minimum=1, maximum=65535)
         self.capture_mode = _combo(["Snap", "Sequence"], "Snap")
+        self.capture_mode.setEnabled(False)
+        self.capture_mode.setToolTip("Not wired to a real backend: never read by _camera_sequence_settings() or any capture path (confirmed dead, Session 11).")
         self.sequence_frames = _int_spin(0, minimum=0)
         self.dcam_source = _combo(["Internal", "External", "Software", "MasterPulse"], "Internal")
         self.external_polarity = _combo(["Negative", "Positive"], "Negative")
@@ -948,7 +950,7 @@ class MainWindow(QMainWindow):
         settings.addRow("Source", self.sequence_source)
         settings.addRow("Interval", self.sequence_interval)
         settings.addRow("Burst", self.sequence_burst)
-        settings.addRow("Capture mode", self.capture_mode)
+        settings.addRow("Capture mode (unused)", self.capture_mode)
         settings.addRow("Frames", self.sequence_frames)
         settings.addRow("Dcam Trigger Source", self.dcam_source)
         settings.addRow("Polarity", self.external_polarity)
@@ -963,8 +965,15 @@ class MainWindow(QMainWindow):
         grid.addWidget(browse, 5, 1)
         grid.addWidget(QLabel("SaveSequence"), 6, 0)
         grid.addWidget(save, 7, 0)
+        sequence_note = QLabel(
+            "These Sequence Settings (Mode/Source/Interval/Burst/Polarity/Delay) are "
+            "applied to every automated Experiment run -- unlike the WFG tab, changes "
+            "made here DO affect experiment runs."
+        )
+        sequence_note.setWordWrap(True)
         grid.addWidget(QLabel("Sequence Settings"), 0, 2)
-        grid.addLayout(settings, 1, 2, 7, 1)
+        grid.addWidget(sequence_note, 1, 2)
+        grid.addLayout(settings, 2, 2, 7, 1)
         return group
 
     def _experiment_tab(self) -> QWidget:
@@ -1005,42 +1014,74 @@ class MainWindow(QMainWindow):
 
     def _ad_settings_group(self) -> QGroupBox:
         group = QGroupBox("Analog Discovery Settings")
-        form = QFormLayout(group)
+        layout = QVBoxLayout(group)
         note = QLabel("These settings fully control AD2 output during experiment runs, independent of the WFG tab.")
         note.setWordWrap(True)
-        form.addRow(note)
-        form.addRow("Camera FPS", self.exp_camera_fps)
-        form.addRow("Camera Start (s)", self.exp_camera_start)
-        form.addRow("CH0 Enable", self.exp_ch1_enable)
-        form.addRow("CH0 Function", self.exp_ch1_function)
-        form.addRow("CH0 Frequency (Hz)", self.exp_ch1_freq)
-        form.addRow("CH0 Amplitude (V)", self.exp_ch1_amp)
-        form.addRow("CH0 Offset (V)", self.exp_ch1_offset)
-        form.addRow("CH0 Start (s)", self.exp_ch1_start)
-        form.addRow("CH0 Run (s) (0=Cont)", self.exp_ch1_run)
-        form.addRow("CH0 cRepeat (0=inf)", self.exp_ch1_repeat)
-        form.addRow("CH0 Trigger Source", self.exp_ch1_trigger_source)
-        form.addRow("CH0 Symmetry (%)", self.exp_ch1_symmetry)
-        form.addRow("CH0 Phase (Deg)", self.exp_ch1_phase)
-        form.addRow(self.exp_ch1_repeat_trigger)
-        form.addRow(self.exp_sweep_enable)
-        form.addRow("CH0 Sweep Center Frequency (MHz)", self.exp_sweep_center_mhz)
-        form.addRow("CH0 Sweep Width (kHz)", self.exp_sweep_width_khz)
-        form.addRow("CH0 Sweep Time (ms)", self.exp_sweep_time_ms)
-        form.addRow("CH0 Sweep Type", self.exp_sweep_type)
-        form.addRow("CH1 Enable", self.exp_ch2_enable)
-        form.addRow("CH1 Function", self.exp_ch2_function)
-        form.addRow("CH1 Frequency (Hz)", self.exp_ch2_freq)
-        form.addRow("CH1 Amplitude (V)", self.exp_ch2_amp)
-        form.addRow("CH1 Offset (V)", self.exp_ch2_offset)
-        form.addRow("CH1 Start (s)", self.exp_ch2_start)
-        form.addRow("CH1 Run (s)(0=Cont)", self.exp_ch2_run)
-        form.addRow("CH1 cRepeat (0=inf)", self.exp_ch2_repeat)
-        form.addRow("CH1 Trigger Source", self.exp_ch2_trigger_source)
-        form.addRow("CH1 Symmetry (%)", self.exp_ch2_symmetry)
-        form.addRow("CH1 Phase (Deg)", self.exp_ch2_phase)
-        form.addRow(self.exp_ch2_repeat_trigger)
+        layout.addWidget(note)
+
+        top = QFormLayout()
+        top.addRow("Camera FPS", self.exp_camera_fps)
+        top.addRow("Camera Start (s)", self.exp_camera_start)
+        layout.addLayout(top)
+
+        self._add_experiment_channel_sections(layout, "CH0")
+        self._add_experiment_channel_sections(layout, "CH1")
         return group
+
+    def _add_experiment_channel_sections(self, layout: QVBoxLayout, channel_label: str) -> None:
+        # Mirrors the manual WFG tab's own Carrier/Trigger/(FM Mod)/Sweep
+        # sub-grouping convention (_wfg_channel_group()) -- same QLabel +
+        # QFormLayout structure, applied here since this form's fields
+        # (unlike the WFG tab's) aren't otherwise visually distinguished.
+        if channel_label == "CH0":
+            enable, function, freq, amp, offset = (
+                self.exp_ch1_enable, self.exp_ch1_function, self.exp_ch1_freq, self.exp_ch1_amp, self.exp_ch1_offset,
+            )
+            symmetry, phase = self.exp_ch1_symmetry, self.exp_ch1_phase
+            start, run, repeat, trigger_source, repeat_trigger = (
+                self.exp_ch1_start, self.exp_ch1_run, self.exp_ch1_repeat,
+                self.exp_ch1_trigger_source, self.exp_ch1_repeat_trigger,
+            )
+        else:
+            enable, function, freq, amp, offset = (
+                self.exp_ch2_enable, self.exp_ch2_function, self.exp_ch2_freq, self.exp_ch2_amp, self.exp_ch2_offset,
+            )
+            symmetry, phase = self.exp_ch2_symmetry, self.exp_ch2_phase
+            start, run, repeat, trigger_source, repeat_trigger = (
+                self.exp_ch2_start, self.exp_ch2_run, self.exp_ch2_repeat,
+                self.exp_ch2_trigger_source, self.exp_ch2_repeat_trigger,
+            )
+
+        carrier = QFormLayout()
+        carrier.addRow(f"{channel_label} Enable", enable)
+        carrier.addRow(f"{channel_label} Function", function)
+        carrier.addRow(f"{channel_label} Frequency (Hz)", freq)
+        carrier.addRow(f"{channel_label} Amplitude (V)", amp)
+        carrier.addRow(f"{channel_label} Offset (V)", offset)
+        carrier.addRow(f"{channel_label} Symmetry (%)", symmetry)
+        carrier.addRow(f"{channel_label} Phase (Deg)", phase)
+        layout.addWidget(QLabel("Carrier"))
+        layout.addLayout(carrier)
+
+        trigger = QFormLayout()
+        run_label = "Run (s) (0=Cont)" if channel_label == "CH0" else "Run (s)(0=Cont)"
+        trigger.addRow(f"{channel_label} Start (s)", start)
+        trigger.addRow(f"{channel_label} {run_label}", run)
+        trigger.addRow(f"{channel_label} cRepeat (0=inf)", repeat)
+        trigger.addRow(f"{channel_label} Trigger Source", trigger_source)
+        trigger.addRow(repeat_trigger)
+        layout.addWidget(QLabel("Trigger"))
+        layout.addLayout(trigger)
+
+        if channel_label == "CH0":
+            sweep = QFormLayout()
+            sweep.addRow(self.exp_sweep_enable)
+            sweep.addRow(f"{channel_label} Sweep Center Frequency (MHz)", self.exp_sweep_center_mhz)
+            sweep.addRow(f"{channel_label} Sweep Width (kHz)", self.exp_sweep_width_khz)
+            sweep.addRow(f"{channel_label} Sweep Time (ms)", self.exp_sweep_time_ms)
+            sweep.addRow(f"{channel_label} Sweep Type", self.exp_sweep_type)
+            layout.addWidget(QLabel("Sweep (FM modulation calibration -- distinct from Frequency Scanning)"))
+            layout.addLayout(sweep)
 
     def _experiment_numbers_group(self) -> QGroupBox:
         group = QGroupBox("Experiment")
