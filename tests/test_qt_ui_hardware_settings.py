@@ -178,6 +178,51 @@ def test_experiment_sequence_settings_set_explicit_deterministic_trigger_source(
     assert series.experiments[0].sequence_settings["trigger_source"] == "Internal"
 
 
+def test_experiment_sequence_settings_carry_manual_tab_sequence_cluster_fields(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    window.series_path.setText(str(tmp_path / "series"))
+    window.exp_camera_fps.setValue(100.0)
+    window.exp_frames.setValue(5)
+
+    window.sequence_mode.setCurrentText("Burst")
+    window.sequence_source.setCurrentText("Software")
+    window.sequence_interval.setValue(0.25)
+    window.sequence_burst.setValue(7)
+    window.external_polarity.setCurrentText("Positive")
+    window.external_delay.setValue(0.5)
+
+    series, _total_frames, _config = window._build_experiment_series()
+    settings = series.experiments[0].sequence_settings
+
+    assert settings["masterpulse_mode"] == "Burst"
+    assert settings["masterpulse_source"] == "Software"
+    assert settings["masterpulse_interval_s"] == 0.25
+    assert settings["masterpulse_burst_times"] == 7
+    assert settings["trigger_polarity"] == "Positive"
+    assert settings["trigger_delay_s"] == 0.5
+    # frames/camera_start_s/trigger_source remain experiment-sourced, not the manual tab's.
+    assert settings["frames"] == 5
+    assert settings["trigger_source"] == "Internal"
+
+
+def test_experiment_wfg_config_carries_symmetry_phase_and_repeat_trigger(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    window.series_path.setText(str(tmp_path / "series"))
+    window.exp_camera_fps.setValue(100.0)
+    window.exp_frames.setValue(5)
+
+    window.exp_ch1_symmetry.setValue(65.0)
+    window.exp_ch1_phase.setValue(12.5)
+    window.exp_ch1_repeat_trigger.setChecked(True)
+
+    series, _total_frames, _config = window._build_experiment_series()
+    ch0 = series.experiments[0].wfg_config.channels[0]
+
+    assert ch0.carrier.symmetry_percent == 65.0
+    assert ch0.carrier.phase_deg == 12.5
+    assert ch0.trigger.repeat_trigger is True
+
+
 def test_fm_sweep_toggle_off_preserves_existing_experiment_behavior(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
     window.series_path.setText(str(tmp_path / "series"))

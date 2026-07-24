@@ -49,6 +49,10 @@ class FakeCamera:
         self.exposure_ms = exposure_ms
         self.calls.append(("camera", "configure", exposure_ms))
 
+    def configure_exposure_time(self, exposure_ms):
+        self.exposure_ms = exposure_ms
+        self.calls.append(("camera", "configure_exposure_time", exposure_ms))
+
     def configure_sequence(self, settings):
         self.sequence_config = settings
         self.calls.append(("camera", "configure_sequence", settings))
@@ -278,6 +282,31 @@ def test_application_full_flow_dry_run_skips_flush_by_default(tmp_path):
     assert isinstance(app.valve, FakeValve)
 
 
+def test_run_experiment2_applies_experiment_tab_exposure_to_real_dcam_call(tmp_path):
+    # Regression test for the Session 19 finding: run_experiment2() previously called
+    # camera.configure(exposure_ms=...), which only updates a Python-side bookkeeping
+    # field and never writes DCAM_IDPROP.EXPOSURETIME to real hardware -- only the
+    # manual Camera tab's configure_exposure_time() call does that. Simulate a manual
+    # tab session having left the camera at a different exposure, then confirm
+    # run_experiment2() overwrites it with the Experiment tab's own distinctive value
+    # via the same real hardware-writing call the manual tab uses.
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+    app.camera.configure_exposure_time(9.999)  # simulates a prior manual-tab session
+    calls.clear()
+
+    experiment = make_recording_experiment(calls, tmp_path)
+    experiment.global_exposure_ms = 33.7  # distinctive Experiment-tab value
+    app.experiment_series.enqueue_experiments([experiment])
+
+    ok = app.run_experiment2()
+
+    assert ok is True
+    assert ("camera", "configure_exposure_time", 33.7) in calls
+    assert not any(call[:2] == ("camera", "configure") for call in calls)
+    assert app.camera.exposure_ms == 33.7
+
+
 def test_application_full_flow_waits_only_for_remaining_ad2_time(tmp_path, monkeypatch):
     calls = []
     app = make_fake_app(calls, tmp_path)
@@ -332,6 +361,70 @@ def test_application_full_flow_rejects_continuous_ad2_before_hardware_start(tmp_
 
     assert not any(call[:2] == ("ad2", "config_wfg") for call in calls)
     assert ("camera", "start_capture") not in calls
+
+
+def finite_do_clock_config(*, camera_fps=10.0, enabled=True):
+    return {
+        "running": True,
+        "channels": [
+            {
+                "channel_index": 1,
+                "enable": enabled,
+                "clock_frequency_hz": camera_fps,
+                "trigger": {"secRun": 0.5, "secWait": 0.0},
+            }
+        ],
+    }
+
+
+def test_run_experiment2_rejects_camera_fps_exceeding_readout_budget(tmp_path):
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+    app.camera.read_readout_time = lambda: 0.05  # 50 ms readout for the configured ROI
+    experiment = make_recording_experiment(calls, tmp_path)
+    experiment.global_exposure_ms = 20.0  # 20 ms exposure -> 70 ms frame period -> ~14.3 fps max
+    experiment.do_clock_settings = finite_do_clock_config(camera_fps=100.0)
+    app.experiment_series.enqueue_experiments([experiment])
+
+    try:
+        app.run_experiment2()
+    except ValueError as exc:
+        assert "exceeds what the current exposure" in str(exc)
+        assert "Reduce Camera FPS" in str(exc)
+    else:
+        raise AssertionError("camera fps exceeding the readout/exposure budget should be rejected")
+
+    assert ("camera", "start_capture") not in calls
+
+
+def test_run_experiment2_allows_camera_fps_within_readout_budget(tmp_path):
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+    app.camera.read_readout_time = lambda: 0.005  # 5 ms readout for the configured ROI
+    experiment = make_recording_experiment(calls, tmp_path)
+    experiment.global_exposure_ms = 5.0  # 5 ms exposure -> 10 ms frame period -> 100 fps max
+    experiment.do_clock_settings = finite_do_clock_config(camera_fps=50.0)
+    app.experiment_series.enqueue_experiments([experiment])
+
+    ok = app.run_experiment2()
+
+    assert ok is True
+    assert ("camera", "start_capture") in calls
+
+
+def test_run_experiment2_ignores_disabled_do_clock_channel_for_fps_budget(tmp_path):
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+    app.camera.read_readout_time = lambda: 0.05
+    experiment = make_recording_experiment(calls, tmp_path)
+    experiment.global_exposure_ms = 20.0
+    experiment.do_clock_settings = finite_do_clock_config(camera_fps=1000.0, enabled=False)
+    app.experiment_series.enqueue_experiments([experiment])
+
+    ok = app.run_experiment2()
+
+    assert ok is True
+    assert ("camera", "start_capture") in calls
 
 
 def test_initialize_rolls_back_already_initialized_devices_when_later_device_fails(tmp_path):

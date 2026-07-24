@@ -549,11 +549,13 @@ class HamamatsuCamera:
 
     def center_roi(self) -> None:
         if isinstance(self.roi, SubRegion):
-            self.roi = self.roi.centered(self.roi_limits)
+            centered: SubRegion | dict = self.roi.centered(self.roi_limits)
         elif self.roi is None:
-            self.roi = {"centered": True}
+            centered = {"centered": True}
         else:
-            self.roi["centered"] = True
+            centered = dict(self.roi)
+            centered["centered"] = True
+        self.configure_roi(centered)
 
     def save_sequence(self, image_data: object, folder: Path) -> None:
         if self.backend is not None:

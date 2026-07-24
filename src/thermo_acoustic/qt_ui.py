@@ -484,6 +484,9 @@ class MainWindow(QMainWindow):
         self.exp_ch1_run = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_ch1_repeat = _int_spin(0, minimum=0)
         self.exp_ch1_trigger_source = _combo(WFG_TRIGGER_SOURCE_OPTIONS, "trigsrcNone")
+        self.exp_ch1_symmetry = _spin(50.0, decimals=3, minimum=0.0, maximum=100.0)
+        self.exp_ch1_phase = _spin(0.0, decimals=3)
+        self.exp_ch1_repeat_trigger = QCheckBox("Repeat Trigger")
         self.exp_sweep_enable = QCheckBox("Enable Frequency Sweep During Experiment")
         self.exp_sweep_center_mhz = _spin(1.934, decimals=6, minimum=0.0)
         self.exp_sweep_width_khz = _spin(50.0, decimals=3, minimum=0.0)
@@ -498,6 +501,9 @@ class MainWindow(QMainWindow):
         self.exp_ch2_run = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_ch2_repeat = _int_spin(0, minimum=0)
         self.exp_ch2_trigger_source = _combo(WFG_TRIGGER_SOURCE_OPTIONS, "trigsrcNone")
+        self.exp_ch2_symmetry = _spin(50.0, decimals=3, minimum=0.0, maximum=100.0)
+        self.exp_ch2_phase = _spin(0.0, decimals=3)
+        self.exp_ch2_repeat_trigger = QCheckBox("Repeat Trigger")
         self.exp_ad2_channels = [
             {
                 "frequency": self.exp_ch1_freq,
@@ -509,6 +515,9 @@ class MainWindow(QMainWindow):
                 "sec_run": self.exp_ch1_run,
                 "repeat": self.exp_ch1_repeat,
                 "trigger_source": self.exp_ch1_trigger_source,
+                "symmetry": self.exp_ch1_symmetry,
+                "phase": self.exp_ch1_phase,
+                "repeat_trigger": self.exp_ch1_repeat_trigger,
             },
             {
                 "frequency": self.exp_ch2_freq,
@@ -520,6 +529,9 @@ class MainWindow(QMainWindow):
                 "sec_run": self.exp_ch2_run,
                 "repeat": self.exp_ch2_repeat,
                 "trigger_source": self.exp_ch2_trigger_source,
+                "symmetry": self.exp_ch2_symmetry,
+                "phase": self.exp_ch2_phase,
+                "repeat_trigger": self.exp_ch2_repeat_trigger,
             },
         ]
         self._experiment_ad2_seeded = False
@@ -1008,6 +1020,9 @@ class MainWindow(QMainWindow):
         form.addRow("CH0 Run (s) (0=Cont)", self.exp_ch1_run)
         form.addRow("CH0 cRepeat (0=inf)", self.exp_ch1_repeat)
         form.addRow("CH0 Trigger Source", self.exp_ch1_trigger_source)
+        form.addRow("CH0 Symmetry (%)", self.exp_ch1_symmetry)
+        form.addRow("CH0 Phase (Deg)", self.exp_ch1_phase)
+        form.addRow(self.exp_ch1_repeat_trigger)
         form.addRow(self.exp_sweep_enable)
         form.addRow("CH0 Sweep Center Frequency (MHz)", self.exp_sweep_center_mhz)
         form.addRow("CH0 Sweep Width (kHz)", self.exp_sweep_width_khz)
@@ -1022,6 +1037,9 @@ class MainWindow(QMainWindow):
         form.addRow("CH1 Run (s)(0=Cont)", self.exp_ch2_run)
         form.addRow("CH1 cRepeat (0=inf)", self.exp_ch2_repeat)
         form.addRow("CH1 Trigger Source", self.exp_ch2_trigger_source)
+        form.addRow("CH1 Symmetry (%)", self.exp_ch2_symmetry)
+        form.addRow("CH1 Phase (Deg)", self.exp_ch2_phase)
+        form.addRow(self.exp_ch2_repeat_trigger)
         return group
 
     def _experiment_numbers_group(self) -> QGroupBox:
@@ -1119,6 +1137,9 @@ class MainWindow(QMainWindow):
             experiment_state["sec_run"].setValue(wfg_state["sec_run"].value())
             experiment_state["repeat"].setValue(wfg_state["repeat"].value())
             _set_combo_text(experiment_state["trigger_source"], wfg_state["trigger_source"].currentText())
+            experiment_state["symmetry"].setValue(wfg_state["symmetry"].value())
+            experiment_state["phase"].setValue(wfg_state["phase"].value())
+            experiment_state["repeat_trigger"].setChecked(wfg_state["repeat_trigger"].isChecked())
         self._experiment_ad2_seeded = True
 
     def _seed_experiment_ad2_if_experiment_tab(self, index: int) -> None:
@@ -1130,8 +1151,8 @@ class MainWindow(QMainWindow):
             frequency_hz=state["frequency"].value(),
             amplitude_v=state["amplitude"].value(),
             offset_v=state["offset"].value(),
-            symmetry_percent=50.0,
-            phase_deg=0.0,
+            symmetry_percent=state["symmetry"].value(),
+            phase_deg=state["phase"].value(),
             function=WaveformFunction(state["function"].currentText()),
             enable=state["enable"].isChecked(),
         )
@@ -1159,7 +1180,7 @@ class MainWindow(QMainWindow):
                 sec_run=state["sec_run"].value(),
                 sec_wait=state["sec_wait"].value(),
                 repeat_count=state["repeat"].value(),
-                repeat_trigger=False,
+                repeat_trigger=state["repeat_trigger"].isChecked(),
                 source=state["trigger_source"].currentText(),
             ),
             fm_mod=fm_mod,
@@ -1534,6 +1555,14 @@ class MainWindow(QMainWindow):
                     global_exposure_ms=self.exp_exposure_ms.value(),
                     trigger_global_exposure=self.global_exposure.isChecked(),
                     sequence_settings={
+                        # Start from the manual Camera tab's own sequence settings so
+                        # masterpulse_mode/masterpulse_source/masterpulse_interval_s/
+                        # masterpulse_burst_times/trigger_polarity/trigger_delay_s --
+                        # which have no separate Experiment-tab controls -- carry
+                        # through to the automated path every run instead of being
+                        # silently omitted, matching RunExperiment2.vi's own behavior
+                        # of always applying the whole SequenceSettings cluster.
+                        **self._camera_sequence_settings(),
                         "frames": self.exp_frames.value(),
                         "camera_start_s": [widget.value() for widget in self.camera_start_array],
                         # Explicit and deterministic so experiment runs never inherit
@@ -1624,6 +1653,12 @@ class MainWindow(QMainWindow):
                 self._experiment_channel_config(0, self.exp_ad2_channels[0]),
                 self._experiment_channel_config(1, self.exp_ad2_channels[1]),
             ],
+            # Not sourced from a live control: the manual WFG tab's own
+            # self.wfg_sync widget is disabled ("Not implemented:
+            # SynchronizeState is currently a non-functional stub") because
+            # WaveFormsBackend.configure_wfg() never calls FDwfAnalogOutMasterSet
+            # -- synchronize_state has no real hardware effect anywhere in this
+            # codebase, manual or automated. Matches the manual tab's own default.
             synchronize_state="Independent",
         )
 
@@ -1982,6 +2017,9 @@ class MainWindow(QMainWindow):
                 "ch1_run": self.exp_ch1_run.value(),
                 "ch1_repeat": self.exp_ch1_repeat.value(),
                 "ch1_trigger_source": self.exp_ch1_trigger_source.currentText(),
+                "ch1_symmetry": self.exp_ch1_symmetry.value(),
+                "ch1_phase": self.exp_ch1_phase.value(),
+                "ch1_repeat_trigger": self.exp_ch1_repeat_trigger.isChecked(),
                 "ch2_frequency": self.exp_ch2_freq.value(),
                 "ch2_amplitude": self.exp_ch2_amp.value(),
                 "ch2_offset": self.exp_ch2_offset.value(),
@@ -1991,6 +2029,9 @@ class MainWindow(QMainWindow):
                 "ch2_run": self.exp_ch2_run.value(),
                 "ch2_repeat": self.exp_ch2_repeat.value(),
                 "ch2_trigger_source": self.exp_ch2_trigger_source.currentText(),
+                "ch2_symmetry": self.exp_ch2_symmetry.value(),
+                "ch2_phase": self.exp_ch2_phase.value(),
+                "ch2_repeat_trigger": self.exp_ch2_repeat_trigger.isChecked(),
                 "flush_enabled": self.exp_flush_enabled.isChecked(),
                 "flush_flowrate": self.exp_flush_flowrate.value(),
                 "flush_volume": self.exp_flush_volume.value(),
@@ -2081,12 +2122,16 @@ class MainWindow(QMainWindow):
                 "ch1_start": self.exp_ch1_start,
                 "ch1_run": self.exp_ch1_run,
                 "ch1_repeat": self.exp_ch1_repeat,
+                "ch1_symmetry": self.exp_ch1_symmetry,
+                "ch1_phase": self.exp_ch1_phase,
                 "ch2_frequency": self.exp_ch2_freq,
                 "ch2_amplitude": self.exp_ch2_amp,
                 "ch2_offset": self.exp_ch2_offset,
                 "ch2_start": self.exp_ch2_start,
                 "ch2_run": self.exp_ch2_run,
                 "ch2_repeat": self.exp_ch2_repeat,
+                "ch2_symmetry": self.exp_ch2_symmetry,
+                "ch2_phase": self.exp_ch2_phase,
                 "flush_flowrate": self.exp_flush_flowrate,
                 "flush_volume": self.exp_flush_volume,
                 "wait_after_flush": self.exp_wait_after_flush,
@@ -2105,6 +2150,8 @@ class MainWindow(QMainWindow):
             for key, widget in (
                 ("ch1_enable", self.exp_ch1_enable),
                 ("ch2_enable", self.exp_ch2_enable),
+                ("ch1_repeat_trigger", self.exp_ch1_repeat_trigger),
+                ("ch2_repeat_trigger", self.exp_ch2_repeat_trigger),
             ):
                 if key in experiment:
                     widget.setChecked(bool(experiment[key]))
@@ -2122,6 +2169,9 @@ class MainWindow(QMainWindow):
                     "ch1_run",
                     "ch1_repeat",
                     "ch1_trigger_source",
+                    "ch1_symmetry",
+                    "ch1_phase",
+                    "ch1_repeat_trigger",
                     "ch2_frequency",
                     "ch2_amplitude",
                     "ch2_offset",
@@ -2131,6 +2181,9 @@ class MainWindow(QMainWindow):
                     "ch2_run",
                     "ch2_repeat",
                     "ch2_trigger_source",
+                    "ch2_symmetry",
+                    "ch2_phase",
+                    "ch2_repeat_trigger",
                 )
             ):
                 self._experiment_ad2_seeded = True

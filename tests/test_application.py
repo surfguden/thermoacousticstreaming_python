@@ -956,6 +956,28 @@ def test_hamamatsu_backend_commands(tmp_path):
     assert ("close",) in backend.calls
 
 
+def test_center_roi_reapplies_centered_coordinates_to_real_backend():
+    backend = FakeCameraBackend()
+    camera = HamamatsuCamera(backend=backend)
+    camera.update_roi_limits(
+        SubRegionLimits(
+            horizontal_size=MinMaxInc(0, 100, 1),
+            vertical_size=MinMaxInc(0, 80, 1),
+        )
+    )
+    camera.configure_roi(SubRegion(horizontal_size=20, vertical_size=10))
+    backend.calls.clear()
+
+    camera.center_roi()
+
+    configure_roi_calls = [call for call in backend.calls if call[0] == "configure_roi"]
+    assert len(configure_roi_calls) == 1, "center_roi() must re-apply the centered ROI via a real configure_roi() call"
+    applied_roi = configure_roi_calls[0][1]
+    assert (applied_roi.horizontal_offset, applied_roi.vertical_offset) == (40, 35)
+    assert (applied_roi.horizontal_size, applied_roi.vertical_size) == (20, 10)
+    assert camera.roi is applied_roi
+
+
 def test_experiment_series_helpers(tmp_path):
     first = Experiment2(experiment_folder=tmp_path / "first")
     series = ExperimentSeries2(series_path=tmp_path)

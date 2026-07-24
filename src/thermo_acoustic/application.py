@@ -275,6 +275,41 @@ class Application:
                 )
         return wait_seconds
 
+    def _configured_camera_fps(self, experiment: Experiment2) -> float | None:
+        do_config = coerce_do_config(experiment.do_clock_settings)
+        for channel in do_config.channels:
+            if channel.enable and channel.clock_frequency_hz:
+                return float(channel.clock_frequency_hz)
+        return None
+
+    def _check_camera_timing_budget(self, experiment: Experiment2) -> None:
+        # Concrete implementation of the previously-deferred "exposure vs.
+        # readout timing" check (LabVIEW's Camera tab shows a live-computed
+        # "N is Vertical is max for <fps> fps" readback derived from DCAM's
+        # own DCAM_IDPROP_TIMING_READOUTTIME; Python had no equivalent).
+        # camera_fps is read from the DO clock channel because that is the
+        # only place the intended frame rate is recorded on Experiment2.
+        camera_fps = self._configured_camera_fps(experiment)
+        if camera_fps is None or camera_fps <= 0:
+            return
+        # Read back self.camera.exposure_ms (the value configure_exposure_time()
+        # just applied to real hardware above) rather than experiment.global_exposure_ms
+        # directly, so this check verifies the actual applied exposure instead of
+        # trusting the experiment dict to match what was really pushed to the device.
+        exposure_s = max(self.camera.exposure_ms, 0.0) / 1000.0
+        readout_s = max(self.camera.read_readout_time(), 0.0)
+        frame_period_s = exposure_s + readout_s
+        if frame_period_s <= 0:
+            return
+        achievable_fps = 1.0 / frame_period_s
+        if camera_fps > achievable_fps:
+            raise ValueError(
+                f"Configured Camera FPS ({camera_fps:.3f}) exceeds what the current exposure "
+                f"({exposure_s * 1000:.3f} ms) and ROI readout time ({readout_s * 1000:.3f} ms) "
+                f"can sustain (max {achievable_fps:.3f} fps for this ROI/exposure combination). "
+                "Reduce Camera FPS, exposure, or vertical ROI size before starting this experiment."
+            )
+
     def _ad2_trigger_completion_seconds(self, *, label: str, sec_run: float, sec_wait: float) -> float:
         if sec_run == 0:
             raise ValueError(
@@ -338,12 +373,18 @@ class Application:
         self.ad2.config_wfg(experiment.wfg_config)
         self.ad2.config_do_clock_special(experiment.do_clock_settings)
 
-        self.camera.configure(exposure_ms=experiment.global_exposure_ms)
+        # configure_exposure_time() (not the plain configure() bookkeeping
+        # setter) is what actually writes DCAM_IDPROP.EXPOSURETIME to real
+        # hardware -- matches the manual Camera tab's _configure_camera(),
+        # which already calls it. Previously this path only updated
+        # self.camera.exposure_ms without ever pushing it to the device.
+        self.camera.configure_exposure_time(experiment.global_exposure_ms)
         self.camera.configure_sequence(experiment.sequence_settings)
         self.fire_status_event(
             "Configuring camera trigger global exposure; this may only take effect with compatible trigger source settings"
         )
         self.camera.configure_trigger_global_exposure(experiment.trigger_global_exposure)
+        self._check_camera_timing_budget(experiment)
         image_data = []
         aborted = False
         self.camera.start_capture()
