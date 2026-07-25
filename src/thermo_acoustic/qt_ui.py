@@ -547,6 +547,19 @@ class MainWindow(QMainWindow):
         self.camera_start_array = [_spin(0.0, decimals=3, minimum=0.0) for _ in range(10)]
         self.global_exposure = QCheckBox("Off/On")
         self.dynamic_camera_start = QCheckBox("Off/On")
+        # Frequency Scanning / Dynamic Frequency (LabVIEW's FrequencyHelper.vi +
+        # CreateExperiments.vi "Dynamic Frequency"/"Frequency List" inputs,
+        # investigated in a prior session, implemented here). Discrete per-repeat
+        # substitution of Channel 1's carrier frequency -- architecturally
+        # parallel to Dynamic Camera Start Time above, but the frequency list
+        # is generated from Start/Stop/Count rather than entered per-slot.
+        # Start/Stop use kHz, matching the Session-29 kHz unification for every
+        # other WFG Carrier frequency field on this tab (not Hz, as the
+        # original LabVIEW-only investigation assumed before that unification).
+        self.exp_freq_scan_enable = QCheckBox("Enable Frequency Scanning During Experiment")
+        self.exp_freq_scan_start_khz = _spin(1900.0, decimals=3, minimum=0.0)
+        self.exp_freq_scan_stop_khz = _spin(1975.0, decimals=3, minimum=0.0)
+        self.exp_freq_scan_count = _int_spin(2, minimum=1)
         self.average_fps = QLabel("0")
 
     def _make_wfg_channel_state(self, index: int, frequency: float, amplitude: float) -> dict[str, object]:
@@ -1042,8 +1055,7 @@ class MainWindow(QMainWindow):
         grid.addWidget(self.series_path, 6, 0, 1, 5)
         grid.addWidget(browse, 6, 5)
         grid.addWidget(self._ad_settings_group(), 7, 0, 1, 2)
-        grid.addWidget(self._experiment_numbers_group(), 7, 2)
-        grid.addWidget(self._experiment_flush_group(), 8, 2)
+        grid.addWidget(self._experiment_settings_column(), 7, 2, 2, 1)
         grid.addWidget(self._camera_start_group(), 7, 4, 2, 1)
         grid.addWidget(QLabel("GlobalExposure"), 7, 5)
         grid.addWidget(self.global_exposure, 7, 6)
@@ -1152,6 +1164,26 @@ class MainWindow(QMainWindow):
             layout.addWidget(QLabel("Sweep (FM modulation calibration -- distinct from Frequency Scanning)"))
             layout.addLayout(sweep)
 
+    def _experiment_settings_column(self) -> QScrollArea:
+        # Adding the Frequency Scanning group as a third box stacked in this
+        # column (alongside the existing Experiment/Flush settings groups)
+        # squeezed all three below their minimumSizeHint at the app's default
+        # window size -- the same 0-1px row-collapse failure mode fixed for
+        # _ad_settings_group() in an earlier session. Same fix here: give the
+        # stack its own QScrollArea instead of forcing the grid to compress it.
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.addWidget(self._experiment_numbers_group())
+        layout.addWidget(self._experiment_flush_group())
+        layout.addWidget(self._experiment_frequency_scan_group())
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setMaximumHeight(360)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setWidget(content)
+        return scroll
+
     def _experiment_numbers_group(self) -> QGroupBox:
         group = QGroupBox("Experiment")
         form = QFormLayout(group)
@@ -1174,6 +1206,15 @@ class MainWindow(QMainWindow):
         form = QFormLayout(group)
         for widget in self.camera_start_array:
             form.addRow(widget)
+        return group
+
+    def _experiment_frequency_scan_group(self) -> QGroupBox:
+        group = QGroupBox("Frequency Scanning (Dynamic Frequency, Ch1 only)")
+        form = QFormLayout(group)
+        form.addRow(self.exp_freq_scan_enable)
+        form.addRow("Start Frequency (kHz)", self.exp_freq_scan_start_khz)
+        form.addRow("Stop Frequency (kHz)", self.exp_freq_scan_stop_khz)
+        form.addRow("Number of Frequencies", self.exp_freq_scan_count)
         return group
 
     def _error_panel(self) -> QGroupBox:
@@ -1261,7 +1302,9 @@ class MainWindow(QMainWindow):
         if self.tabs.tabText(index) == "Experiment":
             self._seed_experiment_ad2_from_wfg_once()
 
-    def _experiment_channel_config(self, index: int, state: dict[str, object]) -> WfgChannelConfig:
+    def _experiment_channel_config(
+        self, index: int, state: dict[str, object], *, frequency_override_hz: float | None = None
+    ) -> WfgChannelConfig:
         # state["frequency"] displays/stores kHz (Experiment tab's own Frequency
         # field) -- converted to Hz here, matching _channel_config()'s manual-tab
         # equivalent conversion.
@@ -1291,6 +1334,18 @@ class MainWindow(QMainWindow):
             carrier.frequency_hz = sweep.center_hz
             carrier.enable = True
             fm_mod = sweep.fm_mod_settings()
+        # Frequency Scanning / Dynamic Frequency: per-repeat discrete carrier
+        # frequency substitution (LabVIEW's CreateExperiments.vi "Dynamic
+        # Frequency"/"Frequency List" inputs), applied only to Channel 1
+        # (index 0) -- Channel 2 is never touched, matching the original
+        # investigation's finding that this is architecturally parallel to
+        # Dynamic Camera Start Time (a per-repeat substitution keyed on
+        # repeat index), not a new experiment-count expansion. Applied after
+        # FM Sweep's own override above so the two (unrelated, both Ch1-only)
+        # features don't silently fight if both were somehow enabled at
+        # once -- the per-repeat scan value wins.
+        if index == 0 and frequency_override_hz is not None:
+            carrier.frequency_hz = frequency_override_hz
         return WfgChannelConfig(
             channel_index=index,
             carrier=carrier,
@@ -1303,6 +1358,22 @@ class MainWindow(QMainWindow):
             ),
             fm_mod=fm_mod,
         )
+
+    def _experiment_frequency_scan_list_hz(self) -> list[float]:
+        # LabVIEW's FrequencyHelper.vi generates a linear array of frequencies
+        # from Start/Stop/Number-of-Frequencies inputs (prior investigation,
+        # C:\git\thermacoustics, commit 8f8e255, "Updated with Frequency
+        # Scanning"). Linear (not log) spacing is inferred from that
+        # investigation's reading of the VI, not independently re-derived
+        # from its compiled block-diagram wiring -- flagged there as an
+        # assumption, not a confirmed fact, and left as such here.
+        start_hz = self.exp_freq_scan_start_khz.value() * 1000.0
+        stop_hz = self.exp_freq_scan_stop_khz.value() * 1000.0
+        count = self.exp_freq_scan_count.value()
+        if count <= 1:
+            return [start_hz] * count
+        step = (stop_hz - start_hz) / (count - 1)
+        return [start_hz + step * index for index in range(count)]
 
     def _experiment_fm_sweep_settings(self) -> FmSweepSettings:
         return FmSweepSettings(
@@ -1657,12 +1728,32 @@ class MainWindow(QMainWindow):
         return any(series_path.rglob("data.tdms")) or any(series_path.rglob("frame_*.tiff"))
 
     def _build_experiment_series(self) -> tuple[ExperimentSeries2, int, WfgConfig]:
-        config = self._experiment_wfg_config()
+        repeats = self.exp_repeats.value()
+        frequency_scan_hz: list[float] | None = None
+        if self.exp_freq_scan_enable.isChecked():
+            frequency_scan_hz = self._experiment_frequency_scan_list_hz()
+            if len(frequency_scan_hz) != repeats:
+                raise ValueError(
+                    f"Frequency Scanning is enabled with {len(frequency_scan_hz)} frequencies "
+                    f"(Number of Frequencies) but Repeats is set to {repeats}; they must match "
+                    "before starting this experiment."
+                )
         fm_sweep = self._experiment_fm_sweep_settings() if self.exp_sweep_enable.isChecked() else None
         started_at = time.monotonic()
         _ = started_at
         experiments = []
-        for repeat in range(self.exp_repeats.value()):
+        preview_config: WfgConfig | None = None
+        for repeat in range(repeats):
+            # WFG config is built fresh per repeat (like _experiment_do_clock_config(repeat)
+            # below) rather than once outside this loop -- required for Frequency Scanning's
+            # per-repeat Ch1 frequency substitution to actually differ between repeats; with
+            # Frequency Scanning off this produces the same values every repeat, just as a
+            # single shared config object did before.
+            config = self._experiment_wfg_config(
+                frequency_override_hz=frequency_scan_hz[repeat] if frequency_scan_hz is not None else None
+            )
+            if preview_config is None:
+                preview_config = config
             folder = Path(self.series_path.text()) / f"repeat_{repeat + 1:03d}"
             experiments.append(
                 Experiment2(
@@ -1697,7 +1788,7 @@ class MainWindow(QMainWindow):
                     fm_sweep=fm_sweep,
                 )
             )
-        return ExperimentSeries2(Path(self.series_path.text()), experiments), self.exp_frames.value() * self.exp_repeats.value(), config
+        return ExperimentSeries2(Path(self.series_path.text()), experiments), self.exp_frames.value() * repeats, preview_config
 
     def _experiment_do_clock_config(self, repeat_index: int) -> DoConfig:
         camera_fps = float(self.exp_camera_fps.value())
@@ -1786,11 +1877,13 @@ class MainWindow(QMainWindow):
             progress("average_fps", f"{fps:.2f}")
         return "ExperimentComplete"
 
-    def _experiment_wfg_config(self) -> WfgConfig:
+    def _experiment_wfg_config(self, frequency_override_hz: float | None = None) -> WfgConfig:
         return WfgConfig(
             running=any(state["enable"].isChecked() for state in self.exp_ad2_channels),
             channels=[
-                self._experiment_channel_config(0, self.exp_ad2_channels[0]),
+                self._experiment_channel_config(
+                    0, self.exp_ad2_channels[0], frequency_override_hz=frequency_override_hz
+                ),
                 self._experiment_channel_config(1, self.exp_ad2_channels[1]),
             ],
             # Not sourced from a live control: the manual WFG tab's own

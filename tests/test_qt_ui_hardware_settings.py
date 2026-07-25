@@ -541,6 +541,98 @@ def test_fm_sweep_toggle_on_carries_settings_into_experiment_wfg_config(monkeypa
     assert properties["FMSweepType"] == "Symmetric"
 
 
+def test_frequency_scanning_off_keeps_wfg_config_identical_across_repeats(monkeypatch, tmp_path):
+    # Regression guard for the restructure that made _build_experiment_series()
+    # build a fresh WfgConfig per repeat (like _experiment_do_clock_config(repeat))
+    # instead of once outside the loop: with Dynamic Frequency off, every
+    # repeat's Ch1/Ch2 carrier values must still come out identical.
+    window = make_window(monkeypatch, tmp_path)
+    window.series_path.setText(str(tmp_path / "series"))
+    window.exp_camera_fps.setValue(100.0)
+    window.exp_frames.setValue(5)
+    window.exp_repeats.setValue(3)
+    window.exp_ch1_freq.setValue(1900.0)
+    # exp_freq_scan_enable is off by default -- do not touch it.
+
+    series, _total_frames, _config = window._build_experiment_series()
+
+    frequencies = [experiment.wfg_config.channels[0].carrier.frequency_hz for experiment in series.experiments]
+    assert frequencies == [1_900_000.0, 1_900_000.0, 1_900_000.0]
+    ch2_frequencies = [experiment.wfg_config.channels[1].carrier.frequency_hz for experiment in series.experiments]
+    assert len(set(ch2_frequencies)) == 1
+
+
+def test_frequency_scanning_substitutes_ch1_only_per_repeat(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    window.series_path.setText(str(tmp_path / "series"))
+    window.exp_camera_fps.setValue(100.0)
+    window.exp_frames.setValue(5)
+    window.exp_repeats.setValue(4)
+    window.exp_ch2_freq.setValue(1.0)  # kHz -- Ch2 must stay at this value every repeat
+
+    window.exp_freq_scan_enable.setChecked(True)
+    window.exp_freq_scan_start_khz.setValue(1900.0)
+    window.exp_freq_scan_stop_khz.setValue(1975.0)
+    window.exp_freq_scan_count.setValue(4)
+
+    series, _total_frames, _config = window._build_experiment_series()
+
+    ch1_frequencies = [experiment.wfg_config.channels[0].carrier.frequency_hz for experiment in series.experiments]
+    assert ch1_frequencies == pytest.approx([1_900_000.0, 1_925_000.0, 1_950_000.0, 1_975_000.0])
+
+    ch2_frequencies = [experiment.wfg_config.channels[1].carrier.frequency_hz for experiment in series.experiments]
+    assert ch2_frequencies == [1000.0, 1000.0, 1000.0, 1000.0]
+
+
+def test_frequency_scanning_repeats_mismatch_raises_before_starting(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    window.series_path.setText(str(tmp_path / "series"))
+    window.exp_camera_fps.setValue(100.0)
+    window.exp_frames.setValue(5)
+    window.exp_repeats.setValue(3)
+
+    window.exp_freq_scan_enable.setChecked(True)
+    window.exp_freq_scan_start_khz.setValue(1900.0)
+    window.exp_freq_scan_stop_khz.setValue(1975.0)
+    window.exp_freq_scan_count.setValue(5)  # deliberately != Repeats (3)
+
+    with pytest.raises(ValueError, match="Frequency Scanning"):
+        window._build_experiment_series()
+    assert not (tmp_path / "series").exists(), "nothing should be created before the mismatch is caught"
+
+
+def test_frequency_scanning_swept_value_reaches_real_tdms_metadata(monkeypatch, tmp_path):
+    # End-to-end per Task 1(f): confirms _build_experiment_series()'s per-repeat
+    # WFG config actually reaches Experiment2/_write_tdms() with no changes
+    # needed there -- each repeat's existing WFGFreqCh1 property should record
+    # the swept frequency automatically once the config itself varies by repeat.
+    from test_application import install_fake_nptdms
+
+    writes = install_fake_nptdms(monkeypatch)
+
+    window = make_window(monkeypatch, tmp_path)
+    window.series_path.setText(str(tmp_path / "series"))
+    window.exp_camera_fps.setValue(100.0)
+    window.exp_frames.setValue(5)
+    window.exp_repeats.setValue(3)
+
+    window.exp_freq_scan_enable.setChecked(True)
+    window.exp_freq_scan_start_khz.setValue(1900.0)
+    window.exp_freq_scan_stop_khz.setValue(1975.0)
+    window.exp_freq_scan_count.setValue(3)
+
+    series, _total_frames, _config = window._build_experiment_series()
+    expected_hz = [1_900_000.0, 1_937_500.0, 1_975_000.0]
+
+    for experiment, expected in zip(series.experiments, expected_hz):
+        experiment.create_folder_and_tdms()
+        experiment.save_settings()
+        tdms_path = experiment.experiment_folder / "data.tdms"
+        objects = writes[str(tdms_path)]
+        experiment_group = next(item for item in objects if getattr(item, "kind", "") == "group" and item.name == "Experiment")
+        assert experiment_group.properties["WFGFreqCh1"] == pytest.approx(expected)
+
+
 def test_qt_ui_experiment_do_clock_config_uses_camera_timing_fields(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
     window.exp_camera_fps.setValue(200.0)

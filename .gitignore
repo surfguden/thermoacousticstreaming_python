@@ -36,6 +36,13 @@ frame_*.npy
 *.bak
 ~$*
 
+# pytest --basetemp scratch directories (this machine's tmp_path fixture hits
+# PermissionError, so tests are run with --basetemp=.pytest_tmp* project-
+# relative dirs instead -- these are throwaway test output and must never be
+# committed, see the accidental commit cleaned up in a prior session).
+.pytest_tmp*/
+_pytest_tmp/
+
 # Editor and OS metadata
 .vscode/
 .idea/
