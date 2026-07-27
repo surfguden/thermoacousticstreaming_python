@@ -3,6 +3,17 @@
 This is a read-only migration audit. It does not authorize hardware testing or
 new hardware actions.
 
+## Document Status
+
+This audit is historical and point-in-time. It remains useful for the
+LabVIEW-to-Python reasoning trail, but several gaps it identified were later
+implemented in the current working tree. Current code now includes the AD2
+DO-clock/DIO1 LED timing derivation, an AD2 completion wait that includes the
+DO term, LabVIEW-style `data.tdms` metadata writing, corrected valve command
+strings, and a combined fill-level/flow-rate pump call in `flush()`. Treat
+the tables below as an audit trail plus remaining-gap list, not as a live-state
+substitute for current source inspection and `docs/claude_code_change_log.md`.
+
 ## Executive Summary
 
 The current Python program is structurally migrated from the exported LabVIEW
@@ -12,11 +23,13 @@ experiment shape: initialize instruments, configure AD2, configure camera,
 start capture, trigger, read frames, optionally flush, save, and clean up.
 
 However, the full working LabVIEW experiment is not yet proven completely and
-equivalently migrated. The camera path is strongly validated, and low-risk AD2
-output is validated. The remaining equivalence gaps are AD2 trigger timing,
-LabVIEW DO clock/custom relevance, CH2/index 1 purpose, real Qmix pump
-initialization semantics, valve command mapping, flush behavior with real
-pump/valve, the obsolete Prior COM7 Z-stage path, and save/metadata parity.
+equivalently migrated. The camera path is strongly validated, low-risk AD2
+output is validated, and later sessions filled several migration gaps
+identified by this audit. Remaining equivalence/risk areas still include AD2
+trigger timing against the physical setup, DO Custom relevance, CH2/index 1
+purpose, real Qmix pump behavior, valve status-handshake confidence, flush
+behavior with real pump/valve, the obsolete Prior COM7 Z-stage path, and exact
+TDMS/metadata parity with LabVIEW.
 
 Recommendation: do not proceed directly to full LabVIEW acoustic output. A
 short AD2-only acoustic candidate can be considered only after confirming the
@@ -100,17 +113,17 @@ The table classifies status in the current Python program, not just the raw
 | `Application_RunExperiment2` | `Application.run_experiment2()` | Migrated and active |
 | `Application_CleanUp` | `Application.cleanup()` | Migrated and active |
 | `ExperimentSeries2` queue operations | `ExperimentSeries2` dataclass methods | Migrated and active |
-| `Experiment2` settings/folder/save hooks | `Experiment2` dataclass methods | Partially migrated |
+| `Experiment2` settings/folder/save hooks | `Experiment2` dataclass methods | Migrated and active for `data.tdms`; exact LabVIEW parity still not fully proven |
 | Hamamatsu init/open/exposure/ROI/sequence/capture/save | `HamamatsuCamera`, `HamamatsuDcamBackend` | Migrated and active |
 | Hamamatsu software trigger/snapshot/readout/buffer helpers | Camera facade/backend methods | Migrated, some paths not central to current experiment |
 | AD2 init/open/cleanup/PC trigger | `AD2Sdk`, `WaveFormsBackend` | Migrated and active |
 | AD2 WFG config/start/stop/readback helpers | `AD2Sdk`, `WfgConfig`, `WaveFormsBackend.configure_wfg()` | Migrated and active, timing uncertain |
-| AD2 DO Custom | `DoConfig`, `config_do_custom()`, `configure_do()` | Migrated but legacy/nonessential and currently unsafe to run |
-| AD2 DO Clock Special | `config_do_clock_special()`, `configure_do()` | Migrated but legacy/nonessential and currently unsafe to run |
+| AD2 DO Custom | `DoConfig`, `config_do_custom()`, `configure_do()` | Migrated but legacy/nonessential unless separately justified |
+| AD2 DO Clock Special | `config_do_clock_special()`, `configure_do()` | Migrated and active for DIO1 LED timing; still safety-gated |
 | AD2 MSO | `capture_scope*()` and Qt MSO tab | Migrated, outside canonical experiment path |
 | Cetoni/Qmix pump init | `CetoniPump`, `QmixPumpBackend.initialize()` | Migrated but unsafe with current main workflow |
 | Pump flow/fill/refill/empty/reference/status | `CetoniPump` and `QmixPumpBackend` methods | Migrated but gated/unsafe until validated |
-| Valve init/position/cleanup | `Valve`, `SerialTextCommandBackend` | Migrated but hardware mapping uncertain |
+| Valve init/position/cleanup | `Valve`, `SerialTextCommandBackend` | Migrated with `P01`/`P02` commands; status-query confidence still limited |
 | Application flush | `Application.flush()` | Migrated but gated; unsafe with real pump/valve |
 | Prior Z motor | `PriorZMotor` | Migrated but obsolete for current hardware |
 | Z-stack | `Application.z_stack()` | Migrated but unsafe/obsolete with current Z hardware |
@@ -128,13 +141,13 @@ The table classifies status in the current Python program, not just the raw
 | AD2 WFG call order | Python configures WFG before camera capture and PC trigger. It calls `FDwfAnalogOutConfigure(..., running)` during WFG config. With `trigsrcNone`, output may start at config time rather than PC trigger. Not proven equivalent. |
 | AD2 PC trigger | Present in `Application.run_experiment2()` immediately after `camera.start_capture()`. Semantics depend on WFG trigger source; uncertain for `trigsrcNone`. |
 | AD2 CH1/CH2 mapping | Python UI has two WFG channels. LabVIEW screenshot candidate has CH0 at `1.975 MHz`, `2 V` and CH1/index 1 at `1000 Hz`, `1 V`; CH2 purpose is unknown. Current staged acoustic mode is CH0-only. |
-| DO Custom / DO Clock | APIs are migrated and can call real DigitalOut configuration, but current experiment passes `{}` from Qt. Relevance to the working LabVIEW acoustic experiment is not proven. |
+| DO Custom / DO Clock | DO Clock Special is now active in the experiment path for DIO1 LED timing; DO Custom remains legacy/nonessential unless separately justified. |
 | Pump/Qmix init | Python backend opens bus, starts communication, clears faults, enables pump, and configures units. This is active behavior and may differ from the exact LabVIEW operational state. It is not safe as passive main-workflow init. |
 | Pump flow | Python has refill/empty/generate flow/set fill level/reference. Not validated for current one-pump hardware beyond discovery/readback. |
-| Flush order | Python matches the apparent LabVIEW sequence: valve pos1, wait, pump fill-level/generate flow, wait for pump, valve pos2, wait after flush, set fill level. Real semantics remain unvalidated. |
-| Valve commands | Python opens COM resource and writes `"1"` or `"2"` by default. Current hardware likely uses COM6, while LabVIEW screenshot candidate mentions COM5. Position meaning is unresolved. |
+| Flush order | Python now uses the LabVIEW-style combined `set_fill_level(level, flow_rate)` call for the first pump move, then waits, switches valve, waits, and updates the final fill level. Real semantics remain hardware-sensitive. |
+| Valve commands | Python opens COM resource and writes `P01`/`P02` with CR termination through `SerialTextCommandBackend`. The status query is protocol-derived and should still be treated cautiously until hardware-confirmed. |
 | Z-stage | Prior COM7 implementation maps LabVIEW Prior VIs, but current hardware is a Thorlabs/APT piezo controller. The migrated Prior path is not equivalent to current hardware. |
-| Save/metadata | Python saves TIFF frames as `frame_00000.tiff` etc. `Experiment2.save_settings()`, `save_image_data()`, and `save_camera_settings()` are mostly directory-creation hooks, not full LabVIEW TDMS/metadata equivalence. |
+| Save/metadata | Python saves TIFF frames and writes `data.tdms` with experiment/camera/image metadata. Exact field-by-field LabVIEW parity still requires review against real LabVIEW output files. |
 | Cleanup order | Python cleanup order is camera, pump, valve, Z motor, AD2. LabVIEW cleanup included these classes. Equivalence is broad, but pump cleanup calls stop and Qmix bus stop/close if real. |
 
 ## D. Current Canonical Active Workflow vs Original LabVIEW
@@ -150,11 +163,11 @@ The table classifies status in the current Python program, not just the raw
 | Valve init | `Valve.initialize()` | Yes if enabled | COM open-close only | High | Command mapping unresolved. |
 | Prior Z init | `PriorZMotor.initialize()` | Yes if enabled | Not valid current hardware | High | COM7 absent. |
 | Dequeue experiment | `ExperimentSeries2.dequeue_experiment()` | Yes | Unit/fake tested | Low | Structural match. |
-| Create folder/TDMS | `create_folder_and_tdms()` | Yes | Unit/fake tested | Medium | Folder exists, TDMS equivalence not implemented. |
-| Save settings | `save_settings()` | Yes | Unit/fake tested | Medium | Mostly a placeholder. |
+| Create folder/TDMS | `create_folder_and_tdms()` | Yes | Unit/fake tested | Medium | Creates `data.tdms`; exact LabVIEW parity still needs review. |
+| Save settings | `save_settings()` | Yes | Unit/fake tested | Medium | Writes `data.tdms`; exact LabVIEW parity still needs review. |
 | Configure WFG | `ad2.config_wfg()` | Yes | Low-risk output passed | High for acoustic | Start timing uncertain. |
 | Configure DO custom | `ad2.config_do_custom()` | Not in canonical run | Not validated | High | Migrated but not active. |
-| Configure DO clock special | `ad2.config_do_clock_special()` | Yes, but usually `{}` | Fake tested only | Medium/high | Empty config in Qt experiment path. |
+| Configure DO clock special | `ad2.config_do_clock_special()` | Yes | Fake tested only | Medium/high | DIO1 LED timing derived from Camera FPS / Camera Start / Frames. |
 | Configure camera exposure | `camera.configure()` | Yes | Passed | Low | Wrapper stores exposure; backend sequence can set exposure. |
 | Configure camera sequence | `camera.configure_sequence()` | Yes | Passed | Low/medium | Trigger-source equivalence still needs acoustic workflow check. |
 | Start camera capture | `camera.start_capture()` | Yes | Passed | Low | DCAM buffer lifecycle fixed. |
@@ -163,7 +176,7 @@ The table classifies status in the current Python program, not just the raw
 | Stop capture | `camera.stop_capture()` | Yes | Passed | Low | Cleanup path exists. |
 | Flush | `if experiment.flush_enabled: flush()` | Gated, default false | Fake tested | High | Real pump/valve not validated. |
 | Save sequence | `camera.save_sequence()` | Yes | Passed for TIFF | Medium | Downstream metadata parity unknown. |
-| Save image/settings metadata | `save_image_data()`, `save_camera_settings()` | Yes | Fake/unit only | Medium | Mostly placeholders. |
+| Save image/settings metadata | `save_image_data()`, `save_camera_settings()` | Yes | Fake/unit only | Medium | Writes `data.tdms`; exact LabVIEW parity still needs review. |
 | Experiment cleanup | `experiment.cleanup()` | Yes | Fake/unit | Low/medium | Placeholder. |
 | Application cleanup | `Application.cleanup()` | Yes | Fake/unit plus standalone smokes | Medium | Real pump/valve/Z cleanup not fully validated. |
 
@@ -179,10 +192,14 @@ Priority items:
      rather than at `pc_trigger()`.
 
 2. DO clock/custom relevance.
-   - LabVIEW exports include `ConfigDOCustom` and `ConfigDOClockSpezial`.
-   - Python implements them.
-   - Current Qt experiment path passes empty DO settings.
-   - They should remain legacy/nonessential unless proven required.
+   - DO Clock Special is now implemented as the DIO1 LED timing path.
+   - DO Custom remains legacy/nonessential unless proven required.
+   - **Caveat (do not conflate these two facts, Session 43):** "implemented
+     as the DIO1 LED timing path" means `config_do_clock_special()` is
+     called with a real, UI-populated `DoConfig` (already true before
+     this session) -- it does **not** mean DIO0/DIO1 relative timing has
+     been checked against the physical setup. That remains unverified
+     against an oscilloscope and is a separate, still-open item.
 
 3. CH2/index 1 purpose.
    - LabVIEW screenshot candidate includes index 1 at `1000 Hz`, `1 V`.
@@ -256,9 +273,9 @@ Priority items:
 
 ## Bottom Line
 
-The migration is broad and structurally complete, but the full working LabVIEW
-experiment is not yet completely proven semantically equivalent in Python. The
-next safest action before any AD2 acoustic short is to verify AD2 timing
-semantics around `config_wfg()`, `trigsrcNone`, and `pc_trigger()`, while
-keeping pump, valve, Qmix, Z-stage, Thorlabs/APT, and DO outputs out of the
-workflow.
+The migration is broad and structurally complete, and later sessions filled
+several gaps this audit originally identified. The full working LabVIEW
+experiment is still not completely proven semantically equivalent in Python.
+Before treating Python as a drop-in LabVIEW replacement, keep verifying AD2
+timing, DIO/LED alignment, pump/valve behavior, Qmix behavior, and TDMS
+metadata parity against the real instrument setup and real LabVIEW output.

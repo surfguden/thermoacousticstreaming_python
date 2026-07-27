@@ -703,10 +703,11 @@ class Valve:
         if self.backend is not None:
             self.backend.write(f"OPEN {self.visa_resource}")
             raw_response = self.backend.query(self.status_query_command)
-            self._apply_status_response(raw_response)
+            if not self._apply_status_response(raw_response):
+                raise ValveError(f"Valve returned unrecognized status on {self.visa_resource}: {self.status_note}")
         self.initialized = True
 
-    def _apply_status_response(self, raw_response: str) -> None:
+    def _apply_status_response(self, raw_response: str) -> bool:
         # Protocol confirmed against IDEX MX Series II driver docs (via the
         # linnarsson-lab/MXII-valve reference driver): "S\r" queries status.
         # Zero bytes back within the read timeout means nothing is on the
@@ -717,16 +718,17 @@ class Valve:
         text = raw_response.strip()
         if text in ("*", "**"):
             self.status_note = "busy"
-            return
+            return True
         if text == "":
             self.status_note = "ready"
-            return
+            return True
         digits = "".join(ch for ch in text if ch.isdigit())
         if digits and int(digits) in (1, 2):
             self.position = int(digits)
             self.status_note = "confirmed"
-            return
+            return True
         self.status_note = f"unverified position response: {text!r}"
+        return False
 
     def set_position(self, position: int) -> None:
         # position=1 -> Open, position=2 -> Closed (see class-level note above).

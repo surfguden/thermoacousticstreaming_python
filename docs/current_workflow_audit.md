@@ -4,6 +4,15 @@ This document captures the current Python control workflow and the safety
 boundary before any LabVIEW acoustic output is run. It is documentation only;
 it does not authorize new hardware actions.
 
+## Document Status
+
+This audit is a point-in-time workflow/safety document. It should be read
+together with `docs/claude_code_change_log.md` for later implementation
+history and `docs/labview_migration_completeness_audit.md` for LabVIEW
+migration-parity questions. Later sessions migrated the AD2 DO-clock/LED
+timing path into the experiment workflow, so older "DO clock is
+legacy/nonessential" wording in this document has been refreshed below.
+
 ## Canonical Python Flow
 
 ```mermaid
@@ -57,7 +66,8 @@ unchanged and can still move pump and valve when real backends are connected.
 | Hamamatsu camera acquisition | `HamamatsuCamera` + `HamamatsuDcamBackend` | Camera path validated |
 | AD2 WFG configuration | `AD2Sdk.config_wfg()` | Low-risk path validated; acoustic timing not fully confirmed |
 | AD2 PC trigger | `AD2Sdk.pc_trigger()` | Present in run path; interaction with `trigsrcNone` needs confirmation |
-| AD2 DO Custom / DO Clock | `config_do_clock_special()` and DO settings | Legacy/nonessential until proven required |
+| AD2 DO Clock Special | `config_do_clock_special()` and DO settings | Active migrated DIO1 LED timing path; remains safety-gated |
+| AD2 DO Custom | `config_do_custom()` and custom DO settings | Legacy/nonessential unless later evidence requires it |
 | Qmix/neMESYS pump | `CetoniPump` + `QmixPumpBackend` | Discovery/status validated only; main workflow real init remains gated |
 | Valve position 1/2 | `Valve.set_position(1/2)` | Mapping unresolved; do not switch yet |
 | Flush | `Application.flush()` | Gated by `flush_enabled`; unsafe with real pump/valve until validated |
@@ -72,7 +82,8 @@ unchanged and can still move pump and valve when real backends are connected.
 | AD2 low-risk WFG | Active but gated | Open-close and low-risk CH0 output passed |
 | AD2 LabVIEW acoustic candidate | Candidate, gated | Frequency/amplitude known, timing and duration risks remain |
 | AD2 PC trigger | Active in workflow, unresolved semantics | `trigsrcNone` may start output during WFG config instead of PC trigger |
-| AD2 DO Custom / DO Clock | Legacy/nonessential | Do not run unless later evidence shows it is required |
+| AD2 DO Clock Special | Active but gated | Migrated as the DIO1 LED timing path derived from Camera FPS / Camera Start / Frames |
+| AD2 DO Custom | Legacy/nonessential | Do not run unless later evidence shows it is required |
 | Qmix pump discovery | Active standalone only | One-pump config validated for discovery/readback |
 | Qmix pump flow | Do not run yet | Pump motion and flow require separate explicit gate |
 | Valve COM/position mapping | Unresolved | COM6 likely valve; position 1/2 effects not confirmed |
@@ -87,7 +98,8 @@ unchanged and can still move pump and valve when real backends are connected.
 | Camera | Low after validation | Camera-only path can run with pump/valve/Z disabled |
 | AD2 WFG | Medium to high for acoustic settings | Low-risk output validated; LabVIEW acoustic requires confirmation and timing acknowledgement |
 | AD2 PC trigger | Medium | WFG start timing vs `pc_trigger()` is not fully confirmed |
-| AD2 DO clock/custom | Unknown | Legacy/nonessential; remains disabled |
+| AD2 DO clock | Medium/high | Active DIO1 LED timing path; timing should still be checked against the physical setup before broad use |
+| AD2 DO custom | Unknown/high | Legacy/nonessential; remains disabled unless separately justified |
 | Pump/Qmix initialize | Medium | Qmix discovery passed, but main workflow real initialization remains out of scope |
 | Pump flow | High | Do not run without explicit pump-flow gate and one-pump config |
 | Valve position 1/2 | High | Do not switch until COM/position mapping is verified |
@@ -123,6 +135,19 @@ unchanged and can still move pump and valve when real backends are connected.
 - Thorlabs/APT motion, enable, home, jog, polling, identify, or settings changes.
 - AD2 DO Custom / DO Clock output.
 - Combined camera + full LabVIEW acoustic output.
+
+**DO Clock caveat (do not conflate these two facts, Session 43):** DO
+Clock Special is populated from real UI values -- `qt_ui.py`'s
+`_experiment_do_clock_config()` builds a real `DoConfig` from
+`exp_camera_fps`/`exp_frames`/`exp_camera_start`, passed unconditionally
+into `config_do_clock_special()` -- this has been true since before this
+session and is not new. That is a *structural/wiring* fact, separate from
+whether the resulting DIO0 (acoustic)/DIO1 (LED) relative timing is
+correct on the physical setup, which remains **unverified against an
+oscilloscope**. The item stayed on this list, and the Risk Table entry
+below still reads "timing should still be checked against the physical
+setup before broad use," for that second reason -- being populated from
+real settings does not mean the timing itself has been confirmed.
 
 ## Required Before Acoustic Expansion
 

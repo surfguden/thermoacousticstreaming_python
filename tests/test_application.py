@@ -607,13 +607,40 @@ def test_valve_initialize_raises_on_empty_status_response():
     assert not valve.initialized
 
 
-def test_valve_initialize_flags_unparseable_status_response():
-    valve_backend = FakeTextBackend({"S": "??\r"})
-    valve = Valve(backend=valve_backend)
+def test_valve_initialize_accepts_explicit_valid_status_response():
+    valve_backend = FakeTextBackend({"S": "2\r"})
+    valve = Valve(backend=valve_backend, visa_resource="COM6")
 
     valve.initialize()
 
     assert valve.initialized
+    assert valve.position == 2
+    assert valve.status_note == "confirmed"
+
+
+def test_valve_initialize_accepts_busy_status_response_as_busy():
+    valve_backend = FakeTextBackend({"S": "*\r"})
+    valve = Valve(backend=valve_backend, visa_resource="COM6")
+
+    valve.initialize()
+
+    assert valve.initialized
+    assert valve.status_note == "busy"
+
+
+def test_valve_initialize_rejects_unparseable_status_response():
+    valve_backend = FakeTextBackend({"S": "??\r"})
+    valve = Valve(backend=valve_backend)
+
+    try:
+        valve.initialize()
+    except Exception as exc:
+        assert "unrecognized status" in str(exc)
+        assert "unverified position response" in str(exc)
+    else:
+        raise AssertionError("expected initialize() to reject an unrecognized valve response")
+
+    assert not valve.initialized
     assert "unverified" in valve.status_note
 
 

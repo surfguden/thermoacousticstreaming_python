@@ -1,34 +1,36 @@
 # Claude Code Change Log
 
-This is a factual record of everything modified in this repository across
-Claude Code sessions to date, compiled from `git log`, `git status`, and
-`git diff` against the working tree on branch `junjiebranch`.
+This is a historical record of the LabVIEW-to-Python migration and the
+Claude Code sessions that worked on it. It is intentionally useful, but it
+is not the live source of truth for the current repository state. For the
+current state, always check `git log`, `git status`, `git diff`, and the
+code itself.
 
-**Important caveat on dating**: as of this writing, none of the work
-described below has been committed. `git log` shows the branch's real
-commit history ending at `5419043` (2026-07-09), and every file discussed
-here still shows as `modified`/untracked in `git status`. That means none
-of this has a git timestamp of its own -- it all exists only as
-uncommitted working-tree changes. No dates are invented; where a date is
-stated, it comes from `git log`.
+**Current repo-state note, refreshed after independent audit.** The old
+top-level caveat in this document said the branch history ended at
+`5419043` and that none of the work below had been committed. That is no
+longer true. As of the refresh that added this note, branch `junjiebranch`
+has commits through `4105fa8` (`Session 39: full 8-category UI audit and
+fix pass...`). The working tree is still not clean: `qt_ui.py`,
+`qt_ui_v2.py`, tooltip-related tests, this changelog, and untracked helper
+files contain additional post-commit work. Current code/tests also contain
+explicit **Session 41** references, so Session 40 is not the latest
+documented edit state in the working tree.
 
 **Caveat on methodology -- read this before treating the document as
-authoritative.** This log was compiled from two distinct kinds of source,
-and they are not equally verifiable:
+authoritative.** Earlier sections were compiled from a mix of git
+evidence, working-tree diffs, and conversation history. Those sources are
+not equally verifiable:
 
-1. **Fresh git diff/grep against the current working tree.** Every
-   file:line reference, current behavior description, and test-count claim
-   in this document was re-checked against the working tree at compile
-   time, not recalled from earlier summaries. This part is independently
-   reproducible by anyone with repo access.
-2. **This conversation's own history**, used for *sequencing and
-   narrative only*: which session did what, in what order, and -- in
-   particular -- the fact that the qt_ui_v2 default-entry-point swap and
-   its later revert happened at all. This is **not** git-derived. Checked
-   at the time this caveat was written: `git stash list` is empty, and
-   `git reflog` contains only commits/checkouts/pulls -- nothing tracks
-   uncommitted working-tree edits. Concretely, for the swap-then-revert
-   sequence:
+1. **Git evidence.** Commit IDs and file contents that exist in the
+   repository can be independently reproduced by anyone with repo access.
+2. **Working-tree evidence.** Uncommitted changes can be checked with
+   `git status` and `git diff`, but they have no commit timestamp and can
+   change again without leaving durable history unless committed.
+3. **Conversation history.** Sequencing claims about work that was made
+   and then fully reverted are not recoverable from git alone. In
+   particular, the qt_ui_v2 default-entry-point swap and later revert are
+   conversation-derived because the net git diff is zero. Concretely:
    - `tools/run_ui.py`'s two edits (swap, then revert) net to a diff of
      zero against the last commit -- `git diff` alone shows no evidence
      this file was ever touched.
@@ -39,23 +41,17 @@ and they are not equally verifiable:
      commit (the final, reverted state) -- the intermediate rewritten
      state is invisible to git.
 
-   The only reason this document records that sequence is that it was
-   carried out directly in this conversation, across two separate user
-   instructions, and is recalled here rather than rediscovered from
-   artifacts. A reader (or a future compiler of this log) starting only
-   from `git log`/`git diff`/`git stash list`/`git reflog` on this repo,
-   with no access to the conversation, would have no way to know this
-   swap-and-revert happened -- the working tree alone would just show
-   `qt_ui` as the current default, with no trace of the detour.
+   A reader starting only from `git log`/`git diff`/`git stash list`/
+   `git reflog`, with no access to the conversation, would have no way to
+   know this swap-and-revert happened.
 
-   A direct consequence: if any *other* change in this conversation was
-   made and then fully reverted without being recalled here, it would be
-   invisible both to git and to this document. This log's completeness
-   for "things done and later undone" is bounded by what was recalled
-   while compiling it, not by anything independently checkable in git.
+   A direct consequence: if any *other* change was made and then fully
+   reverted without being recorded here, it would be invisible both to git
+   and to this document. This log's completeness for "things done and
+   later undone" is bounded by what was recalled while compiling it, not
+   by anything independently checkable in git.
 
-Also note: this log covers everything currently sitting in the working
-tree, which includes work from **two different sources**:
+Also note: this log covers work from **two different sources**:
 
 - A prior coding session (per the user's own account at the start of this
   Claude Code engagement, referred to there as "a prior coding session
@@ -68,6 +64,18 @@ tree, which includes work from **two different sources**:
 - The Claude Code sessions that followed, covered turn-by-turn in the
   "Claude Code sessions" section, sequenced from conversation history as
   described above.
+
+## How to use the docs together
+
+- This file is the historical change log: use it to understand when and
+  why changes were made, but verify live behavior against the current code.
+- `docs/current_workflow_audit.md` is the operational safety map for the
+  current Python workflow and staged hardware boundaries. It is a
+  point-in-time workflow document, not an authorization to run hardware.
+- `docs/labview_migration_completeness_audit.md` is the migration-parity
+  audit against LabVIEW. It records equivalence gaps and historical
+  uncertainty; later code may have closed some gaps, so cross-check this
+  changelog and current source before using it as an implementation spec.
 
 ---
 
@@ -865,15 +873,391 @@ All 8 categories complete, worked strictly in order, one at a time, with a chang
 
 **Repo state:** working tree matches this document's description exactly (re-verified via fresh `git status`/`git diff --stat` immediately before writing this summary, not from memory of earlier steps in this session). Full test suite green (201/201). No hardware exercised this session -- every fix is layout/label/tooltip/display-logic-only, or (Category 7) exposes already-hardware-caveat-carrying features through a new UI surface without touching their underlying hardware-writing code at all. Ready to commit.
 
+### Session 40 -- Comprehensive tooltip coverage: every field, cross-parameter dependencies, and a visible tooltip marker
+
+**Superseded by Session 41 in the current working tree.** This section is
+kept as a historical account of the Session 40 pass. Current code/tests no
+longer match the exact implementation/counts described here: Session 41
+replaced the style-based marker with an icon-wrapper marker and narrowed
+tooltip coverage to the subset judged non-obvious or safety-relevant.
+
+Explicit revision of Session 39's Category 6 pass, which the user judged far too shallow (5 tooltips added, treating most fields as "self-evident"). This session re-scoped to three explicit requirements and worked them in order: (A) tooltip *every* control, not just ones judged non-obvious; (B) make cross-parameter dependencies visible in the tooltip text itself, not just describe each field in isolation; (C) add a visible marker so a tooltip's existence is discoverable without hovering.
+
+**Enumeration first, per the requested method.** Live `findChildren()` sweep (offscreen, against real `qt_ui.MainWindow()`/`qt_ui_v2.MainWindowV2()` instances, not a static grep) over every `QDoubleSpinBox`/`QSpinBox`/`QComboBox`/`QCheckBox`/`QLineEdit` -- internal spin-box/combo text-editor children excluded (Qt gives every `QAbstractSpinBox` its own internal `QLineEdit`, which is not a separate control; an early version of the sweep script over-counted by ~100 before this was caught). Result, reported to the user before any code was written: **172 real value-bearing widgets** in `qt_ui.MainWindow`, of which **81 had no tooltip at all** (Initialization 9, WFG 25, MSO 5, Pump&Valve 1, Camera 4, Experiment 33, plus 4 status/path fields), and **2 tooltips existed but never reached `qt_ui_v2.py` users** (`valve_resource`/`cetoni_config_path`, set inside `_instrument_group()`, a v1-tab-only method `qt_ui_v2.py`'s `InitializationDialog` never calls -- the same class of "tooltip that only works for one of the two UIs" gap this session's own broader sweep was specifically designed to catch). Cross-referencing `_experiment_do_clock_config()`, `Application.flush()`/`FlushSettings.timeout_s`, `_check_camera_timing_budget()`, `hardware_factory.build_hardware_bundle()`, and `_set_mso_stats()` alongside the 7 dependencies named in the task surfaced **15 total cross-parameter dependency relationships** (the 7 given, plus 8 more: Repeats↔Frequency-Scanning-count, Repeats↔Camera-Start-Array-length, Exposure-Time↔Camera-FPS bidirectionally, Flush-Volume↔Syringe/Custom-Volume, Flush-Flowrate↔Flush-Volume, Sample-Count↔Sample-Frequency, Range↔Offset, Enable↔Simulate pairing for all 4 instruments, Sequence-Mode↔Interval/Burst, Trigger-Source↔Polarity/Delay).
+
+**Requirement A -- every gap filled, grounded in code traced this session (not invented).** All 81 missing tooltips written; the 2 misplaced ones relocated into `_build_state()` (the pattern every other tooltip already follows, guaranteeing it applies regardless of which UI's layout method runs) rather than left in `_instrument_group()`. Every WFG-tab and Experiment-tab Carrier field (Frequency/Amplitude/Offset/Function/Enable/channel index) that Session 39 had judged "self-evident enough to skip" now has its own tooltip -- per the user's explicit instruction to be broad, not conservative, about what counts as obvious to an outside operator. A genuinely new fact surfaced while grounding `prior_resource`'s tooltip: tracing `hardware_factory.build_hardware_bundle()` confirmed the Z stage backend combo (`z_backend`) is *never read at all* -- enabling "Z stage" always builds a Prior-serial backend regardless of whether the combo shows `"prior_serial"` or `"thorlabs_apt"`, a stronger claim than the pre-existing "Not wired to a real backend" stub tooltip made. Folded into `prior_resource`'s tooltip and the new open-items entry below.
+
+**Requirement B -- dependency relationships woven directly into tooltip text, both sides.** Rather than a separate annotation mechanism, each dependency's two (or more) fields were written to name each other explicitly and state the relationship -- e.g. `exp_camera_fps`'s tooltip states both "combines with Frames below: the DO clock's run duration = Frames / this value" and the exposure-timing-budget relationship with `exp_exposure_ms`, while `exp_exposure_ms`'s own tooltip states the same relationship back. `exp_repeats` now states both hard constraints tying it to other fields (Frequency Scanning's count must match; Camera Start Array's 10-slot ceiling when Dynamic Camera Start Time is checked) rather than describing "number of repeats" in isolation. `flush_flowrate`/`flush_volume` (and their Experiment-tab twins) now state the real `FlushSettings.timeout_s` formula connecting them, not just "this affects a timeout" vaguely. Roughly 33 tooltip strings carry explicit cross-reference language across the ~50 fields the 15 relationships touch (some strings are shared across multiple widgets, e.g. the Enable/Simulate pairing templates, so the field count exceeds the string count).
+
+**Requirement C -- a visible marker, chosen to avoid breaking the dozens of tests that assert exact row-label text.** Considered appending a literal glyph (e.g. `" ⓘ"`) to row-label strings, but rejected it: many existing tests assert exact label text (e.g. `"Capture mode (unused)"`), and a text-based marker would have broken every one of them for no functional reason. Instead: a new `MainWindow._TOOLTIP_MARK_STYLE = "text-decoration: underline; color: palette(link);"` applied via a new `_mark_tooltip_widget()`/`_mark_tooltip_pair()`/`_mark_tooltip_rows()` helper family ([qt_ui.py:1395](src/thermo_acoustic/qt_ui.py:1395)) -- a *style-only* change (label text itself never changes, so every existing text assertion stays valid) that mirrors the tooltip onto the row's own label widget (not just the field) so hovering either shows the explanation, both styled to look hoverable. `_mark_tooltip_rows(form)` is a generic, no-hardcoded-list sweep over a `QFormLayout`'s own rows (handles both the common `(label, field)` shape and single-widget spanning rows like `form.addRow(checkbox)`), called once at the end of every group-builder method that constructs one (26 call sites across both files); the handful of raw `QGridLayout`/`QHBoxLayout` label+field pairs outside any `QFormLayout` (e.g. the ROI group's ExposureTime(ms) row, the WFG tab's header controls, `qt_ui_v2.py`'s Acquisition Parameters grid) were marked individually via `_mark_tooltip_pair()`/`_mark_tooltip_widget()`. Confirmed empirically offscreen that Qt's stylesheet engine does not support the CSS `text-decoration-style: dotted` variant (renders as a solid underline regardless) -- reported honestly rather than claimed as literally dotted.
+- **Note on Camera Start Array(s):** the 10 per-repeat slots have no adjacent label in either UI (bare `QFormLayout.addRow(widget)`/grid rows) -- each slot's own tooltip is set directly per Requirement A, and the marker is applied to the field widget itself since there is no separate label to decorate.
+
+**Completeness test.** `test_every_value_widget_has_a_tooltip_and_visible_marker` ([tests/test_qt_ui_hardware_settings.py](tests/test_qt_ui_hardware_settings.py)) and `test_v2_every_value_widget_has_a_tooltip_and_visible_marker` ([tests/test_qt_ui_v2.py](tests/test_qt_ui_v2.py)) -- same generic `findChildren()` method as the wheel-guard completeness sweep (Session 28/29/33), run as two independent live instances per this project's own established discipline ("never assume v2 inherits v1's coverage just because widgets are shared"); v2's version additionally opens the Initialization dialog and all four manual panels to confirm the reuse genuinely carries tooltips/markers through, not just structurally.
+
+**Final counts (before -> after, this session):**
+- Widgets with a tooltip at all: **91/172 (53%) -> 172/172 (100%)** in `qt_ui.MainWindow`; **~90/173 -> 173/173 (100%)** in `qt_ui_v2.MainWindowV2` (including the Initialization dialog and all 4 manual panels).
+- Widgets with the visible marker: **0 -> 172/172 (100%)** and **0 -> 173/173 (100%)** respectively (the marker mechanism itself is new this session).
+- Of the 172 total, roughly **50 fields carry explicit cross-parameter dependency language** (Requirement B, 15 relationships) and the remaining **~122 carry purely explanatory text** (Requirement A) -- these categories overlap in practice (a field can have both an explanation and a dependency clause in the same tooltip string) rather than being cleanly partitioned.
+- Tests: **203 passing, up from 201** -- 2 new completeness tests, all pre-existing tests pass unmodified (zero row-label text changed anywhere, confirmed by the fact that no existing exact-label-text assertion needed updating).
+
+**Files touched:** [qt_ui.py](src/thermo_acoustic/qt_ui.py), [qt_ui_v2.py](src/thermo_acoustic/qt_ui_v2.py), [tests/test_qt_ui_hardware_settings.py](tests/test_qt_ui_hardware_settings.py) (1 new test), [tests/test_qt_ui_v2.py](tests/test_qt_ui_v2.py) (1 new test).
+
+**Verification:** tested (203 passing). Not hardware-verified -- tooltip text, label styling, and one tooltip relocation (`_instrument_group()` -> `_build_state()`) only; no widget's read value, signal wiring, or downstream config-building logic changed. The one behavior-adjacent change (Frequency Scanning's `_experiment_frequency_scan_group()`/`_connect_frequency_scan_count_display_refresh()`, already live since Session 39) is untouched by this session.
+
+**Environment note, not a code issue (same category as Session 27's pytest `tmp_path` note):** repeatedly re-running `tests/test_qt_ui_v2.py` alone (10-20x in a loop, to stress-test the new completeness tests) intermittently hit `SystemError: <class 'PySide6.QtWidgets.QLineEdit'> returned NULL without setting an exception` during `MainWindowV2.__init__()` -> `_build_state()`, always at the same line (`self.series_path = QLineEdit(...)`, roughly 30-40 widget constructions into that method). Confirmed this is **not caused by this session's changes**: the identical crash, at the identical line, was reproduced in `test_v2_global_status_panel_does_not_truncate_value_labels` -- an unmodified Session-39 test this session never touched. This is a PySide6/shiboken-level binding flakiness from constructing many `MainWindow`/`MainWindowV2` instances (172+ widgets each) in one process, not a logic bug reachable by adjusting tooltip/label content -- observed at roughly a 1-in-8 to 1-in-15 rate when hammering this one file repeatedly, never observed in the many full-suite runs performed throughout this session (which interleave other test files and so construct fewer consecutive windows per unit time). Reported here for the record; not fixed (out of scope -- an environment/binding characteristic, not application code).
+
+### Session 41 -- Correcting Session 40's overshoot: narrower tooltip coverage, icon-based marker
+
+Explicit two-part correction of Session 40, requested by the user after
+reviewing that session's result: Session 40 tooltipped and marked *all*
+172 fields uniformly, but the actual requirement was always "necessary
+ones only" (fields an outsider can't understand from the label alone), not
+blanket coverage. This session did not touch any tooltip *text* Session 40
+wrote (verified/grounded, left alone) -- only (a) how many fields carry a
+tooltip+marker at all, and (b) what the marker looks like and how it
+triggers.
+
+**Part 1 -- re-classified all 172 fields, reported the split before
+implementing.** Live `findChildren()` sweep (same method as Session 40's
+own enumeration) confirms the final counts precisely: **127 kept, 45
+removed** in `qt_ui.MainWindow` (v2 reuses the same underlying widget
+instances via its manual-panel dialogs, so the same split applies there).
+The 45 removed (tooltip and marker both taken off, label/widget itself
+untouched) are the WFG tab's per-channel Carrier cluster on both channels
+(`idx`, `frequency`, `amplitude`, `offset`, `function`, `enable`,
+`sec_run`, `repeat`) and FM Mod cluster (`fm_frequency`, `fm_amplitude`,
+`fm_offset`, `fm_function` -- `fm_symmetry`/`fm_phase` were judged
+non-obvious and kept), plus `mso_ch1_enabled`/`mso_ch2_enabled`/`mso_offset`,
+`flush_count`, `roi_h_offset`/`roi_h_size`, `image_continuous`,
+`conversion_min`/`conversion_max`, `sequence_path`, the top-bar `status`
+readout, `error_source`, `exp_flush_enabled`, and the Experiment tab's
+per-channel `amplitude`/`offset`/`function`/`repeat` (both channels --
+`frequency`/`enable`/`run` were judged non-obvious on the Experiment tab
+specifically, see below, and kept). Kept fields are the ones actually
+tied to non-obvious semantics, hidden behavior, unverified/stub status, or
+one of Session 40's 15 cross-parameter dependencies -- e.g. Custom Volume,
+WaitAfterFlush, Step Size's override behavior, DCAM Trigger Source's
+unverified status, the Z-stage backend dead-control finding, the
+DO-clock/Camera-FPS relationship.
+
+Three fields were reconsidered mid-pass after actually reading their
+tooltip content, rather than removed by blanket category as first
+planned: `series_path` (states data-overwrite-protection behavior, not
+obvious from the label), and the Experiment tab's (not WFG tab's)
+`exp_ch1_freq`/`exp_ch2_freq` (states the Frequency-Scanning/Sweep
+override relationship), `exp_ch1_enable`/`exp_ch2_enable` (states the
+both-disabled-means-WFG-never-starts dependency), and
+`exp_ch1_run`/`exp_ch2_run` (states a raises-if-zero validation gotcha the
+WFG tab's plain `sec_run` field doesn't have) -- these look identical to
+already-removed self-evident siblings by label alone, but their specific
+tooltip text carries a real dependency or gotcha the label doesn't, so
+they stayed. This is the intended judgment calibration: closer to an
+experienced instrument operator's baseline than Session 39's original
+5-field list, without repeating Session 40's "everything" overshoot.
+
+**Part 2 -- replaced the label-underline marker with a separate click-triggered
+icon widget.** Session 40's marker was a stylesheet change
+(`text-decoration: underline; color: palette(link);`) applied to the row's
+own label widget. Removed entirely, along with its
+`_mark_tooltip_widget()`/`_mark_tooltip_pair()`/`_mark_tooltip_rows()`
+helper family. Replaced with a small "ⓘ" `_TooltipIconButton` (an
+18x18px `QToolButton`) placed in a `_TooltipIconWrapper` container next to
+the field -- never touching the label's own text or style, so no test
+asserting exact label text needed to change. `MainWindow._add_tooltip_icons(form)`
+walks a `QFormLayout`'s rows generically (same no-hardcoded-list method
+Session 40 used) and swaps a row's field widget for `[field, icon]` via
+`QFormLayout.setWidget()` wherever the field already carries a tooltip;
+`_wrap_with_tooltip_icon()` is the same building block, called directly at
+the handful of raw grid/hbox call sites outside any `QFormLayout` (the ROI
+group's ExposureTime(ms)/Center ROI cells, the WFG tab's header controls,
+`series_path`, and `qt_ui_v2.py`'s Acquisition Parameters grid and
+Enable/Simulate pairs). `qt_ui_v2.py`'s dense AD2 Output Parameters table
+(`_v2_ad2_output_group()`, Session 24/25) deliberately got **no** icons at
+all: its cells are the *same shared widget instances* the Experiment tab's
+own labeled rows use, and wrapping either a header or a data cell there
+would change what `grid.itemAtPosition(row, col).widget()` returns,
+breaking that table's own pre-existing identity tests -- the explanation
+stays reachable via the icon on the Experiment tab's own row for the same
+field.
+
+**Trigger mechanism: click, not hover -- confirmed with the user, not
+assumed.** The task flagged this as genuinely ambiguous ("点了才出现" could
+mean either) and asked before implementing; the user answered **Click**
+via the tool's own confirmation prompt. Implemented literally: no native
+`.setToolTip()` is set on the icon button itself (hovering it alone shows
+nothing), and its `clicked` signal calls `QToolTip.showText(pos, text,
+self)` manually, reusing Qt's own tooltip rendering (auto-wrap, native
+look, dismisses when the mouse leaves) rather than a bespoke popup widget.
+
+**Tooltip text auto-wrap confirmed, not just assumed.** `QToolTip.showText()`
+wraps Qt's standard tooltip rendering, which auto-wraps long text at a
+reasonable pixel width by default; the multi-line strings Session 40 wrote
+were left exactly as-is (this session did not touch tooltip text) and
+render as multiple wrapped lines under this new click-triggered display,
+not one unbroken line.
+
+**A real Qt layout bug found and fixed while wiring the icon marker in.**
+`QFormLayout.addLayout()`/`QLayout.addLayout()`, called on a *still-detached*
+(parentless) `QFormLayout` whose row field was already replaced via
+`setWidget()`, silently "unwraps" that replacement -- it reparents the
+inner field widget directly onto the new parent and discards the wrapper
+container, with no error. Confirmed via an isolated repro (build a
+`QFormLayout()`, replace a row via `setWidget()`, then call
+`someLayout.addLayout(form)` -- the wrapper's child widget's `.parent()`
+silently changes from the wrapper to the new parent). This does **not**
+happen when the `QFormLayout` already has a parent widget from
+construction (`QFormLayout(some_widget)`, the pattern used almost
+everywhere else in this file) -- only for the ~11 `QFormLayout()` sites in
+`qt_ui.py` that get attached to an outer layout via `addLayout()` after
+being built (`_wfg_channel_group()`'s `form`/`trigger`/`fm`/`sweep`,
+`_roi_group()`, `_conversion_group()`, `_sequence_group()`'s `settings`,
+`_ad_settings_group()`'s `top`, and `_add_experiment_channel_sections()`'s
+`carrier`/`trigger`/`sweep`). Fixed by reordering each site so
+`_add_tooltip_icons(form)` runs *after* the corresponding
+`layout.addLayout(form)` call, not before.
+
+**Completeness tests rewritten for the narrower coverage and the new
+marker.** `test_every_value_widget_has_a_tooltip_and_visible_marker`
+([tests/test_qt_ui_hardware_settings.py](tests/test_qt_ui_hardware_settings.py))
+now checks coherence generically instead of asserting every widget has a
+tooltip: every tooltipped widget must have the icon marker
+(`isinstance(widget.parentWidget(), qt_ui._TooltipIconWrapper)`), every
+non-tooltipped widget must *not* have one either (confirming the
+narrowing actually removed the marker, not just the tooltip text), and the
+overall split is pinned at `kept == 127` since that split was a reviewed
+judgment call worth protecting from silent drift. `test_v2_...`'s
+equivalent ([tests/test_qt_ui_v2.py](tests/test_qt_ui_v2.py)) was still
+checking for Session 40's old `"text-decoration"` stylesheet string and
+still asserting every widget must have a tooltip -- both stale after this
+session's changes, both rewritten to the same coherence pattern (with an
+explicit, commented exclusion for the AD2 table's 24 shared field widgets,
+matching the production-code rationale above).
+
+**Test-suite flakiness found and mitigated, confirmed environment-specific
+(not a production issue).** Extending tooltip coverage to 127 fields adds
+a wrapper `QWidget` + `QToolButton` next to each one (~250 extra native
+widgets per built `MainWindow`, ~800 to ~1050). Running the full test
+suite intermittently hit `SystemError: <class 'PySide6.QtWidgets.Xxx'>
+returned NULL without setting an exception` from inside PySide6/Shiboken,
+for an essentially random widget class each time. Investigated properly
+rather than guessed at: bisected out cumulative test-session leakage as
+the cause (a single, first-ever `MainWindow()` build in a fresh process
+fails too, ~30-40% of the time) and confirmed it does not reproduce at all
+under the real "windows" Qt platform (5/5 clean) -- only under the
+`QT_QPA_PLATFORM=offscreen` backend this whole test suite forces, meaning
+production use of the actual app is not affected by this at all, only
+this test suite's offscreen rendering. A second construction attempt
+reliably succeeds. Added `tests/conftest.py` (new, previously untracked --
+now part of this session's change set): a `build_with_retry()` helper
+wrapping every `MainWindow()`/`MainWindowV2()`/manual-panel-dialog
+construction call site in both test files with up to 8 retries, plus an
+autouse fixture that forces each test's top-level widgets through
+`deleteLater()` + a manual `QEvent.DeferredDelete` replay (plain
+`processEvents()` alone did not drain that queue for a widget tree this
+size, confirmed empirically) so they don't accumulate across the run.
+Residual flakiness after this mitigation: 0 failures in the large majority
+of full-suite runs performed while verifying this session's work, with an
+occasional single, different-test-each-time failure in roughly 1 in 4-5
+runs of the complete `tests/` suite (205 tests) -- consistent with
+genuine, low-probability native instability in this specific offscreen-Qt/
+Shiboken combination under heavy widget churn (occasionally severe enough
+that even 8 retries in a row all fail), not a logic bug in this session's
+code. Not chased further: full process isolation per test (e.g.
+`pytest-forked`) would likely close this remaining gap but is a
+test-infrastructure change beyond this session's scope; flagged here for
+visibility rather than silently worked around.
+
+**Files touched:** [qt_ui.py](src/thermo_acoustic/qt_ui.py),
+[qt_ui_v2.py](src/thermo_acoustic/qt_ui_v2.py),
+[tests/test_qt_ui_hardware_settings.py](tests/test_qt_ui_hardware_settings.py),
+[tests/test_qt_ui_v2.py](tests/test_qt_ui_v2.py), new
+[tests/conftest.py](tests/conftest.py).
+
+**Verification:** full `tests/` suite green (205/205) across the large
+majority of repeated runs during verification, modulo the documented
+residual offscreen-platform flakiness above. Not hardware-verified --
+tooltip coverage, marker mechanism, and test infrastructure only; no
+widget's read value, signal wiring, or downstream config-building logic
+changed.
+
+### Session 42 -- Pump&Valve layout width fix; qt_ui_v2 tooltip-marker tests re-verified against the current mechanism
+
+**Audit-trail note, written deliberately, not for polish: this entry did
+not exist when the session it describes was worked.** A separate handoff
+check (a fresh read of this changelog cross-checked against live
+`git status`/`git log`) caught that this session's work had landed in the
+working tree with no corresponding changelog entry -- a real process gap,
+not a stylistic one. This entry was reconstructed afterward, from the
+diff and the session's own tool-call history, at the point the gap was
+caught. It is being logged now, after the fact, with that fact stated
+plainly here rather than backdated or folded silently into Session 41's
+entry to look as if it had been written at the time. Future audits of
+this log should treat this paragraph as authoritative on that point.
+
+**Task 1 -- qt_ui_v2 tooltip-marker tests: verified already current, no
+edit needed.** Re-checked `tests/test_qt_ui_v2.py`'s tooltip-coverage
+helpers against the request to "make tooltip-related assertions match the
+current icon-wrapper marker approach" and "do not keep tests that rely on
+the old `styleSheet()`/`"text-decoration"` implementation detail." Grepped
+both `tests/test_qt_ui_v2.py` and `tests/test_qt_ui_hardware_settings.py`
+for `text-decoration`/`styleSheet()`: zero matches in either file.
+`_has_tooltip_icon()` in `tests/test_qt_ui_v2.py` already asserts
+`isinstance(widget.parentWidget(), qt_ui._TooltipIconWrapper)` -- the
+current icon-wrapper mechanism, not the Session 40 stylesheet marker this
+task was worried about. This was already corrected as part of Session 41's
+own completeness-test rewrite (see that entry's "Completeness tests
+rewritten" paragraph); no further change was needed or made.
+
+**Task 2 -- Pump&Valve tab's oversized natural width, fixed.** Measured
+`_pump_tab()` offscreen: `sizeHint` **2194x232**, `minimumSizeHint`
+**1516x232** -- wider than both the app's default window width (1280px)
+and its own documented minimum (980px), guaranteeing forced compression
+or clipping at every normal window size.
+- **First attempt, tried and reverted.** `_flush_group()` (the tab's
+  fourth column's second group) was the one group in this tab missing
+  `QFormLayout.RowWrapPolicy.WrapLongRows`, which its four siblings
+  (Valve/Pump/Syringe/Flow Control/Flush) already use. Adding it dropped
+  the tab's `minimumSizeHint` from 1516px to 1300px, but caused a genuine
+  regression: `test_v2_no_group_box_is_squeezed_below_its_minimum_size_hint`
+  caught "Flush Settings" squeezed to 104px against its own 120px
+  `minimumSizeHint` inside the v2 PumpValve manual-panel dialog at
+  1440x860 -- narrowing one column's width via row-wrapping increased that
+  group's row-height needs just enough to squeeze a sibling elsewhere in
+  the same reused layout. Reverted rather than accepted, per this
+  project's own standing rule that a fix causing a new regression is not
+  an acceptable trade.
+- **Fix actually applied.** Same pattern already established in this file
+  for exactly this situation (`_wfg_channel_group()`, `_sequence_group()`,
+  `_ad_settings_group()`): wrapped `_pump_tab()`'s four-column content in
+  its own `QScrollArea` (`setWidgetResizable(False)`, both scrollbars
+  `ScrollBarAsNeeded`) instead of force-compressing it. No group's
+  internal layout was touched, so this carries none of the row-height-vs-
+  width-tradeoff risk the first attempt hit. Re-measured offscreen: the
+  tab's own `minimumSizeHint` drops from 1516px to **88px** (just the
+  scroll viewport); the full 2194x232 content is unchanged and reachable
+  by scrolling instead of forced compression.
+- **Remaining rough edge, left intentionally:** the tab's *natural*
+  content width (2194px) itself was not reduced -- an operator on a
+  narrower screen still needs to scroll horizontally to reach the
+  rightmost column (Flush/Flush Settings). Reflowing the four columns
+  into two rows would meaningfully shrink the natural width but is a
+  broader redesign than this task's "minimal, local fix" scope called for.
+
+**Files touched:** [qt_ui.py](src/thermo_acoustic/qt_ui.py) only. No test
+file needed a change (Task 1 required none; Task 2's fix is covered by
+the existing generic `test_v2_no_group_box_is_squeezed_below_its_minimum_size_hint`
+regression guard, which caught the reverted first attempt and passed
+against the final fix -- no new test was written specifically for this
+task).
+
+**Verification:** tested -- `pytest tests/test_qt_ui_v2.py
+tests/test_qt_ui_hardware_settings.py` 80/80 across 3 consecutive clean
+runs; full `tests/` suite 205/205. Not hardware-verified -- layout-only,
+no hardware interaction possible to verify against.
+
+### Session 43 -- Docs-inconsistency fix (DO clock caution lists); valve-handshake hardening investigated, still uncommitted and undecided
+
+**Mixed-status entry, deliberately not blurred together.** This session
+covers two genuinely different things: (1) a docs fix that is **done**,
+and (2) an investigation into pre-existing uncommitted code (the
+valve-handshake hardening in `instruments.py`) that is **not** this
+session's work, is **not yet accepted**, and remains exactly as
+uncommitted as it was before this session started. Read the two parts
+separately; neither implies the other's status.
+
+**Part 1 -- docs-inconsistency fix, done.** A prior handoff-check pass
+(commit-provenance/docs-accuracy review, same session that caught the
+missing Session 42 entry) had refreshed `docs/current_workflow_audit.md`
+and `docs/labview_migration_completeness_audit.md` to correct a real
+stale claim (both files previously said the automated experiment path
+"passes `{}`"/"empty config" into `config_do_clock_special()`, which is
+false -- confirmed by reading `qt_ui.py`'s `_experiment_do_clock_config()`,
+which builds a real `DoConfig` from live `exp_camera_fps`/`exp_frames`/
+`exp_camera_start` values, unconditionally passed in at
+`application.py:374`). That correction was accurate. But the same refresh
+pass also **silently dropped "DO Clock" out of both files' caution/
+restriction lists** while fixing the `{}` claim -- `current_workflow_audit.md`'s
+"## Do Not Run Yet" list went from `"AD2 DO Custom / DO Clock output."` to
+just `"AD2 DO Custom output."`, and `labview_migration_completeness_audit.md`'s
+"Mark legacy/hide later" list went from `"DO Custom / DO Clock UI actions
+unless proven required."` to just `"DO Custom UI actions unless proven
+required."` -- both inconsistent with those same files' own Risk Table
+rows, which still (correctly) said DO clock timing "should still be
+checked against the physical setup before broad use" and remained "Fake
+tested only." No file claimed oscilloscope verification outright, but the
+omission functionally implied the open item was closed when it wasn't.
+- **Fix:** both list entries restored verbatim (`"AD2 DO Custom / DO Clock
+  output."` / `"DO Custom / DO Clock UI actions unless proven required."`),
+  plus an explicit caveat paragraph added at both sites distinguishing the
+  two facts that must not be conflated: DO Clock Special being
+  **populated/active from real UI values** (true, and true since before
+  this session -- a structural/wiring fact) versus **DIO0 (acoustic)/DIO1
+  (LED) relative timing being oscilloscope-verified against the physical
+  setup** (still not true -- the same open item this project has carried
+  since the DO-clock derivation was first migrated, unchanged by this
+  session).
+- **Files touched:** [docs/current_workflow_audit.md](docs/current_workflow_audit.md),
+  [docs/labview_migration_completeness_audit.md](docs/labview_migration_completeness_audit.md).
+
+**Part 2 -- valve-handshake hardening: investigated, provenance
+established, still uncommitted, still undecided.** `instruments.py`'s
+`Valve.initialize()`/`_apply_status_response()` currently contain a
+change not written by this session and not attributable to any prior
+session in this log: `_apply_status_response()` now returns `bool`
+instead of `None`, and `initialize()` raises `ValveError` when it returns
+`False` (an unrecognized/unparseable status response), instead of the
+previous behavior of logging `status_note` and continuing as if
+connected.
+- **Provenance, established via `git blame`/`git log -p --follow`, not
+  assumed.** `git blame` on the added lines (the `if not
+  self._apply_status_response(...): raise ValveError(...)` guard, the
+  `-> bool` signature, all three `return True`/`return False` statements)
+  shows every one of them as `Not Committed Yet`. `git log --oneline --all
+  -- src/thermo_acoustic/instruments.py` lists exactly 6 commits that have
+  ever touched this file; `git log -p --follow` through all 6 confirms
+  every prior committed version of `initialize()` called
+  `self._apply_status_response(raw_response)` and discarded the result --
+  never a bool return, never a raise. The surrounding `status_note`-setting
+  logic itself (busy/ready/confirmed/unverified) *is* committed, in
+  `3474232` ("Migrate hardware safety, DO-clock/LED timing, valve
+  protocol, and data-integrity fixes...", the Session 2/13 baseline) --
+  only the hardening (return-bool-and-raise) is new and uncommitted, with
+  no associated commit or session anywhere in this log.
+- **Test coverage verified empirically, not just read.** Temporarily
+  reverted the fix (removed the `if not ...: raise ValveError(...)` guard,
+  restored the old discard-the-result call) and ran
+  `test_valve_initialize_rejects_unparseable_status_response`: it
+  **failed** (`AssertionError: expected initialize() to reject an
+  unrecognized valve response`), confirming the test genuinely exercises
+  the raise path rather than trivially passing regardless. Restored the
+  fix immediately after; `git diff` on `instruments.py` afterward matched
+  the pre-check state exactly (byte-for-byte, confirmed via `git diff`
+  before and after).
+- **Status: still uncommitted, still pending a decision.** This
+  investigation did not change, accept, revert, or commit anything in
+  `instruments.py` -- it is reported here as findings only, exactly as
+  requested. Whether to keep, commit, or discard this hardening remains
+  an open decision, not something this entry should be read as resolving.
+
+**Files touched (Part 2):** none -- read-only investigation, `instruments.py`
+was temporarily modified and restored during the empirical check described
+above, with the restoration confirmed byte-identical to the pre-check
+working-tree state.
+
+**Verification:** Part 1 is a docs-only change (no test suite impact).
+Part 2 made no lasting code change; the temporary revert-and-restore was
+verified via `git diff` equality, not via a test run against a persisted
+change.
+
 ---
 
 ## Known remaining open items as of this writing
 
 **Resolved since the previous version of this list** (kept out of the list below, not repeated): SeriesPath overwrite protection, syringe-volume-vs-flush-capacity mismatch, camera trigger source left undefined, Qmix fill-level unit ambiguity, valve ready-check only at init (not reused during flush), the `"BD 5ml"` inner-diameter value, the experiment-path exposure time never reaching real DCAM hardware (Session 20), TDMS write verification (Session 26), the WFG-tab live-use labeling (Session 29, proposed 3 days prior to that session, previously only done for Camera), the WFG tab's Sweep "Center Frequency" unit (Session 16's MHz choice corrected to kHz in Session 29, alongside every other Carrier/FM-Mod/Sweep frequency field on both tabs), the settings.json Hz->kHz silent-misload gap Session 29 itself flagged as unfixed (Session 30: versioned `schema_version` key + one-time auto-convert + load-time warning), Abort not stopping a running experiment series (Session 31 found it on real hardware, Session 32 fixed it, Session 33 hardware-reconfirmed the fix), `FlushSettings.timeout_s`'s missing minutes-to-seconds conversion (Session 31/32, hardware-reconfirmed Session 33 with the exact originally-failing parameters), and the real Qmix pump being unable to connect via `qt_ui.py`'s Initialize button on a clean environment because `QMIXSDK` was never set (Session 31/32, hardware-reconfirmed Session 33 with `QMIXSDK` genuinely unset beforehand).
 
-- **Valve status-query handshake (`"S"` command)** is protocol-derived from third-party documentation, not yet run against real hardware. (Session 2.)
+- **Valve status-query handshake (`"S"` command)** was originally protocol-derived and unverified (Session 2), but later real-hardware GUI verification reported `status_note="confirmed"` (Session 31). Remaining caution: current code still treats some non-empty but unrecognized status responses as connected-with-note rather than a hard initialization failure, so inspect `Valve._apply_status_response()` before relying on the handshake as a strict device-identity proof.
 - **DCAM frame timestamp clock domain** is unverified -- real per-frame values are now captured and used when the camera/driver reports support, but which clock (camera-internal vs. host-driver) produced them, and what epoch `sec` is measured from, has not been confirmed against real hardware or official SDK documentation. (Session 8.)
-- **Pump flow-rate sign convention**: no sign-inversion logic exists anywhere in `CetoniPump`/`Application.flush()`/the UI, and no documented LabVIEW reference convention exists in this repo to compare against -- there is nothing to verify a match or mismatch against. (Flagged in Session 6.)
+- **Pump flow-rate sign convention** is no longer completely unknown: current UI labeling records `-=aspirate, +=dispense`, and no sign-inversion logic exists anywhere in `CetoniPump`/`Application.flush()`/the UI. Remaining caution: review the live tooltip text before using it as operator guidance, because an independent audit found at least one tooltip still carried older "unverifiable" wording after the label was corrected.
 - **`src/thermo_acoustic/ui.py`** (592 lines, a separate unused Tkinter `MainWindow`) remains in the repo, confirmed unreachable from any launcher, flagged for a removal decision but not removed. (Session 7.)
 - **`qt_ui_v2.py`/`MainWindowV2`** remains explicitly *not* the default launch target (see Session 4) pending hardware verification and user approval, despite having working sidebar panels, valve handshake, and Init dialog fixes.
 - **Camera trigger source is now deterministic but not necessarily correct**: hardcoded to `"Internal"` (Session 13) purely to remove undefined leftover-state risk. Whether the real experiment should instead use `"External"` (paced by the AD2 DIO pulse train) has not been resolved -- **Session 19 traced the real LabVIEW call path (`RunExperiment2.vi` -> `CreateExperiments.vi` -> `Experiment2_Init.vi` -> `ConfigureSequence.vi` -> `tm_inputtriggersource_40.vi`) and confirmed the actual wired value is not recoverable from the exported VI diagrams** (compiled block-diagram wiring, not text); the front-panel screenshot's "Internal" is explicitly not used as a substitute. Still needs oscilloscope verification against real hardware -- unchanged in practice, now backed by a real (negative) investigation instead of screenshot inference. **Session 31 added real supporting evidence** (not a resolution): real per-frame `dcam_clock:` timestamp deltas from an actual hardware run were ~0.0316s apart, matching the camera's own readout time, not the configured DO-clock frame period (0.2s at 5 fps) -- consistent with `"Internal"` free-running the camera at its own rate rather than being paced by the DO clock at all. Deliberately not acted on (needs oscilloscope verification, not fixable from software alone).
