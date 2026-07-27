@@ -1388,6 +1388,610 @@ in this session; Frequency Scanning's persistence is settings-file-only
 and does not touch the hardware-writing per-repeat substitution logic
 already in place since Session 34.
 
+### Session 45 -- New hardware, Phase 1: objective Z-piezo controller standalone verification (real model correction found)
+
+**New feature integration, not an audit/fix pass -- explicitly
+commissioned, per the user's own framing.** Phase 1 only: standalone
+hardware verification via a probe script
+([hardware_tests/test_bpc_piezo_probe.py](hardware_tests/test_bpc_piezo_probe.py)),
+following this project's established pattern
+(`hardware_tests/test_valve_command_probe_v2.py`). **`qt_ui.py`/
+`qt_ui_v2.py` were not touched at all this session** -- integration into
+the app itself is explicitly a later phase, not started.
+
+**Environment setup.** `pythonnet` 3.1.0 installed into the `exp_ctrl`
+conda environment (not previously present). Kinesis confirmed installed
+at `C:\Program Files\Thorlabs\Kinesis`.
+
+**Major finding: the connected device is not a BPC301/BPC303 at all.**
+The task's own starting assumption (Benchtop Piezo Controller, BPC301
+single-channel or BPC303 3-channel) turned out to be wrong, inherited
+from old project history -- this project has referred to this device as
+a generic "APT Piezo Controller" (pylablib's own non-model-specific
+label) since a much earlier session, and that label was never
+previously cross-checked against Thorlabs' actual model-specific classes.
+`BenchtopPiezo.Connect("44533854")`
+(`Thorlabs.MotionControl.Benchtop.PiezoCLI.dll`, the class matching
+Thorlabs' own official GitHub example at
+`Thorlabs/Motion_Control_Examples/Python/Kinesis/Benchtop/BPCXXX/BPC3XX_pythonnet.py`)
+consistently raised `DeviceNotReadyException: Device is not connected`
+on every attempt -- reproduced identically via raw PowerShell .NET
+reflection (bypassing Python/pythonnet entirely), with and without an
+explicit `DeviceManagerCLI.Initialize()` call, and through the actual
+probe script via pythonnet.
+- **Three hypotheses investigated and cleanly ruled out first, each with
+  real evidence, not assumed:**
+  1. **Device exclusivity** (Kinesis GUI holding the connection). Ruled
+     out: user confirmed Kinesis GUI was fully closed (not just
+     disconnected) before a retry, which failed identically.
+  2. **Missing elevation.** Not reached as a live test (UAC prompts
+     require interactive consent this automation shell can't provide),
+     but superseded by the finding below before it became necessary.
+  3. **Channel-selection-before-`Connect()`, sourced from a real NI
+     Knowledge Base article** (`kA00Z0000019RKySAM`, "Control a
+     Thorlabs BPC303 Using .NET and Thorlabs' Kinesis Software") and a
+     related NI Community forum thread -- the KB article's embedded
+     LabVIEW block-diagram image (downloaded and read directly, not
+     just its surrounding text) showed setting a `ChannelNumber`
+     property before `CreateDevice()`, but on the entirely different
+     `Thorlabs.MotionControl.Controls.BenchtopPiezoControl` class (a
+     WinForms/WPF-hybrid ActiveX-style control, not the modern
+     `BenchtopPiezoCLI.BenchtopPiezo` class). Attempting to instantiate
+     that control class standalone failed at construction
+     (`ResourceDictionary.Source` exception) -- it needs a real hosting
+     WPF/WinForms application (Kinesis's own GUI, or LabVIEW's runtime),
+     not usable headless. Ruled out as inapplicable to this script's
+     architecture, not disproven in general.
+- **Real root cause, found via .NET reflection, not guessed:**
+  `DeviceManagerCLI.GetDeviceTypesList()` reports this device's actual
+  type ID as **44**. `BenchtopPiezo`'s own `DevicePrefix41`/
+  `DevicePrefix71` static constants (reflected directly from the DLL)
+  do not include 44 -- meaning the modern BPC-specific class genuinely
+  does not recognize this device's type at all, independent of call
+  sequence. `Thorlabs.MotionControl.Benchtop.PrecisionPiezoCLI.dll`'s
+  `BenchtopPrecisionPiezo` class has a `DevicePrefix44` constant that
+  matches exactly. Confirmed by connecting: `BenchtopPrecisionPiezo
+  .Connect("44533854")` succeeds with no exception, where
+  `BenchtopPiezo.Connect(...)` never did. **This was a wrong-.NET-class
+  problem, not a missing-initialization-step or channel-selection
+  problem** -- both of the latter were live theories with real
+  supporting evidence at the time, and were abandoned in favor of this
+  one only once it was independently confirmed to actually work.
+- **Definitive model confirmation, read live from the device's own
+  `GetDeviceInfo()` (not inferred from any external source):**
+  **Name: `PPC001`**, **Description: "PPC001 1 Ch Precision Piezo
+  Unit"**, FirmwareVersion `2.1.4`, HardwareVersion `2`. This is a
+  Thorlabs **PPC001** (1-Channel Precision Piezo Controller) -- a
+  distinct product line from the BPC series entirely, purpose-built for
+  closed-loop strain-gauge-feedback actuators (which is exactly the
+  PFM450(E) mount's own feedback mechanism, per the user's confirmation
+  of the actual connected actuator). An earlier in-session note claiming
+  `ChannelCount=3` (implying BPC303) was **spurious** -- read from a
+  `BenchtopPiezo` object that had never actually connected; the real,
+  live-connected value is `ChannelCount=1`, consistent with "1 Ch" in
+  the device's own description.
+- **`hardware_tests/test_bpc_piezo_probe.py` updated to the correct
+  class** (`BenchtopPrecisionPiezo`/`PrecisionPiezoCLI.dll` in place of
+  `BenchtopPiezo`/`PiezoCLI.dll`; channel-level API surface --
+  `GetPosition()`/`SetPosition()`/`GetOutputVoltage()`/
+  `SetOutputVoltage()`/`GetPositionControlMode()`/`StartPolling()`/
+  `StopPolling()` -- is identical between `PiezoChannel` and
+  `PrecisionPiezoChannel`, both sharing the same `ThorlabsGenericPiezoCLI`
+  base, so the rest of the script's structure needed no change). Module
+  docstring rewritten to record the actual root cause and model, not the
+  original (incorrect) assumption.
+- **`--identify` and `--read` both run for real** (not simulated) via
+  the corrected script, through `exp_ctrl`'s pythonnet:
+  ```
+  ChannelCount: 1
+  PositionControlMode: OpenLoop
+  Position: 0
+  MaxTravel: 450
+  OutputVoltage: 0
+  MaxOutputVoltage: 150
+  MinOutputVoltage: -25
+  ```
+  `MaxTravel=450` is presumed to be micrometers (matching "PFM450" in
+  the mount's own product name) but this was not independently
+  cross-checked against a units property or the PFM450(E) datasheet in
+  this session -- flagged for confirmation before being relied on for
+  real Z soft-limit values. **`--move` was never attempted**, per
+  explicit instruction -- gated behind `--confirm SEND`, same as the
+  established valve-probe convention, and correctly never reached since
+  Phase 1's scope is read-only verification.
+
+**Design decision recorded for the eventual driver-wrapper/acquisition
+layer (Phase 2+, not implemented yet):** the device was found live in
+`OpenLoop` mode, not `ClosedLoop` -- the mode this project's own Z-scan
+use case requires for position accuracy with the PFM450(E)'s strain-gauge
+feedback. Per explicit instruction, the future driver class must **never
+auto-switch this silently**. The required pattern, to be implemented
+wherever device initialization for the Z-scan feature ends up living
+(the Phase-1 driver wrapper class, not the probe script, since this must
+run every time the scan feature starts, not just during hardware
+bring-up):
+1. On connect, read `PositionControlMode`.
+2. If already `ClosedLoop`: proceed normally, no prompt.
+3. If `OpenLoop` (or anything else unexpected): stop and surface an
+   explicit confirmation requirement before switching -- CLI/probe
+   context: a `[y/n]`-style prompt; eventual UI context: a confirmation
+   dialog, same "explicit acknowledgment before a hardware-mode change"
+   pattern already established elsewhere in this project (e.g. the
+   SeriesPath overwrite-confirmation `QMessageBox`, Session 10).
+4. `ClosedLoop` is the correct *default expectation* for this
+   application, but is never assumed or force-set without that
+   acknowledgment.
+Not implemented this session -- Phase 1 is still probe-script/driver-
+wrapper-design stage, per instruction; this is recorded here so it
+carries forward accurately into that later work rather than needing to
+be rediscovered.
+
+**Files touched:**
+[hardware_tests/test_bpc_piezo_probe.py](hardware_tests/test_bpc_piezo_probe.py)
+(new). No `src/thermo_acoustic/` files touched.
+
+**Verification:** real hardware throughout this session's Phase 1 work
+(list/identify/read all run against the genuine physical device, not
+fakes/offscreen) -- this *is* the verification. No automated pytest
+suite impact (new file lives under `hardware_tests/`, this project's
+existing convention for real-hardware-only scripts, not the
+`tests/`-collected fake-backed suite). Not yet integrated into
+`qt_ui.py`/`qt_ui_v2.py` or `Application` -- Phase 1 scope only, per
+explicit instruction not to proceed further until reviewed.
+
+### Session 46 -- New hardware, Phase 2: PiezoStage driver wrapper class for the PPC001
+
+**Still no UI/scan-loop work -- explicit instruction respected.**
+`qt_ui.py`/`qt_ui_v2.py` untouched; no acquisition/scan logic added.
+This is purely a clean, reusable, testable Python interface to the
+device confirmed working in Session 45's Phase 1 probe script.
+
+**New module: [src/thermo_acoustic/thorlabs_piezo.py](src/thermo_acoustic/thorlabs_piezo.py),
+class `PiezoStage`, error class `PiezoStageError`.** Follows this
+project's existing SDK-backend convention (`QmixPumpBackend` in
+`qmix_backend.py`, structurally the closest precedent -- also a vendor
+SDK wrapped in a `@dataclass(slots=True)`, with the SDK's own
+classes/modules held as injectable fields rather than imported at
+module scope, so tests can supply fakes with no real SDK installed):
+- **`connect()`/`disconnect()`** use the exact sequence confirmed
+  working in Session 45's probe script --
+  `BenchtopPrecisionPiezo.CreateBenchtopPiezo()` -> `.Connect()` ->
+  `.GetChannel()` -> `WaitForSettingsInitialized()` -> `StartPolling()`
+  -- **not** `BenchtopPiezo` (the BPC301/BPC303 class this device's
+  type ID doesn't match, per Session 45's root-cause finding).
+  `connect()` rolls back (`ShutDown()`) and raises `PiezoStageError` on
+  any failure partway through, matching `QmixPumpBackend.initialize()`'s
+  own rollback-on-failure pattern; `disconnect()` accumulates errors
+  across both cleanup steps (`StopPolling()`, `ShutDown()`) rather than
+  stopping at the first, matching `QmixPumpBackend.close()`'s
+  `_run_close_step()` pattern.
+- **`max_travel_um`/`max_output_voltage_v`/`min_output_voltage_v` are
+  read from the device at `connect()` time**, via `GetMaxTravel()`/
+  `GetMaxOutputVoltage()`/`GetMinOutputVoltage()`, never hardcoded --
+  per explicit instruction, in case this class is ever pointed at a
+  different unit than this specific PPC001.
+- **`set_position(target_um)` soft-clamps against the live
+  `max_travel_um`** (and 0 as the lower bound) before calling
+  `SetPosition()`, returning the clamped value actually sent so a
+  caller can detect a request that got clamped.
+- **ClosedLoop confirmation pattern (the Session 45 design decision)
+  implemented exactly as specified, not simplified or skipped:**
+  `connect()` only ever *reads* `PositionControlMode` into
+  `self.position_control_mode` -- it never switches it.
+  `needs_closed_loop_confirmation()` reports whether the live mode
+  differs from `CloseLoop`; `switch_to_closed_loop()` is a separate,
+  explicit method a caller may only invoke after obtaining real user
+  confirmation (documented in its own docstring, not just the class
+  docstring, so this constraint is visible at the call site too).
+  `get_position()`/`set_position()` both raise `PiezoStageError` if
+  called while not in `CloseLoop` mode, rather than silently returning
+  a meaningless open-loop value or auto-switching to make the call
+  succeed.
+- **One real, non-obvious bug avoided by verifying against the DLL
+  directly rather than assuming:** the Kinesis enum member is
+  `CloseLoop`, not `ClosedLoop` -- confirmed via a dedicated .NET
+  reflection check (`[System.Enum]::GetNames(...)` against
+  `PiezoControlModeTypes` in `Thorlabs.MotionControl.GenericPiezoCLI.dll`)
+  before writing any comparison logic, specifically because getting
+  this string wrong would have made `needs_closed_loop_confirmation()`
+  always report `True` (comparing against a name that never matches),
+  defeating the entire confirmation pattern silently.
+- **Testability:** `device_manager_cli`, `benchtop_precision_piezo_cls`,
+  `closed_loop_mode`, and `decimal_type` are all injectable dataclass
+  fields (default `None`, lazily populated by `_load_kinesis()` via
+  pythonnet on first real `connect()`) -- including `decimal_type`
+  (`System.Decimal`, required by the real `SetPosition()` call), which
+  needed the same injectable treatment as the rest once it became clear
+  a bare `from System import Decimal` inside `set_position()` would
+  otherwise require pythonnet to even import the test module.
+
+**Tests: [tests/test_thorlabs_piezo.py](tests/test_thorlabs_piezo.py)
+(new), 12 tests, all passing, no live hardware or pythonnet required.**
+Fakes (`FakeDeviceManagerCLI`/`FakeBenchtopPrecisionPiezo`/`FakeDevice`/
+`FakeChannel`) mirror the real .NET method names exactly (PascalCase --
+`Connect`/`GetChannel`/`WaitForSettingsInitialized`/`StartPolling`/
+`GetMaxTravel`/etc.), matching this project's existing fake-SDK
+convention (`FakeQmixBusModule`/`FakeQmixPumpModule` in
+`test_application.py`). Coverage: connect reads real limits/mode without
+hardcoding; connect is idempotent (a second `connect()` call does not
+re-issue `Connect()`); connect failure raises `PiezoStageError` and
+leaves the stage disconnected (not half-connected); disconnect calls
+both `StopPolling()` and `ShutDown()`; every mode-dependent method
+raises before connection; the ClosedLoop confirmation pattern is
+exercised end-to-end (`OpenLoop` -> `needs_closed_loop_confirmation()`
+is `True`, `SetPositionControlMode` never called until
+`switch_to_closed_loop()` is invoked explicitly -> then `True`
+afterward); `get_position()`/`set_position()` reject non-ClosedLoop
+mode; `set_position()` clamps above-range, below-range (negative), and
+in-range targets against the fake's own reported `max_travel_um`
+(confirming the clamp uses the live-read value, not a hardcoded 450).
+
+**Probe script preserved, not replaced, per explicit instruction.**
+[hardware_tests/test_bpc_piezo_probe.py](hardware_tests/test_bpc_piezo_probe.py)
+is untouched from Session 45's final state -- still the live-hardware
+verification tool, `PiezoStage` is a separate, independent class built
+from the same confirmed-working call sequence, not a wrapper around the
+probe script or a replacement for it. Noted in passing, not something
+this session needed to fix: that file is covered by a pre-existing
+`.gitignore` rule (`hardware_tests/test_bpc_piezo_probe.py`, added in
+an earlier commit not part of this conversation's own work, with an
+explicit "local manual hardware probes that can issue real Thorlabs/BPC
+actions -- keep out of the tracked automated test tree unless reviewed
+and renamed" comment) -- consistent with, not contrary to, this
+project's established hardware-safety caution.
+
+**Files touched:** [src/thermo_acoustic/thorlabs_piezo.py](src/thermo_acoustic/thorlabs_piezo.py)
+(new), [tests/test_thorlabs_piezo.py](tests/test_thorlabs_piezo.py) (new).
+No `qt_ui.py`/`qt_ui_v2.py`/`Application` changes.
+
+**Verification:** tested -- `tests/test_thorlabs_piezo.py` 12/12 passing
+in isolation; full `tests/` suite green (229/229) across 2 consecutive
+runs. Not hardware-verified in this session -- `PiezoStage` reuses the
+exact call sequence Session 45 already confirmed against the real
+PPC001, but this specific class (as opposed to the probe script's
+procedural version of the same calls) has not itself been run against
+the physical device yet.
+
+### Session 47 -- New hardware, Phase 3: Z-scan calibration acquisition module
+
+**Premise correction, confirmed by the user before any code was
+written, not guessed past.** The original task described the camera as
+a "Hamamatsu Orca Fusion BT via existing Micro-Manager integration."
+Checking first (grepped the whole `src/`/`hardware_tests/`/`tests/`
+tree for `micro-manager`/`micromanager`/`pymmcore`/`MMCore`: zero
+matches anywhere) found no Micro-Manager layer exists in this codebase
+at all -- the only camera integration is `hamamatsu_dcam.py`'s direct
+DCAM SDK wrapper, fronting the C15440-20UP this project has used and
+hardware-verified throughout its entire history. Reported this
+discrepancy rather than inventing a Micro-Manager path or silently
+substituting DCAM without asking. **User confirmed:** "Orca Fusion BT"
+and "C15440-20UP" are the same physical camera (Hamamatsu's model
+number vs. its marketed product name); the Micro-Manager phrase was the
+user's own mistake, conflating a separate standalone GUI tool (used for
+unrelated optical bring-up, outside this codebase) with this project's
+actual camera integration. Built on the existing DCAM path, exactly as
+found, per that confirmation.
+
+**New module: [src/thermo_acoustic/piezo_zscan.py](src/thermo_acoustic/piezo_zscan.py),
+class `ZScanCalibration` (+ `ZScanError`, `ZScanFrameResult`), plus a CLI
+entry point (`main()`/argparse) in the same file** -- a module +
+standalone-runnable script in one, per instruction, following this
+project's `hardware_tests/` probe-script conventions for the CLI half
+(`[piezo-zscan]`-prefixed step logging) and its production-module
+conventions for the importable half (plain dataclass, no UI/Qt
+dependency at all).
+- **Reuses the existing single-frame capture path exactly, does not
+  reinvent camera triggering:** `camera.capture_snapshot()`
+  (`HamamatsuCamera`/`HamamatsuDcamBackend`, the same call
+  `qt_ui.py`'s manual snapshot button already uses), returning a raw
+  array saved via `PIL.Image.fromarray(...).save(path, format="TIFF")`
+  -- the same library `hamamatsu_dcam.py`'s own `save_sequence()` uses
+  internally, but with this task's own `z_XXXX.XXum.tif` filename
+  convention instead of forcing `save_sequence()`'s unrelated
+  `frame_00000.tiff` scheme to fit, per explicit instruction.
+- **`exposure_ms` is an explicit, required parameter**, applied once via
+  `camera.configure_exposure_time(exposure_ms)` at the start of
+  `run()`, not inherited from whatever the caller left the camera
+  configured to -- per the user's explicit reasoning (a calibration
+  scan must be fully self-contained/reproducible from its own inputs),
+  matching `PiezoStage`'s own no-hidden-state convention.
+- **Fixed settle delay, not position-convergence-based**, exactly as
+  specified: `time.sleep(settle_delay_ms / 1000.0)` after
+  `piezo.set_position()` returns and before `capture_snapshot()`,
+  default 75ms, exposed as a `settle_delay_ms` parameter (both on
+  `ZScanCalibration.run()` and as a `--settle-delay-ms` CLI flag) rather
+  than hardcoded to exactly 75.
+- **Filenames embed the real closed-loop readback (`piezo.get_position()`),
+  not the commanded target** -- `z_{measured_um:07.2f}um.tif`, e.g.
+  `z_0125.30um.tif` for the task's own example. A settling residual
+  (target reached imperfectly) shows up correctly in the saved filename
+  because of this, confirmed by a dedicated test.
+- **`ZScanFrameResult` (target_um, measured_um, filename) is collected
+  as structured data during the scan itself**, not just embedded in
+  filenames and left to be re-parsed later -- so a metadata/manifest
+  file could be added afterward (e.g. serializing the returned list to
+  JSON/CSV) without needing to rewrite how Z values are tracked
+  internally, per explicit instruction. No such file is written yet --
+  intentionally out of this session's scope, per "no separate metadata
+  file needed for now."
+- **The ClosedLoop confirmation pattern (Session 45/46's design
+  decision) is threaded through exactly, not simplified.**
+  `ZScanCalibration` takes a `confirm_closed_loop_switch: Callable[[],
+  bool] | None` -- if the piezo is already `CloseLoop`,
+  `PiezoStage.needs_closed_loop_confirmation()` short-circuits and the
+  callback is never invoked (confirmed by a test whose callback raises
+  `AssertionError` if it's ever called at all); if not, the callback
+  runs and only a `True` result leads to `piezo.switch_to_closed_loop()`
+  being called; `None`/a declined confirmation raises `ZScanError`
+  *before any movement happens at all* (`set_position()` never called).
+  The CLI's own default callback prints the exact wording given in the
+  original design decision -- `"Device is currently in {mode} mode.
+  Z-scan requires ClosedLoop for position accuracy. Switch now?
+  [y/n]"` -- reading the *live* mode rather than hardcoding "OpenLoop",
+  since the design decision itself said "or any other unexpected
+  state."
+- **Error handling: stop, don't skip, name the position and the
+  completed count, flag the result as partial** -- both a mid-scan
+  piezo move failure and a mid-scan capture failure (camera returns
+  `None`) are caught, wrapped in a single `ZScanError` naming the
+  1-based position index, the total position count, and how many
+  frames completed successfully before the failure, with the literal
+  word "PARTIAL" in the message so a caller can't mistake a truncated
+  output directory for a complete stack. Confirmed by two dedicated
+  tests (move failure, capture failure) asserting both the message
+  content and that only the genuinely-completed frames exist on disk
+  afterward -- no silently-skipped position, no silently-continued scan.
+- **Range building is inclusive of both `z_start_um` and `z_end_um`**,
+  via `round((z_end_um - z_start_um) / step_size_um)` steps -- documented
+  in a code comment as the deliberate behavior when the span isn't an
+  exact multiple of the step size (the *nominal* target may land
+  slightly off in that case, but the *real, measured* position -- what
+  actually gets recorded -- is unaffected either way).
+- **Boundary -- pump/valve/AD2/laser are never touched, enforced by two
+  independent tests, not just a docstring claim:**
+  1. `test_module_never_imports_other_hardware_classes` walks
+     `piezo_zscan.py`'s own AST and asserts none of
+     `Valve`/`CetoniPump`/`QmixPumpBackend`/`AD2Sdk`/`WaveFormsBackend`/
+     `PriorZMotor`/`Application` appear as an import anywhere in the
+     file (including inside `main()`, where the real `PiezoStage`/
+     `HamamatsuCamera`/`HamamatsuDcamBackend` imports live) -- a static
+     guarantee independent of any test's mock shape.
+  2. `test_scan_only_calls_piezo_and_camera_methods_no_other_hardware_touched`
+     runs a full scan (including the ClosedLoop-switch path) against
+     `FakePiezo`/`FakeCamera` test doubles that *only* implement the
+     methods `ZScanCalibration` is supposed to call -- any accidental
+     call to something else would raise `AttributeError` and fail the
+     test immediately, not silently pass. Every other test in the file
+     reuses these same narrow fakes, so this property holds throughout
+     the suite, not just in one dedicated test.
+
+**Tests: [tests/test_piezo_zscan.py](tests/test_piezo_zscan.py) (new),
+13 tests, all passing, no live hardware/pythonnet/Qt required.** Covers:
+frame count and filenames for an inclusive range; measured-vs-target
+filename correctness (including a simulated settling residual);
+exposure configured exactly once per scan, not per frame; settle delay
+is both fixed-per-position and genuinely configurable (150ms case and
+the 75ms default both asserted via a mocked `time.sleep`); input
+validation (non-positive step size, inverted range, non-positive
+exposure, negative settle delay); both failure-mode error-handling
+tests described above; all four branches of the ClosedLoop confirmation
+pattern (already-closed-loop, confirmed switch, declined switch, no
+callback provided); and the two hardware-boundary tests.
+
+**Files touched:** [src/thermo_acoustic/piezo_zscan.py](src/thermo_acoustic/piezo_zscan.py)
+(new), [tests/test_piezo_zscan.py](tests/test_piezo_zscan.py) (new). No
+`qt_ui.py`/`qt_ui_v2.py`/`Application` changes -- no UI, no scan-loop
+wiring into the main app, per explicit instruction.
+
+**Verification:** tested -- `tests/test_piezo_zscan.py` 13/13 passing in
+isolation; full `tests/` suite green modulo the same already-documented
+(Session 41/42) offscreen-Qt flakiness in unrelated `qt_ui`/`qt_ui_v2`
+tests, confirmed passing in isolation both times it appeared during this
+session's verification runs, together with this session's own 13 new
+tests, in the same run. Not hardware-verified -- `piezo_zscan.py`'s
+`main()` CLI entry point has not itself been run against the real PPC001
++ C15440-20UP yet; it reuses `PiezoStage`'s and `HamamatsuCamera`'s
+already-hardware-confirmed (Session 45 for the piezo; long-standing
+prior sessions for the camera) individual call sequences, but the two
+combined in this specific new orchestration have not been exercised
+against real hardware in this session.
+
+### Session 48 -- Real-hardware verification of Phase 3, one real bug found and fixed
+
+**First real end-to-end run of `piezo_zscan.py`'s CLI against the actual
+PPC001 + C15440-20UP.** Parameters per explicit instruction: `z_start=200`,
+`z_end=210`, `step_size=2` (6 positions, well inside the 450um travel
+range, centered away from either end), `exposure_ms=20`,
+`settle_delay_ms=75` (the default). The ClosedLoop-confirmation prompt
+was exercised through its real code path, not bypassed -- `"y"` was
+piped into the script's actual stdin (`echo y | ... python
+piezo_zscan.py ...`), so the genuine `input()` call in
+`_cli_confirm_closed_loop()` ran for real; it was simply never triggered
+this run because the device was already `CloseLoop` at connect time (see
+surprise #1 below).
+
+**First attempt failed -- a real bug, not a hardware issue.**
+`PiezoStage.connect()` raised `PiezoStageError: ... float() argument
+must be a string or a real number, not 'Decimal'` inside
+`channel.GetMaxTravel()`'s conversion. Root cause: pythonnet's
+`System.Decimal` (the real return type of `GetMaxTravel()`/
+`GetMaxOutputVoltage()`/`GetMinOutputVoltage()`/`GetPosition()`) does not
+implement Python's `__float__` -- unlike Python's own stdlib
+`decimal.Decimal`, which does. `float(x)` on a real `System.Decimal`
+always raises; only `float(str(x))` works, since `str()` produces a
+clean parseable numeral. **Why this wasn't caught by Session 46's unit
+tests:** `FakeChannel`'s `Get*()` methods returned plain Python floats,
+which `float()` happily accepts regardless of conversion method -- the
+fakes didn't reproduce the one specific behavioral gap between
+`System.Decimal` and a native Python number that this bug depended on.
+This is exactly the class of gap real-hardware verification exists to
+catch that mocks structurally cannot, on its own -- not a criticism of
+Session 46's test design (the fakes correctly modeled every method
+*call*, just not this one return-type quirk), but the reason this
+session re-ran verification instead of treating Session 46/47's green
+test suite as sufficient proof.
+- **Fixed** in `src/thermo_acoustic/thorlabs_piezo.py`: new
+  `_decimal_to_float(value)` helper (`float(str(value))`), used in place
+  of every bare `float(channel.GetX())` call (`GetMaxTravel`,
+  `GetMaxOutputVoltage`, `GetMinOutputVoltage`, `GetPosition`).
+- **Test fidelity improved to catch a regression of this exact bug in
+  the future, not just document it.** `tests/test_thorlabs_piezo.py`'s
+  `FakeChannel` now wraps its `Get*()` return values in a new
+  `FakeSystemDecimal` -- a minimal stand-in that supports `str()` but
+  deliberately not `float()`, mirroring the real type's actual behavior
+  instead of a Python `float`/stdlib `decimal.Decimal` that would let a
+  regression back to bare `float(...)` pass silently. All 12
+  `test_thorlabs_piezo.py` tests re-run and still pass against the
+  corrected code with this stricter fake.
+- **Re-ran the real scan after the fix: full success.**
+
+**Real scan results (all 6 of 6 frames captured, no failures):**
+
+| target (um) | measured (um) | filename |
+|---|---|---|
+| 200.00 | 200.18 | `z_0200.18um.tif` |
+| 202.00 | 202.06 | `z_0202.06um.tif` |
+| 204.00 | 204.05 | `z_0204.05um.tif` |
+| 206.00 | 206.07 | `z_0206.07um.tif` |
+| 208.00 | 208.07 | `z_0208.07um.tif` |
+| 210.00 | 210.07 | `z_0210.07um.tif` |
+
+Total wall-clock time: **~10.2 seconds** for connect + camera init + 6
+positions (move + 75ms settle + capture each) + disconnect -- no timing
+surprise, well within a reasonable range for a 6-point scan; unit tests
+never modeled real connection/capture overhead (they mock `time.sleep`
+specifically, nothing else), so there was nothing for this number to
+contradict. Every saved file independently verified afterward, not just
+trusted from the CLI's own "scan complete" line: all 6 are genuine,
+non-degenerate 2304x2304 16-bit TIFFs (`I;16` mode, matching the
+C15440-20UP's known full-frame resolution already referenced elsewhere
+in this project's docs) with real, non-trivial pixel value ranges
+(roughly 1580-3400 across the six frames, not blank/saturated), each
+~10.1MB, saved under
+`hardware_tests/output/piezo_zscan_verification/session48_first_real_scan/`
+(gitignored, matching this project's established `hardware_tests/output/`
+convention for real-run artifacts).
+
+**Two things flagged as genuinely unexpected, per explicit instruction,
+not smoothed over:**
+1. **The device was already in `CloseLoop` mode at connect time**, not
+   `OpenLoop` as it was when last read in Session 45. Something changed
+   the mode between that session and this one -- outside this
+   conversation's own actions (no `switch_to_closed_loop()`-equivalent
+   call was made in between) -- most plausibly manual interaction via
+   the Kinesis GUI at some point. Net effect: this run never actually
+   exercised the "declined/no-callback" failure branches of the
+   ClosedLoop-confirmation pattern against real hardware, only the
+   already-satisfied branch -- those remain verified only by
+   `test_piezo_zscan.py`'s mocked tests, not by a real run. Worth a
+   dedicated real-hardware confirmation-prompt run later if that
+   specific path needs hardware sign-off too.
+2. **The first move's settling residual (0.18um) was noticeably larger
+   than the other five (0.05-0.07um).** Plausibly the first move from an
+   idle/pre-scan position settling more slowly within the fixed 75ms
+   window than subsequent smaller relative moves, but this is a single
+   scan's worth of evidence -- not enough to draw a real conclusion, and
+   explicitly not treated as one here. Noted for whoever tunes
+   `settle_delay_ms` later, not acted on.
+No image-quality issues observed (pixel ranges and dimensions checked
+directly, not just file existence).
+
+**Files touched:** [src/thermo_acoustic/thorlabs_piezo.py](src/thermo_acoustic/thorlabs_piezo.py)
+(Decimal-conversion fix), [tests/test_thorlabs_piezo.py](tests/test_thorlabs_piezo.py)
+(`FakeSystemDecimal`, stricter fakes). No changes to `piezo_zscan.py`
+itself -- the bug was entirely inside `PiezoStage`, not the scan
+orchestration layer.
+
+**Verification:** real hardware (the scan itself, described above) plus
+`tests/test_thorlabs_piezo.py` 12/12 and `tests/test_piezo_zscan.py`
+13/13 re-run against the fixed code; full `tests/` suite green (242/242).
+
+### Session 49 -- pytest `--basetemp` leftover cleanup and a fixed-scratch-directory convention to prevent recurrence
+
+**Investigated before deleting anything, per explicit instruction.**
+User-reported: ~30+ (actually 119, counted directly) leftover
+`.pytest_tmp_*`/`_pytest_tmp` directories in the project root, dated
+2026-07-22 through 2026-07-27. Two hypotheses were given to
+distinguish: a real cleanup-fixture bug, or expected/unbounded
+`--basetemp` accumulation.
+- **`tests/conftest.py`'s `_qt_widget_cleanup` fixture is unrelated and
+  not at fault** -- read in full: it's a plain `yield`-based fixture
+  with no conditional logic after `yield`, so pytest runs its teardown
+  regardless of whether the test passed, failed, or raised (no
+  "skip-on-failure" gap exists). More fundamentally, that fixture only
+  tears down in-memory Qt widgets between tests within a single pytest
+  process -- it has no connection to on-disk `--basetemp` directories at
+  all; nothing in this project's code creates or cleans those up.
+- **Root cause, confirmed by reading `pyproject.toml` and this
+  project's own history (Session 27):** the real default `tmp_path`
+  location on this machine (`%LOCALAPPDATA%\Temp\pytest-of-<user>`)
+  raises a genuine `PermissionError`, so every session since Session 27
+  has worked around it by passing an explicit, uniquely-named
+  `--basetemp=<descriptive-name>` per ad hoc invocation. This is
+  **not** quite "pytest's default retention count set too loose" (the
+  more literal reading of the second hypothesis) -- passing `--basetemp`
+  explicitly bypasses pytest's own retention/rotation system for
+  auto-generated `tmp_path` directories entirely; since every invocation
+  used a *different* name, nothing was ever reused or purged by any
+  mechanism, pytest's or this project's. `pyproject.toml` had no
+  `tmp_path_retention_count` or equivalent setting -- confirmed absent,
+  not just unconfigured.
+- **Confirmed clean otherwise, not just assumed:** none of the 119 were
+  git-tracked (`.gitignore:43` `.pytest_tmp*/` and `:44` `_pytest_tmp/`
+  cover all of them; `git status`/`git check-ignore -v` verified);
+  contents spot-checked as routine `settings.json` test-scratch files
+  matching `make_window()`'s normal per-test writes, nothing
+  unexpected; total size 9.0MB.
+
+**Cleanup: 84 of 119 deleted; 35 blocked by a pre-existing, already-
+documented OS permission issue, not something newly broken.** `rm -rf`
+(bash) and `Remove-Item -Force` (PowerShell) both failed identically on
+the same 35 directories with `UnauthorizedAccessException` -- even
+`Get-Acl`/`icacls` on those specific paths fail the same way, unable to
+even *read* the ACL, let alone modify it. This is the identical failure
+mode Session 27 already documented for a different, earlier batch of
+leftover directories on this same machine ("all 20 remain Permission
+denied... including to `Get-Acl` itself"), and Session 34 confirmed it
+was specific to certain pre-existing directories rather than a blanket
+inability to delete anything matching the naming pattern. Not pursued
+further (no admin rights available in this session, and forcing
+ownership takeover on directories whose origin isn't fully understood is
+a bigger, more invasive action than this task asked for) -- left as-is,
+consistent with how the same class of leftover was handled in Session 27.
+
+**Prevention: a fixed, reused `--basetemp`, enforced at the config
+level, not just documented as a convention to remember.**
+`pyproject.toml`'s `[tool.pytest.ini_options]` now sets
+`addopts = "--basetemp=.pytest_tmp_scratch"` -- every pytest invocation
+that doesn't explicitly override `--basetemp` on its own command line
+now automatically reuses the same directory (an explicit
+`--basetemp=<other-name>` on the command line still takes precedence,
+for the rare case a genuinely separate scratch location is needed).
+Chosen over a documentation-only note specifically because the user
+flagged the real risk plainly: a written convention with no enforcement
+"quietly drifts back to descriptive-per-run names" the same way the
+original workaround did, one ad hoc invocation at a time, over dozens of
+sessions. Verified empirically, not just by reading the config: a test
+run with no `--basetemp` flag at all now creates `.pytest_tmp_scratch`
+automatically; a second run reuses the exact same directory (directory
+count unchanged before/after); full `tests/` suite still green (242/242)
+under the new default. `.pytest_tmp_scratch` is already covered by the
+existing `.pytest_tmp*/` `.gitignore` pattern -- no `.gitignore` change
+needed.
+
+**Files touched:** [pyproject.toml](pyproject.toml) (`addopts` added,
+with an inline comment explaining why, per "document wherever this
+project's testing conventions are already written down" -- no separate
+CONTRIBUTING-style file exists in this repo to put it in instead).
+Deleted: 84 `.pytest_tmp_*`/`_pytest_tmp` directories (not tracked by
+git, so no git diff from this deletion itself).
+
+**Verification:** full `tests/` suite green (242/242) run with the new
+`addopts` default in effect (no explicit `--basetemp` passed). Directory
+count confirmed stable across repeated runs (no new leftover
+accumulation). Not a code-behavior change to the application itself --
+test-infrastructure/tooling only.
+
 ---
 
 ## Known remaining open items as of this writing
