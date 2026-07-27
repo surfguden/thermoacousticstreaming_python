@@ -5,9 +5,10 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import pytest
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QWheelEvent
-from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QLabel, QSpinBox
+from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QGroupBox, QLabel, QPushButton, QSpinBox
 
 from thermo_acoustic import qt_ui, qt_ui_v2
 from thermo_acoustic.hardware_factory import HardwareRuntimeConfig
@@ -113,13 +114,44 @@ def test_v2_placeholder_buttons_do_not_drive_hardware(monkeypatch, tmp_path):
         window.close()
 
 
+def test_v2_sidebar_shows_friendly_name_not_internal_panel_key(monkeypatch, tmp_path):
+    # Category 8 (Session 39): "PumpValve" is the internal dict key used to
+    # look up _MANUAL_PANEL_BUILDERS/_manual_panels -- it was also rendered
+    # verbatim as the sidebar button's own text, the only one of the four
+    # panel names that reads like a smashed-together internal identifier
+    # rather than a real label. Confirms the button now shows the same name
+    # qt_ui.py's own tab bar uses for this feature ("Pump&Valve"), and that
+    # _show_placeholder() (the dead-in-production but still-tested pre-
+    # Session-2 handler) uses the same friendly name too.
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        button_texts = [
+            button.text()
+            for button in window.findChildren(QPushButton)
+            if button.text() in ("WFG", "MSO", "PumpValve", "Pump&Valve", "Camera")
+        ]
+        assert "Pump&Valve" in button_texts
+        assert "PumpValve" not in button_texts
+
+        window._show_placeholder("PumpValve")
+        assert "Pump&Valve panel is not yet implemented" in window.status.text()
+    finally:
+        window.close()
+
+
 def test_v2_sidebar_buttons_open_existing_manual_test_panels(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
     try:
         for panel_name in ("WFG", "MSO", "PumpValve", "Camera"):
             dialog = window._ensure_manual_panel(panel_name)
 
-            assert dialog.windowTitle() == f"{panel_name} (Manual Test)"
+            # PumpValve (Session 39, Category 8): the internal dict key is
+            # smashed together with no separator for use as a Python
+            # identifier -- the displayed title uses the same human-friendly
+            # name qt_ui.py's own tab bar shows for this feature
+            # ("Pump&Valve"), not the raw key, unlike the other three panels
+            # (already their own correct display text).
+            assert dialog.windowTitle() == f"{qt_ui_v2.MainWindowV2._panel_display_name(panel_name)} (Manual Test)"
             assert not dialog.isModal()
 
         checkboxes = window._manual_panels["WFG"].findChildren(QCheckBox)
@@ -147,6 +179,44 @@ def test_v2_valve_status_flags_unverified_and_busy_responses(monkeypatch, tmp_pa
         window.app.valve.status_note = "busy"
         window._refresh_status()
         assert window.valve_connection_status.text() == "Connected (busy)"
+    finally:
+        window.close()
+
+
+def test_v2_experiment_running_indicator_reads_explicit_flag_not_status_text(monkeypatch, tmp_path):
+    # Category 2 (Session 39): the old "experiment" in self.app.status.lower()
+    # heuristic would have reported "No" here even though an experiment
+    # series is genuinely still active -- e.g. right after Abort is clicked,
+    # when self.app.status has just been overwritten to "Aborting..." but the
+    # current repeat may still be executing. _experiment_series_active is the
+    # explicit flag qt_ui.py's _run_experiment_series() now brackets its own
+    # execution with, independent of whatever status text happens to be set.
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        window._busy_count = 1
+        window.app.status = "Aborting..."
+        window._experiment_series_active = True
+        window._refresh_status()
+        assert window.experiment_running_status.text() == "Yes"
+
+        window._experiment_series_active = False
+        window._refresh_status()
+        assert window.experiment_running_status.text() == "No"
+    finally:
+        window.close()
+
+
+def test_v2_elapsed_time_and_time_left_are_marked_as_stale_stubs(monkeypatch, tmp_path):
+    # Category 4 (Session 39): v2's own "Status / Progress" group had the
+    # identical bare QLabel("00:00:00") construction as qt_ui.py's Experiment
+    # tab -- fixed via the same shared _elapsed_time_label()/_time_left_label()
+    # helpers, confirmed here independently for the v2 window.
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        for label in (window.elapsed_time_label, window.time_left_label):
+            assert label.text() == "00:00:00"
+            assert not label.isEnabled()
+            assert "Not wired to a real backend" in label.toolTip()
     finally:
         window.close()
 
@@ -244,6 +314,46 @@ def test_v2_reuses_existing_experiment_builder(monkeypatch, tmp_path):
         window.close()
 
 
+def test_v2_experiment_area_exposes_fm_sweep_and_frequency_scanning(monkeypatch, tmp_path):
+    # Category 7 (Session 39): v2's Experiment area never had any reachable
+    # control for FM Sweep (flagged as a known gap since Session 25, never
+    # fixed) or Frequency Scanning (added Session 34, gap never even
+    # flagged) -- both are real, fully-wired qt_ui.py Experiment-tab
+    # features, not new development, so this confirms the new
+    # _experiment_fm_sweep_group()/reused _experiment_frequency_scan_group()
+    # bind the *same* widget instances qt_ui.py's own Experiment tab uses
+    # (identity, not copies), and that a value set through v2's own groups
+    # reaches the real _build_experiment_series() output exactly like it
+    # would from qt_ui.py.
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        fm_sweep_group = window._experiment_fm_sweep_group()
+        fm_sweep_form = fm_sweep_group.layout()
+        assert fm_sweep_form.itemAt(1, fm_sweep_form.ItemRole.FieldRole).widget() is window.exp_sweep_start_khz
+        assert fm_sweep_form.itemAt(2, fm_sweep_form.ItemRole.FieldRole).widget() is window.exp_sweep_stop_khz
+
+        freq_scan_group = window._experiment_frequency_scan_group()
+        freq_scan_form = freq_scan_group.layout()
+        assert freq_scan_form.itemAt(1, freq_scan_form.ItemRole.FieldRole).widget() is window.exp_freq_scan_start_khz
+        assert freq_scan_form.itemAt(3, freq_scan_form.ItemRole.FieldRole).widget() is window.exp_freq_scan_count
+
+        window.series_path.setText(str(tmp_path / "series"))
+        window.exp_camera_fps.setValue(100.0)
+        window.exp_frames.setValue(3)
+        window.exp_repeats.setValue(2)
+        window.exp_ch1_enable.setChecked(True)
+        window.exp_ch1_run.setValue(0.5)
+        window.exp_sweep_enable.setChecked(True)
+        window.exp_sweep_start_khz.setValue(1000.0)
+        window.exp_sweep_stop_khz.setValue(1100.0)
+
+        _series, _total_frames, config = window._build_experiment_series()
+
+        assert config.channels[0].carrier.frequency_hz == pytest.approx(1_050_000.0)
+    finally:
+        window.close()
+
+
 def test_v2_ad2_output_table_exposes_symmetry_phase_and_repeat_trigger(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
     try:
@@ -290,5 +400,86 @@ def test_v2_ad2_output_table_exposes_symmetry_phase_and_repeat_trigger(monkeypat
         assert ch0.carrier.symmetry_percent == 65.0
         assert ch0.carrier.phase_deg == 12.5
         assert ch0.trigger.repeat_trigger is True
+    finally:
+        window.close()
+
+
+def test_v2_no_group_box_is_squeezed_below_its_minimum_size_hint(monkeypatch, tmp_path):
+    # Category 3 (Session 39): qt_ui.py's own
+    # test_no_group_box_is_squeezed_below_its_minimum_size_hint (Session 29)
+    # only walks window.tabs.currentWidget() -- qt_ui_v2.MainWindowV2 has no
+    # such tabs, so none of its own groups (Status/Progress, Sequence
+    # Control, AD2 Output Parameters, Acquisition Parameters, Waveform
+    # Preview, Global Status) or its manual-panel QDialogs were ever covered
+    # by that guard. An offscreen sweep this session found the "Global
+    # Status" panel's value QLabels squeezed to a fixed 34px regardless of
+    # content (fixed via WrapLongRows + word-wrap, see qt_ui_v2.py's
+    # _global_status_panel()) -- this test locks that fix in and extends
+    # the same generic, no-hardcoded-list method to v2's own window AND its
+    # four manual-panel dialogs, so future v2-only groups stay covered too.
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        window.show()
+        for width, height in ((1440, 860), (980, 680)):
+            window.resize(width, height)
+            QApplication.processEvents()
+            QApplication.processEvents()
+
+            failures = []
+            for group in window.findChildren(QGroupBox):
+                geometry = group.geometry()
+                min_hint = group.minimumSizeHint()
+                if min_hint.height() > 0 and geometry.height() < min_hint.height():
+                    failures.append(("MainWindowV2", group.title(), geometry.height(), min_hint.height()))
+
+            for name in ("WFG", "MSO", "PumpValve", "Camera"):
+                dialog = window._ensure_manual_panel(name)
+                dialog.show()
+                QApplication.processEvents()
+                QApplication.processEvents()
+                for group in dialog.findChildren(QGroupBox):
+                    geometry = group.geometry()
+                    min_hint = group.minimumSizeHint()
+                    if min_hint.height() > 0 and geometry.height() < min_hint.height():
+                        failures.append((f"{name} dialog", group.title(), geometry.height(), min_hint.height()))
+
+            assert not failures, (
+                f"at window size {width}x{height}: group box(es) squeezed below their own "
+                f"minimumSizeHint (rows collapsing to 0-1px): {failures}"
+            )
+    finally:
+        window.close()
+
+
+def test_v2_global_status_panel_does_not_truncate_value_labels(monkeypatch, tmp_path):
+    # Reproduces the specific truncation this session found: every value
+    # QLabel in "Global Status" rendered at a fixed 34px regardless of its
+    # own required width (e.g. "Not connected" needing 156px). Confirms both
+    # the short-text case and a real long-text case (the valve's
+    # status_note passthrough, Session 2) now render without clipping.
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        window.resize(1440, 860)
+        window.show()
+        QApplication.processEvents()
+        QApplication.processEvents()
+
+        for label in (
+            window.ad2_connection_status,
+            window.camera_connection_status,
+            window.pump_connection_status,
+            window.valve_connection_status,
+        ):
+            assert label.wordWrap() is True
+
+        window.app.valve.initialized = True
+        window.app.valve.status_note = "unverified position response: 'ERR'"
+        window._refresh_status()
+        QApplication.processEvents()
+
+        assert window.valve_connection_status.text() == "Connected (unverified position response: 'ERR')"
+        # word-wrapped into more than a single 12px text line rather than
+        # clipped to one line's worth of pixels.
+        assert window.valve_connection_status.height() > 20
     finally:
         window.close()

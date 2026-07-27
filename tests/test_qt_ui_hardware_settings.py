@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QWheelEvent
-from PySide6.QtWidgets import QCheckBox, QComboBox, QDoubleSpinBox, QGroupBox, QLabel, QScrollArea, QSpinBox
+from PySide6.QtWidgets import QCheckBox, QComboBox, QDoubleSpinBox, QGroupBox, QLabel, QPushButton, QScrollArea, QSpinBox
 from PySide6.QtWidgets import QApplication
 
 from thermo_acoustic import qt_ui
@@ -140,28 +140,104 @@ def test_no_group_box_is_squeezed_below_its_minimum_size_hint(monkeypatch, tmp_p
     # over the same edge) is checked here across every QGroupBox in every tab,
     # generically via findChildren() -- not a hardcoded list -- so it stays
     # valid as new groups/fields are added later.
+    #
+    # Checked at both the app's real *default* size (1280x820) and its
+    # documented *minimum* (980x680, self.setMinimumSize()) -- Session 39's
+    # audit found "Camera Start Array(s)" only collapsed at the minimum size
+    # (252px actual vs. 346px required), invisible at the default size this
+    # test previously checked exclusively.
     window = make_window(monkeypatch, tmp_path)
-    window.resize(1280, 820)  # the app's real default size
     window.show()
+
+    for width, height in ((1280, 820), (980, 680)):
+        window.resize(width, height)
+        QApplication.processEvents()
+        QApplication.processEvents()
+
+        failures = []
+        for index in range(window.tabs.count()):
+            window.tabs.setCurrentIndex(index)
+            QApplication.processEvents()
+            QApplication.processEvents()
+            for group in window.tabs.currentWidget().findChildren(QGroupBox):
+                geometry = group.geometry()
+                min_hint = group.minimumSizeHint()
+                if min_hint.height() > 0 and geometry.height() < min_hint.height():
+                    failures.append(
+                        (window.tabs.tabText(index), group.title(), geometry.height(), min_hint.height())
+                    )
+
+        assert not failures, (
+            f"at window size {width}x{height}: group box(es) squeezed below their own "
+            f"minimumSizeHint (rows collapsing to 0-1px): {failures}"
+        )
+
+
+def test_frequency_scanning_start_field_fits_full_precision(monkeypatch, tmp_path):
+    # Task 2(a): "1900.000" was rendering as "1900." because the shared
+    # _spin() factory capped every QDoubleSpinBox at setMaximumWidth(125)
+    # while its real sizeHint() (accounting for the actual displayed
+    # decimals) needed up to 252px -- confirmed via an offscreen sweep
+    # across every tab, not just this one field. _SPIN_MAX_WIDTH raised to
+    # 260 to comfortably cover every sizeHint measured at the time.
+    window = make_window(monkeypatch, tmp_path)
+    window.resize(1280, 820)
+    window.show()
+    window.tabs.setCurrentIndex(5)  # Experiment
+    QApplication.processEvents()
     QApplication.processEvents()
 
-    failures = []
-    for index in range(window.tabs.count()):
-        window.tabs.setCurrentIndex(index)
-        QApplication.processEvents()
-        QApplication.processEvents()
-        for group in window.tabs.currentWidget().findChildren(QGroupBox):
-            geometry = group.geometry()
-            min_hint = group.minimumSizeHint()
-            if min_hint.height() > 0 and geometry.height() < min_hint.height():
-                failures.append(
-                    (window.tabs.tabText(index), group.title(), geometry.height(), min_hint.height())
-                )
+    field = window.exp_freq_scan_start_khz
+    assert field.sizeHint().width() <= field.maximumWidth()
+    assert field.geometry().width() >= field.sizeHint().width() - 2
 
-    assert not failures, (
-        f"group box(es) squeezed below their own minimumSizeHint (rows collapsing "
-        f"to 0-1px): {failures}"
-    )
+
+def test_waveform_graph_label_has_safety_margin(monkeypatch, tmp_path):
+    # Task 2(b): only a ~5px margin existed between this label's required
+    # text width and its actual rendered width at the app's minimum window
+    # size (980x680) -- fragile enough to explain a reported "first
+    # character cut off" screenshot. setMinimumWidth(200) gives real headroom.
+    window = make_window(monkeypatch, tmp_path)
+    window.resize(980, 680)  # the app's own minimum size, the tightest case
+    window.show()
+    window.tabs.setCurrentIndex(5)  # Experiment
+    QApplication.processEvents()
+    QApplication.processEvents()
+
+    tab = window.tabs.widget(5)
+    labels = [lbl for lbl in tab.findChildren(QLabel) if lbl.text() == "Waveform Graph"]
+    assert len(labels) == 1
+    label = labels[0]
+    required = label.fontMetrics().horizontalAdvance(label.text())
+    assert label.geometry().width() >= required + 20, "must keep real margin, not just barely fit"
+
+
+def test_sweep_headers_wrap_instead_of_needing_full_single_line_width(monkeypatch, tmp_path):
+    # Task 2(c): both Sweep group headers rendered as one unwrapped ~1300px
+    # line inside a horizontally-scrollable area whose visible viewport is
+    # much narrower -- since scrolling starts at the left edge, the closing
+    # words ("...distinct from Frequency Scanning)") were never visible
+    # without scrolling right. Word-wrapping at a bounded width fixes this
+    # and, as a side effect, substantially shrinks the group's own natural
+    # content width (this was the single widest element in the group).
+    window = make_window(monkeypatch, tmp_path)
+
+    window.tabs.setCurrentIndex(1)  # WFG
+    QApplication.processEvents()
+    wfg_tab = window.tabs.widget(1)
+    wfg_headers = [lbl for lbl in wfg_tab.findChildren(QLabel) if "Sweep (FM modulation" in lbl.text()]
+    assert wfg_headers, "expected at least one manual-tab Sweep header"
+    for label in wfg_headers:
+        assert label.wordWrap() is True
+        assert label.maximumWidth() < 1000
+
+    window.tabs.setCurrentIndex(5)  # Experiment
+    QApplication.processEvents()
+    experiment_tab = window.tabs.widget(5)
+    experiment_headers = [lbl for lbl in experiment_tab.findChildren(QLabel) if "Sweep (FM modulation" in lbl.text()]
+    assert len(experiment_headers) == 1
+    assert experiment_headers[0].wordWrap() is True
+    assert experiment_headers[0].maximumWidth() < 1000
 
 
 def test_focus_wheel_guard_covers_every_spin_and_combo_widget(monkeypatch, tmp_path):
@@ -195,6 +271,127 @@ def test_focus_wheel_guard_covers_every_spin_and_combo_widget(monkeypatch, tmp_p
     )
 
 
+def test_representative_fields_have_grounded_tooltips(monkeypatch, tmp_path):
+    # Task 3: a sample across every tab, not exhaustive -- confirms tooltips
+    # exist and reference the specific documented fact they're grounded in
+    # (changelog session numbers, real code paths, or established caveats),
+    # not just a restatement of the label.
+    window = make_window(monkeypatch, tmp_path)
+
+    # Initialization: stub fields disabled + tooltipped, matching v2's
+    # existing InitializationDialog._mark_unwired_stub() convention.
+    assert not window.z_backend.isEnabled()
+    assert "Not wired to a real backend" in window.z_backend.toolTip()
+    assert not window.thorlabs_apt_serial.isEnabled()
+    assert "Session 3" in window.thorlabs_apt_serial.toolTip()
+
+    # WFG tab: Symmetry/Phase/secRun/secWait/Repeat/Trigger source.
+    ch1_state = window.wfg_channels[0]
+    assert "Duty-cycle" in ch1_state["symmetry"].toolTip()
+    assert "0 = continuous" in ch1_state["sec_run"].toolTip()
+    assert "0 = infinite" in ch1_state["repeat"].toolTip()
+
+    # MSO tab: Sample Frequency's 100 MS/s AD2 limit, Range's clipping risk.
+    assert "100 MS/s" in window.mso_sample_frequency.toolTip() or "UNCONFIRMED" in window.mso_sample_frequency.toolTip()
+    assert "clipping" in window.mso_range.toolTip()
+
+    # PumpValve tab: valve Open/Closed, Custom Volume, flow-rate sign convention.
+    assert "Custom" in window.custom_syringe_volume_ml.toolTip()
+    assert "unverifiable" in window.flow_rate.toolTip()
+
+    # Camera tab: DCAM Trigger Source unresolved status.
+    assert "oscilloscope" in window.dcam_source.toolTip()
+
+    # Experiment tab: Step Size convention, Frequency Scanning spacing caveat.
+    assert "0 = not used" in window.exp_freq_scan_step_khz.toolTip()
+    assert "not confirmed" in window.exp_freq_scan_enable.toolTip()
+
+
+def test_custom_syringe_volume_disabled_unless_syringe_is_custom(monkeypatch, tmp_path):
+    # Task 4 investigation: Custom Volume is only ever read as a fallback in
+    # _syringe_volume_ml() when Syringe="Custom" (ignored for the three named
+    # BD presets), and has no effect at all on ConfigureSyringe's real
+    # geometry call either way -- _configure_syringe() only ever sends
+    # {"name": syringe}. Disabled whenever a named preset is selected.
+    window = make_window(monkeypatch, tmp_path)
+
+    # Default is "BD 1ml" -- Custom Volume should start disabled.
+    assert window.syringe.currentText() == "BD 1ml"
+    assert not window.custom_syringe_volume_ml.isEnabled()
+
+    window.syringe.setCurrentText("Custom")
+    assert window.custom_syringe_volume_ml.isEnabled()
+
+    window.syringe.setCurrentText("BD 5ml")
+    assert not window.custom_syringe_volume_ml.isEnabled()
+
+    # Confirm the value is still read (just not editable) when disabled --
+    # disabling a QDoubleSpinBox doesn't change its stored .value().
+    window.syringe.setCurrentText("Custom")
+    window.custom_syringe_volume_ml.setValue(3.5)
+    assert window._syringe_volume_ml() == 3.5
+    window.syringe.setCurrentText("BD 5ml")
+    assert window._syringe_volume_ml() == 5.0  # preset value, custom ignored
+
+
+def test_pump_tab_valve_position_buttons_show_open_closed_semantics(monkeypatch, tmp_path):
+    # Position 1 = Open, Position 2 = Closed is a confirmed, safety-relevant
+    # physical mapping (instruments.py's Valve class) -- must be visible on
+    # both the row label and the button text, not left for the operator to
+    # remember.
+    window = make_window(monkeypatch, tmp_path)
+    pump_tab = None
+    for index in range(window.tabs.count()):
+        if window.tabs.tabText(index) == "Pump&Valve":
+            pump_tab = window.tabs.widget(index)
+            break
+    assert pump_tab is not None
+
+    label_texts = {lbl.text() for lbl in pump_tab.findChildren(QLabel)}
+    button_texts = {btn.text() for btn in pump_tab.findChildren(QPushButton)}
+    assert "Valve Pos1 (Open)" in label_texts
+    assert "ValvePos2 (Closed)" in label_texts
+    assert "Pos1 (Open)" in button_texts
+    assert "Pos2 (Closed)" in button_texts
+
+
+def test_init_tab_hardware_group_uses_clean_mx_valve_label(monkeypatch, tmp_path):
+    # "MX Valve 2" was a stray LabVIEW front-panel disambiguation-suffix
+    # artifact, the same bug class as the already-cleaned "SeriesPath 2" /
+    # "ExposureTime(ms) 2" / "Flush Settings 2" -- there is only one Valve in
+    # this codebase (self.valve_enabled/self.valve_resource are both
+    # singular, never indexed), so the "2" did not distinguish anything.
+    window = make_window(monkeypatch, tmp_path)
+    init_tab = None
+    for index in range(window.tabs.count()):
+        if window.tabs.tabText(index) == "Initialization":
+            init_tab = window.tabs.widget(index)
+            break
+    assert init_tab is not None
+    label_texts = {lbl.text() for lbl in init_tab.findChildren(QLabel)}
+    assert "MX Valve" in label_texts
+    assert "MX Valve 2" not in label_texts
+
+
+def test_experiment_tab_regroups_global_exposure_and_dynamic_camera_start(monkeypatch, tmp_path):
+    # GlobalExposure and Dynamic Camera Start Time no longer float in
+    # isolated grid cells -- confirm they're now inside the group boxes they
+    # logically belong to (the "Experiment" numbers group they modify, and
+    # the "Camera Start Array(s)" group they control), not merely present
+    # somewhere on the tab.
+    window = make_window(monkeypatch, tmp_path)
+    experiment_tab = None
+    for index in range(window.tabs.count()):
+        if window.tabs.tabText(index) == "Experiment":
+            experiment_tab = window.tabs.widget(index)
+            break
+    assert experiment_tab is not None
+
+    groups = {gb.title(): gb for gb in experiment_tab.findChildren(QGroupBox)}
+    assert window.global_exposure in groups["Experiment"].findChildren(QCheckBox)
+    assert window.dynamic_camera_start in groups["Camera Start Array(s)"].findChildren(QCheckBox)
+
+
 def test_wfg_tab_and_experiment_tab_carry_live_use_labels(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
 
@@ -208,16 +405,19 @@ def test_wfg_tab_and_experiment_tab_carry_live_use_labels(monkeypatch, tmp_path)
     wfg_checkbox_texts = {box.text() for box in wfg_tab.findChildren(QCheckBox)}
 
     # Ch1 (task's "CH0") Frequency/Amplitude/secRun/secWait: overridden during a run.
-    assert "Frequency (kHz) Carrier (overridden during experiment run)" in wfg_label_texts
-    assert "Amplitude (V) (overridden during experiment run)" in wfg_label_texts
-    assert "Run duration (s)   [0 = continuous] (overridden during experiment run)" in wfg_label_texts
-    assert "secWait (overridden during experiment run)" in wfg_label_texts
+    # Shortened from "(overridden during experiment run)"/"(not used by automated
+    # experiment runs)" to "(overridden)"/"(unused)" -- same distinction (an active
+    # Experiment-tab analog exists vs. none exists at all), far less per-row width.
+    assert "Frequency (kHz) Carrier (overridden)" in wfg_label_texts
+    assert "Amplitude (V) (overridden)" in wfg_label_texts
+    assert "Run duration (s)   [0 = continuous] (overridden)" in wfg_label_texts
+    assert "secWait (overridden)" in wfg_label_texts
     # Extended, verified-accurate labeling: Enable/Trigger source are also
     # overridden (not "active", per the trace in _wfg_channel_group()).
-    assert "Enable (overridden during experiment run)" in wfg_checkbox_texts
-    assert "Trigger source (overridden during experiment run)" in wfg_label_texts
+    assert "Enable (overridden)" in wfg_checkbox_texts
+    assert "Trigger source (overridden)" in wfg_label_texts
     # FM Mod is genuinely never read by an automated run at all.
-    assert "Frequency (kHz) (not used by automated experiment runs)" in wfg_label_texts
+    assert "Frequency (kHz) (unused)" in wfg_label_texts
 
     for index in range(window.tabs.count()):
         if window.tabs.tabText(index) == "Experiment":
@@ -244,7 +444,12 @@ def test_camera_sequence_group_flags_live_automated_use_and_dead_capture_mode(mo
     window = make_window(monkeypatch, tmp_path)
 
     group = window._sequence_group()
-    grid = group.layout()
+    # The grid now lives on its own content widget inside a QScrollArea
+    # (Session 38 fix for the wrapped sequence_note label needing more row
+    # height than the group's own minimumSizeHint could accommodate
+    # unwrapped) -- navigate through that to reach the real QGridLayout.
+    scroll = group.findChildren(QScrollArea)[0]
+    grid = scroll.widget().layout()
     note_item = grid.itemAtPosition(1, 2)
     assert note_item is not None
     note_text = note_item.widget().text()
@@ -254,9 +459,36 @@ def test_camera_sequence_group_flags_live_automated_use_and_dead_capture_mode(mo
     assert not window.capture_mode.isEnabled()
     assert "Not wired to a real backend" in window.capture_mode.toolTip()
 
-    settings_layout = grid.itemAtPosition(2, 2).layout()
+    settings_layout = grid.itemAtPosition(4, 2).layout()
     label_item = settings_layout.itemAt(4, settings_layout.ItemRole.LabelRole)
     assert label_item.widget().text() == "Capture mode (unused)"
+
+    # sequence_exposure_ms: confirmed dead since Session 11 (never included in
+    # _camera_sequence_settings(), so never read by configure_sequence()), and
+    # its "ExposureTime(ms)" label collided with the real, live self.exposure_ms
+    # field in the ROI group on the same tab -- same bug class as capture_mode,
+    # fixed the same way in this pass.
+    assert not window.sequence_exposure_ms.isEnabled()
+    assert "Not wired to a real backend" in window.sequence_exposure_ms.toolTip()
+    exposure_label_item = settings_layout.itemAt(9, settings_layout.ItemRole.LabelRole)
+    assert exposure_label_item.widget().text() == "ExposureTime(ms) (unused)"
+    assert "exposure_ms" not in window._camera_sequence_settings()
+
+
+def test_experiment_tab_elapsed_time_and_time_left_are_marked_as_stale_stubs(monkeypatch, tmp_path):
+    # Category 4 (Session 39): "Elapsed Time"/"Time Left" were constructed as
+    # bare QLabel("00:00:00") -- not assigned to any attribute -- so no code
+    # anywhere could ever update them despite rendering exactly like a live
+    # countdown/stopwatch readout. Confirmed still "00:00:00" text but now
+    # disabled + tooltipped as a non-functional stub, matching this
+    # codebase's established convention (capture_mode, sequence_exposure_ms).
+    window = make_window(monkeypatch, tmp_path)
+
+    for label in (window.elapsed_time_label, window.time_left_label):
+        assert label.text() == "00:00:00"
+        assert not label.isEnabled()
+        assert "Not wired to a real backend" in label.toolTip()
+        assert "never updated by any code path" in label.toolTip()
 
 
 def test_qt_ui_uses_passive_hardware_config_defaults(monkeypatch, tmp_path):
@@ -272,6 +504,47 @@ def test_qt_ui_uses_passive_hardware_config_defaults(monkeypatch, tmp_path):
     assert window.cetoni_config_path.text() == str(defaults.qmix.config_path)
     assert window.qmix_sdk_python_path.text() == str(defaults.qmix.sdk_python_path)
     assert window.qmix_qmixsdk_path.text() == str(defaults.qmix.qmixsdk_path)
+
+
+def test_category_6_grounded_tooltips_added_this_session(monkeypatch, tmp_path):
+    # Category 6 (Session 39): fields found genuinely non-self-evident and
+    # previously untooltipped, each grounded in a fact traced from real code
+    # this session (not invented) -- see the Session 39 changelog entry for
+    # the full trace of each.
+    window = make_window(monkeypatch, tmp_path)
+
+    # prior_resource: mirrors valve_resource's "genuinely used" pattern, plus
+    # the newly-traced fact that Z stage backend selection has zero effect on
+    # which backend is actually built (hardware_factory.build_hardware_bundle()
+    # never reads it).
+    assert "genuinely used" in window.prior_resource.toolTip()
+    assert "has no effect on which backend is actually built" in window.prior_resource.toolTip()
+
+    # flush_flowrate (manual tab): grounded in the same uL/min fact Session
+    # 31/32 established for FlushSettings.timeout_s; label also brought in
+    # line with the Experiment-tab twin's "(uL)" suffix.
+    assert "uL/min" in window.flush_flowrate.toolTip()
+
+    # conversion_method: grounded in ImagePreviewWindow's own three display
+    # methods, traced directly this session.
+    assert "linearly stretches" in window.conversion_method.toolTip()
+    assert "90th-percentile" in window.conversion_method.toolTip()
+    assert "right-bit-shifts" in window.conversion_method.toolTip()
+
+    # sequence_frames: grounded in the confirmed manual-vs-automated
+    # divergence (unlike its six siblings, this one is NOT carried into
+    # automated runs).
+    assert "NOT carried into automated Experiment runs" in window.sequence_frames.toolTip()
+
+    # exp_sweep_time_ms / manual WFG tab's sweep_time_ms: grounded in
+    # FmSweepSettings.fm_frequency_hz's real formula (ad2.py).
+    assert "1000/this value" in window.exp_sweep_time_ms.toolTip()
+    assert "1000/this value" in window.wfg_channels[0]["sweep_time_ms"].toolTip()
+
+    flush_group = window._flush_group()
+    flush_form = flush_group.layout()
+    flush_label_item = flush_form.itemAt(0, flush_form.ItemRole.LabelRole)
+    assert flush_label_item.widget().text() == "Flush Flowrate(uL)"
 
 
 def test_qt_ui_settings_dict_includes_passive_hardware_fields(monkeypatch, tmp_path):
@@ -468,20 +741,23 @@ def test_frequency_fields_display_khz_but_round_trip_to_correct_hz_hardware_valu
     assert manual_config.carrier.frequency_hz == 1_900_000.0
     assert manual_config.fm_mod.frequency_hz == 2500.0
 
-    # Manual WFG tab: Sweep "Center Frequency (kHz)" (Session 16 chose MHz; corrected here).
-    manual_state["sweep_center_khz"].setValue(1934.0)
-    manual_state["sweep_width_khz"].setValue(50.0)
+    # Manual WFG tab: Sweep "Start/Stop Frequency (kHz)" (Session 16 chose Center+Width
+    # in MHz; corrected to kHz then, and to Start+Stop here -- matching Digilent's own
+    # WaveForms sweep tool convention). Start=1909.0/Stop=1959.0 reproduces the exact
+    # same Martens et al. reference case as before: (1909+1959)/2=1934, |1959-1909|=50.
+    manual_state["sweep_start_khz"].setValue(1909.0)
+    manual_state["sweep_stop_khz"].setValue(1959.0)
     sweep = window._fm_sweep_settings_from_state(manual_state)
     assert sweep.center_hz == 1_934_000.0
     assert sweep.width_hz == 50_000.0
 
-    # Experiment tab: Carrier "Frequency (kHz)" and Sweep "Center Frequency (kHz)".
+    # Experiment tab: Carrier "Frequency (kHz)" and Sweep "Start/Stop Frequency (kHz)".
     window.exp_ch1_freq.setValue(1900.0)
     experiment_config = window._experiment_channel_config(0, window.exp_ad2_channels[0])
     assert experiment_config.carrier.frequency_hz == 1_900_000.0
 
-    window.exp_sweep_center_khz.setValue(1934.0)
-    window.exp_sweep_width_khz.setValue(50.0)
+    window.exp_sweep_start_khz.setValue(1909.0)
+    window.exp_sweep_stop_khz.setValue(1959.0)
     experiment_sweep = window._experiment_fm_sweep_settings()
     assert experiment_sweep.center_hz == 1_934_000.0
     assert experiment_sweep.width_hz == 50_000.0
@@ -512,8 +788,10 @@ def test_fm_sweep_toggle_on_carries_settings_into_experiment_wfg_config(monkeypa
     window.exp_frames.setValue(5)
 
     window.exp_sweep_enable.setChecked(True)
-    window.exp_sweep_center_khz.setValue(1934.0)
-    window.exp_sweep_width_khz.setValue(50.0)
+    # Start=1909.0/Stop=1959.0 kHz reproduces the same Martens et al. reference
+    # case as the original Center=1934/Width=50 kHz: (1909+1959)/2=1934, |1959-1909|=50.
+    window.exp_sweep_start_khz.setValue(1909.0)
+    window.exp_sweep_stop_khz.setValue(1959.0)
     window.exp_sweep_time_ms.setValue(1.0)
     window.exp_sweep_type.setCurrentText("Symmetric")
 
@@ -539,6 +817,47 @@ def test_fm_sweep_toggle_on_carries_settings_into_experiment_wfg_config(monkeypa
     assert properties["FMSweepWidthKHz"] == 50.0
     assert properties["FMSweepTimeMs"] == 1.0
     assert properties["FMSweepType"] == "Symmetric"
+
+
+def test_fm_sweep_dual_mode_start_stop_and_center_width_stay_in_sync(monkeypatch, tmp_path):
+    # Task 1 correction: Start/Stop and Center/Width are both live inputs for
+    # the same value -- editing either pair updates the other, neither is
+    # ever hidden or removed. Martens et al. reference case both directions:
+    # Start=1909/Stop=1959 <-> Center=1934/Width=50.
+    window = make_window(monkeypatch, tmp_path)
+
+    # Manual WFG tab (Ch1 state).
+    manual_state = window.wfg_channels[0]
+    manual_state["sweep_start_khz"].setValue(1909.0)
+    manual_state["sweep_stop_khz"].setValue(1959.0)
+    assert manual_state["sweep_center_khz"].value() == pytest.approx(1934.0)
+    assert manual_state["sweep_width_khz"].value() == pytest.approx(50.0)
+
+    manual_state["sweep_center_khz"].setValue(2000.0)
+    manual_state["sweep_width_khz"].setValue(100.0)
+    assert manual_state["sweep_start_khz"].value() == pytest.approx(1950.0)
+    assert manual_state["sweep_stop_khz"].value() == pytest.approx(2050.0)
+
+    # Round-trip back to the reference case via Center/Width this time.
+    manual_state["sweep_center_khz"].setValue(1934.0)
+    manual_state["sweep_width_khz"].setValue(50.0)
+    sweep = window._fm_sweep_settings_from_state(manual_state)
+    assert sweep.center_hz == 1_934_000.0
+    assert sweep.width_hz == 50_000.0
+
+    # Experiment tab.
+    window.exp_sweep_start_khz.setValue(1909.0)
+    window.exp_sweep_stop_khz.setValue(1959.0)
+    assert window.exp_sweep_center_khz.value() == pytest.approx(1934.0)
+    assert window.exp_sweep_width_khz.value() == pytest.approx(50.0)
+
+    window.exp_sweep_center_khz.setValue(1934.0)
+    window.exp_sweep_width_khz.setValue(50.0)
+    assert window.exp_sweep_start_khz.value() == pytest.approx(1909.0)
+    assert window.exp_sweep_stop_khz.value() == pytest.approx(1959.0)
+    experiment_sweep = window._experiment_fm_sweep_settings()
+    assert experiment_sweep.center_hz == 1_934_000.0
+    assert experiment_sweep.width_hz == 50_000.0
 
 
 def test_frequency_scanning_off_keeps_wfg_config_identical_across_repeats(monkeypatch, tmp_path):
@@ -584,6 +903,25 @@ def test_frequency_scanning_substitutes_ch1_only_per_repeat(monkeypatch, tmp_pat
     assert ch2_frequencies == [1000.0, 1000.0, 1000.0, 1000.0]
 
 
+def test_frequency_scanning_step_size_overrides_count_when_nonzero(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    window.series_path.setText(str(tmp_path / "series"))
+    window.exp_camera_fps.setValue(100.0)
+    window.exp_frames.setValue(5)
+    window.exp_repeats.setValue(4)
+
+    window.exp_freq_scan_enable.setChecked(True)
+    window.exp_freq_scan_start_khz.setValue(1900.0)
+    window.exp_freq_scan_stop_khz.setValue(1975.0)
+    window.exp_freq_scan_count.setValue(10)  # deliberately wrong -- Step Size must win
+    window.exp_freq_scan_step_khz.setValue(25.0)  # (1975-1900)/25 + 1 = 4 points
+
+    series, _total_frames, _config = window._build_experiment_series()
+
+    ch1_frequencies = [experiment.wfg_config.channels[0].carrier.frequency_hz for experiment in series.experiments]
+    assert ch1_frequencies == pytest.approx([1_900_000.0, 1_925_000.0, 1_950_000.0, 1_975_000.0])
+
+
 def test_frequency_scanning_repeats_mismatch_raises_before_starting(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
     window.series_path.setText(str(tmp_path / "series"))
@@ -599,6 +937,54 @@ def test_frequency_scanning_repeats_mismatch_raises_before_starting(monkeypatch,
     with pytest.raises(ValueError, match="Frequency Scanning"):
         window._build_experiment_series()
     assert not (tmp_path / "series").exists(), "nothing should be created before the mismatch is caught"
+
+
+def test_frequency_scanning_repeats_mismatch_error_names_the_true_count_source(monkeypatch, tmp_path):
+    # Category 5 (Session 39): the mismatch error used to always say "(Number
+    # of Frequencies)" even when Step Size (not Number of Frequencies) was
+    # the field actually driving the count -- misattributing the source an
+    # operator would need to fix. Confirms both branches now name correctly.
+    window = make_window(monkeypatch, tmp_path)
+    window.series_path.setText(str(tmp_path / "series"))
+    window.exp_camera_fps.setValue(100.0)
+    window.exp_frames.setValue(5)
+    window.exp_repeats.setValue(3)
+    window.exp_freq_scan_enable.setChecked(True)
+    window.exp_freq_scan_start_khz.setValue(1900.0)
+    window.exp_freq_scan_stop_khz.setValue(1975.0)
+
+    window.exp_freq_scan_count.setValue(5)  # step is 0 -- Number of Frequencies drives it
+    with pytest.raises(ValueError, match=r"\(Number of Frequencies\)"):
+        window._build_experiment_series()
+
+    window.exp_freq_scan_step_khz.setValue(25.0)  # (1975-1900)/25 + 1 = 4 points, step now drives it
+    with pytest.raises(ValueError, match=r"\(Step Size\)"):
+        window._build_experiment_series()
+
+
+def test_frequency_scanning_number_of_frequencies_display_tracks_step_size(monkeypatch, tmp_path):
+    # Category 5 (Session 39): unlike FM Sweep's Start/Stop<->Center/Width
+    # (Session 38), Step Size silently overrode the real point count without
+    # ever updating what "Number of Frequencies" displayed -- an operator
+    # reading only that field would see a stale, wrong number once Step Size
+    # took over. Confirms the display now tracks the real computed count
+    # whenever Step Size is active, and that editing Number of Frequencies
+    # directly still works, unchanged, whenever Step Size is 0.
+    window = make_window(monkeypatch, tmp_path)
+
+    window.exp_freq_scan_start_khz.setValue(1900.0)
+    window.exp_freq_scan_stop_khz.setValue(1975.0)
+    window.exp_freq_scan_count.setValue(10)  # stale/wrong once Step Size is set below
+
+    window.exp_freq_scan_step_khz.setValue(25.0)  # (1975-1900)/25 + 1 = 4 points
+    assert window.exp_freq_scan_count.value() == 4
+
+    window.exp_freq_scan_stop_khz.setValue(2000.0)  # (2000-1900)/25 + 1 = 5 points
+    assert window.exp_freq_scan_count.value() == 5
+
+    window.exp_freq_scan_step_khz.setValue(0.0)  # back to "not used" -- Number of Frequencies is authoritative again
+    window.exp_freq_scan_count.setValue(7)
+    assert window.exp_freq_scan_count.value() == 7
 
 
 def test_frequency_scanning_swept_value_reaches_real_tdms_metadata(monkeypatch, tmp_path):
@@ -1359,6 +1745,62 @@ def test_run_experiment_series_stops_queuing_further_repeats_after_abort(monkeyp
         assert status == "ExperimentSeriesAborted"
         assert call_count["n"] == 1, "no further repeat should have started after Abort was fired"
         assert series.see_elements_left() == 2, "queue must not drain to completion after Abort"
+    finally:
+        window.close()
+
+
+def test_run_experiment_series_brackets_experiment_series_active_progress(monkeypatch, tmp_path):
+    # Category 2 (Session 39): qt_ui_v2.py's "Experiment running" indicator
+    # used to derive its Yes/No from "experiment" in self.app.status.lower(),
+    # which goes stale the instant Abort is clicked (Abort's own
+    # "Aborting..." status overwrites app.status while the current repeat may
+    # still be executing). Fixed to read an explicit
+    # "experiment_series_active" progress kind that _run_experiment_series()
+    # now emits True before its loop and False (via try/finally) on every
+    # exit path. This test confirms the bracketing on both the successful
+    # path and the raised-RuntimeError path.
+    from thermo_acoustic.workflows import Experiment2, ExperimentSeries2
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(qt_ui, "SETTINGS_PATH", settings_path)
+    QApplication.instance() or QApplication([])
+
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        series = ExperimentSeries2(series_path=tmp_path)
+        series.enqueue_experiments([Experiment2()])
+        config = window._experiment_wfg_config()
+
+        events: list[tuple[str, object]] = []
+        window._run_experiment_series(series, total_frames=1, config=config, progress=lambda kind, value: events.append((kind, value)))
+
+        active_events = [value for kind, value in events if kind == "experiment_series_active"]
+        assert active_events == [True, False]
+        assert events.index(("experiment_series_active", True)) < events.index(("experiment_series_active", False))
+    finally:
+        window.close()
+
+    class FailingRunApplication(qt_ui.Application):
+        def run_experiment2(self) -> bool:
+            self.status = "ExperimentFlushFailed"
+            return False
+
+    window = qt_ui.MainWindow(app=FailingRunApplication())
+    try:
+        series = ExperimentSeries2(series_path=tmp_path)
+        series.enqueue_experiments([Experiment2()])
+        config = window._experiment_wfg_config()
+
+        events = []
+        try:
+            window._run_experiment_series(series, total_frames=1, config=config, progress=lambda kind, value: events.append((kind, value)))
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("expected RuntimeError when the repeat fails")
+
+        active_events = [value for kind, value in events if kind == "experiment_series_active"]
+        assert active_events == [True, False], "flag must be cleared even when a repeat raises"
     finally:
         window.close()
 

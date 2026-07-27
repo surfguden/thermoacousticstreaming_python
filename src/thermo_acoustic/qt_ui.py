@@ -65,13 +65,22 @@ WFG_TRIGGER_SOURCE_OPTIONS = ["trigsrcNone", "trigsrcPC", "trigsrcAnalogIn", "tr
 CONVERSION_METHOD_OPTIONS = ["Full Dynamic", "90% Dynamic", "Downshift"]
 
 
+# A systematic offscreen sweep (Session 38) found nearly every QDoubleSpinBox
+# in the app had a real sizeHint() up to 252px while capped at
+# setMaximumWidth(125) -- about half the width actually needed, so a value
+# like "1900.000" rendered as "1900." (the trailing digits had nowhere to
+# go). 260px comfortably covers every sizeHint measured across every tab at
+# the time of that sweep, with a small margin.
+_SPIN_MAX_WIDTH = 260
+
+
 def _spin(value: float = 0.0, *, decimals: int = 3, minimum: float = -1e12, maximum: float = 1e12) -> QDoubleSpinBox:
     widget = QDoubleSpinBox()
     widget.setDecimals(decimals)
     widget.setRange(minimum, maximum)
     widget.setValue(value)
     widget.setKeyboardTracking(False)
-    widget.setMaximumWidth(125)
+    widget.setMaximumWidth(_SPIN_MAX_WIDTH)
     return widget
 
 
@@ -80,7 +89,7 @@ def _int_spin(value: int = 0, *, minimum: int = -1_000_000, maximum: int = 1_000
     widget.setRange(minimum, maximum)
     widget.setValue(value)
     widget.setKeyboardTracking(False)
-    widget.setMaximumWidth(125)
+    widget.setMaximumWidth(_SPIN_MAX_WIDTH)
     return widget
 
 
@@ -359,6 +368,15 @@ class MainWindow(QMainWindow):
         self._threads: list[QThread] = []
         self._workers: list[ActionWorker] = []
         self._busy_count = 0
+        # Tracks whether _run_experiment_series()'s while loop is currently
+        # executing (set/cleared via the "experiment_series_active" progress
+        # kind below, not read directly from a worker thread -- see
+        # _run_experiment_series()). Distinct from `self.app.status` string
+        # matching, which qt_ui_v2.py's "Experiment running" indicator used
+        # to rely on and which was found to go stale the instant Abort is
+        # clicked (its own "Aborting..." status overwrites app.status while
+        # the series' current repeat may still genuinely be in flight).
+        self._experiment_series_active = False
         self._shutdown_in_progress = False
         self._close_after_shutdown = False
         self._shutdown_thread: threading.Thread | None = None
@@ -407,6 +425,16 @@ class MainWindow(QMainWindow):
 
         self.z_backend = _combo([item.value for item in ZStageBackend], hardware_defaults.z_stage.backend.value)
         self.prior_resource = QLineEdit(hardware_defaults.z_stage.prior_resource)
+        self.prior_resource.setToolTip(
+            "The real VISA/COM resource for the Prior Z-motor controller; passed to "
+            "HardwareRuntimeConfig and genuinely used, unlike the disabled Z stage backend/"
+            "Thorlabs fields above. Traced hardware_factory.build_hardware_bundle(): checking "
+            "'Z stage' always builds a Prior-serial Z-motor when enabled, regardless of what "
+            "the (unwired) Z stage backend combo shows -- selecting 'thorlabs_apt' there has no "
+            "effect on which backend is actually built. Low current risk only because this path "
+            "is separately documented as legacy/obsolete (Session 18) -- current Z hardware is "
+            "Thorlabs/APT, which has no real backend at all yet."
+        )
         self.thorlabs_apt_serial = QLineEdit(hardware_defaults.z_stage.thorlabs_apt_serial)
         self.thorlabs_apt_backend = QLineEdit(hardware_defaults.z_stage.thorlabs_apt_backend)
         self.thorlabs_apt_discovery_only = QCheckBox("Discovery only")
@@ -430,52 +458,196 @@ class MainWindow(QMainWindow):
         self.mso_ch2_enabled.setChecked(True)
         self.mso_trigger_source = _combo([item.value for item in TriggerSource], TriggerSource.NONE.value)
         self.mso_sample_frequency = _spin(10_000.0, decimals=1, minimum=1.0, maximum=100_000_000.0)
+        self.mso_sample_frequency.setToolTip(
+            "AD2 analog-in sample rate. 100 MS/s (the max above) is the Analog Discovery 2's "
+            "published spec, but this has not been independently re-verified against this "
+            "specific device (Session 18 audit: classified UNCONFIRMED, treat as a reasonable "
+            "default, not a confirmed one)."
+        )
         self.mso_sample_count = _int_spin(4096, minimum=1, maximum=1_000_000)
         self.mso_range = _spin(1.0, decimals=3, minimum=0.001, maximum=50.0)
+        self.mso_range.setToolTip(
+            "Analog-in voltage range. The 1 V default is below the documented real acoustic "
+            "drive signal (up to 2 V on CH0) -- scoping at this default risks clipping "
+            "(Session 18 audit: classified SUSPECTED-PLACEHOLDER). Widen before scoping CH0."
+        )
         self.mso_offset = _spin(0.0, decimals=3, minimum=-50.0, maximum=50.0)
         self.mso_stats = QLabel("No capture")
         self.mso_samples: list[float] = []
 
         self.syringe = _combo(["BD 1ml", "BD 5ml", "BD 10ml", "Custom"], "BD 1ml")
+        self.syringe.setToolTip(
+            "BD inner diameters confirmed against BD's published spec (Session 17: "
+            "1ml=4.78mm, 5ml=12.07mm, 10ml=14.5mm). Stroke length is a derived value "
+            "(volume / cross-sectional area assuming full nominal volume over full piston "
+            "travel), not an independently-sourced BD spec figure. 'Custom' has no known "
+            "geometry -- Configure Syringe will fail for it unless Custom Volume-adjacent "
+            "geometry fields are supplied (see Custom Volume's own tooltip)."
+        )
         self.custom_syringe_volume_ml = _spin(1.0, decimals=3, minimum=0.001)
+        # Task 4 investigation (Session 38): traced _syringe_volume_ml() --
+        # this value is only ever read as a fallback when Syringe="Custom"
+        # (ignored/inert for the three named BD presets, which have their
+        # own known volumes). It also has NO effect on ConfigureSyringe's
+        # real geometry call in ANY case -- _configure_syringe() only ever
+        # sends {"name": syringe} to the pump backend, never this value; it
+        # feeds only the flush-volume-vs-syringe-capacity safety check.
+        # Disabled whenever a named preset is active, matching this
+        # project's established stub-marking convention, so its value can't
+        # be mistaken for something currently being read.
+        self.custom_syringe_volume_ml.setToolTip(
+            "Only used when Syringe = 'Custom' (feeds the flush-volume-vs-syringe-capacity "
+            "safety check in Application.flush()). Has no effect on the real syringe geometry "
+            "Configure Syringe sends to the pump, which only recognizes the three named BD "
+            "presets -- selecting 'Custom' and clicking Configure Syringe will fail because no "
+            "real inner diameter/stroke is supplied for it."
+        )
+        self._update_custom_syringe_volume_enabled()
+        self.syringe.currentTextChanged.connect(lambda _text: self._update_custom_syringe_volume_enabled())
         self.flow_rate = _spin(-5000.0, decimals=1)
+        self.flow_rate.setToolTip(
+            "uL/min, sign per the row label (-=aspirate, +=dispense). No sign-inversion logic "
+            "exists anywhere in CetoniPump/Application.flush()/this UI, and no documented "
+            "LabVIEW reference convention exists in this repo to compare against -- flagged "
+            "since Session 6 as unverifiable from current code, not confirmed correct or wrong."
+        )
         self.level_ml = _spin(0.0, decimals=3, minimum=0.0)
+        self.level_ml.setToolTip(
+            "Absolute mL target for 'Go to Level' (not a fraction of syringe capacity -- Session "
+            "13 removed an earlier 0.0-1.0 fraction-vs-absolute-mL ambiguity)."
+        )
         self.flush_flowrate = _spin(0.0, decimals=3)
+        self.flush_flowrate.setToolTip(
+            "uL/min on the real device (QmixPumpBackend.initialize() configures the pump's flow "
+            "unit as uL/min, confirmed via the FlushSettings.timeout_s fix, Session 31/32) -- "
+            "this row's label omits the unit shown on its Experiment-tab twin "
+            "('Flush Flowrate(uL)'); same field, same unit, just not spelled out here."
+        )
         self.flush_volume = _spin(0.0, decimals=3, minimum=0.0)
+        self.flush_volume.setToolTip(
+            "Application.flush() raises before touching hardware if this exceeds the selected "
+            "syringe's capacity (Session 10)."
+        )
         self.wait_after_flush = _spin(0.0, decimals=3, minimum=0.0)
+        self.wait_after_flush.setToolTip(
+            "Seconds to wait after the flush's second valve move (Closed) before considering the "
+            "flush complete -- lets the system settle after fluid movement stops."
+        )
         self.flush_count = _int_spin(1, minimum=1)
 
         self.roi_h_offset = _int_spin(0, minimum=0)
         self.roi_v_offset = _int_spin(900, minimum=0)
+        self.roi_v_offset.setToolTip(
+            "These startup defaults diverge from this repo's own validated-on-real-hardware "
+            "combination (vertical_offset=792, vertical_size=740, exposure=40.0ms; C15440-20UP; "
+            "see docs/current_workflow_audit.md and experiment_presets.py) -- Session 18 audit: "
+            "classified SUSPECTED-PLACEHOLDER, never wired into these live defaults."
+        )
         self.roi_h_size = _int_spin(2304, minimum=0)
         self.roi_v_size = _int_spin(500, minimum=0)
+        self.roi_v_size.setToolTip(self.roi_v_offset.toolTip())
         self.exposure_ms = _spin(50.0, decimals=3, minimum=0.0)
+        self.exposure_ms.setToolTip(
+            "Applied to real DCAM hardware via Configure Camera (configure_exposure_time()). "
+            "Automated Experiment runs use their own Exposure time (ms) field instead and enforce "
+            "a timing budget: Application._check_camera_timing_budget() rejects a configured "
+            "Camera FPS the current exposure + real DCAM readout time can't sustain."
+        )
         self.center_roi = QCheckBox("Off/On")
         self.center_roi.setChecked(True)
         self.image_continuous = QCheckBox("Off/On")
         self.image_continuous.setChecked(False)
         self.conversion_method = _combo(CONVERSION_METHOD_OPTIONS, "Full Dynamic")
+        self.conversion_method.setToolTip(
+            "How a captured 16-bit frame is stretched to 8-bit for on-screen preview only -- "
+            "traced ImagePreviewWindow's own conversion methods: 'Full Dynamic' linearly stretches "
+            "the frame's real min/max to 0-255; '90% Dynamic' stretches the middle 90th-percentile "
+            "range instead (clips the outer 5% at each tail); 'Downshift' right-bit-shifts the raw "
+            "16-bit value by '# Shifts' bits and clips to 0-255, no min/max computation. Display-"
+            "only -- does not affect the saved TIFF data."
+        )
         self.conversion_min = _spin(0.0, decimals=3)
         self.conversion_min.setReadOnly(True)
+        self.conversion_min.setToolTip(
+            "Read-only: the real min/percentile value used for the last 'Adjust' -- an output of "
+            "the conversion, not an input to it."
+        )
         self.conversion_max = _spin(0.0, decimals=3)
         self.conversion_max.setReadOnly(True)
+        self.conversion_max.setToolTip(self.conversion_min.toolTip().replace("min/percentile", "max/percentile"))
         self.conversion_shifts = _int_spin(0, minimum=0, maximum=16)
+        self.conversion_shifts.setToolTip(
+            "Only used when Conversion Method = 'Downshift': the raw pixel value is right-shifted "
+            "by this many bits before clipping to 0-255 (e.g. 8 shifts converts a 16-bit range "
+            "down to roughly its top byte)."
+        )
         self.sequence_path = QLineEdit("")
         self.sequence_mode = _combo(["Continuous", "Start (single)", "Burst"], "Continuous")
+        sequence_cluster_tip = (
+            "Part of the DCAM SequenceSettings cluster. Since Session 22, these Sequence "
+            "fields (Mode/Source/Interval/Burst/Polarity/Delay) are carried from this manual "
+            "tab into every automated Experiment run -- unlike most manual-tab widgets, "
+            "changing these DOES affect automated runs, matching RunExperiment2.vi's own "
+            "behavior of always applying the whole cluster."
+        )
+        self.sequence_mode.setToolTip(sequence_cluster_tip)
         self.sequence_source = _combo(["External", "Software"], "External")
+        self.sequence_source.setToolTip(sequence_cluster_tip)
         self.sequence_interval = _spin(1.0, decimals=6, minimum=0.000005, maximum=10.0)
+        self.sequence_interval.setToolTip(sequence_cluster_tip)
         self.sequence_burst = _int_spin(1, minimum=1, maximum=65535)
+        self.sequence_burst.setToolTip(sequence_cluster_tip)
         self.capture_mode = _combo(["Snap", "Sequence"], "Snap")
         self.capture_mode.setEnabled(False)
         self.capture_mode.setToolTip("Not wired to a real backend: never read by _camera_sequence_settings() or any capture path (confirmed dead, Session 11).")
         self.sequence_frames = _int_spin(0, minimum=0)
+        self.sequence_frames.setToolTip(
+            "Unlike its six siblings in this Sequence group (Mode/Source/Interval/Burst/Polarity/"
+            "Delay, Session 22), this one is NOT carried into automated Experiment runs -- "
+            "_build_experiment_series() always overrides it with the Experiment tab's own Frames "
+            "count. Only reaches real hardware via this manual tab's own Configure Camera click, "
+            "where it sizes the DCAM capture buffer (HamamatsuDcamBackend._sequence_buffer_frame_count())."
+        )
         self.dcam_source = _combo(["Internal", "External", "Software", "MasterPulse"], "Internal")
+        self.dcam_source.setToolTip(
+            "Automated Experiment runs hardcode this to 'Internal' (Session 13) purely to remove "
+            "undefined leftover-state risk -- whether it should instead be 'External' (paced by "
+            "the AD2 DIO pulse train) remains genuinely unresolved: Session 19 traced the real "
+            "LabVIEW call chain but the actual wired value is compiled block-diagram wiring, not "
+            "recoverable from the exported VI diagrams. Still needs oscilloscope verification."
+        )
         self.external_polarity = _combo(["Negative", "Positive"], "Negative")
+        self.external_polarity.setToolTip(sequence_cluster_tip)
         self.external_delay = _spin(0.0, decimals=6, minimum=0.0, maximum=10.000002)
+        self.external_delay.setToolTip(sequence_cluster_tip)
+        # Confirmed dead since Session 11 ("constructed and displayed but
+        # never read"), same bug class as capture_mode (fixed Session 24) --
+        # but this one was flagged, never actually fixed. _camera_sequence_settings()
+        # never includes an "exposure_ms" key, so this value is never read by
+        # configure_sequence() or anything else; the real exposure control is
+        # self.exposure_ms in the ROI group (Configure Camera ->
+        # configure_exposure_time()), which shares this same "ExposureTime(ms)"
+        # row label on the same tab -- a live/dead label collision identical to
+        # the one already fixed for "Mode"/"Capture mode" in Session 24.
+        # Disabled here, matching that precedent, instead of removing the
+        # widget outright.
         self.sequence_exposure_ms = _spin(0.0, decimals=3, minimum=0.0)
+        self.sequence_exposure_ms.setEnabled(False)
+        self.sequence_exposure_ms.setToolTip(
+            "Not wired to a real backend: never included in _camera_sequence_settings(), so "
+            "never read by configure_sequence() or any capture path (confirmed dead, Session "
+            "11; same bug class as capture_mode, fixed Session 24, but this field was never "
+            "actually fixed then). The real exposure control is ExposureTime(ms) in the ROI "
+            "group above (self.exposure_ms), applied via Configure Camera."
+        )
 
         self.series_path = QLineEdit(r"C:\test\firstrunpulsed")
         self.exp_camera_fps = _spin(0.0, decimals=3, minimum=0.0)
+        self.exp_camera_fps.setToolTip(
+            "Must be > 0 -- used to derive the AD2 DIO1 LED clock (Experiment2's DO clock "
+            "channel) and checked against the real DCAM readout time + exposure by "
+            "Application._check_camera_timing_budget() before capture starts."
+        )
         self.exp_camera_start = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_ch1_freq = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_ch1_amp = _spin(0.0, decimals=3)
@@ -483,29 +655,80 @@ class MainWindow(QMainWindow):
         self.exp_ch1_function = _combo([item.value for item in WaveformFunction], WaveformFunction.SINE.value)
         self.exp_ch1_enable = QCheckBox("Enable")
         self.exp_ch1_start = _spin(0.0, decimals=3, minimum=0.0)
+        self.exp_ch1_start.setToolTip("Delay in seconds after the AD2 PC trigger before this channel's output starts.")
         self.exp_ch1_run = _spin(0.0, decimals=3, minimum=0.0)
+        self.exp_ch1_run.setToolTip(
+            "Output duration in seconds. 0 = continuous/free-running (no defined stop time) -- "
+            "Application._ad2_trigger_completion_seconds() raises before starting if this is 0, "
+            "since flush/save can't safely proceed without a known completion time."
+        )
         self.exp_ch1_repeat = _int_spin(0, minimum=0)
+        self.exp_ch1_repeat.setToolTip("Number of trigger repeats. 0 = infinite (repeats until manually stopped).")
         self.exp_ch1_trigger_source = _combo(WFG_TRIGGER_SOURCE_OPTIONS, "trigsrcNone")
+        self.exp_ch1_trigger_source.setToolTip(
+            "AD2 SDK trigger source enum. The automated Experiment path always arms via config "
+            "then fires one shared PC trigger (Application.run_experiment2() -> ad2.pc_trigger())."
+        )
         self.exp_ch1_symmetry = _spin(50.0, decimals=3, minimum=0.0, maximum=100.0)
+        self.exp_ch1_symmetry.setToolTip(
+            "Duty-cycle-like shape control for the carrier waveform (percent of each period "
+            "spent in the 'high' phase for Square, or skew for Triangle/Sine). 50% is symmetric."
+        )
         self.exp_ch1_phase = _spin(0.0, decimals=3)
+        self.exp_ch1_phase.setToolTip("Starting phase offset of the carrier waveform, in degrees.")
         self.exp_ch1_repeat_trigger = QCheckBox("Repeat Trigger")
+        self.exp_ch1_repeat_trigger.setToolTip("Whether the trigger source re-arms automatically after each repeat.")
         self.exp_sweep_enable = QCheckBox("Enable Frequency Sweep During Experiment")
+        # Start/Stop Frequency are the user-facing inputs (see the manual WFG
+        # tab's matching sweep_start_khz/sweep_stop_khz note) -- defaults are
+        # the Martens et al. reference case (center 1.934 MHz, width 50 kHz)
+        # re-expressed as Start=1909.0/Stop=1959.0 kHz: (1909+1959)/2=1934,
+        # |1959-1909|=50, exactly reproducing the original Session-16 values.
+        self.exp_sweep_start_khz = _spin(1909.0, decimals=3, minimum=0.0)
+        self.exp_sweep_stop_khz = _spin(1959.0, decimals=3, minimum=0.0)
+        # Dual-mode input (see the manual WFG tab's matching note): Center/
+        # Width restored alongside Start/Stop, kept in sync, neither removed.
         self.exp_sweep_center_khz = _spin(1934.0, decimals=3, minimum=0.0)
         self.exp_sweep_width_khz = _spin(50.0, decimals=3, minimum=0.0)
         self.exp_sweep_time_ms = _spin(1.0, decimals=3, minimum=0.0)
+        self.exp_sweep_time_ms.setToolTip(
+            "Time for one full sweep repetition -- FmSweepSettings.fm_frequency_hz = 1000/this "
+            "value (ad2.py), i.e. the FM node's own modulation frequency. Martens et al. "
+            "reference case (Session 16) uses 1 ms (-> 1 kHz FM modulation rate)."
+        )
         self.exp_sweep_type = _combo(["Symmetric", "RampUp", "RampDown"], "Symmetric")
+        exp_sweep_dual_mode_tip = (
+            "Start/Stop and Center/Width are both live inputs for the same underlying value -- "
+            "editing either pair updates the other to match (center_hz=(start+stop)/2, "
+            "width_hz=|stop-start|). Unlike the manual WFG tab's own Sweep group, enabling this "
+            "one DOES apply to real automated Experiment runs (Session 16)."
+        )
+        for widget in (self.exp_sweep_start_khz, self.exp_sweep_stop_khz, self.exp_sweep_center_khz, self.exp_sweep_width_khz):
+            widget.setToolTip(exp_sweep_dual_mode_tip)
+        self.exp_sweep_type.setToolTip(
+            "Symmetric->Triangle, RampUp->RampUp, RampDown->RampDown is the most architecturally "
+            "plausible Function-2 enum mapping given the shared AD2 SDK enum, not independently "
+            "confirmed against WfgConfigureSweepCh1.vi's actual wiring (Session 16)."
+        )
         self.exp_ch2_freq = _spin(1.0, decimals=3, minimum=0.0)
         self.exp_ch2_amp = _spin(1.0, decimals=3)
         self.exp_ch2_offset = _spin(0.0, decimals=3)
         self.exp_ch2_function = _combo([item.value for item in WaveformFunction], WaveformFunction.SINE.value)
         self.exp_ch2_enable = QCheckBox("Enable")
         self.exp_ch2_start = _spin(0.0, decimals=3, minimum=0.0)
+        self.exp_ch2_start.setToolTip(self.exp_ch1_start.toolTip())
         self.exp_ch2_run = _spin(0.0, decimals=3, minimum=0.0)
+        self.exp_ch2_run.setToolTip(self.exp_ch1_run.toolTip())
         self.exp_ch2_repeat = _int_spin(0, minimum=0)
+        self.exp_ch2_repeat.setToolTip(self.exp_ch1_repeat.toolTip())
         self.exp_ch2_trigger_source = _combo(WFG_TRIGGER_SOURCE_OPTIONS, "trigsrcNone")
+        self.exp_ch2_trigger_source.setToolTip(self.exp_ch1_trigger_source.toolTip())
         self.exp_ch2_symmetry = _spin(50.0, decimals=3, minimum=0.0, maximum=100.0)
+        self.exp_ch2_symmetry.setToolTip(self.exp_ch1_symmetry.toolTip())
         self.exp_ch2_phase = _spin(0.0, decimals=3)
+        self.exp_ch2_phase.setToolTip(self.exp_ch1_phase.toolTip())
         self.exp_ch2_repeat_trigger = QCheckBox("Repeat Trigger")
+        self.exp_ch2_repeat_trigger.setToolTip(self.exp_ch1_repeat_trigger.toolTip())
         self.exp_ad2_channels = [
             {
                 "frequency": self.exp_ch1_freq,
@@ -540,13 +763,34 @@ class MainWindow(QMainWindow):
         self.exp_repeats = _int_spin(1, minimum=1)
         self.exp_frames = _int_spin(1, minimum=0)
         self.exp_exposure_ms = _spin(0.0, decimals=3, minimum=0.0)
+        self.exp_exposure_ms.setToolTip(
+            "Applied to real DCAM hardware every run via configure_exposure_time() (Session 20 "
+            "fix -- a prior bug called a Python-side bookkeeping setter instead, silently leaving "
+            "the camera at whatever exposure a previous manual session had set)."
+        )
         self.exp_flush_flowrate = _spin(0.0, decimals=3)
         self.exp_flush_volume = _spin(0.0, decimals=3, minimum=0.0)
+        self.exp_flush_volume.setToolTip(
+            "Application.flush() raises before touching hardware if this exceeds the selected "
+            "syringe's capacity (Session 10)."
+        )
         self.exp_wait_after_flush = _spin(0.0, decimals=3, minimum=0.0)
+        self.exp_wait_after_flush.setToolTip(
+            "Seconds to wait after the flush's second valve move (Closed) before considering the "
+            "flush complete -- lets the system settle after fluid movement stops."
+        )
         self.exp_flush_enabled = QCheckBox("Enable")
         self.camera_start_array = [_spin(0.0, decimals=3, minimum=0.0) for _ in range(10)]
         self.global_exposure = QCheckBox("Off/On")
+        self.global_exposure.setToolTip(
+            "Experiment2.trigger_global_exposure -- passed to camera.configure_trigger_global_exposure(); "
+            "may only take effect with compatible DCAM trigger source settings."
+        )
         self.dynamic_camera_start = QCheckBox("Off/On")
+        self.dynamic_camera_start.setToolTip(
+            "When on, each repeat's Camera Start Time comes from its own slot in Camera Start "
+            "Array(s) below instead of the single Camera Start (s) field above."
+        )
         # Frequency Scanning / Dynamic Frequency (LabVIEW's FrequencyHelper.vi +
         # CreateExperiments.vi "Dynamic Frequency"/"Frequency List" inputs,
         # investigated in a prior session, implemented here). Discrete per-repeat
@@ -557,16 +801,41 @@ class MainWindow(QMainWindow):
         # other WFG Carrier frequency field on this tab (not Hz, as the
         # original LabVIEW-only investigation assumed before that unification).
         self.exp_freq_scan_enable = QCheckBox("Enable Frequency Scanning During Experiment")
+        self.exp_freq_scan_enable.setToolTip(
+            "Discrete per-repeat substitution of Channel 1's carrier frequency only (Channel 2 "
+            "unaffected) -- one full experiment per frequency point, distinct from FM Sweep's "
+            "continuous ms-scale sweep within a single drive. Linear spacing between Start and "
+            "Stop is inferred from the LabVIEW investigation, not confirmed from its compiled "
+            "block-diagram wiring. Repeats must equal the resulting frequency count or this "
+            "raises before starting."
+        )
         self.exp_freq_scan_start_khz = _spin(1900.0, decimals=3, minimum=0.0)
         self.exp_freq_scan_stop_khz = _spin(1975.0, decimals=3, minimum=0.0)
         self.exp_freq_scan_count = _int_spin(2, minimum=1)
+        self.exp_freq_scan_count.setToolTip(
+            "Must equal Repeats when Frequency Scanning is enabled. Overridden by Step Size when "
+            "that field is set above 0."
+        )
+        # Alternative to Number of Frequencies: when > 0, Step Size drives the
+        # point count instead (count derived and rounded to the nearest whole
+        # point); 0 means "not used," matching this codebase's existing
+        # zero-means-disabled convention (e.g. custom_syringe_volume_ml only
+        # applies when "Custom" is selected). Not part of the LabVIEW spec
+        # (which only exposes Number of Frequencies) -- a Python-only
+        # convenience addition.
+        self.exp_freq_scan_step_khz = _spin(0.0, decimals=3, minimum=0.0)
+        self.exp_freq_scan_step_khz.setToolTip(
+            "0 = not used (Number of Frequencies drives the point count instead). When set above "
+            "0, this takes precedence: point count = round(|Stop-Start| / Step) + 1. Not part of "
+            "the original LabVIEW FrequencyHelper.vi spec -- a Python-only convenience addition."
+        )
         self.average_fps = QLabel("0")
 
     def _make_wfg_channel_state(self, index: int, frequency: float, amplitude: float) -> dict[str, object]:
         # frequency/amplitude are passed in Hz (caller-facing default values);
         # all frequency-class widgets below display/store kHz -- see the
         # kHz-unification note in _channel_config().
-        return {
+        state = {
             "idx": _int_spin(index, minimum=0, maximum=1),
             "frequency": _spin(frequency / 1000.0, decimals=3, minimum=0.0),
             "amplitude": _spin(amplitude, decimals=3),
@@ -588,13 +857,60 @@ class MainWindow(QMainWindow):
             "fm_function": _combo([item.value for item in WaveformFunction], WaveformFunction.SINE.value),
             "fm_enable": QCheckBox("Enable"),
             "sweep_enable": QCheckBox("Enable Sweep"),
+            # Dual-mode input, corrected in a later session after Session 35
+            # removed Center+Width entirely instead of adding Start/Stop
+            # alongside it: Start/Stop Frequency (Digilent's own WaveForms
+            # sweep tool convention) and Center/Width (this feature's
+            # original Session-16 paper-narrative framing) are both live
+            # inputs for the same underlying value, kept in sync by
+            # _connect_sweep_dual_mode_refresh() -- neither is ever hidden or
+            # removed, matching the same "offer both, replace neither"
+            # principle already used for Frequency Scanning's Number of
+            # Frequencies vs. Step Size. The FM-node hardware math
+            # (FmSweepSettings, fm_mod_settings()) is unchanged from Session
+            # 16 either way -- only the UI input path(s) changed.
+            "sweep_start_khz": _spin(frequency / 1000.0 - 25.0, decimals=3, minimum=0.0),
+            "sweep_stop_khz": _spin(frequency / 1000.0 + 25.0, decimals=3, minimum=0.0),
             "sweep_center_khz": _spin(frequency / 1000.0, decimals=3, minimum=0.0),
             "sweep_width_khz": _spin(50.0, decimals=3, minimum=0.0),
             "sweep_time_ms": _spin(1.0, decimals=3, minimum=0.0),
             "sweep_type": _combo(["Symmetric", "RampUp", "RampDown"], "Symmetric"),
-            "sweep_top_khz": QLabel("--"),
-            "sweep_bottom_khz": QLabel("--"),
         }
+        state["symmetry"].setToolTip(
+            "Duty-cycle-like shape control for the carrier waveform (percent of each period "
+            "spent in the 'high' phase for Square, or skew for Triangle/Sine). 50% is symmetric."
+        )
+        state["phase"].setToolTip("Starting phase offset of the carrier waveform, in degrees.")
+        state["sec_run"].setToolTip(
+            "Output duration in seconds. 0 = continuous/free-running output (no defined stop time)."
+        )
+        state["sec_wait"].setToolTip("Delay in seconds after the AD2 PC trigger before this channel's output starts.")
+        state["repeat"].setToolTip("Number of trigger repeats. 0 = infinite (repeats until manually stopped).")
+        state["trigger_source"].setToolTip(
+            "AD2 SDK trigger source enum (trigsrcNone/trigsrcPC/etc.) controlling what starts this "
+            "channel's output. The automated Experiment path always arms via config then fires a "
+            "single shared PC trigger (Application.run_experiment2() -> ad2.pc_trigger())."
+        )
+        state["repeat_trigger"].setToolTip("Whether the trigger source re-arms automatically after each repeat.")
+        sweep_dual_mode_tip = (
+            "Start/Stop and Center/Width are both live inputs for the same underlying value -- "
+            "editing either pair updates the other to match (center_hz=(start+stop)/2, "
+            "width_hz=|stop-start|). Continuous ms-scale sweep within a single acoustic drive, "
+            "distinct from Frequency Scanning's discrete per-repeat substitution."
+        )
+        for key in ("sweep_start_khz", "sweep_stop_khz", "sweep_center_khz", "sweep_width_khz"):
+            state[key].setToolTip(sweep_dual_mode_tip)
+        state["sweep_time_ms"].setToolTip(
+            "Time for one full sweep repetition -- FmSweepSettings.fm_frequency_hz = 1000/this "
+            "value (ad2.py), i.e. the FM node's own modulation frequency. Martens et al. "
+            "reference case (Session 16) uses 1 ms (-> 1 kHz FM modulation rate)."
+        )
+        state["sweep_type"].setToolTip(
+            "Symmetric->Triangle, RampUp->RampUp, RampDown->RampDown is the most architecturally "
+            "plausible Function-2 enum mapping given the shared AD2 SDK enum, not independently "
+            "confirmed against WfgConfigureSweepCh1.vi's actual wiring (Session 16)."
+        )
+        return state
 
     def _build_layout(self) -> None:
         root = QWidget()
@@ -642,33 +958,98 @@ class MainWindow(QMainWindow):
         grid = QGridLayout(tab)
         grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         grid.addWidget(self._instrument_group(), 0, 0)
-        grid.addWidget(self._simulation_group(), 0, 1)
+        # Without an explicit alignment, QGridLayout stretches a cell's widget
+        # to fill the full row height -- Simulation (4 simple checkboxes,
+        # ~125px natural) was being inflated to match Hardware's much taller
+        # ~395px (12 real fields), leaving a large empty region inside the
+        # Simulation box itself. AlignTop keeps it at its own natural size.
+        grid.addWidget(self._simulation_group(), 0, 1, Qt.AlignmentFlag.AlignTop)
         initialize = QPushButton("Initialize!")
         initialize.setMinimumWidth(230)
         initialize.clicked.connect(self._start_initialize)
         grid.addWidget(QLabel("Initialize System"), 1, 0)
         grid.addWidget(initialize, 2, 0)
         grid.setColumnStretch(2, 1)
+        # Note: the remaining gap between this tab's own natural content
+        # height (~457px) and its actual rendered height inside the running
+        # app is a QTabWidget characteristic, not a per-tab layout defect --
+        # every tab page shares one viewport sized to the tallest tab
+        # (Experiment), so a much sparser tab like this one is stretched to
+        # match regardless of its own layout. Eliminating that fully would
+        # mean resizing the whole window on every tab switch, which is worse
+        # UX than the current dead space and out of scope for a label/layout
+        # pass; not attempted here.
         return tab
 
     def _instrument_group(self) -> QGroupBox:
+        # qt_ui_v2.py's InitializationDialog already disables these same six
+        # fields with "Not wired to a real backend" (Session 3, confirmed
+        # against hardware_factory.build_hardware_bundle(), which never reads
+        # them) -- this tab never got that same treatment, so it still shows
+        # them as if they were live, editable settings. Applied here too for
+        # consistency between the two UIs' Initialization surfaces.
         group = QGroupBox("Hardware")
         form = QFormLayout(group)
         form.addRow("Analog Discovery 3", self.ad2_enabled)
         form.addRow("Z stage", self.z_enabled)
-        form.addRow("Z stage backend", self.z_backend)
+        form.addRow("Z stage backend", self._mark_unwired_stub(self.z_backend))
         form.addRow("Prior VISA resource name", self.prior_resource)
-        form.addRow("Thorlabs/APT serial", self.thorlabs_apt_serial)
-        form.addRow("Thorlabs/APT backend", self.thorlabs_apt_backend)
-        form.addRow("Thorlabs/APT discovery only", self.thorlabs_apt_discovery_only)
+        form.addRow("Thorlabs/APT serial", self._mark_unwired_stub(self.thorlabs_apt_serial))
+        form.addRow("Thorlabs/APT backend", self._mark_unwired_stub(self.thorlabs_apt_backend))
+        form.addRow("Thorlabs/APT discovery only", self._mark_unwired_stub(self.thorlabs_apt_discovery_only))
         form.addRow("Hamamatsu", self.camera_enabled)
         form.addRow("Cetoni Pump", self.pump_enabled)
-        form.addRow("Qmix SDK Python Path", self.qmix_sdk_python_path)
-        form.addRow("Qmix QMIXSDK Path", self.qmix_qmixsdk_path)
+        form.addRow("Qmix SDK Python Path", self._mark_unwired_stub(self.qmix_sdk_python_path))
+        form.addRow("Qmix QMIXSDK Path", self._mark_unwired_stub(self.qmix_qmixsdk_path))
+        self.cetoni_config_path.setToolTip(
+            "Read by CetoniPump.initialize() -- genuinely used, unlike the Qmix SDK/QMIXSDK "
+            "path fields above."
+        )
         form.addRow("Cetoni Device Configuration Path", self.cetoni_config_path)
-        form.addRow("MX Valve 2", self.valve_enabled)
+        form.addRow("MX Valve", self.valve_enabled)
+        self.valve_resource.setToolTip("The real COM port; passed to HardwareRuntimeConfig and genuinely used.")
         form.addRow("Valve VISA resource name", self.valve_resource)
         return group
+
+    @staticmethod
+    def _mark_unwired_stub(widget: QWidget) -> QWidget:
+        widget.setEnabled(False)
+        widget.setToolTip(
+            "Not wired to a real backend: never read by hardware_factory.build_hardware_bundle() "
+            "(Session 3)."
+        )
+        return widget
+
+    @staticmethod
+    def _stale_static_display(widget: QWidget, description: str) -> QWidget:
+        # Category 4 (Session 39): "Elapsed Time"/"Time Left" were found
+        # constructed as bare QLabel("00:00:00") -- not even assigned to a
+        # `self.` attribute -- in both qt_ui.py and qt_ui_v2.py, meaning no
+        # code anywhere could ever update them even if it tried. They render
+        # exactly like a live countdown/stopwatch readout (mirroring
+        # LabVIEW's own Elapsed Time/Time Left front-panel indicators) but
+        # have been 100% static placeholders for this display's entire
+        # history -- never flagged in any of the 38 prior sessions' audits.
+        # Implementing a real timer is a new feature (out of this pass's
+        # scope); marked as a non-functional stub instead, the same
+        # disabled+tooltip convention already used for every other
+        # confirmed-dead widget in this codebase, so it stops silently
+        # implying a live value that was never wired.
+        widget.setEnabled(False)
+        widget.setToolTip(
+            f"Not wired to a real backend: this {description} display is never updated by any "
+            "code path -- a static placeholder mirroring a LabVIEW front-panel indicator that "
+            "was never ported (confirmed dead, Session 39)."
+        )
+        return widget
+
+    def _elapsed_time_label(self) -> QLabel:
+        self.elapsed_time_label = QLabel("00:00:00")
+        return self._stale_static_display(self.elapsed_time_label, "Elapsed Time")
+
+    def _time_left_label(self) -> QLabel:
+        self.time_left_label = QLabel("00:00:00")
+        return self._stale_static_display(self.time_left_label, "Time Left")
 
     def _simulation_group(self) -> QGroupBox:
         group = QGroupBox("Simulation")
@@ -718,7 +1099,17 @@ class MainWindow(QMainWindow):
         # CH1 exactly like exp_ch1_freq/exp_ch1_amp for CH0, and every other
         # field listed there also has its own confirmed Experiment-tab widget.
         # Labeled uniformly and accurately here instead of per that assumption.
-        overridden = " (overridden during experiment run)"
+        # Chose option (a) -- shorten the repeated suffix itself -- over
+        # option (b) (single sentence + per-field marker/icon): the tab's own
+        # top-level note already states the general rule ("Settings here do
+        # NOT affect experiment runs"), but "overridden" vs "unused" are two
+        # genuinely different reasons (an active Experiment-tab analog exists
+        # vs. none exists at all) worth keeping distinguishable per field: a
+        # single generic marker would lose that distinction, and Qt doesn't
+        # have a built-in compact form-row annotation widget cheaper than a
+        # short text suffix. Cuts each repeated phrase from 30-40 characters
+        # to 10-12, which is what was actually cramping the value fields.
+        overridden = " (overridden)"
         # This tab's Ch1/Ch2 groups (Carrier+Trigger+FM Mod+Sweep, ~25 rows) are
         # squeezed below their own minimumSizeHint in both width and height when
         # shown inside MainWindow's fixed-size tab page (confirmed offscreen:
@@ -766,7 +1157,7 @@ class MainWindow(QMainWindow):
         # (Ch1/CH0 only), fm_mod comes entirely from the Experiment tab's own
         # Sweep fields. Either way, these FM Mod widgets are never read by an
         # automated run -- not "active", not "overridden", simply unused.
-        fm_note = " (not used by automated experiment runs)"
+        fm_note = " (unused)"
         for label, key in (
             (f"Frequency (kHz){fm_note}", "fm_frequency"),
             (f"Amplitude (%){fm_note}", "fm_amplitude"),
@@ -781,19 +1172,40 @@ class MainWindow(QMainWindow):
         layout.addLayout(fm)
         sweep = QFormLayout()
         for label, key in (
+            ("Start Frequency (kHz)", "sweep_start_khz"),
+            ("Stop Frequency (kHz)", "sweep_stop_khz"),
             ("Center Frequency (kHz)", "sweep_center_khz"),
-            ("Sweep Width (kHz)", "sweep_width_khz"),
+            ("Width (kHz)", "sweep_width_khz"),
             ("Sweep Time (ms)", "sweep_time_ms"),
             ("Sweep Type", "sweep_type"),
         ):
             sweep.addRow(label, state[key])
         sweep.addRow(state["sweep_enable"])
-        sweep.addRow("Top Frequency (kHz)", state["sweep_top_khz"])
-        sweep.addRow("Bottom Frequency (kHz)", state["sweep_bottom_khz"])
-        layout.addWidget(QLabel("Sweep (FM modulation calibration -- distinct from Frequency Scanning)"))
+        # Sweep (FM modulation): this manual tab's own state is independent
+        # of the Experiment tab and does not affect automated runs -- matches
+        # the WFG tab's other live-use labels (Session 29), correcting the
+        # prior "calibration" framing, which was ambiguous about whether it
+        # meant "manual/independent" or "not real hardware."
+        # Measured offscreen (Session 38): unwrapped, this label demanded
+        # 1332px on its own -- the dominant reason this whole group needed
+        # horizontal scrolling, and since the scroll position starts at the
+        # left edge, only the label's opening words were visible without
+        # scrolling right, with "no visible closing context" (the reported
+        # symptom). Wrapping at a width matching the group's own per-field
+        # rows fixes both: the caption is now fully visible, and the group's
+        # natural width driven by this label drops substantially.
+        sweep_header = QLabel(
+            "Sweep (FM modulation, manual tab only -- independent from the Experiment tab, "
+            "distinct from Frequency Scanning)"
+        )
+        sweep_header.setWordWrap(True)
+        sweep_header.setMaximumWidth(450)
+        layout.addWidget(sweep_header)
         layout.addLayout(sweep)
-        self._connect_sweep_bounds_refresh(state)
-        self._refresh_sweep_bounds(state)
+        self._connect_sweep_dual_mode_refresh(
+            state["sweep_start_khz"], state["sweep_stop_khz"],
+            state["sweep_center_khz"], state["sweep_width_khz"],
+        )
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(False)
@@ -804,20 +1216,57 @@ class MainWindow(QMainWindow):
         outer.addWidget(scroll)
         return group
 
-    def _connect_sweep_bounds_refresh(self, state: dict[str, object]) -> None:
-        for key in ("sweep_center_khz", "sweep_width_khz"):
-            state[key].valueChanged.connect(lambda _value, state=state: self._refresh_sweep_bounds(state))
+    def _connect_sweep_dual_mode_refresh(self, start_widget, stop_widget, center_widget, width_widget) -> None:
+        # Start/Stop and Center/Width are two live input paths for the same
+        # underlying value -- editing either pair updates the other to match,
+        # neither is ever hidden or removed (same "offer both, replace
+        # neither" principle as Frequency Scanning's Number of Frequencies
+        # vs. Step Size). `guard` prevents the two directions' valueChanged
+        # signals from re-triggering each other in a loop.
+        guard = {"active": False}
 
-    def _refresh_sweep_bounds(self, state: dict[str, object]) -> None:
-        center_khz = state["sweep_center_khz"].value()
-        width_khz = state["sweep_width_khz"].value()
-        state["sweep_top_khz"].setText(f"{center_khz + width_khz / 2.0:.3f}")
-        state["sweep_bottom_khz"].setText(f"{center_khz - width_khz / 2.0:.3f}")
+        def sync_center_width_from_start_stop(_value=None) -> None:
+            if guard["active"]:
+                return
+            guard["active"] = True
+            try:
+                start_khz = start_widget.value()
+                stop_khz = stop_widget.value()
+                center_widget.setValue((start_khz + stop_khz) / 2.0)
+                width_widget.setValue(abs(stop_khz - start_khz))
+            finally:
+                guard["active"] = False
+
+        def sync_start_stop_from_center_width(_value=None) -> None:
+            if guard["active"]:
+                return
+            guard["active"] = True
+            try:
+                center_khz = center_widget.value()
+                width_khz = width_widget.value()
+                start_widget.setValue(center_khz - width_khz / 2.0)
+                stop_widget.setValue(center_khz + width_khz / 2.0)
+            finally:
+                guard["active"] = False
+
+        start_widget.valueChanged.connect(sync_center_width_from_start_stop)
+        stop_widget.valueChanged.connect(sync_center_width_from_start_stop)
+        center_widget.valueChanged.connect(sync_start_stop_from_center_width)
+        width_widget.valueChanged.connect(sync_start_stop_from_center_width)
+        # Seed Center/Width from the initial Start/Stop defaults so all four
+        # widgets agree before any user edit.
+        sync_center_width_from_start_stop()
 
     def _fm_sweep_settings_from_state(self, state: dict[str, object]) -> FmSweepSettings:
+        # Start/Stop and Center/Width are kept in sync (see
+        # _connect_sweep_dual_mode_refresh()); reading Start/Stop here is
+        # equivalent to reading Center/Width. FmSweepSettings' own FM-node
+        # math is unchanged from Session 16 either way.
+        start_hz = state["sweep_start_khz"].value() * 1000.0
+        stop_hz = state["sweep_stop_khz"].value() * 1000.0
         return FmSweepSettings(
-            center_hz=state["sweep_center_khz"].value() * 1000.0,
-            width_hz=state["sweep_width_khz"].value() * 1_000.0,
+            center_hz=(start_hz + stop_hz) / 2.0,
+            width_hz=abs(stop_hz - start_hz),
             sweep_time_ms=state["sweep_time_ms"].value(),
             sweep_type=state["sweep_type"].currentText(),
         )
@@ -855,20 +1304,40 @@ class MainWindow(QMainWindow):
         self.mso_text.setMaximumHeight(90)
         graph_layout.addWidget(self.mso_text)
 
-        content.addWidget(controls)
-        content.addWidget(graph_box, 1)
+        # Without an explicit alignment, QHBoxLayout stretches each widget to
+        # fill the row's full height -- both boxes were being inflated to
+        # 356px even though their own natural content only needs 270px
+        # (MSO Configuration) / 305px (Waveform), the same class of dead
+        # space as the Initialization tab's Simulation group. AlignTop keeps
+        # each at its own natural height instead.
+        content.addWidget(controls, 0, Qt.AlignmentFlag.AlignTop)
+        content.addWidget(graph_box, 1, Qt.AlignmentFlag.AlignTop)
         layout.addLayout(content)
         layout.addStretch()
         return tab
 
     def _pump_tab(self) -> QWidget:
+        # Restructured from a sparse QGridLayout with individual widgets
+        # scattered at hand-picked row/col coordinates (which left large,
+        # uneven dead-space regions -- rows/columns with nothing in them --
+        # while Flush Settings and STOP sat isolated at the far edges) into
+        # balanced group-box columns matching the tab's actual content,
+        # eliminating that dead space instead of just capping group sizes
+        # (there were no oversized group boxes here to cap -- only one
+        # existed, Flush Settings, and it was already naturally sized).
         tab = QWidget()
-        grid = QGridLayout(tab)
-        grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        pos1 = QPushButton("Pos1")
-        pos1.clicked.connect(lambda: self._run_action(lambda progress: self.app.valve.set_position(1), "Valve Pos1"))
-        pos2 = QPushButton("Pos2")
-        pos2.clicked.connect(lambda: self._run_action(lambda progress: self.app.valve.set_position(2), "Valve Pos2"))
+        columns = QHBoxLayout(tab)
+        columns.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        # Position 1 = Open, Position 2 = Closed (confirmed physical mapping,
+        # see instruments.py's Valve class) -- safety-relevant, so spelled out
+        # explicitly rather than left for the operator to remember.
+        pos1 = QPushButton("Pos1 (Open)")
+        pos1.setToolTip("Confirmed physical mapping: position 1 = Open (Valve.set_position(1), instruments.py).")
+        pos1.clicked.connect(lambda: self._run_action(lambda progress: self.app.valve.set_position(1), "Valve Pos1 (Open)"))
+        pos2 = QPushButton("Pos2 (Closed)")
+        pos2.setToolTip("Confirmed physical mapping: position 2 = Closed (Valve.set_position(2), instruments.py).")
+        pos2.clicked.connect(lambda: self._run_action(lambda progress: self.app.valve.set_position(2), "Valve Pos2 (Closed)"))
         refill = QPushButton("Refill")
         refill.clicked.connect(lambda: self._run_action(lambda progress: self.app.pump.refill(), "Refilling"))
         empty = QPushButton("Empty")
@@ -887,44 +1356,72 @@ class MainWindow(QMainWindow):
         stop.setMinimumSize(200, 70)
         stop.clicked.connect(lambda: self._run_action(lambda progress: self.app.pump.stop(), "Pump stopped"))
 
-        grid.addWidget(QLabel("Valve Pos1"), 0, 0)
-        grid.addWidget(pos1, 1, 0)
-        grid.addWidget(QLabel("ValvePos2"), 2, 0)
-        grid.addWidget(pos2, 3, 0)
-        grid.addWidget(QLabel("Refill"), 0, 2)
-        grid.addWidget(refill, 1, 2)
-        grid.addWidget(QLabel("Empty"), 0, 3)
-        grid.addWidget(empty, 1, 3)
-        grid.addWidget(QLabel("Syringe"), 2, 2)
-        grid.addWidget(self.syringe, 3, 2)
-        grid.addWidget(QLabel("Custom Volume (ml)"), 2, 3)
-        grid.addWidget(self.custom_syringe_volume_ml, 3, 3)
-        grid.addWidget(QLabel("ConfigureSyringe"), 2, 4)
-        grid.addWidget(configure, 3, 4)
-        grid.addWidget(QLabel("Flow Rate (-=aspirate, +=dispense)"), 5, 2)
-        grid.addWidget(self.flow_rate, 6, 2)
-        grid.addWidget(QLabel("Generate Flow"), 5, 4)
-        grid.addWidget(generate, 6, 4)
-        grid.addWidget(QLabel("Level(ml)"), 8, 3)
-        grid.addWidget(self.level_ml, 9, 3)
-        grid.addWidget(QLabel("Go to Level"), 8, 4)
-        grid.addWidget(go, 9, 4)
-        grid.addWidget(QLabel("Reference move"), 10, 4)
-        grid.addWidget(ref, 11, 4)
-        grid.addWidget(QLabel("Number of flushes"), 12, 3)
-        grid.addWidget(self.flush_count, 13, 3)
-        grid.addWidget(QLabel("Flush"), 12, 4)
-        grid.addWidget(flush, 13, 4)
-        grid.addWidget(QLabel("Stop Syringe"), 10, 0)
-        grid.addWidget(stop, 11, 0, 3, 2)
-        grid.addWidget(self._flush_group(), 9, 5, 5, 2)
-        grid.setColumnStretch(7, 1)
+        # WrapLongRows on every column's QFormLayout: an offscreen truncation
+        # sweep (Session 38) found several row labels here clipped (e.g.
+        # "Number of flushes" at 60px actual vs. 204px required) because each
+        # column is narrower than a single-row form normally assumes. Wrapping
+        # the label onto its own line above the field when needed avoids
+        # clipping without widening the columns themselves.
+        valve_group = QGroupBox("Valve")
+        valve_form = QFormLayout(valve_group)
+        valve_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        valve_form.addRow("Valve Pos1 (Open)", pos1)
+        valve_form.addRow("ValvePos2 (Closed)", pos2)
+        column1 = QVBoxLayout()
+        column1.addWidget(valve_group)
+        column1.addWidget(QLabel("Stop Syringe"))
+        column1.addWidget(stop)
+        column1.addStretch()
+
+        pump_group = QGroupBox("Pump")
+        pump_form = QFormLayout(pump_group)
+        pump_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        pump_form.addRow("Refill", refill)
+        pump_form.addRow("Empty", empty)
+        syringe_group = QGroupBox("Syringe")
+        syringe_form = QFormLayout(syringe_group)
+        syringe_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        syringe_form.addRow("Syringe", self.syringe)
+        syringe_form.addRow("Custom Volume (ml)", self.custom_syringe_volume_ml)
+        syringe_form.addRow("ConfigureSyringe", configure)
+        column2 = QVBoxLayout()
+        column2.addWidget(pump_group)
+        column2.addWidget(syringe_group)
+        column2.addStretch()
+
+        flow_group = QGroupBox("Flow Control")
+        flow_form = QFormLayout(flow_group)
+        flow_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        flow_form.addRow("Flow Rate (-=aspirate, +=dispense)", self.flow_rate)
+        flow_form.addRow("Generate Flow", generate)
+        flow_form.addRow("Level(ml)", self.level_ml)
+        flow_form.addRow("Go to Level", go)
+        flow_form.addRow("Reference move", ref)
+        column3 = QVBoxLayout()
+        column3.addWidget(flow_group)
+        column3.addStretch()
+
+        flush_count_group = QGroupBox("Flush")
+        flush_count_form = QFormLayout(flush_count_group)
+        flush_count_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        flush_count_form.addRow("Number of flushes", self.flush_count)
+        flush_count_form.addRow("Flush", flush)
+        column4 = QVBoxLayout()
+        column4.addWidget(flush_count_group)
+        column4.addWidget(self._flush_group())
+        column4.addStretch()
+
+        columns.addLayout(column1)
+        columns.addLayout(column2)
+        columns.addLayout(column3)
+        columns.addLayout(column4)
+        columns.addStretch()
         return tab
 
     def _flush_group(self) -> QGroupBox:
         group = QGroupBox("Flush Settings")
         form = QFormLayout(group)
-        form.addRow("Flush Flowrate", self.flush_flowrate)
+        form.addRow("Flush Flowrate(uL)", self.flush_flowrate)
         form.addRow("flush volume (ml)", self.flush_volume)
         form.addRow("WaitAfterFlush", self.wait_after_flush)
         return group
@@ -949,7 +1446,15 @@ class MainWindow(QMainWindow):
         row.addWidget(image)
         row.addWidget(QLabel("Image Continous"))
         row.addWidget(self.image_continuous)
-        row.addWidget(QLabel("If the button is grayed out, press the configure camera button"))
+        # word-wrap: this HBoxLayout row has no wrap-long-rows equivalent
+        # (that's a QFormLayout-only policy) -- an offscreen truncation
+        # sweep (Session 38) found this label clipped at 324px actual vs.
+        # 744px required. Give it a fixed width to wrap into instead of one
+        # long unbroken line.
+        hint_label = QLabel("If the button is grayed out, press the configure camera button")
+        hint_label.setWordWrap(True)
+        hint_label.setMaximumWidth(260)
+        row.addWidget(hint_label)
         row.addStretch()
         return group
 
@@ -970,13 +1475,25 @@ class MainWindow(QMainWindow):
         grid.addWidget(configure, 1, 2)
         grid.addWidget(QLabel("Center ROI"), 2, 1)
         grid.addWidget(self.center_roi, 3, 1)
-        grid.addWidget(QLabel("476 is Vertical is max for 100 fps"), 4, 1, 1, 2)
+        # Removed (Session 36): a static "476 is Vertical is max for 100 fps"
+        # label, confirmed stale/hardcoded since Session 19 -- the real,
+        # live-computed equivalent check is Application._check_camera_timing_budget(),
+        # which reads the actual DCAM readout time and current exposure. No
+        # replacement hint added here: this manual Camera tab has no "Camera
+        # FPS" field of its own to compare against (that's an Experiment-tab
+        # concept), and this tab may be shown before the camera is connected,
+        # so a live query isn't reliably available here without adding a new
+        # hardcoded fallback in its place -- exactly what was asked to avoid.
         return group
 
     def _conversion_group(self) -> QGroupBox:
         group = QGroupBox("Conversion Policy (Default)")
         layout = QVBoxLayout(group)
         form = QFormLayout()
+        # WrapLongRows: wrap a row's label onto its own line above the field
+        # instead of clipping it when the column is narrower than the label
+        # needs (found via an offscreen truncation sweep, Session 38).
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         form.addRow("Conversion Method", self.conversion_method)
         form.addRow("Minimum Value", self.conversion_min)
         form.addRow("Maximum Value", self.conversion_max)
@@ -992,8 +1509,17 @@ class MainWindow(QMainWindow):
         return group
 
     def _sequence_group(self) -> QGroupBox:
+        # Giving sequence_note below enough row-span to render its wrapped
+        # text in full (Session 38 fix) pushed this group's own
+        # minimumSizeHint past what the Camera tab's grid can give it,
+        # tripping the same 0-1px row-collapse failure mode fixed for
+        # _ad_settings_group() in an earlier session. Same fix here: the
+        # grid goes on its own content widget, wrapped in a QScrollArea,
+        # instead of directly on the group.
         group = QGroupBox("Sequence")
-        grid = QGridLayout(group)
+        outer = QVBoxLayout(group)
+        content = QWidget()
+        grid = QGridLayout(content)
         start = QPushButton("Start")
         start.clicked.connect(lambda: self._run_action(lambda progress: self.app.camera.start_capture(), "Camera capture started"))
         trig = QPushButton("Trigg")
@@ -1013,7 +1539,7 @@ class MainWindow(QMainWindow):
         settings.addRow("Dcam Trigger Source", self.dcam_source)
         settings.addRow("Polarity", self.external_polarity)
         settings.addRow("Delay", self.external_delay)
-        settings.addRow("ExposureTime(ms)", self.sequence_exposure_ms)
+        settings.addRow("ExposureTime(ms) (unused)", self.sequence_exposure_ms)
         grid.addWidget(QLabel("StartSequence"), 0, 0)
         grid.addWidget(start, 1, 0)
         grid.addWidget(QLabel("Trigg"), 2, 0)
@@ -1030,8 +1556,20 @@ class MainWindow(QMainWindow):
         )
         sequence_note.setWordWrap(True)
         grid.addWidget(QLabel("Sequence Settings"), 0, 2)
-        grid.addWidget(sequence_note, 1, 2)
-        grid.addLayout(settings, 2, 2, 7, 1)
+        # Wrapped text needs more height than a single un-spanned grid row
+        # gave it (found via an offscreen sweep, Session 38: 48px actual vs.
+        # 68px required at this width) -- span 3 rows so the wrapped label
+        # has room to render in full.
+        grid.addWidget(sequence_note, 1, 2, 3, 1)
+        grid.addLayout(settings, 4, 2, 7, 1)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setMaximumHeight(460)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
         return group
 
     def _experiment_tab(self) -> QWidget:
@@ -1039,9 +1577,9 @@ class MainWindow(QMainWindow):
         grid = QGridLayout(tab)
         grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         grid.addWidget(QLabel("Elapsed Time"), 0, 0)
-        grid.addWidget(QLabel("00:00:00"), 1, 0)
+        grid.addWidget(self._elapsed_time_label(), 1, 0)
         grid.addWidget(QLabel("Time Left"), 0, 1)
-        grid.addWidget(QLabel("00:00:00"), 1, 1)
+        grid.addWidget(self._time_left_label(), 1, 1)
         grid.addWidget(QLabel("# elements in queue"), 0, 2)
         self.queue_count = QLabel("0")
         grid.addWidget(self.queue_count, 1, 2)
@@ -1057,13 +1595,17 @@ class MainWindow(QMainWindow):
         grid.addWidget(self._ad_settings_group(), 7, 0, 1, 2)
         grid.addWidget(self._experiment_settings_column(), 7, 2, 2, 1)
         grid.addWidget(self._camera_start_group(), 7, 4, 2, 1)
-        grid.addWidget(QLabel("GlobalExposure"), 7, 5)
-        grid.addWidget(self.global_exposure, 7, 6)
-        grid.addWidget(QLabel("Dynamic Camera Start Time"), 8, 5)
-        grid.addWidget(self.dynamic_camera_start, 8, 6)
         grid.addWidget(QLabel("Average FPS"), 10, 5)
         grid.addWidget(self.average_fps, 11, 5)
-        grid.addWidget(QLabel("Waveform Graph"), 10, 0)
+        # Measured offscreen (Session 38): only a ~5px safety margin between
+        # this label's required text width (168px) and its actual rendered
+        # width (173px) at the app's own minimum window size (980x680) --
+        # not conclusively clipped in this environment, but fragile enough to
+        # explain a reported "first character cut off" screenshot at a
+        # slightly narrower real window. setMinimumWidth gives real headroom.
+        waveform_graph_label = QLabel("Waveform Graph")
+        waveform_graph_label.setMinimumWidth(200)
+        grid.addWidget(waveform_graph_label, 10, 0)
         self.waveform_graph = WaveformGraph()
         grid.addWidget(self.waveform_graph, 11, 0, 1, 5)
         grid.setColumnStretch(6, 1)
@@ -1157,12 +1699,30 @@ class MainWindow(QMainWindow):
         if channel_label == "CH0":
             sweep = QFormLayout()
             sweep.addRow(self.exp_sweep_enable)
+            sweep.addRow(f"{channel_label} Sweep Start Frequency (kHz)", self.exp_sweep_start_khz)
+            sweep.addRow(f"{channel_label} Sweep Stop Frequency (kHz)", self.exp_sweep_stop_khz)
             sweep.addRow(f"{channel_label} Sweep Center Frequency (kHz)", self.exp_sweep_center_khz)
             sweep.addRow(f"{channel_label} Sweep Width (kHz)", self.exp_sweep_width_khz)
             sweep.addRow(f"{channel_label} Sweep Time (ms)", self.exp_sweep_time_ms)
             sweep.addRow(f"{channel_label} Sweep Type", self.exp_sweep_type)
-            layout.addWidget(QLabel("Sweep (FM modulation calibration -- distinct from Frequency Scanning)"))
+            # Unlike the manual WFG tab's own Sweep group, enabling this one
+            # DOES apply to real automated Experiment runs (Session 16) --
+            # the prior "calibration" wording here was misleading about that.
+            # Wrapped for the same reason as the manual WFG tab's matching
+            # header (Session 38): unwrapped this needed 1356px on its own,
+            # leaving "no visible closing context" without scrolling right.
+            experiment_sweep_header = QLabel(
+                "Sweep (FM modulation, applied to real automated Experiment runs when enabled -- "
+                "distinct from Frequency Scanning)"
+            )
+            experiment_sweep_header.setWordWrap(True)
+            experiment_sweep_header.setMaximumWidth(450)
+            layout.addWidget(experiment_sweep_header)
             layout.addLayout(sweep)
+            self._connect_sweep_dual_mode_refresh(
+                self.exp_sweep_start_khz, self.exp_sweep_stop_khz,
+                self.exp_sweep_center_khz, self.exp_sweep_width_khz,
+            )
 
     def _experiment_settings_column(self) -> QScrollArea:
         # Adding the Frequency Scanning group as a third box stacked in this
@@ -1190,6 +1750,9 @@ class MainWindow(QMainWindow):
         form.addRow("Repeats", self.exp_repeats)
         form.addRow("Frames", self.exp_frames)
         form.addRow("Exposure time (ms)", self.exp_exposure_ms)
+        # Moved here from an isolated spot elsewhere in the tab's grid --
+        # GlobalExposure belongs next to the exposure setting it modifies.
+        form.addRow("GlobalExposure", self.global_exposure)
         return group
 
     def _experiment_flush_group(self) -> QGroupBox:
@@ -1202,10 +1765,34 @@ class MainWindow(QMainWindow):
         return group
 
     def _camera_start_group(self) -> QGroupBox:
+        # Offscreen sweep at the app's own documented minimum window size
+        # (980x680, self.setMinimumSize()) -- not just the 1280x820 default
+        # the existing generic squeeze guard happened to check -- found this
+        # group squeezed to 252px actual vs. 346px required (11 rows: the
+        # Dynamic Camera Start Time toggle + 10 array fields). Same fix as
+        # every other group hitting this failure mode (Sessions 28/29/34/38):
+        # content moves onto its own QScrollArea instead of laying directly
+        # into the group, so it can lay out at full natural height internally
+        # and scroll rather than being compressed.
         group = QGroupBox("Camera Start Array(s)")
-        form = QFormLayout(group)
+        outer = QVBoxLayout(group)
+        content = QWidget()
+        form = QFormLayout(content)
+        # Moved here from an isolated spot elsewhere in the tab's grid --
+        # Dynamic Camera Start Time is the toggle that controls whether this
+        # array is used at all (see _experiment_do_clock_config()), so it
+        # belongs directly above the array it controls.
+        form.addRow("Dynamic Camera Start Time", self.dynamic_camera_start)
         for widget in self.camera_start_array:
             form.addRow(widget)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setMaximumHeight(360)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
         return group
 
     def _experiment_frequency_scan_group(self) -> QGroupBox:
@@ -1215,7 +1802,80 @@ class MainWindow(QMainWindow):
         form.addRow("Start Frequency (kHz)", self.exp_freq_scan_start_khz)
         form.addRow("Stop Frequency (kHz)", self.exp_freq_scan_stop_khz)
         form.addRow("Number of Frequencies", self.exp_freq_scan_count)
+        form.addRow("Step Size (kHz) (0 = use Number of Frequencies)", self.exp_freq_scan_step_khz)
+        self._connect_frequency_scan_count_display_refresh()
         return group
+
+    def _experiment_fm_sweep_group(self) -> QGroupBox:
+        # Category 7 (Session 39): binds the exact same self.exp_sweep_*
+        # widgets already used by _add_experiment_channel_sections()'s CH0
+        # inline Sweep section (qt_ui.py's own Experiment tab) -- not new
+        # widgets, not new state, just a second, standalone QGroupBox surface
+        # for qt_ui_v2.py to reach them from, since v2 never calls
+        # _experiment_tab()/_add_experiment_channel_sections() at all (its
+        # own AD2 Output Parameters table is a separately-built view). This
+        # is the same "no controls at all in v2" gap Session 24 already found
+        # and fixed once for Symmetry/Phase/Repeat Trigger -- FM Sweep and
+        # Frequency Scanning (below) were the two remaining Experiment-tab
+        # features never carried into v2's own view, flagged since Session 25
+        # (FM Sweep) but never fixed, and never even flagged for Frequency
+        # Scanning (added later, Session 34, after v2's own AD2 table was
+        # last touched). v1's existing inline CH0 section is left completely
+        # unchanged -- this is an additive, independent builder, not a
+        # refactor of v1's tested layout.
+        group = QGroupBox(
+            "Sweep (FM modulation, applied to real automated Experiment runs when enabled -- "
+            "distinct from Frequency Scanning) -- CH0 only"
+        )
+        form = QFormLayout(group)
+        form.addRow(self.exp_sweep_enable)
+        form.addRow("Sweep Start Frequency (kHz)", self.exp_sweep_start_khz)
+        form.addRow("Sweep Stop Frequency (kHz)", self.exp_sweep_stop_khz)
+        form.addRow("Sweep Center Frequency (kHz)", self.exp_sweep_center_khz)
+        form.addRow("Sweep Width (kHz)", self.exp_sweep_width_khz)
+        form.addRow("Sweep Time (ms)", self.exp_sweep_time_ms)
+        form.addRow("Sweep Type", self.exp_sweep_type)
+        # v1's own call lives inside _add_experiment_channel_sections(), which
+        # qt_ui_v2.MainWindowV2 never invokes -- this window needs its own
+        # independent wiring of the same widgets, exactly like
+        # _v2_acquisition_group() independently builds its own Camera Start
+        # Array(s) group rather than calling qt_ui.py's _camera_start_group().
+        self._connect_sweep_dual_mode_refresh(
+            self.exp_sweep_start_khz, self.exp_sweep_stop_khz,
+            self.exp_sweep_center_khz, self.exp_sweep_width_khz,
+        )
+        return group
+
+    def _connect_frequency_scan_count_display_refresh(self) -> None:
+        # Category 5 (Session 39): Step Size (when > 0) silently overrode the
+        # actual point count used by _experiment_frequency_scan_list_hz()
+        # without ever updating what "Number of Frequencies" displayed --
+        # unlike FM Sweep's Start/Stop<->Center/Width, which Session 38
+        # fixed to stay genuinely in sync in both directions, this field
+        # could show a stale, misleading count. Not made fully bidirectional
+        # like FM Sweep: doing so (auto-deriving a nonzero Step Size from an
+        # edited Count) would silently flip Step Size from "0 = not used" to
+        # "active", changing which field drives future edits without the
+        # user asking for that -- a real behavior change, not just a display
+        # fix. Instead, this is one-directional and honest: whenever
+        # Start/Stop/Step change and Step Size is actively driving the count
+        # (> 0), "Number of Frequencies" is updated to show the real
+        # resulting count. Editing "Number of Frequencies" directly continues
+        # to work exactly as before when Step Size is 0 (unchanged).
+        def refresh_count_display(_value=None) -> None:
+            step_khz = self.exp_freq_scan_step_khz.value()
+            if step_khz <= 0:
+                return
+            start_khz = self.exp_freq_scan_start_khz.value()
+            stop_khz = self.exp_freq_scan_stop_khz.value()
+            count = max(round(abs(stop_khz - start_khz) / step_khz) + 1, 1)
+            if self.exp_freq_scan_count.value() != count:
+                self.exp_freq_scan_count.setValue(count)
+
+        self.exp_freq_scan_start_khz.valueChanged.connect(refresh_count_display)
+        self.exp_freq_scan_stop_khz.valueChanged.connect(refresh_count_display)
+        self.exp_freq_scan_step_khz.valueChanged.connect(refresh_count_display)
+        refresh_count_display()
 
     def _error_panel(self) -> QGroupBox:
         group = QGroupBox("Error Out")
@@ -1369,16 +2029,30 @@ class MainWindow(QMainWindow):
         # assumption, not a confirmed fact, and left as such here.
         start_hz = self.exp_freq_scan_start_khz.value() * 1000.0
         stop_hz = self.exp_freq_scan_stop_khz.value() * 1000.0
-        count = self.exp_freq_scan_count.value()
+        step_khz = self.exp_freq_scan_step_khz.value()
+        if step_khz > 0:
+            # Step Size is a Python-only alternative to Number of Frequencies
+            # (not part of the LabVIEW spec): when set, it takes precedence
+            # and the point count is derived from it instead of read directly
+            # from the count widget, rounded to the nearest whole point.
+            count = max(round(abs(stop_hz - start_hz) / (step_khz * 1000.0)) + 1, 1)
+        else:
+            count = self.exp_freq_scan_count.value()
         if count <= 1:
             return [start_hz] * count
         step = (stop_hz - start_hz) / (count - 1)
         return [start_hz + step * index for index in range(count)]
 
     def _experiment_fm_sweep_settings(self) -> FmSweepSettings:
+        # Start/Stop and Center/Width are kept in sync by
+        # _connect_sweep_dual_mode_refresh(); reading Start/Stop here is
+        # equivalent to reading Center/Width. FmSweepSettings and everything
+        # downstream of it are unchanged from Session 16.
+        start_hz = self.exp_sweep_start_khz.value() * 1000.0
+        stop_hz = self.exp_sweep_stop_khz.value() * 1000.0
         return FmSweepSettings(
-            center_hz=self.exp_sweep_center_khz.value() * 1000.0,
-            width_hz=self.exp_sweep_width_khz.value() * 1_000.0,
+            center_hz=(start_hz + stop_hz) / 2.0,
+            width_hz=abs(stop_hz - start_hz),
             sweep_time_ms=self.exp_sweep_time_ms.value(),
             sweep_type=self.exp_sweep_type.currentText(),
         )
@@ -1392,6 +2066,9 @@ class MainWindow(QMainWindow):
     def _syringe_volume_ml(self) -> float:
         name = self.syringe.currentText()
         return self._SYRINGE_VOLUMES_ML.get(name, float(self.custom_syringe_volume_ml.value()))
+
+    def _update_custom_syringe_volume_enabled(self) -> None:
+        self.custom_syringe_volume_ml.setEnabled(self.syringe.currentText() == "Custom")
 
     def _flush_settings(self, *, experiment: bool = False) -> FlushSettings:
         syringe_volume_ml = self._syringe_volume_ml()
@@ -1733,9 +2410,19 @@ class MainWindow(QMainWindow):
         if self.exp_freq_scan_enable.isChecked():
             frequency_scan_hz = self._experiment_frequency_scan_list_hz()
             if len(frequency_scan_hz) != repeats:
+                # Attribute the count to whichever field actually produced it --
+                # Step Size overrides Number of Frequencies when set above 0
+                # (see _experiment_frequency_scan_list_hz()); the "Number of
+                # Frequencies" display is kept in sync with that real count
+                # (_connect_frequency_scan_count_display_refresh()), but the
+                # error text itself must name the true source too, not always
+                # blame the same field regardless of which one is driving.
+                count_source = (
+                    "Step Size" if self.exp_freq_scan_step_khz.value() > 0 else "Number of Frequencies"
+                )
                 raise ValueError(
                     f"Frequency Scanning is enabled with {len(frequency_scan_hz)} frequencies "
-                    f"(Number of Frequencies) but Repeats is set to {repeats}; they must match "
+                    f"({count_source}) but Repeats is set to {repeats}; they must match "
                     "before starting this experiment."
                 )
         fm_sweep = self._experiment_fm_sweep_settings() if self.exp_sweep_enable.isChecked() else None
@@ -1824,6 +2511,34 @@ class MainWindow(QMainWindow):
         )
 
     def _run_experiment_series(
+        self,
+        series: ExperimentSeries2,
+        total_frames: int,
+        config: WfgConfig,
+        progress=None,
+    ) -> str:
+        # "experiment_series_active" progress kind brackets the entire method
+        # body (try/finally, so it clears on every exit path: normal
+        # completion, ExperimentSeriesAborted, or a raised RuntimeError) --
+        # this is the ground truth qt_ui_v2.py's "Experiment running"
+        # indicator now reads (see _handle_worker_progress()), instead of
+        # its old "experiment" in self.app.status.lower() heuristic, which
+        # went stale the instant Abort was clicked (Abort's own "Aborting..."
+        # status overwrites app.status while the current repeat, if any, may
+        # still genuinely be in flight). Emitted via the existing
+        # progress-signal mechanism (not set directly) since this method
+        # runs on a background QThread (ActionWorker) and progress.emit()
+        # is the established way this codebase marshals state back to the
+        # main/UI thread.
+        if progress:
+            progress("experiment_series_active", True)
+        try:
+            return self._run_experiment_series_body(series, total_frames, config, progress)
+        finally:
+            if progress:
+                progress("experiment_series_active", False)
+
+    def _run_experiment_series_body(
         self,
         series: ExperimentSeries2,
         total_frames: int,
@@ -2083,6 +2798,8 @@ class MainWindow(QMainWindow):
     def _handle_worker_progress(self, kind: str, value: object) -> None:
         if kind == "status":
             self._set_status(str(value))
+        elif kind == "experiment_series_active":
+            self._experiment_series_active = bool(value)
         elif kind == "queue_count":
             self.queue_count.setText(str(value))
         elif kind == "average_fps":

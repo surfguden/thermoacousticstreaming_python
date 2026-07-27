@@ -688,6 +688,9 @@ class Valve:
     simulate: bool = True
     visa_resource: str = "COM6"
     backend: TextCommandBackend | None = None
+    # Confirmed physical semantics: position 1 = Open, position 2 = Closed.
+    # Safety-relevant -- surfaced explicitly in the UI (qt_ui.py/qt_ui_v2.py
+    # Pump&Valve controls and status readouts), not just documented here.
     command_position_1: str = "P01"
     command_position_2: str = "P02"
     status_query_command: str = "S"
@@ -726,6 +729,7 @@ class Valve:
         self.status_note = f"unverified position response: {text!r}"
 
     def set_position(self, position: int) -> None:
+        # position=1 -> Open, position=2 -> Closed (see class-level note above).
         if position not in (1, 2):
             raise ValueError(f"Unsupported valve position: {position}")
         self.position = position

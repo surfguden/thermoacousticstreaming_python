@@ -132,6 +132,22 @@ class MainWindowV2(MainWindow):
         "PumpValve": "_pump_tab",
         "Camera": "_camera_tab",
     }
+    # Category 8 (Session 39): "PumpValve" (an internal dict key, smashed
+    # together with no separator for use as a Python identifier/lookup key)
+    # was rendered verbatim on the sidebar button and in the manual-panel
+    # dialog's own window title -- the only one of the four panel names that
+    # reads like an internal identifier rather than a real label ("WFG"/"MSO"
+    # are legitimate domain acronyms already used identically throughout
+    # both UIs, not internal-naming leakage). Display text now matches
+    # qt_ui.py's own tab name for the same feature exactly
+    # (self.tabs.addTab(self._pump_tab(), "Pump&Valve")) rather than
+    # inventing new wording; the other three keys are already their own
+    # correct display text, so this dict only needs the one entry.
+    _PANEL_DISPLAY_NAMES: dict[str, str] = {"PumpValve": "Pump&Valve"}
+
+    @classmethod
+    def _panel_display_name(cls, panel_name: str) -> str:
+        return cls._PANEL_DISPLAY_NAMES.get(panel_name, panel_name)
 
     def __init__(self, app: Application | None = None) -> None:
         self._initialization_dialog: InitializationDialog | None = None
@@ -171,7 +187,7 @@ class MainWindowV2(MainWindow):
         layout.addWidget(self.connection_button)
 
         for name in ("WFG", "MSO", "PumpValve", "Camera"):
-            button = QPushButton(name)
+            button = QPushButton(self._panel_display_name(name))
             button.clicked.connect(lambda checked=False, panel_name=name: self._open_manual_panel(panel_name))
             layout.addWidget(button)
 
@@ -193,7 +209,20 @@ class MainWindowV2(MainWindow):
         grid.addWidget(self._v2_ad2_output_group(), 2, 0, 1, 2)
         grid.addWidget(self._v2_acquisition_group(), 3, 0)
         grid.addWidget(self._experiment_flush_group(), 3, 1)
-        grid.addWidget(self._v2_waveform_group(), 4, 0, 1, 2)
+        # Category 7 (Session 39): FM Sweep and Frequency Scanning are both
+        # real, fully-wired Experiment-tab features in qt_ui.py -- neither
+        # had any reachable control anywhere in this window before (FM Sweep
+        # flagged as a known gap since Session 25, never fixed; Frequency
+        # Scanning's v2 gap was never even flagged, added in Session 34 after
+        # this table was last touched). Both bind the exact same
+        # self.exp_sweep_*/self.exp_freq_scan_* widgets qt_ui.py's Experiment
+        # tab uses -- _experiment_frequency_scan_group() is reused directly
+        # (same pattern as _experiment_flush_group() above); FM Sweep needed
+        # a new standalone builder since its qt_ui.py equivalent is embedded
+        # inline in a method v2 never calls (see _experiment_fm_sweep_group()).
+        grid.addWidget(self._experiment_fm_sweep_group(), 4, 0)
+        grid.addWidget(self._experiment_frequency_scan_group(), 4, 1)
+        grid.addWidget(self._v2_waveform_group(), 5, 0, 1, 2)
 
         area.setWidget(content)
         return area
@@ -208,10 +237,14 @@ class MainWindowV2(MainWindow):
         self.status.setMinimumWidth(320)
         self.queue_count = QLabel("0")
 
+        # Elapsed Time / Time Left: confirmed dead (Session 39, Category 4) --
+        # a static "00:00:00" placeholder never updated by any code path in
+        # either UI, same underlying stub helper qt_ui.py's own Experiment
+        # tab now uses.
         grid.addWidget(QLabel("Elapsed Time"), 0, 0)
-        grid.addWidget(QLabel("00:00:00"), 1, 0)
+        grid.addWidget(self._elapsed_time_label(), 1, 0)
         grid.addWidget(QLabel("Time Left"), 0, 1)
-        grid.addWidget(QLabel("00:00:00"), 1, 1)
+        grid.addWidget(self._time_left_label(), 1, 1)
         grid.addWidget(QLabel("# elements in queue"), 0, 2)
         grid.addWidget(self.queue_count, 1, 2)
         grid.addWidget(QLabel("Status"), 0, 3)
@@ -322,14 +355,20 @@ class MainWindowV2(MainWindow):
         grid.addWidget(self.exp_exposure_ms, 4, 1)
         grid.addWidget(QLabel("GlobalExposure"), 5, 0)
         grid.addWidget(self.global_exposure, 5, 1)
-        grid.addWidget(QLabel("Dynamic Camera Start Time"), 6, 0)
-        grid.addWidget(self.dynamic_camera_start, 6, 1)
 
         camera_start = QGroupBox("Camera Start Array(s)")
         camera_start_layout = QGridLayout(camera_start)
+        # Dynamic Camera Start Time moved here from the acquisition grid's own
+        # column -- it's the toggle controlling whether this array is used at
+        # all (see qt_ui.py's _experiment_do_clock_config()), so it belongs
+        # with the array it controls rather than the other, unrelated
+        # acquisition params (matching the same regroup applied in qt_ui.py's
+        # own _camera_start_group()).
+        camera_start_layout.addWidget(QLabel("Dynamic Camera Start Time"), 0, 0)
+        camera_start_layout.addWidget(self.dynamic_camera_start, 0, 1)
         for index, widget in enumerate(self.camera_start_array):
-            camera_start_layout.addWidget(widget, index // 2, index % 2)
-        grid.addWidget(camera_start, 0, 2, 7, 1)
+            camera_start_layout.addWidget(widget, index // 2 + 1, index % 2)
+        grid.addWidget(camera_start, 0, 2, 6, 1)
         grid.setColumnStretch(2, 1)
         return group
 
@@ -354,8 +393,25 @@ class MainWindowV2(MainWindow):
 
     def _global_status_panel(self) -> QGroupBox:
         group = QGroupBox("Global Status")
-        group.setMaximumWidth(280)
+        # Offscreen measurement (Session 39, Category 3) found every value
+        # QLabel in this form squeezed to a fixed 34px regardless of its own
+        # content (e.g. "Not connected" needing 156px, "idle, fill 0.000 ml"
+        # needing 228px) -- this group's own minimumSizeHint (534x269) was
+        # never checked against its 280px maximumWidth cap, unlike every
+        # QGroupBox in qt_ui.py's own tabs, which the generic
+        # test_no_group_box_is_squeezed_below_its_minimum_size_hint guard
+        # (Session 29) already covers -- that guard only walks
+        # window.tabs.currentWidget(), which qt_ui_v2.MainWindowV2 doesn't
+        # have. Fixed with WrapLongRows, the same established pattern
+        # already used for narrow-column truncation on the Pump&Valve tab
+        # (Session 38): a row's label goes on its own line when it doesn't
+        # fit alongside its field, giving the field(most of the group's
+        # width on the line below instead of a fixed sliver. Confirmed
+        # offscreen this alone (no width change) resolves every QLabel
+        # truncation in this form.
+        group.setMaximumWidth(300)
         form = QFormLayout(group)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
 
         self.error_status = QLabel("OK")
         self.error_code = QLineEdit("0")
@@ -366,10 +422,18 @@ class MainWindowV2(MainWindow):
         form.addRow("Error Out code", self.error_code)
         form.addRow("Error Out source", self.error_source)
 
+        # word-wrap: these four can display long runtime text (e.g. the
+        # valve's real "Connected (unverified position response: '...')"
+        # status_note passthrough, Session 2) that WrapLongRows' extra
+        # row width alone would not guarantee fits on one line.
         self.ad2_connection_status = QLabel("Not connected")
+        self.ad2_connection_status.setWordWrap(True)
         self.camera_connection_status = QLabel("Not connected")
+        self.camera_connection_status.setWordWrap(True)
         self.pump_connection_status = QLabel("Not connected")
+        self.pump_connection_status.setWordWrap(True)
         self.valve_connection_status = QLabel("Not connected")
+        self.valve_connection_status.setWordWrap(True)
         form.addRow("AD2", self.ad2_connection_status)
         form.addRow("Camera", self.camera_connection_status)
         form.addRow("Pump", self.pump_connection_status)
@@ -399,7 +463,7 @@ class MainWindowV2(MainWindow):
         return self._initialization_dialog
 
     def _show_placeholder(self, panel_name: str) -> None:
-        self._set_status(f"{panel_name} panel is not yet implemented in the new UI preview")
+        self._set_status(f"{self._panel_display_name(panel_name)} panel is not yet implemented in the new UI preview")
 
     def _open_manual_panel(self, panel_name: str) -> None:
         dialog = self._ensure_manual_panel(panel_name)
@@ -413,7 +477,7 @@ class MainWindowV2(MainWindow):
             builder_name = self._MANUAL_PANEL_BUILDERS[panel_name]
             content = getattr(self, builder_name)()
             dialog = QDialog(self)
-            dialog.setWindowTitle(f"{panel_name} (Manual Test)")
+            dialog.setWindowTitle(f"{self._panel_display_name(panel_name)} (Manual Test)")
             dialog.setModal(False)
             layout = QVBoxLayout(dialog)
             layout.addWidget(content)
@@ -505,8 +569,17 @@ class MainWindowV2(MainWindow):
         wfg_config = getattr(self.app.ad2, "wfg_config", None)
         self.ad2_running_status.setText("Yes" if getattr(wfg_config, "running", False) else "No")
         self.camera_capturing_status.setText("Yes" if getattr(self.app.camera, "capturing", False) else "No")
-        self.experiment_running_status.setText("Yes" if self._busy_count and "experiment" in self.app.status.lower() else "No")
-        self.valve_position_status.setText(str(getattr(self.app.valve, "position", "Unknown")))
+        # Reads the "experiment_series_active" flag qt_ui.py's
+        # _run_experiment_series() brackets its own execution with (see
+        # qt_ui.py's _build_state()/_handle_worker_progress()) -- not a
+        # status-text substring match. The prior "experiment" in
+        # self.app.status.lower() heuristic went stale the instant Abort was
+        # clicked: Abort's own "Aborting..." status overwrites self.app.status
+        # while the series' current repeat may still genuinely be executing,
+        # which would have made this indicator misleadingly report "No"
+        # while hardware was still active.
+        self.experiment_running_status.setText("Yes" if getattr(self, "_experiment_series_active", False) else "No")
+        self.valve_position_status.setText(self._valve_position_text())
         dosing = "dosing" if getattr(self.app.pump, "dosing", False) else "idle"
         self.pump_state_status.setText(f"{dosing}, fill {getattr(self.app.pump, 'fill_level', 0.0):.3f} ml")
 
@@ -526,6 +599,18 @@ class MainWindowV2(MainWindow):
         if status_note and status_note != "confirmed":
             return f"Connected ({status_note})"
         return "Connected"
+
+    def _valve_position_text(self) -> str:
+        # Position 1 = Open, Position 2 = Closed (confirmed physical mapping,
+        # see instruments.py's Valve class) -- surfaced explicitly here too,
+        # not just on the Pump&Valve tab's own Pos1/Pos2 buttons, since this
+        # is the only live readout of the valve's current position in v2.
+        position = getattr(self.app.valve, "position", None)
+        if position == 1:
+            return "1 (Open)"
+        if position == 2:
+            return "2 (Closed)"
+        return "Unknown"
 
 
 def main() -> int:
