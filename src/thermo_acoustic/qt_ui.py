@@ -33,6 +33,8 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSpinBox,
     QTabWidget,
+    QToolButton,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -134,6 +136,39 @@ def install_focus_wheel_guard(app: QApplication | None) -> None:
     guard = FocusWheelGuard(app)
     app.installEventFilter(guard)
     app._thermo_acoustic_focus_wheel_guard = guard
+
+
+class _TooltipIconButton(QToolButton):
+    """Small "ⓘ" marker placed next to a field that has a tooltip
+    (Session 41, Part 2 -- replaces Session 40's label-underline marker).
+    Deliberately click-triggered, not hover-triggered (explicit user
+    confirmation): no native Qt tooltip is set on this button itself, so
+    hovering it alone shows nothing -- only an actual click calls
+    QToolTip.showText() to display the explanation, reusing Qt's own
+    tooltip rendering (auto-wrap, native look, dismisses when the mouse
+    leaves the button's area) rather than inventing a new popup widget."""
+
+    def __init__(self, explanation: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setText("ⓘ")
+        self.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.setAutoRaise(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setFixedSize(18, 18)
+        self._explanation = explanation
+        self.clicked.connect(self._show_explanation)
+
+    def _show_explanation(self) -> None:
+        QToolTip.showText(self.mapToGlobal(self.rect().bottomLeft()), self._explanation, self)
+
+
+class _TooltipIconWrapper(QWidget):
+    """Marker container class (not just a bare QWidget) so tests/tooling can
+    reliably recognize "this widget's parent is a tooltip-icon wrapper" via
+    isinstance() instead of guessing from layout contents -- holds exactly
+    one field widget plus one _TooltipIconButton, built by
+    MainWindow._wrap_with_tooltip_icon()."""
 
 
 class WaveformGraph(QWidget):
@@ -405,23 +440,60 @@ class MainWindow(QMainWindow):
 
     def _build_state(self) -> None:
         hardware_defaults = default_hardware_config()
+        # Enable/Simulate pairing (Session 40, Category B): traced
+        # hardware_factory.build_hardware_bundle() -- each instrument's own
+        # Enable checkbox and its matching Simulate checkbox are independent
+        # but combine: Enable=Off skips the instrument entirely regardless of
+        # Simulate; Enable=On + Simulate=On builds a fake in-memory backend
+        # (SimulatedAD2Sdk / HamamatsuCamera(simulate=True) / etc., safe, no
+        # real hardware touched); Enable=On + Simulate=Off builds the real
+        # hardware backend (AD2Sdk / HamamatsuDcamBackend / QmixPumpBackend /
+        # SerialTextCommandBackend) and genuinely opens/writes to the device
+        # on Initialize. Both tooltips name the other explicitly since
+        # forgetting to check Simulate before Initialize is the single
+        # easiest way to accidentally drive real hardware from this tab.
+        enable_tip_template = (
+            "Whether {name} is included at all when Initialize is clicked. Off skips it entirely, "
+            "regardless of the matching Simulate checkbox below/right. On + Simulate=On builds a "
+            "safe in-memory fake backend; On + Simulate=Off builds the real hardware backend and "
+            "genuinely opens/writes to the device."
+        )
+        simulate_tip_template = (
+            "Only matters when {name} above/left is On. Checked = safe in-memory fake backend, no "
+            "real hardware touched. Unchecked = the real hardware backend is built and Initialize "
+            "genuinely opens/writes to the device."
+        )
         self.ad2_enabled = QCheckBox("Off/On")
         self.ad2_enabled.setChecked(True)
+        self.ad2_enabled.setToolTip(enable_tip_template.format(name="Analog Discovery"))
         self.z_enabled = QCheckBox("Off/On")
+        self.z_enabled.setToolTip(
+            "Whether the Z stage is included at all when Initialize is clicked -- there is no "
+            "matching Simulate checkbox for Z stage (only AD2/Camera/Pump/Valve have one); when On, "
+            "hardware_factory.build_hardware_bundle() always builds a real Prior-serial backend "
+            "(see prior_resource's own tooltip -- Z stage backend selection has no real effect)."
+        )
         self.camera_enabled = QCheckBox("Off/On")
         self.camera_enabled.setChecked(True)
+        self.camera_enabled.setToolTip(enable_tip_template.format(name="the Hamamatsu camera"))
         self.pump_enabled = QCheckBox("Off/On")
         self.pump_enabled.setChecked(True)
+        self.pump_enabled.setToolTip(enable_tip_template.format(name="the Cetoni pump"))
         self.valve_enabled = QCheckBox("Off/On")
         self.valve_enabled.setChecked(True)
+        self.valve_enabled.setToolTip(enable_tip_template.format(name="the MX valve"))
         self.sim_camera = QCheckBox("Off/On")
         self.sim_camera.setChecked(True)
+        self.sim_camera.setToolTip(simulate_tip_template.format(name="Hamamatsu"))
         self.sim_pump = QCheckBox("Off/On")
         self.sim_pump.setChecked(True)
+        self.sim_pump.setToolTip(simulate_tip_template.format(name="Cetoni Pump"))
         self.sim_valve = QCheckBox("Off/On")
         self.sim_valve.setChecked(True)
+        self.sim_valve.setToolTip(simulate_tip_template.format(name="MX Valve"))
         self.sim_ad2 = QCheckBox("Off/On")
         self.sim_ad2.setChecked(True)
+        self.sim_ad2.setToolTip(simulate_tip_template.format(name="Analog Discovery 3"))
 
         self.z_backend = _combo([item.value for item in ZStageBackend], hardware_defaults.z_stage.backend.value)
         self.prior_resource = QLineEdit(hardware_defaults.z_stage.prior_resource)
@@ -440,12 +512,34 @@ class MainWindow(QMainWindow):
         self.thorlabs_apt_discovery_only = QCheckBox("Discovery only")
         self.thorlabs_apt_discovery_only.setChecked(hardware_defaults.z_stage.thorlabs_apt_discovery_only)
         self.valve_resource = QLineEdit("COM6")
+        # Relocated here from _instrument_group() (Session 40): that method
+        # is v1-tab-only -- qt_ui_v2.py's InitializationDialog builds its own
+        # separate form around this same widget without ever calling
+        # _instrument_group(), so a tooltip set there never reached v2 users
+        # at all. Every other tooltip in this codebase lives in _build_state()
+        # for exactly this reason (guaranteed to apply regardless of which
+        # UI's layout method runs).
+        self.valve_resource.setToolTip(
+            "The real COM port; passed to HardwareRuntimeConfig and genuinely used, unlike the "
+            "disabled Z stage backend/Thorlabs/Qmix path fields on this same tab."
+        )
         self.qmix_sdk_python_path = QLineEdit(str(hardware_defaults.qmix.sdk_python_path))
         self.qmix_qmixsdk_path = QLineEdit(str(hardware_defaults.qmix.qmixsdk_path))
         self.cetoni_config_path = QLineEdit(str(hardware_defaults.qmix.config_path))
+        # Relocated here from _instrument_group() for the same reason as
+        # valve_resource above.
+        self.cetoni_config_path.setToolTip(
+            "Read by CetoniPump.initialize() -- genuinely used, unlike the Qmix SDK/QMIXSDK path "
+            "fields above (Session 3: confirmed never read by hardware_factory.build_hardware_bundle())."
+        )
 
         self.wfg_running = QCheckBox("ON")
         self.wfg_running.setChecked(True)
+        self.wfg_running.setToolTip(
+            "Master on/off for both WFG channels' real hardware output, applied by Apply WFG "
+            "(WfgConfig.running -> ad2.wfg_start_stop_all_ch()). Each channel also has its own "
+            "per-channel Enable checkbox below -- this is the shared master switch on top of those."
+        )
         self.wfg_sync = _combo(["Independent", "Synchronized"], "Independent")
         self.wfg_channels = [
             self._make_wfg_channel_state(0, 1.9e6, 2.0),
@@ -457,19 +551,31 @@ class MainWindow(QMainWindow):
         self.mso_ch2_enabled = QCheckBox("CH2")
         self.mso_ch2_enabled.setChecked(True)
         self.mso_trigger_source = _combo([item.value for item in TriggerSource], TriggerSource.NONE.value)
+        self.mso_trigger_source.setToolTip(
+            "AD2 SDK trigger source enum for this scope capture -- what starts sampling. "
+            "'None' captures immediately on Capture click with no external/PC trigger wait, "
+            "matching the same trigsrcNone/trigsrcPC/etc. vocabulary the WFG tab's own Trigger "
+            "source fields use."
+        )
         self.mso_sample_frequency = _spin(10_000.0, decimals=1, minimum=1.0, maximum=100_000_000.0)
         self.mso_sample_frequency.setToolTip(
             "AD2 analog-in sample rate. 100 MS/s (the max above) is the Analog Discovery 2's "
             "published spec, but this has not been independently re-verified against this "
             "specific device (Session 18 audit: classified UNCONFIRMED, treat as a reasonable "
-            "default, not a confirmed one)."
+            "default, not a confirmed one). Combines with Sample Count to set the capture's real "
+            "duration: duration_s = Sample Count / this value (_set_mso_stats())."
         )
         self.mso_sample_count = _int_spin(4096, minimum=1, maximum=1_000_000)
+        self.mso_sample_count.setToolTip(
+            "Number of samples captured per channel. Combines with Sample Frequency to set the "
+            "capture's real duration: duration_s = this value / Sample Frequency (_set_mso_stats())."
+        )
         self.mso_range = _spin(1.0, decimals=3, minimum=0.001, maximum=50.0)
         self.mso_range.setToolTip(
             "Analog-in voltage range. The 1 V default is below the documented real acoustic "
             "drive signal (up to 2 V on CH0) -- scoping at this default risks clipping "
-            "(Session 18 audit: classified SUSPECTED-PLACEHOLDER). Widen before scoping CH0."
+            "(Session 18 audit: classified SUSPECTED-PLACEHOLDER). Widen before scoping CH0. "
+            "Combines with Offset below to set the actual voltage window the ADC reads."
         )
         self.mso_offset = _spin(0.0, decimals=3, minimum=-50.0, maximum=50.0)
         self.mso_stats = QLabel("No capture")
@@ -481,35 +587,58 @@ class MainWindow(QMainWindow):
             "1ml=4.78mm, 5ml=12.07mm, 10ml=14.5mm). Stroke length is a derived value "
             "(volume / cross-sectional area assuming full nominal volume over full piston "
             "travel), not an independently-sourced BD spec figure. 'Custom' has no known "
-            "geometry -- Configure Syringe will fail for it unless Custom Volume-adjacent "
-            "geometry fields are supplied (see Custom Volume's own tooltip)."
+            "geometry of its own -- Configure Syringe sends the real Custom Inner Diameter/"
+            "Max Piston Stroke fields below for it (Session 44), not a derived guess. This "
+            "selection's nominal capacity (or Custom Volume, when 'Custom' is picked) is also "
+            "what Flush Volume's own safety check is measured against (Application.flush(), "
+            "Session 10)."
         )
         self.custom_syringe_volume_ml = _spin(1.0, decimals=3, minimum=0.001)
         # Task 4 investigation (Session 38): traced _syringe_volume_ml() --
         # this value is only ever read as a fallback when Syringe="Custom"
         # (ignored/inert for the three named BD presets, which have their
-        # own known volumes). It also has NO effect on ConfigureSyringe's
-        # real geometry call in ANY case -- _configure_syringe() only ever
-        # sends {"name": syringe} to the pump backend, never this value; it
-        # feeds only the flush-volume-vs-syringe-capacity safety check.
-        # Disabled whenever a named preset is active, matching this
-        # project's established stub-marking convention, so its value can't
-        # be mistaken for something currently being read.
+        # own known volumes). It feeds only the flush-volume-vs-syringe-
+        # capacity safety check, never ConfigureSyringe's real geometry
+        # call -- that is a deliberate, separate decision (Session 44): a
+        # volume alone can't determine both inner diameter and stroke (an
+        # infinite family of diameter/stroke pairs share the same volume),
+        # so geometry is supplied explicitly via the two new fields below
+        # instead of derived from this one. Disabled whenever a named
+        # preset is active, matching this project's established
+        # stub-marking convention, so its value can't be mistaken for
+        # something currently being read.
         self.custom_syringe_volume_ml.setToolTip(
             "Only used when Syringe = 'Custom' (feeds the flush-volume-vs-syringe-capacity "
-            "safety check in Application.flush()). Has no effect on the real syringe geometry "
-            "Configure Syringe sends to the pump, which only recognizes the three named BD "
-            "presets -- selecting 'Custom' and clicking Configure Syringe will fail because no "
-            "real inner diameter/stroke is supplied for it."
+            "safety check in Application.flush()). Deliberately has no effect on the real "
+            "syringe geometry Configure Syringe sends to the pump (Session 44) -- a volume "
+            "alone can't determine both inner diameter and stroke length, so geometry is "
+            "supplied explicitly via Custom Inner Diameter/Max Piston Stroke below instead."
+        )
+        self.custom_syringe_inner_diameter_mm = _spin(1.0, decimals=3, minimum=0.001)
+        self.custom_syringe_inner_diameter_mm.setToolTip(
+            "Only used when Syringe = 'Custom'. The real inner (bore) diameter of the "
+            "physical syringe, in mm -- sent directly to the Qmix SDK's set_syringe_param() "
+            "as inner_diameter_mm (QmixPumpBackend.configure_syringe(), Session 44). Not "
+            "derived from Custom Volume above; supply the syringe's actual spec value, the "
+            "same way the three named BD presets use their own published inner diameters "
+            "(Session 17), not a value back-calculated from volume."
+        )
+        self.custom_syringe_stroke_mm = _spin(1.0, decimals=3, minimum=0.001)
+        self.custom_syringe_stroke_mm.setToolTip(
+            "Only used when Syringe = 'Custom'. The real maximum piston stroke (full travel "
+            "length) of the physical syringe, in mm -- sent directly to the Qmix SDK's "
+            "set_syringe_param() as max_piston_stroke_mm (QmixPumpBackend.configure_syringe(), "
+            "Session 44). Not derived from Custom Volume above; supply the syringe's actual "
+            "spec value. The three named BD presets instead derive this value from their "
+            "nominal volume (an unconfirmed assumption, Session 17) because no authoritative "
+            "BD stroke figure was available -- Custom deliberately does not repeat that "
+            "assumption on unknown hardware, and asks for the real value instead."
         )
         self._update_custom_syringe_volume_enabled()
         self.syringe.currentTextChanged.connect(lambda _text: self._update_custom_syringe_volume_enabled())
         self.flow_rate = _spin(-5000.0, decimals=1)
         self.flow_rate.setToolTip(
-            "uL/min, sign per the row label (-=aspirate, +=dispense). No sign-inversion logic "
-            "exists anywhere in CetoniPump/Application.flush()/this UI, and no documented "
-            "LabVIEW reference convention exists in this repo to compare against -- flagged "
-            "since Session 6 as unverifiable from current code, not confirmed correct or wrong."
+            "Flow rate in uL/min: negative values aspirate/withdraw, positive values dispense/infuse."
         )
         self.level_ml = _spin(0.0, decimals=3, minimum=0.0)
         self.level_ml.setToolTip(
@@ -521,12 +650,18 @@ class MainWindow(QMainWindow):
             "uL/min on the real device (QmixPumpBackend.initialize() configures the pump's flow "
             "unit as uL/min, confirmed via the FlushSettings.timeout_s fix, Session 31/32) -- "
             "this row's label omits the unit shown on its Experiment-tab twin "
-            "('Flush Flowrate(uL)'); same field, same unit, just not spelled out here."
+            "('Flush Flowrate(uL)'); same field, same unit, just not spelled out here. Combines "
+            "with Flush Volume below to compute the real pump-move timeout: "
+            "(flush_volume_ml*1000/this_value)*60+5 seconds (FlushSettings.timeout_s) -- too low "
+            "a flowrate for a given volume risks the flush being declared failed before the pump "
+            "physically finishes (the exact bug Session 31/32 fixed)."
         )
         self.flush_volume = _spin(0.0, decimals=3, minimum=0.0)
         self.flush_volume.setToolTip(
             "Application.flush() raises before touching hardware if this exceeds the selected "
-            "syringe's capacity (Session 10)."
+            "Syringe's capacity (or Custom Volume, when Syringe='Custom') -- Session 10. Also "
+            "combines with Flush Flowrate above to compute the real pump-move timeout "
+            "(FlushSettings.timeout_s, Session 31/32)."
         )
         self.wait_after_flush = _spin(0.0, decimals=3, minimum=0.0)
         self.wait_after_flush.setToolTip(
@@ -541,7 +676,10 @@ class MainWindow(QMainWindow):
             "These startup defaults diverge from this repo's own validated-on-real-hardware "
             "combination (vertical_offset=792, vertical_size=740, exposure=40.0ms; C15440-20UP; "
             "see docs/current_workflow_audit.md and experiment_presets.py) -- Session 18 audit: "
-            "classified SUSPECTED-PLACEHOLDER, never wired into these live defaults."
+            "classified SUSPECTED-PLACEHOLDER, never wired into these live defaults. Combines with "
+            "Vertical Size below (the two together set DCAM SUBARRAYVPOS/SUBARRAYVSIZE) and with "
+            "Exposure Time to determine the real DCAM readout time _check_camera_timing_budget() "
+            "checks against Camera FPS on the Experiment tab."
         )
         self.roi_h_size = _int_spin(2304, minimum=0)
         self.roi_v_size = _int_spin(500, minimum=0)
@@ -551,10 +689,16 @@ class MainWindow(QMainWindow):
             "Applied to real DCAM hardware via Configure Camera (configure_exposure_time()). "
             "Automated Experiment runs use their own Exposure time (ms) field instead and enforce "
             "a timing budget: Application._check_camera_timing_budget() rejects a configured "
-            "Camera FPS the current exposure + real DCAM readout time can't sustain."
+            "Camera FPS the current exposure + real DCAM readout time (itself set by the ROI size "
+            "above) can't sustain."
         )
         self.center_roi = QCheckBox("Off/On")
         self.center_roi.setChecked(True)
+        self.center_roi.setToolTip(
+            "When On, clicking Configure Camera also centers the ROI (HamamatsuCamera.center_roi(), "
+            "Session 22 fix -- now genuinely re-applies the centered coordinates to real hardware, "
+            "not just local Python state) using the current Horizontal/Vertical Size above."
+        )
         self.image_continuous = QCheckBox("Off/On")
         self.image_continuous.setChecked(False)
         self.conversion_method = _combo(CONVERSION_METHOD_OPTIONS, "Full Dynamic")
@@ -568,13 +712,8 @@ class MainWindow(QMainWindow):
         )
         self.conversion_min = _spin(0.0, decimals=3)
         self.conversion_min.setReadOnly(True)
-        self.conversion_min.setToolTip(
-            "Read-only: the real min/percentile value used for the last 'Adjust' -- an output of "
-            "the conversion, not an input to it."
-        )
         self.conversion_max = _spin(0.0, decimals=3)
         self.conversion_max.setReadOnly(True)
-        self.conversion_max.setToolTip(self.conversion_min.toolTip().replace("min/percentile", "max/percentile"))
         self.conversion_shifts = _int_spin(0, minimum=0, maximum=16)
         self.conversion_shifts.setToolTip(
             "Only used when Conversion Method = 'Downshift': the raw pixel value is right-shifted "
@@ -590,13 +729,29 @@ class MainWindow(QMainWindow):
             "changing these DOES affect automated runs, matching RunExperiment2.vi's own "
             "behavior of always applying the whole cluster."
         )
-        self.sequence_mode.setToolTip(sequence_cluster_tip)
+        self.sequence_mode.setToolTip(
+            "DCAM MASTERPULSE_MODE: Continuous/Start (single)/Burst pulse pattern for the camera's "
+            "internal master-pulse generator. Interval below is the pulse period (all modes); "
+            "Burst below is only physically meaningful for the 'Burst' mode, though Python passes "
+            "it to the device unconditionally regardless of which Mode is selected (traced "
+            "configure_sequence(): no conditional gating on Mode's value). " + sequence_cluster_tip
+        )
         self.sequence_source = _combo(["External", "Software"], "External")
-        self.sequence_source.setToolTip(sequence_cluster_tip)
+        self.sequence_source.setToolTip(
+            "DCAM MASTERPULSE_TRIGGERSOURCE: what starts the master-pulse generator (an external "
+            "signal vs. a software/API call). " + sequence_cluster_tip
+        )
         self.sequence_interval = _spin(1.0, decimals=6, minimum=0.000005, maximum=10.0)
-        self.sequence_interval.setToolTip(sequence_cluster_tip)
+        self.sequence_interval.setToolTip(
+            "DCAM MASTERPULSE_INTERVAL in seconds -- the master-pulse period, paired with Mode "
+            "above. " + sequence_cluster_tip
+        )
         self.sequence_burst = _int_spin(1, minimum=1, maximum=65535)
-        self.sequence_burst.setToolTip(sequence_cluster_tip)
+        self.sequence_burst.setToolTip(
+            "DCAM MASTERPULSE_BURSTTIMES -- pulse count per burst, only physically meaningful when "
+            "Mode above = 'Burst' (see Mode's own tooltip for the unconditional-application caveat). "
+            + sequence_cluster_tip
+        )
         self.capture_mode = _combo(["Snap", "Sequence"], "Snap")
         self.capture_mode.setEnabled(False)
         self.capture_mode.setToolTip("Not wired to a real backend: never read by _camera_sequence_settings() or any capture path (confirmed dead, Session 11).")
@@ -610,16 +765,25 @@ class MainWindow(QMainWindow):
         )
         self.dcam_source = _combo(["Internal", "External", "Software", "MasterPulse"], "Internal")
         self.dcam_source.setToolTip(
-            "Automated Experiment runs hardcode this to 'Internal' (Session 13) purely to remove "
-            "undefined leftover-state risk -- whether it should instead be 'External' (paced by "
-            "the AD2 DIO pulse train) remains genuinely unresolved: Session 19 traced the real "
-            "LabVIEW call chain but the actual wired value is compiled block-diagram wiring, not "
-            "recoverable from the exported VI diagrams. Still needs oscilloscope verification."
+            "DCAM TRIGGERSOURCE -- what starts each camera frame. Automated Experiment runs "
+            "hardcode this to 'Internal' (Session 13) purely to remove undefined leftover-state "
+            "risk -- whether it should instead be 'External' (paced by the AD2 DIO pulse train) "
+            "remains genuinely unresolved: Session 19 traced the real LabVIEW call chain but the "
+            "actual wired value is compiled block-diagram wiring, not recoverable from the "
+            "exported VI diagrams. Still needs oscilloscope verification. Polarity/Delay below are "
+            "only physically meaningful when this is 'External'."
         )
         self.external_polarity = _combo(["Negative", "Positive"], "Negative")
-        self.external_polarity.setToolTip(sequence_cluster_tip)
+        self.external_polarity.setToolTip(
+            "DCAM TRIGGERPOLARITY -- only physically meaningful when Dcam Trigger Source above is "
+            "'External' (which edge of the external trigger signal starts a frame). " + sequence_cluster_tip
+        )
         self.external_delay = _spin(0.0, decimals=6, minimum=0.0, maximum=10.000002)
-        self.external_delay.setToolTip(sequence_cluster_tip)
+        self.external_delay.setToolTip(
+            "DCAM TRIGGERDELAY in seconds -- only physically meaningful when Dcam Trigger Source "
+            "above is 'External' (delay from the external trigger edge to the actual frame start). "
+            + sequence_cluster_tip
+        )
         # Confirmed dead since Session 11 ("constructed and displayed but
         # never read"), same bug class as capture_mode (fixed Session 24) --
         # but this one was flagged, never actually fixed. _camera_sequence_settings()
@@ -642,18 +806,44 @@ class MainWindow(QMainWindow):
         )
 
         self.series_path = QLineEdit(r"C:\test\firstrunpulsed")
+        self.series_path.setToolTip(
+            "Root folder for this experiment series -- each repeat gets its own "
+            "repeat_NNN subfolder containing that repeat's data.tdms + TIFF frames "
+            "(_build_experiment_series()). Start exp blocks with a confirmation dialog if "
+            "data.tdms/frame_*.tiff already exist under this path (Session 10)."
+        )
         self.exp_camera_fps = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_camera_fps.setToolTip(
             "Must be > 0 -- used to derive the AD2 DIO1 LED clock (Experiment2's DO clock "
             "channel) and checked against the real DCAM readout time + exposure by "
-            "Application._check_camera_timing_budget() before capture starts."
+            "Application._check_camera_timing_budget() before capture starts. Combines with "
+            "Frames below: the DO clock's run duration = Frames / this value "
+            "(_experiment_do_clock_config()); combines with Exposure time (ms) in the "
+            "Experiment group below: this FPS must be achievable given that exposure + the real "
+            "DCAM readout time, or the timing-budget check rejects the run before it starts "
+            "(Session 19)."
         )
         self.exp_camera_start = _spin(0.0, decimals=3, minimum=0.0)
+        self.exp_camera_start.setToolTip(
+            "Seconds after the AD2 PC trigger before the DO clock (LED) starts, used for every "
+            "repeat. Ignored whenever Dynamic Camera Start Time (below, in Camera Start Array(s)) "
+            "is checked -- each repeat then uses its own per-repeat value from that array instead."
+        )
         self.exp_ch1_freq = _spin(0.0, decimals=3, minimum=0.0)
+        self.exp_ch1_freq.setToolTip(
+            "CH0 carrier frequency in kHz, converted to Hz at the UI boundary (_experiment_channel_config()). "
+            "Overridden per-repeat when Frequency Scanning (below) is enabled, and overridden "
+            "entirely (Center=(Start+Stop)/2) when Enable Frequency Sweep (below) is checked -- "
+            "the sweep override wins if both happen to be enabled at once."
+        )
         self.exp_ch1_amp = _spin(0.0, decimals=3)
         self.exp_ch1_offset = _spin(0.0, decimals=3)
         self.exp_ch1_function = _combo([item.value for item in WaveformFunction], WaveformFunction.SINE.value)
         self.exp_ch1_enable = QCheckBox("Enable")
+        self.exp_ch1_enable.setToolTip(
+            "Whether CH0's real AD2 output is active for this run. If neither channel is enabled, "
+            "WfgConfig.running is False and the AD2 WFG is not started at all (_experiment_wfg_config())."
+        )
         self.exp_ch1_start = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_ch1_start.setToolTip("Delay in seconds after the AD2 PC trigger before this channel's output starts.")
         self.exp_ch1_run = _spin(0.0, decimals=3, minimum=0.0)
@@ -663,7 +853,6 @@ class MainWindow(QMainWindow):
             "since flush/save can't safely proceed without a known completion time."
         )
         self.exp_ch1_repeat = _int_spin(0, minimum=0)
-        self.exp_ch1_repeat.setToolTip("Number of trigger repeats. 0 = infinite (repeats until manually stopped).")
         self.exp_ch1_trigger_source = _combo(WFG_TRIGGER_SOURCE_OPTIONS, "trigsrcNone")
         self.exp_ch1_trigger_source.setToolTip(
             "AD2 SDK trigger source enum. The automated Experiment path always arms via config "
@@ -679,6 +868,14 @@ class MainWindow(QMainWindow):
         self.exp_ch1_repeat_trigger = QCheckBox("Repeat Trigger")
         self.exp_ch1_repeat_trigger.setToolTip("Whether the trigger source re-arms automatically after each repeat.")
         self.exp_sweep_enable = QCheckBox("Enable Frequency Sweep During Experiment")
+        self.exp_sweep_enable.setToolTip(
+            "When checked, overrides CH0 Frequency above with this group's own Center Frequency "
+            "(and enables the FM node) for every repeat -- CH0's own Frequency field above is "
+            "ignored while this is on. CH1 is never affected (Ch1-only, matching "
+            "WfgConfigureSweepCh1.vi's own hardcoded scope). Distinct from Frequency Scanning "
+            "below: this is a continuous ms-scale sweep within one drive, Frequency Scanning is a "
+            "discrete per-repeat frequency substitution."
+        )
         # Start/Stop Frequency are the user-facing inputs (see the manual WFG
         # tab's matching sweep_start_khz/sweep_stop_khz note) -- defaults are
         # the Martens et al. reference case (center 1.934 MHz, width 50 kHz)
@@ -711,16 +908,24 @@ class MainWindow(QMainWindow):
             "confirmed against WfgConfigureSweepCh1.vi's actual wiring (Session 16)."
         )
         self.exp_ch2_freq = _spin(1.0, decimals=3, minimum=0.0)
+        self.exp_ch2_freq.setToolTip(
+            "CH1 carrier frequency in kHz, converted to Hz at the UI boundary "
+            "(_experiment_channel_config()), applied to real AD2 hardware every run. Never "
+            "touched by Frequency Scanning or Frequency Sweep -- both are Ch1(CH0)-only."
+        )
         self.exp_ch2_amp = _spin(1.0, decimals=3)
         self.exp_ch2_offset = _spin(0.0, decimals=3)
         self.exp_ch2_function = _combo([item.value for item in WaveformFunction], WaveformFunction.SINE.value)
         self.exp_ch2_enable = QCheckBox("Enable")
+        self.exp_ch2_enable.setToolTip(
+            "Whether CH1's real AD2 output is active for this run. If neither channel is enabled, "
+            "WfgConfig.running is False and the AD2 WFG is not started at all (_experiment_wfg_config())."
+        )
         self.exp_ch2_start = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_ch2_start.setToolTip(self.exp_ch1_start.toolTip())
         self.exp_ch2_run = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_ch2_run.setToolTip(self.exp_ch1_run.toolTip())
         self.exp_ch2_repeat = _int_spin(0, minimum=0)
-        self.exp_ch2_repeat.setToolTip(self.exp_ch1_repeat.toolTip())
         self.exp_ch2_trigger_source = _combo(WFG_TRIGGER_SOURCE_OPTIONS, "trigsrcNone")
         self.exp_ch2_trigger_source.setToolTip(self.exp_ch1_trigger_source.toolTip())
         self.exp_ch2_symmetry = _spin(50.0, decimals=3, minimum=0.0, maximum=100.0)
@@ -761,18 +966,44 @@ class MainWindow(QMainWindow):
         ]
         self._experiment_ad2_seeded = False
         self.exp_repeats = _int_spin(1, minimum=1)
+        self.exp_repeats.setToolTip(
+            "Number of Experiment2 runs in this series (_build_experiment_series() builds one "
+            "repeat_NNN folder per unit). Two hard constraints tie this to other fields: (1) when "
+            "Frequency Scanning below is enabled, its resulting frequency count must exactly equal "
+            "this value or _build_experiment_series() raises before starting; (2) when Dynamic "
+            "Camera Start Time is checked, this cannot exceed Camera Start Array(s)'s 10 fixed "
+            "slots, or _experiment_do_clock_config() raises mid-run on the first repeat past slot 10."
+        )
         self.exp_frames = _int_spin(1, minimum=0)
+        self.exp_frames.setToolTip(
+            "Frames captured per repeat. Combines with Camera FPS above: the DO clock's run "
+            "duration = this value / Camera FPS (_experiment_do_clock_config()) -- the real "
+            "duration the LED/camera trigger stays active each repeat."
+        )
         self.exp_exposure_ms = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_exposure_ms.setToolTip(
             "Applied to real DCAM hardware every run via configure_exposure_time() (Session 20 "
             "fix -- a prior bug called a Python-side bookkeeping setter instead, silently leaving "
-            "the camera at whatever exposure a previous manual session had set)."
+            "the camera at whatever exposure a previous manual session had set). Combines with "
+            "Camera FPS above: Application._check_camera_timing_budget() rejects the run before "
+            "capture starts if this exposure plus the real DCAM readout time (set by the ROI size, "
+            "Camera tab) can't sustain the configured Camera FPS (Session 19)."
         )
         self.exp_flush_flowrate = _spin(0.0, decimals=3)
+        self.exp_flush_flowrate.setToolTip(
+            "uL/min on the real device (QmixPumpBackend.initialize() configures the pump's flow "
+            "unit as uL/min, Session 31/32). Combines with flush volume (ml) below to compute the "
+            "real pump-move timeout: (flush_volume_ml*1000/this_value)*60+5 seconds "
+            "(FlushSettings.timeout_s) -- too low a flowrate for a given volume risks the flush "
+            "being declared failed before the pump physically finishes (the exact bug Session "
+            "31/32 fixed)."
+        )
         self.exp_flush_volume = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_flush_volume.setToolTip(
             "Application.flush() raises before touching hardware if this exceeds the selected "
-            "syringe's capacity (Session 10)."
+            "Syringe's capacity (or Custom Volume, Pump&Valve tab, when Syringe='Custom') -- "
+            "Session 10. Also combines with flush Flowrate(uL) above to compute the real pump-"
+            "move timeout (FlushSettings.timeout_s, Session 31/32)."
         )
         self.exp_wait_after_flush = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_wait_after_flush.setToolTip(
@@ -781,15 +1012,25 @@ class MainWindow(QMainWindow):
         )
         self.exp_flush_enabled = QCheckBox("Enable")
         self.camera_start_array = [_spin(0.0, decimals=3, minimum=0.0) for _ in range(10)]
+        for index, widget in enumerate(self.camera_start_array):
+            widget.setToolTip(
+                f"Camera Start Time (s) for repeat {index + 1}, used only when Dynamic Camera "
+                "Start Time above is checked -- otherwise the single Camera Start (s) field above "
+                "is used for every repeat instead. Fixed at 10 slots: Repeats above cannot exceed "
+                "10 while Dynamic Camera Start Time is checked, or _experiment_do_clock_config() "
+                "raises on the first repeat past slot 10."
+            )
         self.global_exposure = QCheckBox("Off/On")
         self.global_exposure.setToolTip(
             "Experiment2.trigger_global_exposure -- passed to camera.configure_trigger_global_exposure(); "
-            "may only take effect with compatible DCAM trigger source settings."
+            "may only take effect with compatible DCAM trigger source settings (Dcam Trigger "
+            "Source, Camera tab)."
         )
         self.dynamic_camera_start = QCheckBox("Off/On")
         self.dynamic_camera_start.setToolTip(
             "When on, each repeat's Camera Start Time comes from its own slot in Camera Start "
-            "Array(s) below instead of the single Camera Start (s) field above."
+            "Array(s) below instead of the single Camera Start (s) field above -- and Repeats "
+            "above cannot then exceed the array's 10 fixed slots."
         )
         # Frequency Scanning / Dynamic Frequency (LabVIEW's FrequencyHelper.vi +
         # CreateExperiments.vi "Dynamic Frequency"/"Frequency List" inputs,
@@ -806,15 +1047,27 @@ class MainWindow(QMainWindow):
             "unaffected) -- one full experiment per frequency point, distinct from FM Sweep's "
             "continuous ms-scale sweep within a single drive. Linear spacing between Start and "
             "Stop is inferred from the LabVIEW investigation, not confirmed from its compiled "
-            "block-diagram wiring. Repeats must equal the resulting frequency count or this "
-            "raises before starting."
+            "block-diagram wiring. Repeats (top of this tab) must equal the resulting frequency "
+            "count (Number of Frequencies, or the count Step Size derives) or this raises before "
+            "starting."
         )
         self.exp_freq_scan_start_khz = _spin(1900.0, decimals=3, minimum=0.0)
+        self.exp_freq_scan_start_khz.setToolTip(
+            "First frequency point (kHz) in the linear-spaced scan -- combines with Stop Frequency "
+            "and Number of Frequencies/Step Size below to generate the full per-repeat list "
+            "(_experiment_frequency_scan_list_hz())."
+        )
         self.exp_freq_scan_stop_khz = _spin(1975.0, decimals=3, minimum=0.0)
+        self.exp_freq_scan_stop_khz.setToolTip(
+            "Last frequency point (kHz) in the linear-spaced scan -- combines with Start Frequency "
+            "and Number of Frequencies/Step Size below to generate the full per-repeat list "
+            "(_experiment_frequency_scan_list_hz())."
+        )
         self.exp_freq_scan_count = _int_spin(2, minimum=1)
         self.exp_freq_scan_count.setToolTip(
-            "Must equal Repeats when Frequency Scanning is enabled. Overridden by Step Size when "
-            "that field is set above 0."
+            "Must equal Repeats (top of this tab) when Frequency Scanning is enabled. Overridden "
+            "by Step Size when that field is set above 0 -- this field's own displayed value then "
+            "auto-updates to show the real count Step Size produces."
         )
         # Alternative to Number of Frequencies: when > 0, Step Size drives the
         # point count instead (count derived and rounded to the nearest whole
@@ -876,22 +1129,49 @@ class MainWindow(QMainWindow):
             "sweep_time_ms": _spin(1.0, decimals=3, minimum=0.0),
             "sweep_type": _combo(["Symmetric", "RampUp", "RampDown"], "Symmetric"),
         }
+        # Category re-narrowing (Session 41): idx/frequency/amplitude/offset/
+        # function/enable removed here -- self-evident given their unit-
+        # labeled row text and the label's own "(overridden)" suffix already
+        # states the key relationship; sec_run/repeat removed since their row
+        # labels already spell out "[0 = continuous]"/"[0 = infinite]" inline.
+        # symmetry/phase kept (shape/skew control is genuinely more than a
+        # plain duty-cycle percentage), as are sec_wait/trigger_source/
+        # repeat_trigger (SDK-jargon/non-obvious semantics).
         state["symmetry"].setToolTip(
             "Duty-cycle-like shape control for the carrier waveform (percent of each period "
             "spent in the 'high' phase for Square, or skew for Triangle/Sine). 50% is symmetric."
         )
         state["phase"].setToolTip("Starting phase offset of the carrier waveform, in degrees.")
-        state["sec_run"].setToolTip(
-            "Output duration in seconds. 0 = continuous/free-running output (no defined stop time)."
-        )
         state["sec_wait"].setToolTip("Delay in seconds after the AD2 PC trigger before this channel's output starts.")
-        state["repeat"].setToolTip("Number of trigger repeats. 0 = infinite (repeats until manually stopped).")
         state["trigger_source"].setToolTip(
             "AD2 SDK trigger source enum (trigsrcNone/trigsrcPC/etc.) controlling what starts this "
             "channel's output. The automated Experiment path always arms via config then fires a "
             "single shared PC trigger (Application.run_experiment2() -> ad2.pc_trigger())."
         )
         state["repeat_trigger"].setToolTip("Whether the trigger source re-arms automatically after each repeat.")
+        # frequency/amplitude/offset/function removed here (Session 41 re-
+        # narrowing) -- self-evident by unit, and the "(unused)" label suffix
+        # already states the key fact; symmetry/phase kept for the same
+        # shape/skew reasoning as Carrier's own symmetry/phase above.
+        fm_mod_tip = (
+            "AD2 FM modulation node (waveforms.py node=1). Never read by an automated Experiment "
+            "run (see this group's own 'FM Mod (unused)' header) -- only reachable via this manual "
+            "tab's own Apply WFG, and only takes effect if FM Mod's own Enable is checked below."
+        )
+        for key in ("fm_symmetry", "fm_phase"):
+            state[key].setToolTip(fm_mod_tip)
+        state["fm_enable"].setToolTip(
+            "Whether the FM modulation node above is active when Apply WFG is clicked. When "
+            "Enable Sweep below is checked instead, these FM Mod fields are entirely bypassed -- "
+            "Sweep computes and writes its own FM node settings directly (_channel_config())."
+        )
+        state["sweep_enable"].setToolTip(
+            "When checked, overrides this channel's own FM Mod fields above (bypassed entirely) "
+            "and this channel's own Frequency above (Carrier.frequency_hz becomes Sweep's own "
+            "Center Frequency) with values computed from the Sweep fields below, applied by Apply "
+            "WFG. Independent of the Experiment tab's own Enable Frequency Sweep checkbox -- see "
+            "this section's own header note."
+        )
         sweep_dual_mode_tip = (
             "Start/Stop and Center/Width are both live inputs for the same underlying value -- "
             "editing either pair updates the other to match (center_hz=(start+stop)/2, "
@@ -1001,14 +1281,10 @@ class MainWindow(QMainWindow):
         form.addRow("Cetoni Pump", self.pump_enabled)
         form.addRow("Qmix SDK Python Path", self._mark_unwired_stub(self.qmix_sdk_python_path))
         form.addRow("Qmix QMIXSDK Path", self._mark_unwired_stub(self.qmix_qmixsdk_path))
-        self.cetoni_config_path.setToolTip(
-            "Read by CetoniPump.initialize() -- genuinely used, unlike the Qmix SDK/QMIXSDK "
-            "path fields above."
-        )
         form.addRow("Cetoni Device Configuration Path", self.cetoni_config_path)
         form.addRow("MX Valve", self.valve_enabled)
-        self.valve_resource.setToolTip("The real COM port; passed to HardwareRuntimeConfig and genuinely used.")
         form.addRow("Valve VISA resource name", self.valve_resource)
+        self._add_tooltip_icons(form)
         return group
 
     @staticmethod
@@ -1051,6 +1327,56 @@ class MainWindow(QMainWindow):
         self.time_left_label = QLabel("00:00:00")
         return self._stale_static_display(self.time_left_label, "Time Left")
 
+    # Requirement C, revised (Session 41): replaces Session 40's style-based
+    # marker (underline + link color applied to the row label itself) with a
+    # separate small "info" icon widget next to the field -- per explicit
+    # correction, since a style change to the label was judged too easy to
+    # miss/too tightly coupled to the label's own appearance. This version
+    # touches neither the label's text NOR its styling at all: a field with
+    # a tooltip gets wrapped in a small container alongside a
+    # _TooltipIconButton; a field with none is left completely untouched
+    # (same widget instance stays directly in its original layout slot).
+    # Click-triggered per explicit user confirmation (not hover): the icon
+    # itself carries no native Qt tooltip (hovering it alone does nothing);
+    # clicking calls QToolTip.showText() manually, reusing Qt's own
+    # tooltip rendering (auto-wrap, native look) for the actual explanation.
+    @classmethod
+    def _wrap_with_tooltip_icon(cls, widget: QWidget) -> QWidget:
+        tip = widget.toolTip()
+        if not tip:
+            return widget
+        container = _TooltipIconWrapper()
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+        layout.addWidget(widget)
+        layout.addWidget(_TooltipIconButton(tip))
+        return container
+
+    @classmethod
+    def _add_tooltip_icons(cls, form: QFormLayout) -> None:
+        """Walk every row of a QFormLayout and, wherever the row's field
+        widget (or single-widget spanning row, e.g. form.addRow(checkbox))
+        already carries a tooltip, replace it in-place with a small
+        [field, icon] container via QFormLayout.setWidget() -- the row's
+        own label (string or QLabel) is never touched, so every existing
+        label-text assertion in this codebase's own tests stays valid
+        unchanged. Reused across every tab/group builder in both UIs (same
+        call sites Session 40's _mark_tooltip_rows() used), so coverage can
+        never drift out of sync with whichever widget actually has a
+        tooltip (checked live every call, not tracked separately)."""
+        for row in range(form.rowCount()):
+            field_item = form.itemAt(row, QFormLayout.ItemRole.FieldRole)
+            spanning_item = form.itemAt(row, QFormLayout.ItemRole.SpanningRole)
+            if spanning_item is not None:
+                widget = spanning_item.widget()
+                if widget is not None and widget.toolTip():
+                    form.setWidget(row, QFormLayout.ItemRole.SpanningRole, cls._wrap_with_tooltip_icon(widget))
+                continue
+            widget = field_item.widget() if field_item is not None else None
+            if widget is not None and widget.toolTip():
+                form.setWidget(row, QFormLayout.ItemRole.FieldRole, cls._wrap_with_tooltip_icon(widget))
+
     def _simulation_group(self) -> QGroupBox:
         group = QGroupBox("Simulation")
         form = QFormLayout(group)
@@ -1058,6 +1384,7 @@ class MainWindow(QMainWindow):
         form.addRow("Simulate Pump", self.sim_pump)
         form.addRow("Simulate Valve", self.sim_valve)
         form.addRow("Simulate AD2", self.sim_ad2)
+        self._add_tooltip_icons(form)
         return group
 
     def _wfg_tab(self) -> QWidget:
@@ -1068,12 +1395,12 @@ class MainWindow(QMainWindow):
         layout.addWidget(note)
         header = QHBoxLayout()
         header.addWidget(QLabel("WFGConfig"))
-        header.addWidget(self.wfg_running)
+        header.addWidget(self._wrap_with_tooltip_icon(self.wfg_running))
         header.addStretch()
         header.addWidget(QLabel("SynchronizeState"))
         self.wfg_sync.setEnabled(False)
         self.wfg_sync.setToolTip("Not implemented: SynchronizeState is currently a non-functional stub.")
-        header.addWidget(self.wfg_sync)
+        header.addWidget(self._wrap_with_tooltip_icon(self.wfg_sync))
         layout.addLayout(header)
         channels = QHBoxLayout()
         channels.addWidget(self._wfg_channel_group("Ch1", self.wfg_channels[0]))
@@ -1138,7 +1465,17 @@ class MainWindow(QMainWindow):
             form.addRow(label, state[key])
         state["enable"].setText(f"Enable{overridden}")
         form.addRow(state["enable"])
+        # _add_tooltip_icons() must run AFTER layout.addLayout() here, not
+        # before -- confirmed empirically (Session 41): QLayout.addLayout()
+        # reparents a still-detached QFormLayout's row widgets to the new
+        # parent using its OWN row bookkeeping, which "unwraps" any row
+        # already replaced via QFormLayout.setWidget() (the tooltip-icon
+        # wrap), silently discarding the wrapper. A QFormLayout constructed
+        # with a parent widget up front (`QFormLayout(some_widget)`, used
+        # everywhere else in this file) never hits this, since it's never
+        # "added" to another layout afterward.
         layout.addLayout(form)
+        self._add_tooltip_icons(form)
         trigger = QFormLayout()
         for label, key in (
             (f"Run duration (s)   [0 = continuous]{overridden}", "sec_run"),
@@ -1151,6 +1488,7 @@ class MainWindow(QMainWindow):
         trigger.addRow(f"Trigger source{overridden}", state["trigger_source"])
         layout.addWidget(QLabel("Trigger"))
         layout.addLayout(trigger)
+        self._add_tooltip_icons(trigger)
         fm = QFormLayout()
         # FM Mod: traced _experiment_channel_config() -- when FM Sweep is off,
         # fm_mod is a hardcoded-disabled CarrierSettings; when FM Sweep is on
@@ -1170,6 +1508,7 @@ class MainWindow(QMainWindow):
         fm.addRow(state["fm_enable"])
         layout.addWidget(QLabel("FM Mod"))
         layout.addLayout(fm)
+        self._add_tooltip_icons(fm)
         sweep = QFormLayout()
         for label, key in (
             ("Start Frequency (kHz)", "sweep_start_khz"),
@@ -1202,6 +1541,7 @@ class MainWindow(QMainWindow):
         sweep_header.setMaximumWidth(450)
         layout.addWidget(sweep_header)
         layout.addLayout(sweep)
+        self._add_tooltip_icons(sweep)
         self._connect_sweep_dual_mode_refresh(
             state["sweep_start_khz"], state["sweep_stop_khz"],
             state["sweep_center_khz"], state["sweep_width_khz"],
@@ -1281,6 +1621,8 @@ class MainWindow(QMainWindow):
         channel_row.addWidget(self.mso_ch1_enabled)
         channel_row.addWidget(self.mso_ch2_enabled)
         channel_row.addStretch()
+        # Self-evident (Session 41 re-narrowing): "CH1"/"CH2" checkboxes
+        # under "Analog In Channels" need no further explanation.
         form.addRow("Analog In Channels", channel_row)
         form.addRow("Trigger Source", self.mso_trigger_source)
         form.addRow("Sample Frequency (Hz)", self.mso_sample_frequency)
@@ -1294,6 +1636,7 @@ class MainWindow(QMainWindow):
         form.addRow(init)
         form.addRow(capture)
         form.addRow("Stats", self.mso_stats)
+        self._add_tooltip_icons(form)
 
         self.mso_graph = WaveformGraph()
         graph_box = QGroupBox("Waveform")
@@ -1325,8 +1668,22 @@ class MainWindow(QMainWindow):
         # eliminating that dead space instead of just capping group sizes
         # (there were no oversized group boxes here to cap -- only one
         # existed, Flush Settings, and it was already naturally sized).
+        # This tab's four columns' combined natural width (~2200px, offscreen-
+        # measured) is well over the app's default window width (1280px) --
+        # WrapLongRows alone (already applied to every column below) still
+        # leaves it oversized, and tightening any one column's wrap further
+        # was tried and reverted: it shrank that column's width but grew its
+        # row heights just enough to squeeze a sibling group below its own
+        # minimumSizeHint elsewhere in the same dialog (Session 42 -- caught
+        # by test_v2_no_group_box_is_squeezed_below_its_minimum_size_hint).
+        # Same fix as every other width/height-constrained group in this file
+        # (_wfg_channel_group(), _sequence_group(), _ad_settings_group()):
+        # give the content its own QScrollArea instead of force-compressing
+        # it, so surplus width scrolls instead of squeezing rows.
         tab = QWidget()
-        columns = QHBoxLayout(tab)
+        outer = QVBoxLayout(tab)
+        content = QWidget()
+        columns = QHBoxLayout(content)
         columns.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         # Position 1 = Open, Position 2 = Closed (confirmed physical mapping,
@@ -1367,6 +1724,7 @@ class MainWindow(QMainWindow):
         valve_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         valve_form.addRow("Valve Pos1 (Open)", pos1)
         valve_form.addRow("ValvePos2 (Closed)", pos2)
+        self._add_tooltip_icons(valve_form)
         column1 = QVBoxLayout()
         column1.addWidget(valve_group)
         column1.addWidget(QLabel("Stop Syringe"))
@@ -1378,12 +1736,16 @@ class MainWindow(QMainWindow):
         pump_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         pump_form.addRow("Refill", refill)
         pump_form.addRow("Empty", empty)
+        self._add_tooltip_icons(pump_form)
         syringe_group = QGroupBox("Syringe")
         syringe_form = QFormLayout(syringe_group)
         syringe_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         syringe_form.addRow("Syringe", self.syringe)
         syringe_form.addRow("Custom Volume (ml)", self.custom_syringe_volume_ml)
+        syringe_form.addRow("Custom Inner Diameter (mm)", self.custom_syringe_inner_diameter_mm)
+        syringe_form.addRow("Custom Max Piston Stroke (mm)", self.custom_syringe_stroke_mm)
         syringe_form.addRow("ConfigureSyringe", configure)
+        self._add_tooltip_icons(syringe_form)
         column2 = QVBoxLayout()
         column2.addWidget(pump_group)
         column2.addWidget(syringe_group)
@@ -1397,6 +1759,7 @@ class MainWindow(QMainWindow):
         flow_form.addRow("Level(ml)", self.level_ml)
         flow_form.addRow("Go to Level", go)
         flow_form.addRow("Reference move", ref)
+        self._add_tooltip_icons(flow_form)
         column3 = QVBoxLayout()
         column3.addWidget(flow_group)
         column3.addStretch()
@@ -1406,6 +1769,7 @@ class MainWindow(QMainWindow):
         flush_count_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         flush_count_form.addRow("Number of flushes", self.flush_count)
         flush_count_form.addRow("Flush", flush)
+        self._add_tooltip_icons(flush_count_form)
         column4 = QVBoxLayout()
         column4.addWidget(flush_count_group)
         column4.addWidget(self._flush_group())
@@ -1416,6 +1780,13 @@ class MainWindow(QMainWindow):
         columns.addLayout(column3)
         columns.addLayout(column4)
         columns.addStretch()
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(False)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
         return tab
 
     def _flush_group(self) -> QGroupBox:
@@ -1424,6 +1795,7 @@ class MainWindow(QMainWindow):
         form.addRow("Flush Flowrate(uL)", self.flush_flowrate)
         form.addRow("flush volume (ml)", self.flush_volume)
         form.addRow("WaitAfterFlush", self.wait_after_flush)
+        self._add_tooltip_icons(form)
         return group
 
     def _camera_tab(self) -> QWidget:
@@ -1442,10 +1814,11 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout(group)
         image = QPushButton("Image")
         image.clicked.connect(self._start_capture_camera_image)
-        self.image_continuous.toggled.connect(self._set_image_continuous)
+        image_continuous = self._live_image_continuous_checkbox()
+        image_continuous.toggled.connect(self._set_image_continuous)
         row.addWidget(image)
         row.addWidget(QLabel("Image Continous"))
-        row.addWidget(self.image_continuous)
+        row.addWidget(image_continuous)
         # word-wrap: this HBoxLayout row has no wrap-long-rows equivalent
         # (that's a QFormLayout-only policy) -- an offscreen truncation
         # sweep (Session 38) found this label clipped at 324px actual vs.
@@ -1458,6 +1831,18 @@ class MainWindow(QMainWindow):
         row.addStretch()
         return group
 
+    def _live_image_continuous_checkbox(self) -> QCheckBox:
+        try:
+            self.image_continuous.isChecked()
+        except RuntimeError:
+            # v2 opens the validated v1 Camera tab as a late-created manual
+            # dialog. Under offscreen Qt, the unparented checkbox created
+            # during _build_state() can occasionally lose its C++ object
+            # before that dialog is built; recreate only that dead widget.
+            self.image_continuous = QCheckBox("Off/On")
+            self.image_continuous.setChecked(False)
+        return self.image_continuous
+
     def _roi_group(self) -> QGroupBox:
         group = QGroupBox("ROI")
         grid = QGridLayout(group)
@@ -1469,12 +1854,13 @@ class MainWindow(QMainWindow):
         configure = QPushButton("Configure")
         configure.clicked.connect(self._start_configure_camera)
         grid.addLayout(form, 0, 0, 3, 1)
+        self._add_tooltip_icons(form)
         grid.addWidget(QLabel("ExposureTime(ms)"), 0, 1)
-        grid.addWidget(self.exposure_ms, 1, 1)
+        grid.addWidget(self._wrap_with_tooltip_icon(self.exposure_ms), 1, 1)
         grid.addWidget(QLabel("Configure Camera"), 0, 2)
         grid.addWidget(configure, 1, 2)
         grid.addWidget(QLabel("Center ROI"), 2, 1)
-        grid.addWidget(self.center_roi, 3, 1)
+        grid.addWidget(self._wrap_with_tooltip_icon(self.center_roi), 3, 1)
         # Removed (Session 36): a static "476 is Vertical is max for 100 fps"
         # label, confirmed stale/hardcoded since Session 19 -- the real,
         # live-computed equivalent check is Application._check_camera_timing_budget(),
@@ -1502,6 +1888,7 @@ class MainWindow(QMainWindow):
         adjust.clicked.connect(self._adjust_camera_preview)
         self.conversion_method.currentTextChanged.connect(lambda _value: self._update_conversion_controls())
         layout.addLayout(form)
+        self._add_tooltip_icons(form)
         layout.addWidget(QLabel("Adjust Intensity in image"))
         layout.addWidget(adjust, alignment=Qt.AlignmentFlag.AlignLeft)
         layout.addStretch()
@@ -1562,6 +1949,7 @@ class MainWindow(QMainWindow):
         # has room to render in full.
         grid.addWidget(sequence_note, 1, 2, 3, 1)
         grid.addLayout(settings, 4, 2, 7, 1)
+        self._add_tooltip_icons(settings)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -1590,7 +1978,7 @@ class MainWindow(QMainWindow):
         grid.addWidget(QLabel("Start Experiment series"), 3, 0)
         grid.addWidget(start, 4, 0)
         grid.addWidget(QLabel("Series path"), 5, 0)
-        grid.addWidget(self.series_path, 6, 0, 1, 5)
+        grid.addWidget(self._wrap_with_tooltip_icon(self.series_path), 6, 0, 1, 5)
         grid.addWidget(browse, 6, 5)
         grid.addWidget(self._ad_settings_group(), 7, 0, 1, 2)
         grid.addWidget(self._experiment_settings_column(), 7, 2, 2, 1)
@@ -1632,6 +2020,7 @@ class MainWindow(QMainWindow):
         top.addRow("Camera FPS", self.exp_camera_fps)
         top.addRow("Camera Start (s)", self.exp_camera_start)
         layout.addLayout(top)
+        self._add_tooltip_icons(top)
 
         self._add_experiment_channel_sections(layout, "CH0")
         self._add_experiment_channel_sections(layout, "CH1")
@@ -1684,6 +2073,7 @@ class MainWindow(QMainWindow):
         carrier.addRow(f"{channel_label} Phase (Deg){overrides}", phase)
         layout.addWidget(QLabel("Carrier"))
         layout.addLayout(carrier)
+        self._add_tooltip_icons(carrier)
 
         trigger = QFormLayout()
         run_label = "Run (s) (0=Cont)" if channel_label == "CH0" else "Run (s)(0=Cont)"
@@ -1695,6 +2085,7 @@ class MainWindow(QMainWindow):
         trigger.addRow(repeat_trigger)
         layout.addWidget(QLabel("Trigger"))
         layout.addLayout(trigger)
+        self._add_tooltip_icons(trigger)
 
         if channel_label == "CH0":
             sweep = QFormLayout()
@@ -1719,6 +2110,7 @@ class MainWindow(QMainWindow):
             experiment_sweep_header.setMaximumWidth(450)
             layout.addWidget(experiment_sweep_header)
             layout.addLayout(sweep)
+            self._add_tooltip_icons(sweep)
             self._connect_sweep_dual_mode_refresh(
                 self.exp_sweep_start_khz, self.exp_sweep_stop_khz,
                 self.exp_sweep_center_khz, self.exp_sweep_width_khz,
@@ -1753,6 +2145,7 @@ class MainWindow(QMainWindow):
         # Moved here from an isolated spot elsewhere in the tab's grid --
         # GlobalExposure belongs next to the exposure setting it modifies.
         form.addRow("GlobalExposure", self.global_exposure)
+        self._add_tooltip_icons(form)
         return group
 
     def _experiment_flush_group(self) -> QGroupBox:
@@ -1762,6 +2155,7 @@ class MainWindow(QMainWindow):
         form.addRow("Flush Flowrate(uL)", self.exp_flush_flowrate)
         form.addRow("flush volume (ml)", self.exp_flush_volume)
         form.addRow("WaitAfterFlush", self.exp_wait_after_flush)
+        self._add_tooltip_icons(form)
         return group
 
     def _camera_start_group(self) -> QGroupBox:
@@ -1785,6 +2179,7 @@ class MainWindow(QMainWindow):
         form.addRow("Dynamic Camera Start Time", self.dynamic_camera_start)
         for widget in self.camera_start_array:
             form.addRow(widget)
+        self._add_tooltip_icons(form)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -1804,6 +2199,7 @@ class MainWindow(QMainWindow):
         form.addRow("Number of Frequencies", self.exp_freq_scan_count)
         form.addRow("Step Size (kHz) (0 = use Number of Frequencies)", self.exp_freq_scan_step_khz)
         self._connect_frequency_scan_count_display_refresh()
+        self._add_tooltip_icons(form)
         return group
 
     def _experiment_fm_sweep_group(self) -> QGroupBox:
@@ -1844,6 +2240,7 @@ class MainWindow(QMainWindow):
             self.exp_sweep_start_khz, self.exp_sweep_stop_khz,
             self.exp_sweep_center_khz, self.exp_sweep_width_khz,
         )
+        self._add_tooltip_icons(form)
         return group
 
     def _connect_frequency_scan_count_display_refresh(self) -> None:
@@ -1884,11 +2281,13 @@ class MainWindow(QMainWindow):
         self.error_status = QLabel("OK")
         self.error_code = QLineEdit("0")
         self.error_code.setReadOnly(True)
+        self.error_code.setToolTip("Always '0' when status='OK', '1' on any caught exception -- not a real DCAM/AD2/Qmix error code, just a boolean flag (_handle_worker_finished()).")
         self.error_source = QLineEdit("")
         self.error_source.setReadOnly(True)
         form.addRow("status", self.error_status)
         form.addRow("code", self.error_code)
         form.addRow("source", self.error_source)
+        self._add_tooltip_icons(form)
         return group
 
     def _channel_config(self, state: dict[str, object]) -> WfgChannelConfig:
@@ -2068,7 +2467,10 @@ class MainWindow(QMainWindow):
         return self._SYRINGE_VOLUMES_ML.get(name, float(self.custom_syringe_volume_ml.value()))
 
     def _update_custom_syringe_volume_enabled(self) -> None:
-        self.custom_syringe_volume_ml.setEnabled(self.syringe.currentText() == "Custom")
+        is_custom = self.syringe.currentText() == "Custom"
+        self.custom_syringe_volume_ml.setEnabled(is_custom)
+        self.custom_syringe_inner_diameter_mm.setEnabled(is_custom)
+        self.custom_syringe_stroke_mm.setEnabled(is_custom)
 
     def _flush_settings(self, *, experiment: bool = False) -> FlushSettings:
         syringe_volume_ml = self._syringe_volume_ml()
@@ -2182,11 +2584,20 @@ class MainWindow(QMainWindow):
         return f"MSO captured {sample_count} samples on {channels}"
 
     def _start_configure_syringe(self) -> None:
+        # Widget values must be read here, on the main/UI thread, before
+        # handing off to _run_action()'s background QThread -- Session 44:
+        # "Custom" now also sends real geometry (inner_diameter_mm/
+        # max_piston_stroke_mm), not just {"name": syringe}, since
+        # configure_syringe() has no preset to fall back on for it.
         syringe = self.syringe.currentText()
-        self._run_action(lambda progress: self._configure_syringe(syringe), "Configuring syringe")
+        config: dict[str, object] = {"name": syringe}
+        if syringe == "Custom":
+            config["inner_diameter_mm"] = float(self.custom_syringe_inner_diameter_mm.value())
+            config["max_piston_stroke_mm"] = float(self.custom_syringe_stroke_mm.value())
+        self._run_action(lambda progress: self._configure_syringe(config), "Configuring syringe")
 
-    def _configure_syringe(self, syringe: str) -> str:
-        self.app.pump.configure_syringe({"name": syringe})
+    def _configure_syringe(self, config: dict[str, object]) -> str:
+        self.app.pump.configure_syringe(config)
         return "Syringe configured"
 
     def _start_generate_flow(self) -> None:
@@ -2991,6 +3402,23 @@ class MainWindow(QMainWindow):
                 "flush_flowrate": self.exp_flush_flowrate.value(),
                 "flush_volume": self.exp_flush_volume.value(),
                 "wait_after_flush": self.exp_wait_after_flush.value(),
+                # Frequency Scanning (Session 44): added as new, purely
+                # additive keys under the same "experiment" dict every other
+                # Experiment-tab field already lives in -- no schema_version
+                # bump needed (matches how Symmetry/Phase/Repeat Trigger were
+                # added in Session 22 without one; the version-2 bump was
+                # only ever for the Hz->kHz *meaning* change of an existing
+                # key, not for adding new ones). "freq_scan_enable" is
+                # included alongside the task's named four fields (Start/
+                # Stop/Number of Frequencies/Step Size) so the feature's
+                # on/off state persists along with its values, matching
+                # every other toggle+values group in this dict (wfg
+                # "enable", mso "ch1_enabled", experiment "ch1_enable").
+                "freq_scan_enable": self.exp_freq_scan_enable.isChecked(),
+                "freq_scan_start_khz": self.exp_freq_scan_start_khz.value(),
+                "freq_scan_stop_khz": self.exp_freq_scan_stop_khz.value(),
+                "freq_scan_count": self.exp_freq_scan_count.value(),
+                "freq_scan_step_khz": self.exp_freq_scan_step_khz.value(),
             },
         }
 
@@ -3104,6 +3532,10 @@ class MainWindow(QMainWindow):
                 "flush_flowrate": self.exp_flush_flowrate,
                 "flush_volume": self.exp_flush_volume,
                 "wait_after_flush": self.exp_wait_after_flush,
+                "freq_scan_start_khz": self.exp_freq_scan_start_khz,
+                "freq_scan_stop_khz": self.exp_freq_scan_stop_khz,
+                "freq_scan_count": self.exp_freq_scan_count,
+                "freq_scan_step_khz": self.exp_freq_scan_step_khz,
             }
             for key, widget in mapping.items():
                 if key in experiment:
@@ -3121,6 +3553,7 @@ class MainWindow(QMainWindow):
                 ("ch2_enable", self.exp_ch2_enable),
                 ("ch1_repeat_trigger", self.exp_ch1_repeat_trigger),
                 ("ch2_repeat_trigger", self.exp_ch2_repeat_trigger),
+                ("freq_scan_enable", self.exp_freq_scan_enable),
             ):
                 if key in experiment:
                     widget.setChecked(bool(experiment[key]))

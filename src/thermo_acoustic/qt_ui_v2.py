@@ -71,8 +71,12 @@ class InitializationDialog(QDialog):
         for row, (name, enable, simulate) in enumerate(rows, start=1):
             label = QLabel("Waiting")
             self._status_labels[name] = label
-            grid.addWidget(enable, row, 0)
-            grid.addWidget(simulate, row, 1)
+            # Enable/Simulate checkboxes already carry their own tooltip
+            # (window._build_state()) -- wrapped directly (their own "Off/On"
+            # text is the row's only label) since there's no separate
+            # row-label widget in this grid layout to place an icon beside.
+            grid.addWidget(window._wrap_with_tooltip_icon(enable), row, 0)
+            grid.addWidget(window._wrap_with_tooltip_icon(simulate), row, 1)
             grid.addWidget(QLabel(name), row, 2)
             grid.addWidget(label, row, 3)
         grid.setColumnStretch(2, 1)
@@ -81,6 +85,11 @@ class InitializationDialog(QDialog):
     def _z_stage_simulate_placeholder(self) -> QCheckBox:
         checkbox = QCheckBox("N/A")
         checkbox.setEnabled(False)
+        checkbox.setToolTip(
+            "Z stage has no Simulate checkbox on the Initialization tab either -- when enabled, "
+            "hardware_factory.build_hardware_bundle() always builds a real Prior-serial backend, "
+            "with no simulated variant."
+        )
         return checkbox
 
     def _hardware_details_group(self, window: QWidget) -> QGroupBox:
@@ -95,6 +104,7 @@ class InitializationDialog(QDialog):
         form.addRow("Qmix SDK Python Path", self._mark_unwired_stub(self._widen_for_content(window.qmix_sdk_python_path)))
         form.addRow("Qmix QMIXSDK Path", self._mark_unwired_stub(self._widen_for_content(window.qmix_qmixsdk_path)))
         form.addRow("Cetoni config path", self._widen_for_content(window.cetoni_config_path))
+        window._add_tooltip_icons(form)
         return group
 
     @staticmethod
@@ -242,9 +252,9 @@ class MainWindowV2(MainWindow):
         # either UI, same underlying stub helper qt_ui.py's own Experiment
         # tab now uses.
         grid.addWidget(QLabel("Elapsed Time"), 0, 0)
-        grid.addWidget(self._elapsed_time_label(), 1, 0)
+        grid.addWidget(self._wrap_with_tooltip_icon(self._elapsed_time_label()), 1, 0)
         grid.addWidget(QLabel("Time Left"), 0, 1)
-        grid.addWidget(self._time_left_label(), 1, 1)
+        grid.addWidget(self._wrap_with_tooltip_icon(self._time_left_label()), 1, 1)
         grid.addWidget(QLabel("# elements in queue"), 0, 2)
         grid.addWidget(self.queue_count, 1, 2)
         grid.addWidget(QLabel("Status"), 0, 3)
@@ -264,7 +274,7 @@ class MainWindowV2(MainWindow):
         grid.addWidget(QLabel("Start Experiment series"), 0, 0)
         grid.addWidget(start, 1, 0)
         grid.addWidget(QLabel("Series path"), 2, 0)
-        grid.addWidget(self.series_path, 3, 0, 1, 4)
+        grid.addWidget(self._wrap_with_tooltip_icon(self.series_path), 3, 0, 1, 4)
         grid.addWidget(browse, 3, 4)
         grid.setColumnStretch(3, 1)
         return group
@@ -288,6 +298,14 @@ class MainWindowV2(MainWindow):
         # tab -- purely a visual grouping, same 12 columns/widgets as before.
         detail_label = QLabel("Detail")
         grid.addWidget(detail_label, 0, core_column_count + 1, 1, len(headers) - core_column_count)
+        # No per-cell tooltip icons in this dense table (Session 41,
+        # Part 2): each column's field widget is the SAME shared instance
+        # the Experiment tab's own labeled rows use, and wrapping either a
+        # header or a data cell here to add an icon would change what
+        # grid.itemAtPosition(row, col).widget() returns -- breaking this
+        # table's own pre-existing identity tests (confirming CH0/CH1 bind
+        # the identical widgets, Session 24/25). The explanation is already
+        # reachable via the icon on the Experiment tab's equivalent field.
         for column, header in enumerate(headers, start=1):
             grid.addWidget(QLabel(header), 1, column)
 
@@ -343,18 +361,17 @@ class MainWindowV2(MainWindow):
         group = QGroupBox("Acquisition Parameters")
         group.setMinimumHeight(300)
         grid = QGridLayout(group)
-        grid.addWidget(QLabel("Camera FPS"), 0, 0)
-        grid.addWidget(self.exp_camera_fps, 0, 1)
-        grid.addWidget(QLabel("Camera Start (s)"), 1, 0)
-        grid.addWidget(self.exp_camera_start, 1, 1)
-        grid.addWidget(QLabel("Repeats"), 2, 0)
-        grid.addWidget(self.exp_repeats, 2, 1)
-        grid.addWidget(QLabel("Frames"), 3, 0)
-        grid.addWidget(self.exp_frames, 3, 1)
-        grid.addWidget(QLabel("Exposure time (ms)"), 4, 0)
-        grid.addWidget(self.exp_exposure_ms, 4, 1)
-        grid.addWidget(QLabel("GlobalExposure"), 5, 0)
-        grid.addWidget(self.global_exposure, 5, 1)
+        acquisition_rows = (
+            ("Camera FPS", self.exp_camera_fps),
+            ("Camera Start (s)", self.exp_camera_start),
+            ("Repeats", self.exp_repeats),
+            ("Frames", self.exp_frames),
+            ("Exposure time (ms)", self.exp_exposure_ms),
+            ("GlobalExposure", self.global_exposure),
+        )
+        for row, (text, widget) in enumerate(acquisition_rows):
+            grid.addWidget(QLabel(text), row, 0)
+            grid.addWidget(self._wrap_with_tooltip_icon(widget), row, 1)
 
         camera_start = QGroupBox("Camera Start Array(s)")
         camera_start_layout = QGridLayout(camera_start)
@@ -365,9 +382,11 @@ class MainWindowV2(MainWindow):
         # acquisition params (matching the same regroup applied in qt_ui.py's
         # own _camera_start_group()).
         camera_start_layout.addWidget(QLabel("Dynamic Camera Start Time"), 0, 0)
-        camera_start_layout.addWidget(self.dynamic_camera_start, 0, 1)
+        camera_start_layout.addWidget(self._wrap_with_tooltip_icon(self.dynamic_camera_start), 0, 1)
         for index, widget in enumerate(self.camera_start_array):
-            camera_start_layout.addWidget(widget, index // 2 + 1, index % 2)
+            # No adjacent label for these (qt_ui.py's own _camera_start_group()
+            # form rows are label-less too) -- wrap the field itself directly.
+            camera_start_layout.addWidget(self._wrap_with_tooltip_icon(widget), index // 2 + 1, index % 2)
         grid.addWidget(camera_start, 0, 2, 6, 1)
         grid.setColumnStretch(2, 1)
         return group
@@ -416,6 +435,7 @@ class MainWindowV2(MainWindow):
         self.error_status = QLabel("OK")
         self.error_code = QLineEdit("0")
         self.error_code.setReadOnly(True)
+        self.error_code.setToolTip("Always '0' when status='OK', '1' on any caught exception -- not a real DCAM/AD2/Qmix error code, just a boolean flag (_handle_worker_finished()).")
         self.error_source = QLineEdit("")
         self.error_source.setReadOnly(True)
         form.addRow("Error Out status", self.error_status)
@@ -450,6 +470,7 @@ class MainWindowV2(MainWindow):
         self.pump_state_status = QLabel("Unknown")
         form.addRow("Valve position", self.valve_position_status)
         form.addRow("Pump state / fill level", self.pump_state_status)
+        self._add_tooltip_icons(form)
         return group
 
     def _open_initialization_dialog(self) -> None:

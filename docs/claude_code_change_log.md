@@ -10,12 +10,14 @@ code itself.
 top-level caveat in this document said the branch history ended at
 `5419043` and that none of the work below had been committed. That is no
 longer true. As of the refresh that added this note, branch `junjiebranch`
-has commits through `4105fa8` (`Session 39: full 8-category UI audit and
-fix pass...`). The working tree is still not clean: `qt_ui.py`,
-`qt_ui_v2.py`, tooltip-related tests, this changelog, and untracked helper
-files contain additional post-commit work. Current code/tests also contain
-explicit **Session 41** references, so Session 40 is not the latest
-documented edit state in the working tree.
+has commits through `8149bc1` (`Harden valve initialize() to reject
+unrecognized status responses`), with `4105fa8` as the preceding Session
+39 UI-audit commit. The working tree is still not clean: `qt_ui.py`,
+`qt_ui_v2.py`, tooltip/layout-related tests, this changelog, and untracked
+helper/probe files contain additional post-commit work. Current code/tests
+also contain explicit **Session 41**, **Session 42**, and **Session 44**
+references, so Session 40 is not the latest documented edit state in the
+working tree.
 
 **Caveat on methodology -- read this before treating the document as
 authoritative.** Earlier sections were compiled from a mix of git
@@ -1249,6 +1251,143 @@ Part 2 made no lasting code change; the temporary revert-and-restore was
 verified via `git diff` equality, not via a test run against a persisted
 change.
 
+### Session 44 -- FM Sweep v1/v2 parity (already resolved -- verified, not redone), Custom syringe geometry wired, Frequency Scanning persisted
+
+Three previously-flagged open items, addressed in order 1->2->3 as
+instructed, each logged separately below since they are genuinely
+independent pieces of work.
+
+**Item 1 -- FM Sweep v1/v2 parity: investigated first, found already
+fixed, explicitly not redone.** The task's premise was that "v2's
+Experiment tab has no FM Sweep controls at all." Read `qt_ui.py`'s FM
+Sweep implementation in full before touching anything, per instruction,
+and in the process found `qt_ui_v2.py:233` already calls
+`self._experiment_fm_sweep_group()` (defined at `qt_ui.py:2166`) from
+`_center_experiment_area()`'s grid -- a real, standalone `QGroupBox`
+binding the *identical* `self.exp_sweep_*` widget instances v1's own
+inline CH0 Sweep section uses, already using the Session 41 click-icon
+tooltip marker (`self._add_tooltip_icons(form)`), already committed as
+part of Session 39 Category 7 (`4105fa8`, predates every UI session this
+conversation has done). Confirmed, not assumed: ran
+`test_v2_experiment_area_exposes_fm_sweep_and_frequency_scanning`, which
+passed -- it drives Start/Stop Frequency through v2's own widget
+instances and asserts the resulting `config.channels[0].carrier.frequency_hz`
+from the real `_build_experiment_series()` call matches the expected
+midpoint, i.e. the same hardware-config-building path v1 uses, not just
+matching widget names. **No code was changed for this item** -- doing so
+would have duplicated already-working, already-tested functionality.
+Reported to the user before proceeding, per this project's own
+established discipline of verifying task premises against live code
+rather than trusting a stated gap list.
+
+**Item 2 -- Custom syringe geometry wired to a real hardware call.**
+Confirmed the premise held (unlike item 1): `_configure_syringe()`
+(`qt_ui.py`, pre-change) still only ever sent `{"name": syringe}`; Qmix's
+real `configure_syringe()` (`qmix_backend.py:148`) needs
+`inner_diameter_mm`/`max_piston_stroke_mm` or a `SYRINGE_PRESETS` name
+match, and "Custom" is in neither -- selecting it and clicking Configure
+Syringe genuinely still raised `QmixPumpError`, exactly as Session 38
+Task 4 found and left unfixed.
+- **Genuine design ambiguity found and flagged, per instruction, rather
+  than guessed at.** Custom Volume (`custom_syringe_volume_ml`, mL) is
+  the only Custom-related field in the UI, but `configure_syringe()`
+  needs two *different* physical dimensions (inner diameter, stroke
+  length) that volume alone cannot determine -- an infinite family of
+  diameter/stroke pairs share the same total volume. Stopped and asked
+  the user via the tool's own confirmation prompt which parameterization
+  to expose: (a) two new explicit fields (Inner Diameter mm + Max Piston
+  Stroke mm), matching `configure_syringe()`'s real API literally with no
+  derivation/assumption, or (b) one new field (Inner Diameter mm) with
+  stroke derived from Custom Volume via the same formula the three BD
+  presets already use (which Session 17 already flagged as an unconfirmed
+  assumption even for BD's own known hardware). **The user chose (a).**
+- **Implemented.** Two new fields, `custom_syringe_inner_diameter_mm`/
+  `custom_syringe_stroke_mm` (`qt_ui.py`, next to `custom_syringe_volume_ml`
+  in `_build_state()` and the Syringe group in `_pump_tab()`), enabled/
+  disabled together with Custom Volume via the same
+  `_update_custom_syringe_volume_enabled()` toggle (extended, not
+  duplicated). `_start_configure_syringe()` now reads the syringe name and
+  -- only when it's "Custom" -- both new field values on the main/UI
+  thread (before handing off to `_run_action()`'s background `QThread`,
+  matching every other widget-value-capture site in this file), and
+  `_configure_syringe()` now takes the whole `config` dict instead of a
+  bare `syringe: str`, sending `inner_diameter_mm`/`max_piston_stroke_mm`
+  for Custom and unchanged `{"name": syringe}` for the three named
+  presets -- confirmed via a new test that BD presets still send nothing
+  extra (preset lookup in `configure_syringe()` untouched) while Custom
+  sends the exact real field values, and that Custom Volume itself is
+  never read by this call (stays flush-safety-check-only, per the chosen
+  option). Tooltips on `self.syringe`/`custom_syringe_volume_ml` updated
+  (previously said Configure Syringe "will fail" for Custom -- no longer
+  true); the two new fields' own tooltips explain they are real,
+  independent SDK parameters, not derived from Custom Volume.
+- **Test:** `test_configure_syringe_sends_real_geometry_for_custom_not_presets`
+  (new) drives `_start_configure_syringe()` against a fake pump and
+  asserts the exact `configure_syringe()` call for both a BD preset and
+  Custom. `test_custom_syringe_volume_disabled_unless_syringe_is_custom`
+  extended to cover the two new fields' enable/disable toggling alongside
+  Custom Volume's existing coverage.
+- **Completeness-test count updated, not silently.**
+  `test_every_value_widget_has_a_tooltip_and_visible_marker`'s pinned
+  `kept == 127` (Session 41) bumped to `kept == 129` -- the two new fields
+  are genuinely non-obvious (real SDK geometry parameters with no
+  UI-visible relationship to Custom Volume), so both got tooltips per the
+  same Session 41 classification criteria, not added blanket.
+
+**Item 3 -- Frequency Scanning's fields now persisted in settings.json.**
+Confirmed the premise held: `_settings_dict()`/`_load_settings()`
+(pre-change) had no `freq_scan_*` keys anywhere, exactly matching Session
+34's own explicit, flagged scope decision to leave this unpersisted and
+Session 39's restatement of the same gap.
+- **No schema-version bump needed, and none added.** These are purely
+  new, additive keys under the existing `"experiment"` dict every other
+  Experiment-tab field already lives in -- the tolerant `if key in data`
+  pattern already used throughout `_load_settings()` means an old file
+  without them simply leaves the fields at their `_build_state()`
+  construction defaults, no migration required. This matches how
+  Symmetry/Phase/Repeat Trigger were added in Session 22 without touching
+  `schema_version` -- confirmed by checking that the version-2 bump
+  (Session 29/30) was specifically for the Hz->kHz *meaning* change of an
+  *existing* key, not for adding new ones, so the same reasoning applies
+  here.
+- **`freq_scan_enable` added alongside the four named fields (Start/
+  Stop/Number of Frequencies/Step Size), not silently, flagged here for
+  visibility.** The task named exactly four fields; a fifth,
+  `exp_freq_scan_enable` (the feature's on/off toggle), was added too so
+  the persisted Start/Stop/Count/Step values don't sit unused behind a
+  toggle that silently resets to off every restart -- matching the
+  established convention that every other toggle+values group in this
+  dict persists both together (`wfg` `enable`, `mso` `ch1_enabled`,
+  `experiment` `ch1_enable`). Not treated as a design ambiguity requiring
+  a stop (low-stakes, easily reversible, consistent with precedent) but
+  called out explicitly rather than folded in silently.
+- **Test:** `test_qt_ui_save_and_restore_frequency_scanning_settings`
+  (new) confirms all five fields round-trip through a real save/load
+  cycle (Step Size deliberately left at 0/"not used" in the setup, so the
+  test exercises persistence rather than the already-covered Step-Size-
+  overrides-Count precedence logic from Session 35/39).
+  `test_qt_ui_load_settings_without_frequency_scanning_keys_loads_without_error`
+  (new) confirms a legacy-style file with no `freq_scan_*` keys at all
+  loads without error, leaving every Frequency Scanning field at its
+  construction default.
+
+**Files touched:** [qt_ui.py](src/thermo_acoustic/qt_ui.py),
+[tests/test_qt_ui_hardware_settings.py](tests/test_qt_ui_hardware_settings.py).
+No files touched for Item 1 (verified already correct, nothing to fix).
+
+**Verification:** tested -- full `tests/` suite green (208/208) across
+2 of 3 consecutive runs during verification, with 1 run hitting a single
+instance of the same already-documented (Session 41/42) offscreen-Qt
+flakiness in an unrelated test
+(`test_v2_no_group_box_is_squeezed_below_its_minimum_size_hint`), not
+this session's code. Not hardware-verified -- Custom syringe geometry
+values now genuinely reach `QmixPumpBackend.configure_syringe()`'s real
+`set_syringe_param()` call when a real (non-simulated) pump backend is
+attached, but no real Qmix pump was exercised with a real Custom syringe
+in this session; Frequency Scanning's persistence is settings-file-only
+and does not touch the hardware-writing per-repeat substitution logic
+already in place since Session 34.
+
 ---
 
 ## Known remaining open items as of this writing
@@ -1264,7 +1403,7 @@ change.
 - **DCAM exposure vs. readout timing validation -- fixed (Session 19).** `Application._check_camera_timing_budget()` now queries the real `read_readout_time()` and rejects (`ValueError`, before `start_capture()`) any configured Camera FPS that the current exposure+ROI readout time cannot sustain. (Originally flagged in Session 12.) The exposure value it checks against is now guaranteed to be the one actually applied to hardware -- see the next item.
 - **Experiment-path exposure time not reaching real DCAM hardware -- fixed (Session 20).** `run_experiment2()` previously called `self.camera.configure(exposure_ms=...)`, a Python-side bookkeeping setter that never wrote `DCAM_IDPROP.EXPOSURETIME` to the real camera (only the manual Camera tab's `configure_exposure_time()` did that). Now calls `configure_exposure_time()` directly, the same real hardware-writing call the manual tab already used -- same bug class, and same fix pattern, as Session 13's camera-trigger-source fix.
 - **WFG amplitude/frequency bounds checking remains absent** beyond the generic `-1e12..1e12` spin-box range -- no physically-meaningful ceiling (e.g. AD2 hardware output limits) is enforced. (Flagged in Session 9, not fixed.)
-- **Custom/arbitrary syringe geometry for real hardware is still unsupported** -- only the three named BD presets (1/5/10 mL) exist; a syringe outside this set requires manually supplied `inner_diameter_mm`/`max_piston_stroke_mm` with no UI for it. **Confirmed concretely (Session 38, Task 4 investigation):** selecting "Custom" in the Syringe dropdown and clicking Configure Syringe will always fail with a real `QmixPumpError` -- `_configure_syringe()` only ever sends `{"name": syringe}`, and "Custom" isn't in `SYRINGE_PRESETS`, so no `inner_diameter_mm`/`stroke_mm` is ever supplied for it by this UI. Not fixed (out of scope for that session's task, which was about Custom Volume specifically).
+- **Custom/arbitrary syringe geometry for real hardware -- fixed (Session 44).** Was: only the three named BD presets (1/5/10 mL) existed; selecting "Custom" and clicking Configure Syringe always failed with a real `QmixPumpError`, since `_configure_syringe()` only ever sent `{"name": syringe}` and "Custom" isn't in `SYRINGE_PRESETS` (confirmed concretely, Session 38 Task 4). Now: two new fields, Custom Inner Diameter (mm) and Custom Max Piston Stroke (mm), are sent as `inner_diameter_mm`/`max_piston_stroke_mm` whenever Syringe="Custom" -- the user's real spec values, not a value derived/guessed from Custom Volume (a volume alone can't determine both diameter and stroke). Custom Volume itself is unchanged, still flush-safety-check-only.
 - **Syringe stroke length is a derived value, not an independently-sourced BD spec figure** -- computed as `volume / cross-sectional area` assuming the full nominal volume fills the entire piston travel in a cylindrical bore; no authoritative real BD stroke-length value was available to verify this assumption against. (Session 17.) The inner-diameter values themselves (1mL=4.78mm, 5mL=12.07mm, 10mL=14.5mm) are confirmed against BD's published spec.
 - **The LabVIEW port registry (`labview_ports.py`) is confirmed materially incomplete** relative to the real LabVIEW project (Session 11): the entire `AD2_MSO_SDK_class` surface (17 real VIs, 1 documented), several `AD2_SDK_class`/`AD2_WFG_SDK_class`/`AD2_DO_SDK_class` member VIs, `TDMSlogg_class`, the `REGLO Digital` peristaltic pump driver (referenced directly in `Main.vi`'s front panel, with a corresponding but entirely unwired `RegloPumpControl` dataclass already in [instruments.py:142-146](src/thermo_acoustic/instruments.py:142)), and `Application.lvclass:SaveData.vi` are all undocumented in the registry and not evaluated for a Python equivalent.
 - **Frequency Scanning / Dynamic Frequency -- implemented (Session 34).** (Investigated Session 14.) `_build_experiment_series()` now builds a fresh `WfgConfig` per repeat; the new "Frequency Scanning (Dynamic Frequency, Ch1 only)" Experiment-tab group (Start/Stop Frequency in kHz, Number of Frequencies) substitutes a linear-spaced per-repeat frequency into Channel 1 only, with a `ValueError` if the frequency count doesn't match Repeats. Not hardware-verified -- the linear-spacing assumption and the Dynamic-Camera-Start-Time-parallel substitution mechanism remain LabVIEW-behavior-inferred, not confirmed from `CreateExperiments.vi`'s compiled block-diagram wiring (same opacity already hit for trigger source and WFG symmetry/phase), and no real AD2 run has confirmed the actual per-repeat output frequency changes as expected.
@@ -1285,6 +1424,6 @@ change.
 - **Session 22 fixed three of Session 21's five findings:** the DCAM sequence cluster (masterpulse mode/source/interval/burst + trigger polarity/delay) is now carried into the automated path from the manual Camera tab's live widgets; WFG symmetry/phase/repeat_trigger are now settable from new Experiment-tab controls instead of hardcoded; and `center_roi()` now actually re-applies centered coordinates via a real `configure_roi()` call instead of only updating local Python state. `synchronize_state` was deliberately left hardcoded, not "fixed" -- investigation confirmed it has no real hardware effect anywhere in this codebase (the manual tab's own control is an explicitly-disabled non-functional stub), so adding a working automated-path control for it would misrepresent a fake feature as real.
 - **`qt_ui_v2.py`'s Experiment area was missing FM Sweep and Frequency Scanning entirely -- fixed (Session 39).** Both are real, fully-wired `qt_ui.py` features; neither had any reachable control in v2 (FM Sweep flagged since Session 25, never fixed; Frequency Scanning's v2 gap never even flagged). New `_experiment_fm_sweep_group()` and a reused `_experiment_frequency_scan_group()` bind the identical widget instances, not copies.
 - **"Analog Discovery 3" row label (Initialization tab) -- flagged, not resolved (Session 39).** The only place in the live codebase calling this device generation "3" (everywhere else says "2") -- looked like the same stray-suffix class as "MX Valve 2" (Session 36), but `docs/PORTING_TBD.md`'s own "real AD2/AD3 hardware" reference means this lab may genuinely have both units, making "typo vs. deliberate" a real, unresolved fork rather than a confirmed bug. Not changed pending the user's own knowledge of what hardware is actually in the lab.
-- **Save/Load Settings persistence coverage -- flagged, not resolved (Session 39).** Most manual-tab-only fields (WFG Trigger/FM Mod/Sweep sub-fields, the entire Pump&Valve and Camera tabs including the Session-22 load-bearing Sequence cluster, and several later-added Experiment-tab fields: Camera FPS/Start/Array, Dynamic Camera Start Time, GlobalExposure, FM Sweep, Frequency Scanning) are silently dropped by Save Settings and reset to defaults on the next Load -- long-standing baseline behavior, not a recent regression. Whether comprehensive persistence was ever the intended design, or Save/Load Settings was always meant to cover only hardware-connection + core experiment-repeat parameters, is a genuine design-scope question this pass could not resolve from the code alone. A mechanical fix (extending `_settings_dict()`/`_load_settings()` with the same tolerant `if key in data` pattern already used throughout) is available if the answer is "yes, persist everything."
+- **Save/Load Settings persistence coverage -- flagged, not resolved (Session 39); Frequency Scanning specifically closed (Session 44).** Most manual-tab-only fields (WFG Trigger/FM Mod/Sweep sub-fields, the entire Pump&Valve and Camera tabs including the Session-22 load-bearing Sequence cluster, and several later-added Experiment-tab fields: Camera FPS/Start/Array, Dynamic Camera Start Time, GlobalExposure, FM Sweep) are still silently dropped by Save Settings and reset to defaults on the next Load -- long-standing baseline behavior, not a recent regression. Whether comprehensive persistence was ever the intended design, or Save/Load Settings was always meant to cover only hardware-connection + core experiment-repeat parameters, remains a genuine design-scope question this list cannot resolve from the code alone. A mechanical fix (extending `_settings_dict()`/`_load_settings()` with the same tolerant `if key in data` pattern already used throughout) is available for the rest if the answer is "yes, persist everything." **Frequency Scanning** (Start/Stop/Number of Frequencies/Step Size, plus its Enable toggle) was named explicitly in this bullet since Session 34 and is now persisted (Session 44) -- removed from this still-open list.
 - **Z stage backend selection has no real effect -- newly confirmed while grounding a tooltip (Session 39).** `hardware_factory.build_hardware_bundle()` never reads `config.z_backend`/the UI's own "Z stage backend" combo at all -- enabling "Z stage" always builds a Prior-serial `PriorZMotor`, regardless of whether the (already-disabled) combo shows `"prior_serial"` or `"thorlabs_apt"`. A stronger claim than the existing "Not wired to a real backend" stub tooltip already made; low current risk only because this whole path is separately flagged as legacy/obsolete (Session 18) since current Z hardware is Thorlabs/APT, which has no real backend implemented at all yet.
 - **`sequence_exposure_ms` was dead since Session 11 and never actually fixed until now -- fixed (Session 39).** Flagged alongside `capture_mode` in that session's audit; `capture_mode` was fixed in Session 24, this field was not, until this session's Category 1 pass caught the same class of bug it had already fixed once before.

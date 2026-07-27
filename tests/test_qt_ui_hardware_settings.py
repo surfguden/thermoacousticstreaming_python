@@ -11,12 +11,14 @@ import numpy as np
 import pytest
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QWheelEvent
-from PySide6.QtWidgets import QCheckBox, QComboBox, QDoubleSpinBox, QGroupBox, QLabel, QPushButton, QScrollArea, QSpinBox
+from PySide6.QtWidgets import QAbstractSpinBox, QCheckBox, QComboBox, QDoubleSpinBox, QGroupBox, QLabel, QLineEdit, QPushButton, QScrollArea, QSpinBox
 from PySide6.QtWidgets import QApplication
 
 from thermo_acoustic import qt_ui
 from thermo_acoustic.camera import SubRegion
 from thermo_acoustic.hardware_config import ZStageBackend, default_hardware_config
+
+from conftest import build_with_retry
 
 
 def make_window(monkeypatch, tmp_path, settings: dict | None = None) -> qt_ui.MainWindow:
@@ -25,7 +27,7 @@ def make_window(monkeypatch, tmp_path, settings: dict | None = None) -> qt_ui.Ma
         settings_path.write_text(json.dumps(settings), encoding="utf-8")
     monkeypatch.setattr(qt_ui, "SETTINGS_PATH", settings_path)
     QApplication.instance() or QApplication([])
-    return qt_ui.MainWindow()
+    return build_with_retry(qt_ui.MainWindow)
 
 
 def combo_items(widget) -> list[str]:
@@ -285,11 +287,16 @@ def test_representative_fields_have_grounded_tooltips(monkeypatch, tmp_path):
     assert not window.thorlabs_apt_serial.isEnabled()
     assert "Session 3" in window.thorlabs_apt_serial.toolTip()
 
-    # WFG tab: Symmetry/Phase/secRun/secWait/Repeat/Trigger source.
+    # WFG tab: Symmetry/secWait/Trigger source. sec_run/repeat tooltips were
+    # removed in the Session 41 re-narrowing -- their row labels already
+    # spell out "[0 = continuous]"/"[0 = infinite]" inline, so a separate
+    # tooltip was judged redundant (self-evident), unlike secWait's terse
+    # label, which still needs explaining.
     ch1_state = window.wfg_channels[0]
     assert "Duty-cycle" in ch1_state["symmetry"].toolTip()
-    assert "0 = continuous" in ch1_state["sec_run"].toolTip()
-    assert "0 = infinite" in ch1_state["repeat"].toolTip()
+    assert not ch1_state["sec_run"].toolTip()
+    assert not ch1_state["repeat"].toolTip()
+    assert "AD2 PC trigger" in ch1_state["sec_wait"].toolTip()
 
     # MSO tab: Sample Frequency's 100 MS/s AD2 limit, Range's clipping risk.
     assert "100 MS/s" in window.mso_sample_frequency.toolTip() or "UNCONFIRMED" in window.mso_sample_frequency.toolTip()
@@ -297,7 +304,9 @@ def test_representative_fields_have_grounded_tooltips(monkeypatch, tmp_path):
 
     # PumpValve tab: valve Open/Closed, Custom Volume, flow-rate sign convention.
     assert "Custom" in window.custom_syringe_volume_ml.toolTip()
-    assert "unverifiable" in window.flow_rate.toolTip()
+    assert "negative values aspirate/withdraw" in window.flow_rate.toolTip()
+    assert "positive values dispense/infuse" in window.flow_rate.toolTip()
+    assert "unverifiable" not in window.flow_rate.toolTip()
 
     # Camera tab: DCAM Trigger Source unresolved status.
     assert "oscilloscope" in window.dcam_source.toolTip()
@@ -308,22 +317,32 @@ def test_representative_fields_have_grounded_tooltips(monkeypatch, tmp_path):
 
 
 def test_custom_syringe_volume_disabled_unless_syringe_is_custom(monkeypatch, tmp_path):
-    # Task 4 investigation: Custom Volume is only ever read as a fallback in
-    # _syringe_volume_ml() when Syringe="Custom" (ignored for the three named
-    # BD presets), and has no effect at all on ConfigureSyringe's real
-    # geometry call either way -- _configure_syringe() only ever sends
-    # {"name": syringe}. Disabled whenever a named preset is selected.
+    # Task 4 investigation (Session 38): Custom Volume is only ever read as a
+    # fallback in _syringe_volume_ml() when Syringe="Custom" (ignored for the
+    # three named BD presets), and has no effect on ConfigureSyringe's real
+    # geometry call -- that is a deliberate, permanent decision (Session 44:
+    # geometry is supplied via the separate Custom Inner Diameter/Max Piston
+    # Stroke fields instead, see test_configure_syringe_sends_real_geometry_
+    # for_custom_not_presets), not an unfixed gap. Disabled whenever a named
+    # preset is selected -- same toggle now covers all three Custom-only
+    # fields (Volume, Inner Diameter, Stroke).
     window = make_window(monkeypatch, tmp_path)
 
-    # Default is "BD 1ml" -- Custom Volume should start disabled.
+    # Default is "BD 1ml" -- all three Custom-only fields should start disabled.
     assert window.syringe.currentText() == "BD 1ml"
     assert not window.custom_syringe_volume_ml.isEnabled()
+    assert not window.custom_syringe_inner_diameter_mm.isEnabled()
+    assert not window.custom_syringe_stroke_mm.isEnabled()
 
     window.syringe.setCurrentText("Custom")
     assert window.custom_syringe_volume_ml.isEnabled()
+    assert window.custom_syringe_inner_diameter_mm.isEnabled()
+    assert window.custom_syringe_stroke_mm.isEnabled()
 
     window.syringe.setCurrentText("BD 5ml")
     assert not window.custom_syringe_volume_ml.isEnabled()
+    assert not window.custom_syringe_inner_diameter_mm.isEnabled()
+    assert not window.custom_syringe_stroke_mm.isEnabled()
 
     # Confirm the value is still read (just not editable) when disabled --
     # disabling a QDoubleSpinBox doesn't change its stored .value().
@@ -332,6 +351,48 @@ def test_custom_syringe_volume_disabled_unless_syringe_is_custom(monkeypatch, tm
     assert window._syringe_volume_ml() == 3.5
     window.syringe.setCurrentText("BD 5ml")
     assert window._syringe_volume_ml() == 5.0  # preset value, custom ignored
+
+
+def test_configure_syringe_sends_real_geometry_for_custom_not_presets(monkeypatch, tmp_path):
+    # Session 44: Custom syringe geometry is wired to configure_syringe()'s
+    # real Qmix SDK call via two new dedicated fields (Custom Inner Diameter/
+    # Max Piston Stroke), sent only when Syringe="Custom" -- confirms Custom
+    # Volume itself is NOT used to derive geometry (a volume alone can't
+    # determine both diameter and stroke), and confirms the three named BD
+    # presets are completely unaffected (still send only {"name": ...},
+    # letting configure_syringe()'s own SYRINGE_PRESETS lookup apply exactly
+    # as before this session).
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        configure_syringe_calls = []
+
+        class FakePump:
+            def configure_syringe(self, config):
+                configure_syringe_calls.append(config)
+
+        window.app.pump = FakePump()
+
+        run_action_calls = []
+        monkeypatch.setattr(window, "_run_action", lambda action, status: run_action_calls.append(action))
+
+        window.syringe.setCurrentText("BD 5ml")
+        window._start_configure_syringe()
+        run_action_calls[-1](lambda *a, **k: None)
+        assert configure_syringe_calls[-1] == {"name": "BD 5ml"}
+
+        window.syringe.setCurrentText("Custom")
+        window.custom_syringe_volume_ml.setValue(2.5)  # must NOT reach configure_syringe()
+        window.custom_syringe_inner_diameter_mm.setValue(7.25)
+        window.custom_syringe_stroke_mm.setValue(42.5)
+        window._start_configure_syringe()
+        run_action_calls[-1](lambda *a, **k: None)
+        assert configure_syringe_calls[-1] == {
+            "name": "Custom",
+            "inner_diameter_mm": 7.25,
+            "max_piston_stroke_mm": 42.5,
+        }
+    finally:
+        window.close()
 
 
 def test_pump_tab_valve_position_buttons_show_open_closed_semantics(monkeypatch, tmp_path):
@@ -443,7 +504,7 @@ def test_wfg_synchronize_state_is_visibly_disabled_stub(monkeypatch, tmp_path):
 def test_camera_sequence_group_flags_live_automated_use_and_dead_capture_mode(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
 
-    group = window._sequence_group()
+    group = build_with_retry(window._sequence_group)
     # The grid now lives on its own content widget inside a QScrollArea
     # (Session 38 fix for the wrapped sequence_note label needing more row
     # height than the group's own minimumSizeHint could accommodate
@@ -541,7 +602,7 @@ def test_category_6_grounded_tooltips_added_this_session(monkeypatch, tmp_path):
     assert "1000/this value" in window.exp_sweep_time_ms.toolTip()
     assert "1000/this value" in window.wfg_channels[0]["sweep_time_ms"].toolTip()
 
-    flush_group = window._flush_group()
+    flush_group = build_with_retry(window._flush_group)
     flush_form = flush_group.layout()
     flush_label_item = flush_form.itemAt(0, flush_form.ItemRole.LabelRole)
     assert flush_label_item.widget().text() == "Flush Flowrate(uL)"
@@ -611,7 +672,7 @@ def test_qt_ui_load_settings_auto_converts_legacy_hz_scale_frequencies(monkeypat
     assert resaved["schema_version"] == 2
     assert resaved["wfg"][0]["frequency"] == pytest.approx(1975.0)
 
-    reloaded_window = qt_ui.MainWindow()
+    reloaded_window = build_with_retry(qt_ui.MainWindow)
     assert reloaded_window.wfg_channels[0]["frequency"].value() == pytest.approx(1975.0)
     assert reloaded_window.exp_ch1_freq.value() == pytest.approx(1975.0)
     assert "auto-converted" not in reloaded_window.status.text()
@@ -634,7 +695,7 @@ def test_qt_ui_save_and_restore_passive_hardware_fields(monkeypatch, tmp_path):
     assert saved["thorlabs_apt_discovery_only"] is False
     assert saved["qmix_sdk_python_path"] == r"C:\sdk\python"
 
-    second_window = qt_ui.MainWindow()
+    second_window = build_with_retry(qt_ui.MainWindow)
 
     assert second_window.z_backend.currentText() == ZStageBackend.THORLABS_APT.value
     assert second_window.thorlabs_apt_serial.text() == "44533854"
@@ -643,6 +704,65 @@ def test_qt_ui_save_and_restore_passive_hardware_fields(monkeypatch, tmp_path):
     assert second_window.qmix_sdk_python_path.text() == r"C:\sdk\python"
     assert second_window.qmix_qmixsdk_path.text() == r"C:\sdk\dll"
     assert second_window.cetoni_config_path.text() == r"C:\configs\one-pump"
+
+
+def test_qt_ui_save_and_restore_frequency_scanning_settings(monkeypatch, tmp_path):
+    # Session 44: Frequency Scanning's fields (previously a deliberate,
+    # flagged scope decision to leave unpersisted -- Session 34) are now
+    # saved/loaded like every other Experiment-tab field. "freq_scan_enable"
+    # is included alongside the task's named four fields (Start/Stop/Number
+    # of Frequencies/Step Size) so the feature doesn't silently reset to off
+    # while its values survive a restart.
+    # Step Size left at 0 ("not used") deliberately: exp_freq_scan_step_khz
+    # > 0 makes _connect_frequency_scan_count_display_refresh() (Session 35/
+    # 39) auto-recompute "Number of Frequencies" from Start/Stop/Step live,
+    # which would silently overwrite the explicit count set below and turn
+    # this into a test of that already-covered precedence logic instead of
+    # persistence. Save/restore of a nonzero Step Size itself is still
+    # covered by the second window's assertions below.
+    first_window = make_window(monkeypatch, tmp_path)
+    first_window.exp_freq_scan_enable.setChecked(True)
+    first_window.exp_freq_scan_start_khz.setValue(1234.5)
+    first_window.exp_freq_scan_stop_khz.setValue(2345.6)
+    first_window.exp_freq_scan_count.setValue(7)
+
+    first_window._save_settings()
+    saved = json.loads(qt_ui.SETTINGS_PATH.read_text(encoding="utf-8"))
+
+    assert saved["experiment"]["freq_scan_enable"] is True
+    assert saved["experiment"]["freq_scan_start_khz"] == pytest.approx(1234.5)
+    assert saved["experiment"]["freq_scan_stop_khz"] == pytest.approx(2345.6)
+    assert saved["experiment"]["freq_scan_count"] == 7
+    assert saved["experiment"]["freq_scan_step_khz"] == pytest.approx(0.0)
+
+    second_window = build_with_retry(qt_ui.MainWindow)
+
+    assert second_window.exp_freq_scan_enable.isChecked() is True
+    assert second_window.exp_freq_scan_start_khz.value() == pytest.approx(1234.5)
+    assert second_window.exp_freq_scan_stop_khz.value() == pytest.approx(2345.6)
+    assert second_window.exp_freq_scan_count.value() == 7
+    assert second_window.exp_freq_scan_step_khz.value() == pytest.approx(0.0)
+
+
+def test_qt_ui_load_settings_without_frequency_scanning_keys_loads_without_error(monkeypatch, tmp_path):
+    # Confirms a settings.json saved before Session 44 (no freq_scan_* keys
+    # at all) still loads cleanly -- the tolerant `if key in data` pattern
+    # (same one every other field in this dict already uses) means the
+    # fields simply stay at their _build_state() construction defaults
+    # rather than raising or silently corrupting.
+    legacy_settings = {
+        "schema_version": 2,
+        "experiment": {"repeats": 3, "frames": 5},
+    }
+    window = make_window(monkeypatch, tmp_path, legacy_settings)
+
+    assert window.exp_repeats.value() == 3
+    assert window.exp_frames.value() == 5
+    assert window.exp_freq_scan_enable.isChecked() is False
+    assert window.exp_freq_scan_start_khz.value() == pytest.approx(1900.0)
+    assert window.exp_freq_scan_stop_khz.value() == pytest.approx(1975.0)
+    assert window.exp_freq_scan_count.value() == 2
+    assert window.exp_freq_scan_step_khz.value() == pytest.approx(0.0)
 
 
 def test_qt_ui_experiment_flush_is_disabled_by_default_and_explicitly_enabled(monkeypatch, tmp_path):
@@ -1666,7 +1786,7 @@ def test_window_close_times_out_blocked_cleanup_without_freezing(monkeypatch, tm
             cleanup_started.set()
             threading.Event().wait()
 
-    window = qt_ui.MainWindow(app=BlockingCleanupApp())
+    window = build_with_retry(lambda: qt_ui.MainWindow(app=BlockingCleanupApp()))
     window._shutdown_timeout_s = 0.1
     window.show()
     QApplication.processEvents()
@@ -1694,7 +1814,7 @@ def test_run_experiment_series_stops_after_failed_repeat(monkeypatch, tmp_path, 
             self.status = "ExperimentFlushFailed"
             return False
 
-    window = qt_ui.MainWindow(app=FailingRunApplication())
+    window = build_with_retry(lambda: qt_ui.MainWindow(app=FailingRunApplication()))
     try:
         series = ExperimentSeries2(series_path=tmp_path)
         series.enqueue_experiments([Experiment2(), Experiment2()])
@@ -1734,7 +1854,7 @@ def test_run_experiment_series_stops_queuing_further_repeats_after_abort(monkeyp
                 self.fire_stop_event()
             return True
 
-    window = qt_ui.MainWindow(app=AbortingRunApplication())
+    window = build_with_retry(lambda: qt_ui.MainWindow(app=AbortingRunApplication()))
     try:
         series = ExperimentSeries2(series_path=tmp_path)
         series.enqueue_experiments([Experiment2(), Experiment2(), Experiment2()])
@@ -1759,11 +1879,13 @@ def test_run_experiment_series_brackets_experiment_series_active_progress(monkey
     # now emits True before its loop and False (via try/finally) on every
     # exit path. This test confirms the bracketing on both the successful
     # path and the raised-RuntimeError path.
+    from test_application import install_fake_nptdms
     from thermo_acoustic.workflows import Experiment2, ExperimentSeries2
 
     settings_path = tmp_path / "settings.json"
     monkeypatch.setattr(qt_ui, "SETTINGS_PATH", settings_path)
     QApplication.instance() or QApplication([])
+    install_fake_nptdms(monkeypatch)
 
     window = make_window(monkeypatch, tmp_path)
     try:
@@ -1785,7 +1907,7 @@ def test_run_experiment_series_brackets_experiment_series_active_progress(monkey
             self.status = "ExperimentFlushFailed"
             return False
 
-    window = qt_ui.MainWindow(app=FailingRunApplication())
+    window = build_with_retry(lambda: qt_ui.MainWindow(app=FailingRunApplication()))
     try:
         series = ExperimentSeries2(series_path=tmp_path)
         series.enqueue_experiments([Experiment2()])
@@ -1848,5 +1970,78 @@ def test_syringe_selection_and_custom_volume_flow_into_flush_settings(monkeypatc
         window.custom_syringe_volume_ml.setValue(2.5)
         custom_settings = window._flush_settings()
         assert custom_settings.syringe_volume_ml == 2.5
+    finally:
+        window.close()
+
+
+_TOOLTIP_COVERAGE_WIDGET_TYPES = (QDoubleSpinBox, QSpinBox, QComboBox, QCheckBox, QLineEdit)
+
+
+def _has_tooltip_icon(widget) -> bool:
+    """True if widget's immediate parent is one of
+    MainWindow._wrap_with_tooltip_icon()'s _TooltipIconWrapper containers
+    (Session 41, Part 2) -- isinstance() against a dedicated wrapper class,
+    not a style/text guess, so it can't be confused with an unrelated
+    sibling elsewhere in the same form."""
+    return isinstance(widget.parentWidget(), qt_ui._TooltipIconWrapper)
+
+
+def _tooltip_coverage_sweep(window) -> list[tuple[str, str, bool, bool]]:
+    """findChildren()-based sweep (same pattern as the wheel-guard audit,
+    Session 28/29/33) over every real value-bearing widget -- excludes the
+    internal QLineEdit every QAbstractSpinBox/QComboBox uses as its own text
+    editor, which is not a separate control. Returns
+    (class_name, tooltip_text, has_tooltip, has_visible_marker) per widget."""
+    results = []
+    for widget_cls in _TOOLTIP_COVERAGE_WIDGET_TYPES:
+        for widget in window.findChildren(widget_cls):
+            if isinstance(widget.parent(), (QAbstractSpinBox, QComboBox)):
+                continue
+            tip = widget.toolTip()
+            results.append((type(widget).__name__, tip, bool(tip), _has_tooltip_icon(widget)))
+    return results
+
+
+def test_every_value_widget_has_a_tooltip_and_visible_marker(monkeypatch, tmp_path):
+    # Requirement A/B/C completeness test, revised (Session 41): Session 40
+    # required a tooltip on all 172 fields; this session narrowed coverage
+    # back to genuinely non-obvious fields only (127 of 172 in qt_ui.py --
+    # see the Session 41 changelog entry for the full classification), and
+    # replaced the label-style marker with a separate ⓘ icon widget. This
+    # test checks COHERENCE generically (no hardcoded per-field list, so it
+    # stays valid as fields are added/removed later): every widget with a
+    # tooltip must have the icon marker, and -- just as importantly, since
+    # Session 40's overshoot is the thing being corrected -- every widget
+    # WITHOUT a tooltip must NOT have one either (confirming the narrowing
+    # actually removed the marker, not just the tooltip text). The overall
+    # kept/removed split itself is asserted as an explicit count, since that
+    # split was a reviewed judgment call worth protecting from silent drift.
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        results = _tooltip_coverage_sweep(window)
+        assert len(results) >= 172, f"expected at least 172 real widgets, found {len(results)}"
+
+        missing_marker = [(cls, tip) for cls, tip, has_tip, marked in results if has_tip and not marked]
+        assert not missing_marker, f"tooltipped widgets missing the visible icon marker: {missing_marker}"
+
+        unwanted_marker = [cls for cls, _tip, has_tip, marked in results if not has_tip and marked]
+        assert not unwanted_marker, f"widgets with no tooltip but an icon marker anyway: {unwanted_marker}"
+
+        kept = sum(1 for _cls, _tip, has_tip, _marked in results if has_tip)
+        # 127 (Session 41 re-narrowing) + 2 new fields this session (Session
+        # 44): custom_syringe_inner_diameter_mm/custom_syringe_stroke_mm,
+        # both genuinely non-obvious (real Qmix SDK geometry parameters with
+        # no derivation from Custom Volume), so both got tooltips per the
+        # same classification criteria, not blanket-added.
+        assert kept == 129, f"expected 129 fields with a tooltip after Session 44's Custom syringe geometry fields, found {kept}"
+
+        # Spot-check a representative sample from both sides of the Session
+        # 41 classification (full list and rationale in the changelog).
+        assert window.custom_syringe_volume_ml.toolTip()  # named dependency example, kept
+        assert window.wait_after_flush.toolTip()  # named example, kept
+        assert window.dcam_source.toolTip()  # unverified status, kept
+        assert not window.flush_count.toolTip()  # plain repeat count, removed
+        assert not window.image_continuous.toolTip()  # self-explanatory checkbox, removed
+        assert not window.wfg_channels[0]["frequency"].toolTip()  # self-evident + redundant w/ "(overridden)" label, removed
     finally:
         window.close()

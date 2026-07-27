@@ -13,6 +13,8 @@ DO term, LabVIEW-style `data.tdms` metadata writing, corrected valve command
 strings, and a combined fill-level/flow-rate pump call in `flush()`. Treat
 the tables below as an audit trail plus remaining-gap list, not as a live-state
 substitute for current source inspection and `docs/claude_code_change_log.md`.
+The live conservative holding list for unresolved or legacy items is
+`docs/legacy_unresolved_items.md`.
 
 ## Executive Summary
 

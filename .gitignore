@@ -52,3 +52,8 @@ desktop.ini
 
 # Codex/local agent scratch state
 .agents/
+.claude/
+
+# Local manual hardware probes that can issue real Thorlabs/BPC actions.
+# Keep out of the tracked automated test tree unless reviewed and renamed.
+hardware_tests/test_bpc_piezo_probe.py

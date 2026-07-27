@@ -12,6 +12,9 @@ history and `docs/labview_migration_completeness_audit.md` for LabVIEW
 migration-parity questions. Later sessions migrated the AD2 DO-clock/LED
 timing path into the experiment workflow, so older "DO clock is
 legacy/nonessential" wording in this document has been refreshed below.
+For the single consolidated list of items that should remain outside the
+active workflow until explicitly resolved, see
+`docs/legacy_unresolved_items.md`.
 
 ## Canonical Python Flow
 

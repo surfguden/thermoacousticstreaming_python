@@ -8,10 +8,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QWheelEvent
-from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QGroupBox, QLabel, QPushButton, QSpinBox
+from PySide6.QtWidgets import QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QGroupBox, QLabel, QLineEdit, QPushButton, QSpinBox
 
 from thermo_acoustic import qt_ui, qt_ui_v2
 from thermo_acoustic.hardware_factory import HardwareRuntimeConfig
+
+from conftest import build_with_retry
 
 
 def make_window(monkeypatch, tmp_path) -> qt_ui_v2.MainWindowV2:
@@ -19,7 +21,7 @@ def make_window(monkeypatch, tmp_path) -> qt_ui_v2.MainWindowV2:
     settings_path.write_text(json.dumps({}), encoding="utf-8")
     monkeypatch.setattr(qt_ui, "SETTINGS_PATH", settings_path)
     QApplication.instance() or QApplication([])
-    return qt_ui_v2.MainWindowV2()
+    return build_with_retry(qt_ui_v2.MainWindowV2)
 
 
 def _synthetic_wheel_event(target, dy: int = 120) -> QWheelEvent:
@@ -58,7 +60,7 @@ def test_wheel_guard_completeness_on_both_window_types_independently(monkeypatch
     monkeypatch.setattr(qt_ui, "SETTINGS_PATH", v1_settings)
     QApplication.instance() or QApplication([])
 
-    window_v1 = qt_ui.MainWindow()
+    window_v1 = build_with_retry(qt_ui.MainWindow)
     window_v1.show()
     QApplication.processEvents()
     try:
@@ -102,12 +104,13 @@ def test_v2_is_separate_main_window_without_old_tab_widget(monkeypatch, tmp_path
         window.close()
 
 
-def test_v2_placeholder_buttons_do_not_drive_hardware(monkeypatch, tmp_path):
+def test_v2_sidebar_opening_manual_panel_does_not_initialize_hardware(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
     try:
-        window._show_placeholder("WFG")
+        window._open_manual_panel("WFG")
 
-        assert "WFG panel is not yet implemented" in window.status.text()
+        assert "WFG" in window._manual_panels
+        assert window._manual_panels["WFG"].isVisible()
         assert window.app.ad2.device_handle is None
         assert window.app.camera.handle is None
     finally:
@@ -120,9 +123,7 @@ def test_v2_sidebar_shows_friendly_name_not_internal_panel_key(monkeypatch, tmp_
     # verbatim as the sidebar button's own text, the only one of the four
     # panel names that reads like a smashed-together internal identifier
     # rather than a real label. Confirms the button now shows the same name
-    # qt_ui.py's own tab bar uses for this feature ("Pump&Valve"), and that
-    # _show_placeholder() (the dead-in-production but still-tested pre-
-    # Session-2 handler) uses the same friendly name too.
+    # qt_ui.py's own tab bar uses for this feature ("Pump&Valve").
     window = make_window(monkeypatch, tmp_path)
     try:
         button_texts = [
@@ -132,9 +133,6 @@ def test_v2_sidebar_shows_friendly_name_not_internal_panel_key(monkeypatch, tmp_
         ]
         assert "Pump&Valve" in button_texts
         assert "PumpValve" not in button_texts
-
-        window._show_placeholder("PumpValve")
-        assert "Pump&Valve panel is not yet implemented" in window.status.text()
     finally:
         window.close()
 
@@ -143,7 +141,7 @@ def test_v2_sidebar_buttons_open_existing_manual_test_panels(monkeypatch, tmp_pa
     window = make_window(monkeypatch, tmp_path)
     try:
         for panel_name in ("WFG", "MSO", "PumpValve", "Camera"):
-            dialog = window._ensure_manual_panel(panel_name)
+            dialog = build_with_retry(lambda panel_name=panel_name: window._ensure_manual_panel(panel_name))
 
             # PumpValve (Session 39, Category 8): the internal dict key is
             # smashed together with no separator for use as a Python
@@ -224,8 +222,8 @@ def test_v2_elapsed_time_and_time_left_are_marked_as_stale_stubs(monkeypatch, tm
 def test_v2_manual_panel_dialogs_are_reused_not_rebuilt(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
     try:
-        first = window._ensure_manual_panel("Camera")
-        second = window._ensure_manual_panel("Camera")
+        first = build_with_retry(lambda: window._ensure_manual_panel("Camera"))
+        second = build_with_retry(lambda: window._ensure_manual_panel("Camera"))
 
         assert first is second
     finally:
@@ -235,7 +233,7 @@ def test_v2_manual_panel_dialogs_are_reused_not_rebuilt(monkeypatch, tmp_path):
 def test_v2_initialization_dialog_reuses_existing_config_widgets(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
     try:
-        dialog = window._ensure_initialization_dialog()
+        dialog = build_with_retry(window._ensure_initialization_dialog)
         checkboxes = dialog.findChildren(QCheckBox)
         labels = [label.text() for label in dialog.findChildren(QLabel)]
 
@@ -314,6 +312,19 @@ def test_v2_reuses_existing_experiment_builder(monkeypatch, tmp_path):
         window.close()
 
 
+def _form_field_widget(form, row):
+    """The row's real field widget, unwrapping the [field, ⓘ icon]
+    container _wrap_with_tooltip_icon() (Session 41, Part 2) creates for any
+    tooltipped field -- a plain (untooltipped) field has no layout of its
+    own, so this is a no-op for those; a wrapped field's real widget is
+    always its container's first child."""
+    widget = form.itemAt(row, form.ItemRole.FieldRole).widget()
+    layout = widget.layout()
+    if layout is not None and layout.count():
+        return layout.itemAt(0).widget()
+    return widget
+
+
 def test_v2_experiment_area_exposes_fm_sweep_and_frequency_scanning(monkeypatch, tmp_path):
     # Category 7 (Session 39): v2's Experiment area never had any reachable
     # control for FM Sweep (flagged as a known gap since Session 25, never
@@ -327,15 +338,20 @@ def test_v2_experiment_area_exposes_fm_sweep_and_frequency_scanning(monkeypatch,
     # would from qt_ui.py.
     window = make_window(monkeypatch, tmp_path)
     try:
-        fm_sweep_group = window._experiment_fm_sweep_group()
+        # Both groups' fields carry tooltips (Session 41 kept them, as
+        # cross-parameter dependencies), so their FieldRole slot now holds
+        # the [field, ⓘ icon] wrapper container _wrap_with_tooltip_icon()
+        # creates -- _form_field_widget() unwraps it to get back to the
+        # real, identical widget instance.
+        fm_sweep_group = build_with_retry(window._experiment_fm_sweep_group)
         fm_sweep_form = fm_sweep_group.layout()
-        assert fm_sweep_form.itemAt(1, fm_sweep_form.ItemRole.FieldRole).widget() is window.exp_sweep_start_khz
-        assert fm_sweep_form.itemAt(2, fm_sweep_form.ItemRole.FieldRole).widget() is window.exp_sweep_stop_khz
+        assert _form_field_widget(fm_sweep_form, 1) is window.exp_sweep_start_khz
+        assert _form_field_widget(fm_sweep_form, 2) is window.exp_sweep_stop_khz
 
-        freq_scan_group = window._experiment_frequency_scan_group()
+        freq_scan_group = build_with_retry(window._experiment_frequency_scan_group)
         freq_scan_form = freq_scan_group.layout()
-        assert freq_scan_form.itemAt(1, freq_scan_form.ItemRole.FieldRole).widget() is window.exp_freq_scan_start_khz
-        assert freq_scan_form.itemAt(3, freq_scan_form.ItemRole.FieldRole).widget() is window.exp_freq_scan_count
+        assert _form_field_widget(freq_scan_form, 1) is window.exp_freq_scan_start_khz
+        assert _form_field_widget(freq_scan_form, 3) is window.exp_freq_scan_count
 
         window.series_path.setText(str(tmp_path / "series"))
         window.exp_camera_fps.setValue(100.0)
@@ -433,7 +449,7 @@ def test_v2_no_group_box_is_squeezed_below_its_minimum_size_hint(monkeypatch, tm
                     failures.append(("MainWindowV2", group.title(), geometry.height(), min_hint.height()))
 
             for name in ("WFG", "MSO", "PumpValve", "Camera"):
-                dialog = window._ensure_manual_panel(name)
+                dialog = build_with_retry(lambda name=name: window._ensure_manual_panel(name))
                 dialog.show()
                 QApplication.processEvents()
                 QApplication.processEvents()
@@ -481,5 +497,91 @@ def test_v2_global_status_panel_does_not_truncate_value_labels(monkeypatch, tmp_
         # word-wrapped into more than a single 12px text line rather than
         # clipped to one line's worth of pixels.
         assert window.valve_connection_status.height() > 20
+    finally:
+        window.close()
+
+
+_TOOLTIP_COVERAGE_WIDGET_TYPES = (QDoubleSpinBox, QSpinBox, QComboBox, QCheckBox, QLineEdit)
+
+
+def _has_tooltip_icon(widget) -> bool:
+    """True if widget's immediate parent is one of
+    MainWindow._wrap_with_tooltip_icon()'s _TooltipIconWrapper containers
+    (Session 41, Part 2) -- same isinstance() check as qt_ui.py's own
+    completeness test, kept as an independent copy per this project's own
+    "verify as two genuinely separate live instances" convention (Session
+    28/29/33) -- never assume v2 inherits v1's coverage just because widgets
+    are shared."""
+    return isinstance(widget.parentWidget(), qt_ui._TooltipIconWrapper)
+
+
+def _tooltip_coverage_sweep(window) -> list[tuple[str, str, bool, bool]]:
+    """Same generic findChildren() sweep as qt_ui.py's own completeness
+    test, kept as an independent copy per this project's own "verify as two
+    genuinely separate live instances" convention (Session 28/29/33) --
+    never assume v2 inherits v1's coverage just because widgets are shared.
+
+    Excludes the AD2 Output Parameters table's per-channel field widgets
+    (_v2_ad2_output_group()): those are the SAME shared instances the
+    Experiment tab's own labeled rows use, and that method's own comment
+    documents deliberately not wrapping them with an icon there, to avoid
+    changing what grid.itemAtPosition(row, col).widget() returns and
+    breaking that table's pre-existing Session 24/25 identity tests -- a
+    tradeoff made before this session's Part 1 narrowing existed, but which
+    still applies now that these particular fields carry real tooltip text
+    (kept, not self-evident). The explanation is still reachable via this
+    same widget's icon wherever v1's Experiment tab shows it."""
+    excluded_ids = {id(widget) for channel in window.exp_ad2_channels for widget in channel.values()}
+    results = []
+    for widget_cls in _TOOLTIP_COVERAGE_WIDGET_TYPES:
+        for widget in window.findChildren(widget_cls):
+            if isinstance(widget.parent(), (QAbstractSpinBox, QComboBox)):
+                continue
+            if id(widget) in excluded_ids:
+                continue
+            tip = widget.toolTip()
+            results.append((type(widget).__name__, tip, bool(tip), _has_tooltip_icon(widget)))
+    return results
+
+
+def test_v2_every_value_widget_has_a_tooltip_and_visible_marker(monkeypatch, tmp_path):
+    # Requirement A/B/C completeness test, revised (Session 41): Session 40
+    # required a tooltip on all 172(+) fields; this session narrowed coverage
+    # back to genuinely non-obvious fields only and replaced the label-style
+    # marker with a separate ⓘ icon widget (see the Session 41 changelog
+    # entry for the full classification and rationale -- v1's own test
+    # asserts the exact 127-of-172 split; this v2 sweep additionally covers
+    # MainWindowV2's own sidebar/status/init-dialog widgets on top of that
+    # same 172, so it checks COHERENCE generically instead of a second
+    # hardcoded count). Covers MainWindowV2's own window AND its
+    # Initialization dialog AND all four manual-panel dialogs (the latter
+    # reuse qt_ui.py's builder methods directly, but this confirms that
+    # reuse genuinely carries the tooltips/markers through, not just
+    # structurally).
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        build_with_retry(window._ensure_initialization_dialog)
+        for name in ("WFG", "MSO", "PumpValve", "Camera"):
+            build_with_retry(lambda name=name: window._ensure_manual_panel(name))
+
+        results = _tooltip_coverage_sweep(window)
+        # 173 real widgets minus the AD2 Output Parameters table's 24
+        # deliberately-excluded shared field widgets (2 channels x 12 fields
+        # each -- see _tooltip_coverage_sweep()'s docstring).
+        assert len(results) >= 149, f"expected at least 149 real widgets, found {len(results)}"
+
+        missing_marker = [(cls, tip) for cls, tip, has_tip, marked in results if has_tip and not marked]
+        assert not missing_marker, f"tooltipped widgets missing the visible icon marker: {missing_marker}"
+
+        unwanted_marker = [cls for cls, _tip, has_tip, marked in results if not has_tip and marked]
+        assert not unwanted_marker, f"widgets with no tooltip but an icon marker anyway: {unwanted_marker}"
+
+        # Spot-check a representative sample from both sides of the Session
+        # 41 classification, reached via v2's manual-panel reuse of v1's
+        # builder methods (full list and rationale in the changelog).
+        assert window.custom_syringe_volume_ml.toolTip()  # named dependency example, kept
+        assert window.dcam_source.toolTip()  # unverified status, kept
+        assert not window.wfg_channels[0]["frequency"].toolTip()  # self-evident, removed
+        assert not window.flush_count.toolTip()  # self-evident, removed
     finally:
         window.close()
