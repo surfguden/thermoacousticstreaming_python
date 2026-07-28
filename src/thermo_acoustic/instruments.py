@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import logging
 import math
 from pathlib import Path
 import time
@@ -18,6 +19,8 @@ from .ad2 import (
 )
 from .camera import SubRegion, SubRegionLimits
 from .waveforms import WaveFormsBackend
+
+logger = logging.getLogger(__name__)
 
 
 class Instrument(Protocol):
@@ -104,7 +107,7 @@ class PumpBackend(Protocol):
 class CameraBackend(Protocol):
     def open_camera(self) -> object: ...
 
-    def configure_exposure_time(self, exposure_ms: float) -> None: ...
+    def configure_exposure_time(self, exposure_ms: float) -> float: ...
 
     def configure_roi(self, roi: SubRegion | dict | None) -> None: ...
 
@@ -498,10 +501,20 @@ class HamamatsuCamera:
         if exposure_ms is not None:
             self.exposure_ms = exposure_ms
 
-    def configure_exposure_time(self, exposure_ms: float) -> None:
+    def configure_exposure_time(self, exposure_ms: float) -> float:
+        # Finding E: when a real backend is attached, self.exposure_ms now
+        # tracks what the device actually applied (which can differ slightly
+        # from the request due to DCAM's own exposure quantization), not the
+        # raw request -- _check_camera_timing_budget() (application.py)
+        # already reads this attribute, so it benefits from the more accurate
+        # value with no changes needed there. Simulated/no-backend case has no
+        # real device to read back from, so the requested value is used as-is,
+        # same as before.
         if self.backend is not None:
-            self.backend.configure_exposure_time(exposure_ms)
-        self.exposure_ms = exposure_ms
+            self.exposure_ms = self.backend.configure_exposure_time(exposure_ms)
+        else:
+            self.exposure_ms = exposure_ms
+        return self.exposure_ms
 
     def configure_roi(self, roi: SubRegion | dict | None) -> None:
         if self.backend is not None:
@@ -794,7 +807,20 @@ class PriorZMotor:
             try:
                 self.position = float(response.strip())
             except ValueError:
-                pass
+                # Finding G (silent-failure/data-integrity sweep): previously
+                # silently kept returning the last-known self.position with
+                # no indication the read failed -- a garbled/partial serial
+                # response was indistinguishable from "position unchanged".
+                # Logged (not raised) since this device is separately flagged
+                # legacy/obsolete (current Z hardware is the Thorlabs piezo,
+                # thorlabs_piezo.py) with no current caller to break.
+                logger.error(
+                    "PriorZMotor.read_position(): could not parse position from response %r on %s; "
+                    "returning last-known position %.3f instead of a fresh read",
+                    response,
+                    self.visa_resource,
+                    self.position,
+                )
         return self.position
 
     def read_movement(self) -> bool:

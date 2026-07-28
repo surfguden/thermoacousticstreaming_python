@@ -82,6 +82,17 @@ class Experiment2:
     wfg_config: WfgConfig | dict[str, Any] | None = None
     do_clock_settings: DoConfig | dict[str, Any] | None = None
     fm_sweep: FmSweepSettings | None = None
+    # Whether each instrument was a Simulated*/simulate=True backend for this
+    # run, not requested/enabled state -- set by Application.run_experiment2()
+    # from the live instrument instances right before the settings snapshot,
+    # since Experiment2 itself has no reference to Application/hardware.
+    # Without this, a simulated dry-run and a real experiment produce
+    # structurally identical data.tdms files with no way to tell them apart
+    # after the fact.
+    sim_ad2: bool = False
+    sim_camera: bool = False
+    sim_pump: bool = False
+    sim_valve: bool = False
     _tdms_properties: dict[str, Any] = field(default_factory=dict, init=False)
     _tdms_image_names: list[str] = field(default_factory=list, init=False)
     _tdms_timestamps: list[str] = field(default_factory=list, init=False)
@@ -100,6 +111,21 @@ class Experiment2:
     def save_camera_settings(self, settings: dict[str, Any]) -> None:
         self.experiment_folder.mkdir(parents=True, exist_ok=True)
         self._tdms_properties.update(self._camera_properties(settings))
+        self._write_tdms()
+
+    def save_flush_result(self, completed: bool) -> None:
+        # Session 7 already made a failed flush surface loudly (status event,
+        # log, Application.errors) -- but that visibility is process-level,
+        # not recorded into this repeat's own data.tdms. Someone inspecting
+        # data.tdms in isolation, without cross-referencing the live app log
+        # (not persisted per-experiment), previously had no way to tell a
+        # flush ever failed for that repeat -- FlushVolume/FlushFlowrate look
+        # equally plausible either way. Called separately from save_settings()
+        # because flush happens after both save_settings() calls in
+        # run_experiment2(), on both the success and early-return-on-failure
+        # paths.
+        self.experiment_folder.mkdir(parents=True, exist_ok=True)
+        self._tdms_properties["FlushCompleted"] = completed
         self._write_tdms()
 
     def save_image_data(self, image_data: Any, frame_timestamps: list[str] | None = None) -> None:
@@ -143,6 +169,11 @@ class Experiment2:
             "FlushFlowrate": self.flush_settings.flush_flowrate,
             "FlushVolume": self.flush_settings.flush_volume_ml,
             "WaitAfterFlush": self.flush_settings.wait_after_flush_s,
+            # Default "not attempted" -- both save_settings() calls in
+            # run_experiment2() happen before flush() ever runs, so this is
+            # always the correct value here; save_flush_result() overwrites
+            # it with the real True/False once flush() actually completes.
+            "FlushCompleted": "",
             "GitCommitHash": _git_commit_hash(),
         }
         properties.update(self._wfg_properties("Ch1", ch1))
@@ -152,10 +183,52 @@ class Experiment2:
                 "DORun": do_channel.trigger.sec_run if do_channel is not None else "",
                 "DOWait": do_channel.trigger.sec_wait if do_channel is not None else "",
                 "DOFreq": do_channel.clock_frequency_hz if do_channel is not None and do_channel.clock_frequency_hz is not None else "",
+                # Finding E: the real achieved frequency after WaveFormsBackend.
+                # configure_do()'s integer clock-divider rounding -- set by
+                # config_do_clock_special() before this second save_settings()
+                # call (see run_experiment2()'s ordering comment above "Finding
+                # A"), so this is the post-hardware-configuration value, not
+                # the pre-configure default.
+                "DOFreqActual": (
+                    do_channel.achieved_clock_frequency_hz
+                    if do_channel is not None and do_channel.achieved_clock_frequency_hz is not None
+                    else ""
+                ),
             }
         )
         properties.update(self._fm_sweep_properties())
+        properties.update(self._sequence_properties())
+        properties.update(
+            {
+                "SimAD2": self.sim_ad2,
+                "SimCamera": self.sim_camera,
+                "SimPump": self.sim_pump,
+                "SimValve": self.sim_valve,
+            }
+        )
         return properties
+
+    def _sequence_properties(self) -> dict[str, Any]:
+        # Session 22 made this cluster (masterpulse mode/source/interval/
+        # burst + trigger source/polarity/delay) genuinely load-bearing for
+        # automated runs -- carried in from the manual Camera tab's own live
+        # widgets into _build_experiment_series()'s sequence_settings dict --
+        # but none of it was ever recorded into data.tdms, so a repeat's
+        # actual DCAM trigger configuration was unrecoverable after the fact.
+        # This project's own most-cited unresolved open item is whether
+        # camera trigger source should be Internal or External; without this,
+        # even confirming *which one was used* for a given saved dataset was
+        # impossible from the data alone.
+        settings = self.sequence_settings or {}
+        return {
+            "TriggerSource": settings.get("trigger_source", ""),
+            "MasterPulseMode": settings.get("masterpulse_mode", ""),
+            "MasterPulseSource": settings.get("masterpulse_source", ""),
+            "MasterPulseInterval": settings.get("masterpulse_interval_s", ""),
+            "MasterPulseBurstTimes": settings.get("masterpulse_burst_times", ""),
+            "TriggerPolarity": settings.get("trigger_polarity", ""),
+            "TriggerDelay": settings.get("trigger_delay_s", ""),
+        }
 
     def _fm_sweep_properties(self) -> dict[str, Any]:
         if self.fm_sweep is None:

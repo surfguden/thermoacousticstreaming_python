@@ -8,7 +8,7 @@ import threading
 import time
 
 from .ad2 import coerce_do_config, coerce_wfg_config
-from .instruments import AD2Sdk, CetoniPump, HamamatsuCamera, PriorZMotor, Valve
+from .instruments import AD2Sdk, CetoniPump, HamamatsuCamera, PriorZMotor, SimulatedAD2Sdk, Valve
 from .messages import Message, MessageName, QueueResult, UiEvent
 from .queues import LabViewQueue
 from .workflows import Experiment2, ExperimentSeries2, FlushSettings
@@ -366,6 +366,16 @@ class Application:
 
         ad2_wait_seconds = self._ad2_completion_wait_seconds(experiment)
 
+        # Finding B (silent-failure/data-integrity sweep): record which
+        # instruments were simulated for this specific run, read from live
+        # instrument state, not requested/enabled config -- so a simulated
+        # dry-run and a real experiment don't produce structurally identical
+        # data.tdms files with no way to tell them apart later.
+        experiment.sim_ad2 = isinstance(self.ad2, SimulatedAD2Sdk)
+        experiment.sim_camera = self.camera.simulate
+        experiment.sim_pump = self.pump.simulate
+        experiment.sim_valve = self.valve.simulate
+
         self.fire_status_event("Initializing Experiment")
         experiment_folder = experiment.create_folder_and_tdms()
         experiment.save_settings()
@@ -373,12 +383,37 @@ class Application:
         self.ad2.config_wfg(experiment.wfg_config)
         self.ad2.config_do_clock_special(experiment.do_clock_settings)
 
+        # Re-snapshot settings now that config_wfg() has run. The first
+        # save_settings() call above is deliberately kept (not replaced) so a
+        # partial record with the *requested* settings still exists on disk
+        # even if config_wfg()/config_do_clock_special() itself raises -- this
+        # second call only refreshes fields that hardware configuration can
+        # change after the fact, currently WfgChannelConfig.out_of_range
+        # (set by WaveFormsBackend.configure_wfg()'s live-range clamping,
+        # Session 51 / commit 23e17d5). Without this, WFGOutOfRangeCh1/Ch2 in
+        # data.tdms always reflected the pre-configure default (False),
+        # because config_wfg() -- the only place that ever sets it True --
+        # ran after the metadata snapshot that recorded it.
+        experiment.save_settings()
+
         # configure_exposure_time() (not the plain configure() bookkeeping
         # setter) is what actually writes DCAM_IDPROP.EXPOSURETIME to real
         # hardware -- matches the manual Camera tab's _configure_camera(),
         # which already calls it. Previously this path only updated
         # self.camera.exposure_ms without ever pushing it to the device.
-        self.camera.configure_exposure_time(experiment.global_exposure_ms)
+        applied_exposure_ms = self.camera.configure_exposure_time(experiment.global_exposure_ms)
+        # Finding E (silent-failure/data-integrity sweep): configure_exposure_time()
+        # now returns the real applied exposure (DCAM's own internal
+        # quantization can differ slightly from the request); record that
+        # real value into data.tdms's ExposureTime, not the raw requested
+        # one, so the saved record matches what was actually pushed to
+        # hardware. Third save_settings() call this run -- cheap (same write
+        # path used twice already above) and keeps the "record what actually
+        # happened, not just what was requested" guarantee Finding A already
+        # established for WFGOutOfRange consistent for this field too.
+        experiment.global_exposure_ms = applied_exposure_ms
+        experiment.save_settings()
+
         self.camera.configure_sequence(experiment.sequence_settings)
         self.fire_status_event(
             "Configuring camera trigger global exposure; this may only take effect with compatible trigger source settings"
@@ -418,6 +453,13 @@ class Application:
 
         if experiment.flush_enabled:
             flush_completed = self.flush(experiment.flush_settings)
+            # Finding D (silent-failure/data-integrity sweep): record the
+            # flush result into this repeat's own data.tdms, on both the
+            # success and failure paths -- Session 7 already made a failed
+            # flush surface loudly (status event, log, Application.errors),
+            # but only at the process level, not into the saved record
+            # itself.
+            experiment.save_flush_result(flush_completed)
             if not flush_completed:
                 message = (
                     f"Flush failed for experiment repeat {experiment.repeat_id}: "

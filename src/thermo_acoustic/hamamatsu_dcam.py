@@ -76,12 +76,18 @@ class HamamatsuDcamBackend:
             self._check(self.dcam.dev_open(), "Dcam.dev_open")
         return self.dcam
 
-    def configure_exposure_time(self, exposure_ms: float) -> None:
+    def configure_exposure_time(self, exposure_ms: float) -> float:
+        # Finding E (silent-failure/data-integrity sweep): prop_setgetvalue()
+        # returns the real value the device actually applied (it can differ
+        # slightly from the request due to DCAM's own internal exposure
+        # quantization), not just whether the call succeeded -- previously
+        # discarded by routing through _check() alone, so the caller only
+        # ever had the requested value to work with, never confirmation of
+        # what was really applied.
         self.open_camera()
-        self._check(
-            self.dcam.prop_setgetvalue(self.dcam_module.DCAM_IDPROP.EXPOSURETIME, max(exposure_ms, 0.0) / 1000.0),
-            "set EXPOSURETIME",
-        )
+        result = self.dcam.prop_setgetvalue(self.dcam_module.DCAM_IDPROP.EXPOSURETIME, max(exposure_ms, 0.0) / 1000.0)
+        self._check(result, "set EXPOSURETIME")
+        return result * 1000.0
 
     def configure_roi(self, roi: SubRegion | dict | None) -> None:
         if roi is None:
@@ -370,14 +376,26 @@ class HamamatsuDcamBackend:
 
     def close(self) -> None:
         if self.dcam is not None:
+            # Finding F (silent-failure/data-integrity sweep): these two
+            # cleanup steps were silently swallowed with a bare `pass` --
+            # unlike every other cleanup path in this codebase
+            # (Application._cleanup_instruments logs; QmixPumpBackend.close()/
+            # PiezoStage.disconnect() both re-raise with details). If the
+            # camera genuinely failed to stop capture or release its buffer
+            # here, Application.cleanup() would see a clean success (no
+            # exception raised) with zero indication the device may still be
+            # in an inconsistent internal state -- only surfacing later as a
+            # confusing, seemingly-unrelated re-Initialize failure. Logged
+            # (not raised) because this remains an intentionally best-effort
+            # cleanup path, same as before -- only the silence is fixed.
             try:
                 self._stop_capture_if_active()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.error("Hamamatsu close(): failed to stop capture during cleanup: %s", exc)
             try:
                 self.dcam.buf_release()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.error("Hamamatsu close(): failed to release buffer during cleanup: %s", exc)
             self.allocated_buffer_frames = 0
             self.dcam.dev_close()
             self.dcam = None

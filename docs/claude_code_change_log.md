@@ -2914,6 +2914,531 @@ documented, expected failure from the tooltip-count entanglement above,
 UI status line, and TDMS metadata field, closing the last remaining gap
 from this session's hardware-verification pass.
 
+### Session 52 -- Silent-failure/data-integrity sweep, Finding A: WFGOutOfRange written to data.tdms before it was ever computed
+
+**Read-only sweep first (prior turn, not logged separately since it
+proposed no changes), then implementing its findings one at a time,
+starting with the highest-priority one.** The sweep used
+`docs/known_open_items.md`'s "data-integrity gaps" section (10 items,
+all re-verified unchanged against current code) as a starting
+inventory, then did a fresh targeted pass of `application.py`,
+`workflows.py`, and each hardware module for silent failures and
+TDMS/experiment-record metadata completeness. Seven findings (A-G)
+came out of that pass; this entry covers Finding A only, in isolation,
+per instruction not to batch fixes into one vague entry.
+
+**The bug.** `run_experiment2()` ([application.py:379-384](src/thermo_acoustic/application.py:379),
+pre-fix) called `experiment.save_settings()` -- which snapshots
+`WFGOutOfRangeCh1`/`Ch2` into `data.tdms` via `_settings_properties()`
+-- **before** `self.ad2.config_wfg(experiment.wfg_config)` ran.
+`WfgChannelConfig.out_of_range` is only ever set to `True` inside
+`WaveFormsBackend.configure_wfg()`/`_configure_analog_node()`
+([waveforms.py:393-403](src/thermo_acoustic/waveforms.py:393), Session
+51 / commit `23e17d5`) -- i.e. three lines *after* the metadata
+snapshot that was supposed to record it. `save_settings()` was never
+called again afterward, and `Experiment2._tdms_properties` is a
+snapshot dict updated in place, not a live view -- so the final
+`data.tdms` for every repeat always recorded `WFGOutOfRangeCh1=False`/
+`Ch2=False`, regardless of whether real clamping happened that run.
+This is exactly the case the Session 51 out-of-range flag was built to
+catch (an operator's requested drive amplitude/frequency silently
+substituted by the AD2 hardware) -- undone by call order, so the one
+piece of evidence meant to reveal it never reached the saved record.
+
+**Why the existing test suite never caught this.**
+`test_configure_wfg_clamps_out_of_range_amplitude_and_frequency_and_flags_channel`
+(`waveforms.py`-level) and `test_experiment2_writes_labview_metadata_tdms`
+(`workflows.py`-level, calls `experiment.save_settings()` directly
+against a fixture) both test their own layer in isolation and both
+passed while this bug shipped -- neither one drives the real
+`run_experiment2()` call order end-to-end.
+
+**Ordering trace performed before choosing a fix, per explicit
+instruction.** Traced every field `_settings_properties()`/
+`_camera_properties()` read between the original `save_settings()`
+call and the end of `run_experiment2()`: `wfg_config`/`do_clock_settings`/
+`sequence_settings`/`flush_settings`/`global_exposure_ms`/
+`trigger_global_exposure`/`fm_sweep` are all set on `Experiment2`
+before `run_experiment2()` starts and none of them are mutated again by
+anything between the two candidate points, except
+`WfgChannelConfig.out_of_range` itself (`config_wfg()`'s own
+side-effect) -- `coerce_wfg_config()` returns the same object instance
+when already a `WfgConfig` (confirmed in `ad2.py`), so `experiment.wfg_config`
+and `self.ad2.wfg_config` are the same object and the mutation is
+visible either way; only the *timing* of the metadata snapshot was
+broken. `config_do_clock_special()` has no equivalent out-of-range
+concept today (DO clock only rejects `clock_frequency_hz <= 0`, it
+doesn't clamp), so it doesn't add anything new to re-snapshot, but is
+covered by the same second call for consistency and to protect any
+future DO-clock flag added later.
+
+**A real regression risk found and deliberately avoided: simply moving
+`save_settings()` later, rather than adding a second call, would have
+silently dropped the existing partial-record-on-failure behavior.** If
+`config_wfg()`/`config_do_clock_special()` itself raises (e.g. real
+device disconnected mid-series), the *original* call ordering left a
+`data.tdms` on disk with the requested settings already recorded before
+the failure -- useful forensic context for exactly the failure case
+this project's own hardware-safety work cares most about. Replacing
+(not augmenting) the early call would have traded one data-integrity
+gap for a smaller but real one. **Fix implemented: the original early
+`save_settings()` call is kept exactly as-is, and a second
+`save_settings()` call is added immediately after
+`config_do_clock_special()`** ([application.py:379-397](src/thermo_acoustic/application.py:379)) --
+cheap (it's the same TDMS write path already used elsewhere per
+repeat, not a new mechanism) and preserves both properties: an early
+partial record if hardware configuration fails, and a final record
+that reflects what hardware configuration actually did.
+
+**Test:** `test_run_experiment2_records_real_wfg_clamping_in_final_tdms`
+([tests/test_application.py](tests/test_application.py)) -- the
+end-to-end test the user explicitly asked for, not another isolated
+unit test. Drives a real `AD2Sdk` + `WaveFormsBackend` (not
+`SimulatedAD2Sdk`) against the existing `FakeAD2ConfigureDwf` fake
+ctypes module (already used by the Session 51 clamping tests, reused
+here rather than duplicated) with a narrowed amplitude range, so a
+10.0V requested carrier amplitude genuinely gets clamped through the
+same code path a real device would use; `device_handle` is pre-set on
+the `AD2Sdk` to skip the fake's unmodeled `FDwfDeviceOpen` byref
+behavior without weakening what's actually being tested (device
+opening is not what this test is about). Calls the real
+`app.run_experiment2()`, then reads back the *final* persisted
+`data.tdms` properties (via the existing `install_fake_nptdms()`
+harness) and asserts `WFGOutOfRangeCh1 is True`. **Verified this test
+actually catches the regression, not just that it passes**: temporarily
+removed the new second `save_settings()` call and re-ran this test
+alone -- it failed with the exact assertion this bug produces (`False`
+where `True` was expected); restored the fix immediately after and
+confirmed the diff was back to its intended state.
+
+**Files touched:** [application.py](src/thermo_acoustic/application.py)
+(`run_experiment2()`, second `save_settings()` call + explanatory
+comment), [tests/test_application.py](tests/test_application.py) (1 new
+test, `test_run_experiment2_records_real_wfg_clamping_in_final_tdms`).
+
+**Verification:** tested -- full `tests/` suite green, 270/270 (up from
+269 pre-fix; TEC's own uncommitted diff and tests remain untouched
+throughout, confirmed via `git status` before and after). Not
+hardware-verified -- exercised against the same `FakeAD2ConfigureDwf`
+fake the Session 51 clamping tests already used, not a real Analog
+Discovery device; the underlying clamping mechanism itself was already
+real-hardware-verified in Session 51's own continued entry above, this
+fix only corrects when its result is captured into `data.tdms`, not the
+clamping logic itself. Not committed, per instruction -- findings B-G
+from this same sweep remain to be implemented and logged individually.
+
+### Session 52 continued, Finding B: no record of simulated-vs-real hardware in the experiment record
+
+**The gap.** `HamamatsuCamera.simulate`, `CetoniPump.simulate`,
+`Valve.simulate` (and the `AD2Sdk`/`SimulatedAD2Sdk` class distinction)
+were all readable from `Application`'s own live instrument instances,
+but none of it ever reached `data.tdms` -- confirmed absent via grep
+before starting. A simulated dry-run and a real experiment produced
+structurally identical `data.tdms` files; nothing in the file itself
+told a later reviewer which one they were looking at.
+
+**Fix.** Four new fields on `Experiment2`
+([workflows.py:121-144](src/thermo_acoustic/workflows.py:121)):
+`sim_ad2`/`sim_camera`/`sim_pump`/`sim_valve`, all defaulting `False`
+(matching this dataclass's existing convention of plain value fields
+with no hardware reference of its own). `_settings_properties()`
+([workflows.py:207-215](src/thermo_acoustic/workflows.py:207)) writes
+them as `SimAD2`/`SimCamera`/`SimPump`/`SimValve`.
+`Application.run_experiment2()`
+([application.py:379-388](src/thermo_acoustic/application.py:379))
+sets all four from live instrument state right after dequeuing the
+experiment, before the first `save_settings()` snapshot: `sim_ad2 =
+isinstance(self.ad2, SimulatedAD2Sdk)` (no `simulate` attribute exists
+on `AD2Sdk` itself -- construction-time class choice is the only
+signal, matching how `hardware_factory.build_hardware_bundle()` itself
+decides which class to build), the other three read `.simulate`
+directly.
+
+**Test.** `test_run_experiment2_records_simulated_vs_real_instruments_in_final_tdms`
+([tests/test_application.py](tests/test_application.py)) -- drives the
+real `run_experiment2()`, deliberately with a **mixed** configuration
+(`AD2Sdk(enabled=False)`, the real non-simulated class, left disabled
+so no hardware backend is actually touched, against every other
+instrument at its default `simulate=True`) specifically so a bug that
+collapsed all four flags to one hardcoded value, or read the wrong
+instrument for one of them, would be caught -- not just "the key
+exists with some value". **Verified this test actually catches the
+regression**, same discipline as Finding A: temporarily removed the
+four new assignment lines and re-ran the test alone -- failed on
+`SimCamera` exactly as expected; restored immediately after.
+
+**Incidental fixture gap found and fixed while running the full
+suite.** `tests/test_full_flow_dry_run.py`'s hand-rolled `FakeCamera`/
+`FakePump`/`FakeValve` duck-typed test doubles had no `.simulate`
+attribute at all (unlike the real classes they stand in for), so 9
+existing tests in that file broke with `AttributeError` the moment
+`run_experiment2()` started reading it. Added `self.simulate = True`
+to each fake's `__init__` -- these fakes already exist specifically to
+avoid touching real hardware, so `True` is the accurate value, not an
+arbitrary placeholder.
+
+**Files touched:** [workflows.py](src/thermo_acoustic/workflows.py)
+(4 new `Experiment2` fields + 4 new TDMS properties),
+[application.py](src/thermo_acoustic/application.py) (`run_experiment2()`
+sets the 4 fields from live instrument state, `SimulatedAD2Sdk` added
+to the existing `.instruments` import),
+[tests/test_application.py](tests/test_application.py) (1 new test),
+[tests/test_full_flow_dry_run.py](tests/test_full_flow_dry_run.py)
+(`.simulate` added to 3 existing fakes, no test logic changed).
+
+**Verification:** tested -- full `tests/` suite green modulo the
+already-documented (Session 41/42/48) offscreen-Qt/Shiboken
+construction flakiness in `test_qt_ui_v2.py` (a different single test
+failed on 2 of 3 full-suite runs during verification, always passing
+cleanly when re-run alone or as part of just `test_qt_ui_v2.py`) --
+confirmed via `git status`/`git diff` that none of this session's
+changes touch `qt_ui_v2.py` or its tests at all, so this is the
+pre-existing environmental characteristic, not a regression. Not
+hardware-verified -- `sim_ad2`/`sim_camera`/`sim_pump`/`sim_valve` are
+plain boolean reads of already-existing instrument state, no new
+hardware interaction to verify against. Not committed, per instruction.
+
+### Session 52 continued, Finding C: camera sequence cluster (trigger source, master pulse, polarity/delay) never recorded to TDMS
+
+**The gap.** Session 22 made `masterpulse_mode`/`masterpulse_source`/
+`masterpulse_interval_s`/`masterpulse_burst_times`, `trigger_polarity`,
+`trigger_delay_s`, and `trigger_source` genuinely load-bearing for
+automated runs -- carried from the manual Camera tab's live widgets
+into `_build_experiment_series()`'s `sequence_settings` dict, then read
+by `HamamatsuDcamBackend.configure_sequence()`
+([hamamatsu_dcam.py:190-235](src/thermo_acoustic/hamamatsu_dcam.py:190))
+every automated run. None of it was ever written to `data.tdms` --
+`_camera_properties()` only recorded `ReadoutTime`/ROI (read back from
+hardware *after* capture), and `_settings_properties()` didn't include
+any of these seven keys either, confirmed absent by direct grep before
+starting. Given this project's own most-cited unresolved open item is
+whether camera trigger source should be Internal or External, a saved
+experiment's own `data.tdms` couldn't even confirm which one was
+actually used for that run.
+
+**No ordering dependency, unlike Finding A.** Traced where
+`experiment.sequence_settings` is set (at `Experiment2` construction
+time, by `qt_ui.py`'s `_build_experiment_series()`, well before
+`run_experiment2()` is ever called) against where it's read
+(`self.camera.configure_sequence(experiment.sequence_settings)`,
+[application.py:403](src/thermo_acoustic/application.py:403), and
+nowhere else) -- `run_experiment2()` never mutates it. So the field is
+already fully populated by the time the very first `save_settings()`
+call runs; this fix required no `application.py` changes at all, only
+`workflows.py`.
+
+**Fix.** New `Experiment2._sequence_properties()`
+([workflows.py:229-247](src/thermo_acoustic/workflows.py:229)) reads
+`self.sequence_settings` (already an existing field, nothing new to
+thread through) and extracts the seven keys as `TriggerSource`/
+`MasterPulseMode`/`MasterPulseSource`/`MasterPulseInterval`/
+`MasterPulseBurstTimes`/`TriggerPolarity`/`TriggerDelay`, each
+defaulting to `""` when the underlying `sequence_settings` dict is
+`None` or the specific key is absent -- matching this file's existing
+`_wfg_properties()`/`_fm_sweep_properties()` empty-string-when-inactive
+convention. Wired into `_settings_properties()`
+([workflows.py:218](src/thermo_acoustic/workflows.py:218)) alongside
+the other `properties.update(self._..._properties())` calls.
+
+**Tests (both in [tests/test_application.py](tests/test_application.py)):**
+`test_experiment2_writes_camera_sequence_cluster_to_tdms` -- uses
+distinguishable, non-default values for every one of the seven fields
+(not just "present"), matching the exact dict keys
+`HamamatsuDcamBackend.configure_sequence()` itself reads, so a bug that
+read the wrong key or hardcoded a default would fail this test, not
+just a generic key-presence check.
+`test_experiment2_sequence_properties_default_to_empty_string_when_unset`
+confirms the `sequence_settings=None` fallback path. **Verified both
+tests actually catch the regression**, same discipline as Findings
+A/B: temporarily removed the `properties.update(self._sequence_properties())`
+wiring line and re-ran both alone -- both failed (`KeyError`, since the
+keys didn't exist at all pre-fix, not merely wrong values); restored
+immediately after.
+
+**Files touched:** [workflows.py](src/thermo_acoustic/workflows.py)
+(`_sequence_properties()` + one wiring line in `_settings_properties()`),
+[tests/test_application.py](tests/test_application.py) (2 new tests).
+
+**Verification:** tested -- full `tests/` suite green, 273/273. Not
+hardware-verified -- this only changes what's read from an already-set
+Python dict into `data.tdms`; the underlying `configure_sequence()`
+hardware-writing behavior itself is completely unchanged.
+
+### Session 52 continued, Finding D: flush failure surfaced live but never recorded in that repeat's data.tdms
+
+**The gap.** Session 7 already made a failed flush surface loudly at
+the process level -- `Application.flush()` returning `False` fires
+`"ExperimentFlushFailed"`, logs via `logger.error`, and appends to
+`Application.errors` -- but none of that reaches the experiment record
+itself. The repeat's `data.tdms` (already written by the earlier
+`save_settings()` calls) had `FlushVolume`/`FlushFlowrate` sitting next
+to nothing indicating whether the flush they describe ever actually
+completed. Someone inspecting `data.tdms` in isolation, without
+cross-referencing the live app log (not persisted per-experiment),
+previously had no way to tell.
+
+**Fix.** New `Experiment2.save_flush_result(completed: bool)`
+([workflows.py:160-173](src/thermo_acoustic/workflows.py:160)) -- a
+small, purpose-specific write, following the same one-purpose-per-method
+convention as `save_camera_settings()`/`save_image_data()`, not folded
+into `save_settings()` since flush happens after both of that method's
+call sites in `run_experiment2()`. `_settings_properties()`
+([workflows.py:214-224](src/thermo_acoustic/workflows.py:214)) gained a
+default `"FlushCompleted": ""` ("not attempted") -- correct at both of
+its own call sites since flush always runs after them.
+`Application.run_experiment2()`
+([application.py:452-460](src/thermo_acoustic/application.py:452)) now
+calls `experiment.save_flush_result(flush_completed)` immediately after
+computing the result, **before** the `if not flush_completed:` branch --
+so both the success and early-return-on-failure paths record it.
+
+**Tests (all in [tests/test_application.py](tests/test_application.py)):**
+`test_run_experiment2_records_flush_failure_in_final_tdms` (monkeypatches
+`Application.flush` to return `False`, confirms `FlushCompleted is False`
+in the final written `data.tdms`, not just that the status/log fired);
+`test_run_experiment2_records_flush_success_in_final_tdms` (the
+counterpart -- a genuinely successful flush against default simulated
+pump/valve, confirms `FlushCompleted is True`, ruling out a hardcoded
+`False` or absent-field bug); `test_experiment2_flush_completed_defaults_to_empty_string_when_flush_never_runs`
+(confirms the `""`-not-attempted default for `flush_enabled=False`).
+**Verified the two `run_experiment2()`-level tests actually catch the
+regression**, same discipline as Findings A/B/C: temporarily removed
+the `experiment.save_flush_result(flush_completed)` call and re-ran
+both alone -- both failed (`'' is True`/`'' is False`, the "not
+attempted" default leaking through instead of the real result);
+restored immediately after.
+
+**Files touched:** [workflows.py](src/thermo_acoustic/workflows.py)
+(`save_flush_result()` + `FlushCompleted` default in
+`_settings_properties()`), [application.py](src/thermo_acoustic/application.py)
+(`run_experiment2()`, one call added), [tests/test_application.py](tests/test_application.py)
+(3 new tests).
+
+**Verification:** tested -- full `tests/` suite green, 276/276. Not
+hardware-verified -- `flush()`'s own return-value semantics are
+completely unchanged (Session 7/31/32/33 territory, already
+hardware-verified); this only records that same return value into
+`data.tdms`.
+
+### Session 52 continued, Finding E: exposure and DO-clock requested-vs-applied readback
+
+**The gap, two related parts, both a smaller version of the same class
+of bug Finding A fixed for WFG amplitude/frequency.**
+1. `HamamatsuDcamBackend.configure_exposure_time()`
+   ([hamamatsu_dcam.py:79](src/thermo_acoustic/hamamatsu_dcam.py:79),
+   pre-fix) discarded `prop_setgetvalue()`'s own return value -- per
+   DCAM's own documented "set and get" contract, this call returns the
+   *real* value the device applied (which can differ from the request
+   due to DCAM's internal exposure quantization), not just whether the
+   call succeeded. `HamamatsuCamera.configure_exposure_time()`
+   ([instruments.py:501](src/thermo_acoustic/instruments.py:501)) then
+   set `self.exposure_ms` to the raw *requested* value regardless --
+   the exact same attribute `Application._check_camera_timing_budget()`
+   already trusts for a hardware-safety-adjacent FPS/readout check.
+2. `WaveFormsBackend.configure_do()`
+   ([waveforms.py:504](src/thermo_acoustic/waveforms.py:504)) computes
+   an **integer** `clock_divider` from the requested `clock_frequency_hz`
+   -- the real achieved DO-clock frequency after that truncation was
+   never computed or recorded anywhere; `data.tdms`'s `DOFreq` always
+   showed the requested value.
+
+**Fix, part 1 (DCAM exposure).**
+`HamamatsuDcamBackend.configure_exposure_time()` now returns the real
+applied value (`result * 1000.0`, converting `prop_setgetvalue()`'s
+seconds back to ms) instead of `None`. `CameraBackend` Protocol
+([instruments.py:107](src/thermo_acoustic/instruments.py:107)) and
+`HamamatsuCamera.configure_exposure_time()`
+([instruments.py:501-514](src/thermo_acoustic/instruments.py:501))
+updated to match -- when a real backend is attached, `self.exposure_ms`
+now tracks the real applied value; the simulated/no-backend case is
+unchanged (no real device to read back from, requested value used
+as-is). `Application.run_experiment2()`
+([application.py:409-427](src/thermo_acoustic/application.py:409))
+captures the return value, updates `experiment.global_exposure_ms`
+with it, and calls `experiment.save_settings()` a third time so
+`data.tdms`'s `ExposureTime` records what was actually applied, not
+the raw request -- the same "record what actually happened, not what
+was requested" guarantee Finding A already established for
+`WFGOutOfRange`, extended to this field. All existing fake camera
+backends across the test suite (`FakeCameraBackend` in
+`tests/test_application.py`, `FakeCamera` in
+`tests/test_full_flow_dry_run.py`) updated to echo the requested value
+back (`return exposure_ms`) rather than implicitly returning `None`,
+which would otherwise have corrupted `self.exposure_ms`/
+`experiment.global_exposure_ms` to `None` for every test using them --
+caught immediately by the full suite (9 failures) before being fixed.
+
+**Fix, part 2 (DO clock).** New
+`DoSingleChannelConfig.achieved_clock_frequency_hz: float | None = None`
+field ([ad2.py:171-184](src/thermo_acoustic/ad2.py:171)), mirroring
+`WfgChannelConfig.out_of_range`'s "never assigned until the real
+hardware call runs" pattern. `configure_do()`
+([waveforms.py:497-509](src/thermo_acoustic/waveforms.py:497)) computes
+it as `internal_clock_hz / (2.0 * clock_divider)` whenever
+`clock_divider > 0`; **deliberately left unset (not guessed at) when
+`clock_divider` truncates to 0** -- this codebase has no confirmed
+real-hardware behavior for a zero divider to derive an
+achieved-frequency formula from, and this project's own established
+convention is to flag an unconfirmed case rather than invent a
+plausible-looking number for it (same discipline as the syringe-stroke
+Pattern (d) cautionary tale in `docs/hardware_safety_patterns.md`).
+`_settings_properties()`
+([workflows.py:231-244](src/thermo_acoustic/workflows.py:231)) gained
+`DOFreqActual` alongside the existing `DOFreq` (both recorded, not one
+replacing the other) -- no `application.py` changes needed here, since
+`config_do_clock_special()` mutates the same `DoConfig` object
+`experiment.do_clock_settings` references, and Finding A's existing
+second `save_settings()` call (already running after
+`config_do_clock_special()`) captures the result with no new ordering
+fix required.
+
+**Tests (all in [tests/test_application.py](tests/test_application.py)):**
+`test_configure_exposure_time_returns_real_applied_value_not_requested`
+(a quantizing fake DCAM handle that returns `requested + 0.1ms`, not an
+exact echo); `test_run_experiment2_records_real_applied_exposure_in_final_tdms`
+(end-to-end through `run_experiment2()`, confirms both the facade's
+`self.exposure_ms` and the final `data.tdms`'s `ExposureTime`);
+`test_configure_do_records_achieved_frequency_after_integer_divider_rounding`
+(33.0 Hz requested against a fixed 100.0 Hz fake internal clock
+truncates to 50.0 Hz achieved -- a stark, unambiguous gap, not
+rounding-noise-level); `test_configure_do_leaves_achieved_frequency_none_when_no_clock_requested`;
+`test_run_experiment2_records_do_clock_achieved_frequency_in_final_tdms`
+(end-to-end, confirms both `DOFreq` and `DOFreqActual` land correctly
+in the final `data.tdms`). **Verified every one of the five tests
+actually catches its specific regression**, same discipline as
+Findings A-D: reverted each of the four independent fix points (DCAM
+backend return value, facade wiring, `application.py` re-snapshot,
+`configure_do()`'s achieved-frequency computation) one at a time and
+re-ran the relevant test(s) alone -- all failed with the exact expected
+symptom each time; restored immediately after each check.
+
+**Files touched:** [hamamatsu_dcam.py](src/thermo_acoustic/hamamatsu_dcam.py)
+(`configure_exposure_time()` returns real applied value),
+[instruments.py](src/thermo_acoustic/instruments.py) (`CameraBackend`
+Protocol + `HamamatsuCamera.configure_exposure_time()`),
+[application.py](src/thermo_acoustic/application.py) (`run_experiment2()`,
+captures + re-records applied exposure), [ad2.py](src/thermo_acoustic/ad2.py)
+(`DoSingleChannelConfig.achieved_clock_frequency_hz`),
+[waveforms.py](src/thermo_acoustic/waveforms.py) (`configure_do()` computes
+it), [workflows.py](src/thermo_acoustic/workflows.py) (`DOFreqActual`),
+[tests/test_application.py](tests/test_application.py) (5 new tests),
+[tests/test_full_flow_dry_run.py](tests/test_full_flow_dry_run.py)
+(`FakeCamera.configure_exposure_time()` now returns the value).
+
+**Verification:** tested -- full `tests/` suite green, 281/281. Not
+hardware-verified -- exercised against fakes/quantizing test doubles
+only; DCAM's own real exposure-quantization magnitude and the AD2's
+own real internal digital-out clock frequency have not been
+independently re-confirmed against physical hardware in this session
+(the underlying `read_readout_time()`/`digital_out_internal_clock_info()`
+SDK calls themselves are unchanged and were already exercised in prior
+real-hardware sessions).
+
+### Session 52 continued, Finding F: HamamatsuDcamBackend.close() silently swallowed cleanup failures
+
+**The gap.** `close()` ([hamamatsu_dcam.py:377-408](src/thermo_acoustic/hamamatsu_dcam.py:377),
+pre-fix): both `_stop_capture_if_active()` and `buf_release()` failures
+were caught with a bare `except Exception: pass` -- no logging at all,
+unlike every other cleanup path in this codebase
+(`Application._cleanup_instruments` logs; `QmixPumpBackend.close()`/
+`PiezoStage.disconnect()` both re-raise with details). If the camera
+genuinely failed to stop capture or release its buffer during
+`Application.cleanup()`, the operator would see a clean "System Not
+Initialized" with zero indication the device might still be in an
+inconsistent internal state -- only surfacing later as a confusing,
+seemingly unrelated re-Initialize failure with no link back to the
+real cause.
+
+**Fix.** Both `except` blocks now call `logger.error(...)`, naming
+which step failed and the real exception -- **not** re-raised, since
+this remains an intentionally best-effort cleanup path (matching this
+project's own established distinction: `_cleanup_instruments` itself
+already tolerates per-device cleanup failures without stopping overall
+cleanup; only the silence inside this one method is fixed, not its
+best-effort nature).
+
+**Test.** `test_hamamatsu_close_logs_swallowed_cleanup_errors_instead_of_silently_passing`
+([tests/test_application.py](tests/test_application.py)) -- forces
+both cleanup steps to raise independently (`_stop_capture_if_active()`
+monkeypatched at the class level via `monkeypatch.setattr`, since
+`HamamatsuDcamBackend` is `@dataclass(slots=True)` and doesn't allow
+arbitrary instance-attribute assignment; `buf_release()` patched
+directly on the fake instance), confirms **both** distinct error
+messages are logged (not just one), and confirms `close()` itself still
+completes without raising. **Verified this test actually catches the
+regression**, same discipline as every other finding this session:
+temporarily restored the bare `pass` and re-ran the test alone -- failed
+(`assert False` on the first logged-message check, empty `caplog.records`);
+restored the fix immediately after.
+
+**Files touched:** [hamamatsu_dcam.py](src/thermo_acoustic/hamamatsu_dcam.py)
+(`close()`, 2 `pass` statements replaced with `logger.error(...)` calls),
+[tests/test_application.py](tests/test_application.py) (1 new test).
+
+**Verification:** tested -- full `tests/` suite green, 282/282. Not
+hardware-verified -- logging-only change to an already-best-effort
+cleanup path; no behavior change to what `close()` actually does or
+returns.
+
+### Session 52 continued, Finding G: PriorZMotor.read_position() silently returned stale data on a parse failure
+
+**The gap.** `read_position()` ([instruments.py:804-811](src/thermo_acoustic/instruments.py:804),
+pre-fix): if the serial response couldn't be parsed as a float, the
+`ValueError` was swallowed with a bare `except ValueError: pass`,
+returning the last-known `self.position` with no indication the read
+had actually failed -- a garbled/partial serial response was
+indistinguishable from "position genuinely unchanged". Confirmed via
+grep that this method currently has **zero callers anywhere in
+`src/`** -- lower real-world exposure than the other six findings, and
+consistent with this whole hardware path being separately flagged
+legacy/obsolete elsewhere in this project's docs (current Z hardware is
+the Thorlabs piezo, `thorlabs_piezo.py`, Sessions 45-50) -- included
+for completeness of the requested `instruments.py` sweep, not because
+it's reachable from `run_experiment2()` today.
+
+**Fix.** `instruments.py` gained a module-level `logger` (it had none
+before -- `import logging` + `logger = logging.getLogger(__name__)`,
+matching the existing pattern already used in `application.py`/
+`hamamatsu_dcam.py`). The `except ValueError:` branch now calls
+`logger.error(...)`, naming the unparseable response, the serial
+resource, and the stale value being returned instead -- **logged, not
+raised**, since (a) no dedicated `PriorZMotorError` class exists for
+this device and creating one solely for this fix would be
+disproportionate for an already-legacy, currently-uncalled path, and
+(b) there is no current caller whose behavior this could safely change
+by raising instead.
+
+**Test.** `test_prior_zmotor_read_position_logs_and_keeps_last_known_on_unparseable_response`
+([tests/test_application.py](tests/test_application.py)) -- confirms
+both halves explicitly: the stale value really is still returned
+(existing, correct fallback behavior, deliberately unchanged) **and**
+the failure is now logged with the actual bad response and resource
+name in the message (the real gap this finding closes). **Verified
+this test actually catches the regression**, same discipline as every
+other finding this session: temporarily restored the bare `pass` and
+re-ran the test alone -- failed (`assert False`, empty
+`caplog.records`); restored the fix immediately after.
+
+**Files touched:** [instruments.py](src/thermo_acoustic/instruments.py)
+(module-level `logger` added, `read_position()`'s except branch),
+[tests/test_application.py](tests/test_application.py) (1 new test).
+
+**Verification:** tested -- full `tests/` suite green, 283/283. Not
+hardware-verified -- logging-only change to a currently-uncalled,
+already-legacy-flagged code path; no behavior change to what
+`read_position()` returns.
+
+**All 7 findings from this session's silent-failure/data-integrity
+sweep (A-G) are now implemented, individually tested (with each test
+independently verified to actually catch its specific regression, not
+just pass), and logged separately. Full `tests/` suite green, 283/283.
+TEC's own uncommitted diff (`tec.py`, and the TEC-authored hunks within
+`application.py`/`hardware_factory.py`/`qt_ui.py`/`qt_ui_v2.py`/
+`workflows.py` + their tests) was never opened for editing at any point
+across all 7 findings, confirmed via `git status`/`git diff` hunk
+inspection before and after each change. Not committed, per
+instruction -- awaiting review.**
+
 ---
 
 ## Known remaining open items as of this writing

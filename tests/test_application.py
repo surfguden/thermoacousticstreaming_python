@@ -505,6 +505,138 @@ def test_run_experiment2_processes_one_experiment(tmp_path, monkeypatch):
     assert (tmp_path / "experiment-1").exists()
 
 
+def test_run_experiment2_records_real_wfg_clamping_in_final_tdms(tmp_path, monkeypatch):
+    # Finding A regression test: drives the REAL run_experiment2() call
+    # order end-to-end (not configure_wfg()/save_settings() in isolation --
+    # those were already independently tested and both passed while this
+    # bug shipped, because save_settings() ran before config_wfg() had a
+    # chance to set out_of_range). Uses a real AD2Sdk + WaveFormsBackend
+    # against a fake dwf that reports a narrow device amplitude range, so
+    # the requested 10.0V carrier amplitude genuinely gets clamped by the
+    # same code path a real device would clamp it through.
+    writes = install_fake_nptdms(monkeypatch)
+    fake_dwf = FakeAD2ConfigureDwf(frequency_range=(10.0, 1_000_000.0), amplitude_range=(-5.0, 5.0))
+    ad2 = AD2Sdk(backend=WaveFormsBackend(dwf=fake_dwf), device_handle=123)
+    app = Application(ad2=ad2)
+    app.pump.fill_level = 1.0
+    channel = WfgChannelConfig(0, carrier=CarrierSettings(frequency_hz=1000.0, amplitude_v=10.0))
+    experiment = Experiment2(
+        experiment_folder=tmp_path / "experiment-clamped",
+        wfg_config=WfgConfig(channels=[channel]),
+    )
+    app.experiment_series.enqueue_experiments([experiment])
+
+    ok = app.run_experiment2()
+
+    assert ok
+    assert channel.out_of_range is True, "sanity check: the fake device range must actually force a clamp"
+    tdms_path = tmp_path / "experiment-clamped" / "data.tdms"
+    objects = writes[str(tdms_path)]
+    experiment_group = next(item for item in objects if getattr(item, "kind", "") == "group" and item.name == "Experiment")
+    assert experiment_group.properties["WFGOutOfRangeCh1"] is True, (
+        "the FINAL data.tdms written for this repeat must reflect the real clamping that just "
+        "happened during config_wfg() -- not the pre-configure default captured by the first, "
+        "early save_settings() call"
+    )
+
+
+def test_run_experiment2_records_simulated_vs_real_instruments_in_final_tdms(tmp_path, monkeypatch):
+    # Finding B regression test: without this fix, data.tdms carried no
+    # SimAD2/SimCamera/SimPump/SimValve fields at all -- a simulated dry-run
+    # and a real experiment were structurally indistinguishable after the
+    # fact. Uses a genuinely mixed configuration (AD2 the real, non-simulated
+    # class -- just disabled, so no hardware is actually touched -- against
+    # every other instrument left at its default simulate=True) so a bug
+    # that collapsed all four flags to the same hardcoded value, or read the
+    # wrong instrument for one of them, would be caught, not just "the key
+    # exists".
+    writes = install_fake_nptdms(monkeypatch)
+    app = Application(ad2=AD2Sdk(enabled=False))
+    experiment = Experiment2(experiment_folder=tmp_path / "experiment-sim-flags")
+    app.experiment_series.enqueue_experiments([experiment])
+
+    ok = app.run_experiment2()
+
+    assert ok
+    tdms_path = tmp_path / "experiment-sim-flags" / "data.tdms"
+    objects = writes[str(tdms_path)]
+    experiment_group = next(item for item in objects if getattr(item, "kind", "") == "group" and item.name == "Experiment")
+    properties = experiment_group.properties
+    assert properties["SimAD2"] is False, "AD2Sdk (not SimulatedAD2Sdk) was used -- must not be reported as simulated"
+    assert properties["SimCamera"] is True
+    assert properties["SimPump"] is True
+    assert properties["SimValve"] is True
+
+
+def test_run_experiment2_records_flush_failure_in_final_tdms(tmp_path, monkeypatch):
+    # Finding D regression test, failure path: before this fix, a failed
+    # flush surfaced loudly at the process level (status event, log,
+    # Application.errors -- Session 7) but the repeat's own data.tdms carried
+    # no record of it at all. Inspecting data.tdms in isolation (without
+    # cross-referencing the live app log, which isn't persisted
+    # per-experiment) gave no way to tell the flush ever failed for that
+    # specific repeat.
+    writes = install_fake_nptdms(monkeypatch)
+    app = Application(ad2=SimulatedAD2Sdk())
+    monkeypatch.setattr(Application, "flush", lambda self, settings: False)
+    experiment = Experiment2(
+        experiment_folder=tmp_path / "experiment-flush-failed",
+        flush_enabled=True,
+        flush_settings=FlushSettings(flush_flowrate=10.0, flush_volume_ml=6.0, wait_after_flush_s=0.0),
+    )
+    app.experiment_series.enqueue_experiments([experiment])
+
+    ok = app.run_experiment2()
+
+    assert ok is False
+    assert app.status == "ExperimentFlushFailed"
+    tdms_path = tmp_path / "experiment-flush-failed" / "data.tdms"
+    objects = writes[str(tdms_path)]
+    experiment_group = next(item for item in objects if getattr(item, "kind", "") == "group" and item.name == "Experiment")
+    assert experiment_group.properties["FlushCompleted"] is False, (
+        "the failed flush must be recorded in this repeat's own data.tdms, not just surfaced "
+        "transiently via status/logging"
+    )
+
+
+def test_run_experiment2_records_flush_success_in_final_tdms(tmp_path, monkeypatch):
+    # Finding D regression test, success path (the counterpart to the
+    # failure test above -- confirms the field isn't hardcoded False/absent,
+    # and that a genuinely successful flush is distinguishable from one that
+    # never ran at all).
+    writes = install_fake_nptdms(monkeypatch)
+    app = Application(ad2=SimulatedAD2Sdk())
+    app.pump.fill_level = 1.0
+    experiment = Experiment2(
+        experiment_folder=tmp_path / "experiment-flush-ok",
+        flush_enabled=True,
+        flush_settings=FlushSettings(flush_flowrate=10.0, flush_volume_ml=6.0, wait_after_flush_s=0.0),
+    )
+    app.experiment_series.enqueue_experiments([experiment])
+
+    ok = app.run_experiment2()
+
+    assert ok is True
+    tdms_path = tmp_path / "experiment-flush-ok" / "data.tdms"
+    objects = writes[str(tdms_path)]
+    experiment_group = next(item for item in objects if getattr(item, "kind", "") == "group" and item.name == "Experiment")
+    assert experiment_group.properties["FlushCompleted"] is True
+
+
+def test_experiment2_flush_completed_defaults_to_empty_string_when_flush_never_runs(tmp_path, monkeypatch):
+    writes = install_fake_nptdms(monkeypatch)
+    experiment = Experiment2(experiment_folder=tmp_path / "no-flush")
+
+    experiment.create_folder_and_tdms()
+    experiment.save_settings()
+
+    tdms_path = tmp_path / "no-flush" / "data.tdms"
+    properties = next(
+        item for item in writes[str(tdms_path)] if getattr(item, "kind", "") == "group" and item.name == "Experiment"
+    ).properties
+    assert properties["FlushCompleted"] == ""
+
+
 def test_stateful_instrument_methods():
     ad2 = SimulatedAD2Sdk()
     assert ad2.open_and_use_first_device() is not None
@@ -680,6 +812,27 @@ def test_valve_wait_until_ready_polls_until_confirmed_and_is_bounded_when_busy()
         ("write", "Z"),
         ("close",),
     ]
+
+
+def test_prior_zmotor_read_position_logs_and_keeps_last_known_on_unparseable_response(caplog):
+    # Finding G regression test: a garbled/partial serial response was
+    # previously indistinguishable from "position unchanged" -- the
+    # ValueError from float() was silently swallowed with a bare `pass`,
+    # with no way for anyone to know the read actually failed. Confirms
+    # both halves: the stale value really is what's returned (existing,
+    # correct fallback behavior, unchanged), AND the failure is now logged
+    # (the actual gap this finding closes).
+    motor = PriorZMotor(backend=FakeTextBackend({"P": "not-a-number"}), visa_resource="COM9")
+    motor.position = 3.5  # simulates a real prior successful read
+
+    with caplog.at_level("ERROR", logger="thermo_acoustic.instruments"):
+        result = motor.read_position()
+
+    assert result == 3.5, "must still return the last-known position, not crash or silently reset to 0"
+    assert any(
+        "could not parse position" in record.message and "not-a-number" in record.message and "COM9" in record.message
+        for record in caplog.records
+    ), caplog.records
 
 
 def test_serial_text_backend_has_longer_bounded_write_timeout():
@@ -1141,6 +1294,7 @@ class FakeCameraBackend:
 
     def configure_exposure_time(self, exposure_ms):
         self.calls.append(("configure_exposure_time", exposure_ms))
+        return exposure_ms
 
     def configure_roi(self, roi):
         self.calls.append(("configure_roi", roi))
@@ -1539,6 +1693,73 @@ def test_waveforms_low_level_wrappers():
     assert "FDwfDigitalOutWaitSet" in called
 
 
+def test_configure_do_records_achieved_frequency_after_integer_divider_rounding():
+    # Finding E regression test: clock_divider is an integer, so the real
+    # achieved DO-clock frequency can differ substantially from the
+    # requested clock_frequency_hz -- previously never recorded anywhere at
+    # all. FakeDwf's internal clock is fixed at 100.0 Hz (confirmed by the
+    # test above); 33.0 Hz requested truncates the divider to 1, giving a
+    # genuinely different achieved frequency (50.0 Hz), not a rounding-noise
+    # -level gap that could pass by coincidence.
+    fake = FakeDwf()
+    backend = WaveFormsBackend(dwf=fake)
+    channel = DoSingleChannelConfig(channel_index=0, enable=True, clock_frequency_hz=33.0)
+    config = DoConfig(channels=[channel])
+
+    backend.configure_do(123, config)
+
+    assert channel.achieved_clock_frequency_hz == pytest.approx(50.0)
+    assert channel.achieved_clock_frequency_hz != channel.clock_frequency_hz
+
+
+def test_configure_do_leaves_achieved_frequency_none_when_no_clock_requested():
+    fake = FakeDwf()
+    backend = WaveFormsBackend(dwf=fake)
+    channel = DoSingleChannelConfig(channel_index=0, enable=True)
+    config = DoConfig(channels=[channel])
+
+    backend.configure_do(123, config)
+
+    assert channel.achieved_clock_frequency_hz is None
+
+
+def test_run_experiment2_records_do_clock_achieved_frequency_in_final_tdms(tmp_path, monkeypatch):
+    # Finding E regression test, end-to-end: drives the real run_experiment2()
+    # call order (config_do_clock_special() mutates the same DoConfig object
+    # experiment.do_clock_settings references, then Finding A's existing
+    # second save_settings() call captures the result -- no new ordering fix
+    # needed here, but confirming that combination actually works end-to-end
+    # is the point, same discipline as Finding A's own test).
+    writes = install_fake_nptdms(monkeypatch)
+    fake_dwf = FakeDwf()
+    ad2 = AD2Sdk(backend=WaveFormsBackend(dwf=fake_dwf), device_handle=123)
+    app = Application(ad2=ad2)
+    do_channel = DoSingleChannelConfig(
+        channel_index=0,
+        enable=True,
+        clock_frequency_hz=33.0,
+        trigger=TriggerSettings(sec_run=0.0, sec_wait=0.0),
+    )
+    experiment = Experiment2(
+        experiment_folder=tmp_path / "experiment-do-freq",
+        do_clock_settings=DoConfig(channels=[do_channel]),
+    )
+    app.experiment_series.enqueue_experiments([experiment])
+
+    ok = app.run_experiment2()
+
+    assert ok
+    assert do_channel.achieved_clock_frequency_hz == pytest.approx(50.0)
+    tdms_path = tmp_path / "experiment-do-freq" / "data.tdms"
+    properties = next(
+        item for item in writes[str(tdms_path)] if getattr(item, "kind", "") == "group" and item.name == "Experiment"
+    ).properties
+    assert properties["DOFreq"] == 33.0
+    assert properties["DOFreqActual"] == pytest.approx(50.0), (
+        "the FINAL data.tdms must record the real achieved DO-clock frequency, not just the requested one"
+    )
+
+
 # -- AD2 amplitude/frequency clamping against the device's own live
 # AnalogOutNode*Info() range (Session 51). Purpose-built fake, not the
 # generic FakeDwf above -- FakeDwf's blanket "*Info" handling returns a
@@ -1755,6 +1976,63 @@ def test_experiment2_writes_labview_metadata_tdms(tmp_path, monkeypatch):
     assert len(channels["Timestamp"].data) == 2
 
 
+def test_experiment2_writes_camera_sequence_cluster_to_tdms(tmp_path, monkeypatch):
+    # Finding C regression test: Session 22 made this whole cluster
+    # (masterpulse mode/source/interval/burst + trigger source/polarity/
+    # delay) genuinely load-bearing for automated runs, but until this fix
+    # none of it ever reached data.tdms -- a repeat's actual DCAM trigger
+    # configuration was unrecoverable after the fact. Uses distinguishable,
+    # non-default values for every field (not just "present") so a bug that
+    # read the wrong key or hardcoded a default would be caught, matching
+    # the exact keys hamamatsu_dcam.py's configure_sequence() itself reads.
+    writes = install_fake_nptdms(monkeypatch)
+    experiment = Experiment2(
+        experiment_folder=tmp_path / "repeat_seq",
+        sequence_settings={
+            "frames": 5,
+            "trigger_source": "external",
+            "masterpulse_mode": "normal",
+            "masterpulse_source": "internal",
+            "masterpulse_interval_s": 0.002,
+            "masterpulse_burst_times": 3,
+            "trigger_polarity": "negative",
+            "trigger_delay_s": 0.0005,
+        },
+    )
+
+    experiment.create_folder_and_tdms()
+    experiment.save_settings()
+
+    tdms_path = tmp_path / "repeat_seq" / "data.tdms"
+    properties = next(
+        item for item in writes[str(tdms_path)] if getattr(item, "kind", "") == "group" and item.name == "Experiment"
+    ).properties
+    assert properties["TriggerSource"] == "external"
+    assert properties["MasterPulseMode"] == "normal"
+    assert properties["MasterPulseSource"] == "internal"
+    assert properties["MasterPulseInterval"] == 0.002
+    assert properties["MasterPulseBurstTimes"] == 3
+    assert properties["TriggerPolarity"] == "negative"
+    assert properties["TriggerDelay"] == 0.0005
+
+
+def test_experiment2_sequence_properties_default_to_empty_string_when_unset(tmp_path):
+    experiment = Experiment2(experiment_folder=tmp_path / "repeat_no_seq", sequence_settings=None)
+
+    properties = experiment._settings_properties()
+
+    for field in (
+        "TriggerSource",
+        "MasterPulseMode",
+        "MasterPulseSource",
+        "MasterPulseInterval",
+        "MasterPulseBurstTimes",
+        "TriggerPolarity",
+        "TriggerDelay",
+    ):
+        assert properties[field] == ""
+
+
 def test_experiment_settings_properties_include_git_commit_hash(monkeypatch, tmp_path):
     monkeypatch.setattr("thermo_acoustic.workflows._git_commit_hash", lambda: "deadbeef-dirty")
 
@@ -1962,6 +2240,144 @@ def test_hamamatsu_dcam_backend_uses_sdk_wrapper(tmp_path):
     assert ("prop_setgetvalue", "EXPOSURETIME", 0.05) in handle.calls
     assert ("cap_firetrigger",) in handle.calls
     assert not handle.opened
+
+
+def test_hamamatsu_close_logs_swallowed_cleanup_errors_instead_of_silently_passing(caplog, monkeypatch):
+    # Finding F regression test: close()'s two cleanup steps (stop capture,
+    # release buffer) were previously wrapped in a bare `except Exception:
+    # pass` -- no logging at all, unlike every other cleanup path in this
+    # codebase. If the camera genuinely failed to stop capture or release its
+    # buffer, Application.cleanup() would see a clean success with zero
+    # indication anything went wrong. Forces both cleanup steps to raise
+    # independently and confirms both errors are logged (not just one, and
+    # not silently swallowed), and that close() itself still completes
+    # without raising (cleanup remains intentionally best-effort -- only the
+    # silence is fixed, not the "don't propagate cleanup failures" behavior).
+    from thermo_acoustic.hamamatsu_dcam import HamamatsuDcamBackend, HamamatsuDcamError
+
+    backend = HamamatsuDcamBackend()
+    backend.dcam_module = FakeDcamModule
+    backend.dcamapi = FakeDcamApi
+    backend.dcam = FakeDcamModule.Dcam(0)
+    backend.dcam.opened = True
+    backend.initialized = False
+
+    def raise_stop_capture_failure(self):
+        raise HamamatsuDcamError("stop capture failed")
+
+    def raise_buffer_release_failure():
+        raise RuntimeError("buffer release failed")
+
+    monkeypatch.setattr(HamamatsuDcamBackend, "_stop_capture_if_active", raise_stop_capture_failure)
+    backend.dcam.buf_release = raise_buffer_release_failure
+
+    with caplog.at_level("ERROR", logger="thermo_acoustic.hamamatsu_dcam"):
+        backend.close()  # must not raise -- cleanup stays best-effort
+
+    messages = [record.message for record in caplog.records]
+    assert any("failed to stop capture" in m and "stop capture failed" in m for m in messages), messages
+    assert any("failed to release buffer" in m and "buffer release failed" in m for m in messages), messages
+    assert backend.dcam is None, "cleanup must still complete despite both logged failures"
+
+
+def test_configure_exposure_time_returns_real_applied_value_not_requested(tmp_path):
+    # Finding E regression test: prop_setgetvalue() (per DCAM's own
+    # documented "set and get" contract) returns the real value the device
+    # applied, which can differ from the request due to DCAM's own internal
+    # exposure quantization -- previously discarded, so configure_exposure_time()
+    # had no way to report anything but the raw request back to its caller.
+    # A quantizing fake (applied = requested + 0.1ms, not an exact echo)
+    # would fail this test if the return value were ever silently dropped
+    # again.
+    from thermo_acoustic.hamamatsu_dcam import HamamatsuDcamBackend
+
+    backend = HamamatsuDcamBackend()
+    backend.dcam_module = FakeDcamModule
+    backend.dcamapi = FakeDcamApi
+    handle = backend.open_camera()
+
+    def quantizing_prop_setgetvalue(prop, value, option=0):
+        if prop == "EXPOSURETIME":
+            applied = value + 0.0001  # +0.1ms, simulating real DCAM quantization
+            handle.values[prop] = applied
+            handle.calls.append(("prop_setgetvalue", prop, value))
+            return applied
+        return FakeDcamModule.Dcam.prop_setgetvalue(handle, prop, value, option)
+
+    handle.prop_setgetvalue = quantizing_prop_setgetvalue
+
+    applied_ms = backend.configure_exposure_time(50.0)
+
+    assert applied_ms == pytest.approx(50.1), (
+        "must return the real applied exposure (with quantization), not echo back the 50.0ms request"
+    )
+
+
+def test_run_experiment2_records_real_applied_exposure_in_final_tdms(tmp_path, monkeypatch):
+    # Finding E regression test, end-to-end: confirms both HamamatsuCamera's
+    # facade (uses the backend's real return value, not the request) and
+    # Application.run_experiment2()'s wiring (re-snapshots data.tdms's
+    # ExposureTime with that real value) together, the same way Finding A's
+    # test drives the real call order rather than testing either layer in
+    # isolation.
+    writes = install_fake_nptdms(monkeypatch)
+
+    class QuantizingCameraBackend:
+        def __init__(self):
+            self.calls = []
+
+        def configure_exposure_time(self, exposure_ms):
+            self.calls.append(exposure_ms)
+            return exposure_ms + 0.25  # simulates real DCAM quantization
+
+        def configure_sequence(self, settings):
+            pass
+
+        def configure_trigger_global_exposure(self, enabled):
+            pass
+
+        def start_capture(self):
+            pass
+
+        def stop_capture(self):
+            pass
+
+        def image_sequence(self, frame_count=0, partial_capture_folder=None):
+            return []
+
+        def read_frame_timestamps(self):
+            return []
+
+        def save_sequence(self, image_data, folder):
+            folder.mkdir(parents=True, exist_ok=True)
+
+        def get_camera_buffer_size(self):
+            return 0
+
+        def get_sub_region(self):
+            return {}
+
+        def read_readout_time(self):
+            return 0.0
+
+    app = Application(ad2=SimulatedAD2Sdk(), camera=HamamatsuCamera(backend=QuantizingCameraBackend()))
+    experiment = Experiment2(
+        experiment_folder=tmp_path / "experiment-exposure-quantized",
+        global_exposure_ms=40.0,
+    )
+    app.experiment_series.enqueue_experiments([experiment])
+
+    ok = app.run_experiment2()
+
+    assert ok
+    assert app.camera.exposure_ms == pytest.approx(40.25), "the facade must track the real applied value, not the request"
+    tdms_path = tmp_path / "experiment-exposure-quantized" / "data.tdms"
+    properties = next(
+        item for item in writes[str(tdms_path)] if getattr(item, "kind", "") == "group" and item.name == "Experiment"
+    ).properties
+    assert properties["ExposureTime"] == pytest.approx(40.25), (
+        "the FINAL data.tdms must record the real applied exposure, not the original 40.0ms request"
+    )
 
 
 # -- Camera ROI pre-flight validation (Session 51): DCAM's own SUBARRAY

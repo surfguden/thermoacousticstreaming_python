@@ -173,6 +173,14 @@ class DoSingleChannelConfig:
     enable: bool = False
     clock_divider: int = 0
     clock_frequency_hz: float | None = None
+    # Finding E (silent-failure/data-integrity sweep): the real achieved
+    # frequency after WaveFormsBackend.configure_do() rounds clock_frequency_hz
+    # down to an integer divider -- None until a real configure_do() call sets
+    # it (mirrors WfgChannelConfig.out_of_range's "never assigned until the
+    # real hardware call runs" pattern). Requested and achieved can differ by
+    # up to one divider step; recording both means that gap is visible in
+    # data.tdms instead of only the requested value being recorded.
+    achieved_clock_frequency_hz: float | None = None
     output_type: DigitalOutType = DigitalOutType.PULSE
     output_mode: str = "PushPull"
     idle_state: DigitalOutIdleState = DigitalOutIdleState.INITIAL

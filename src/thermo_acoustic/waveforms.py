@@ -502,6 +502,17 @@ class WaveFormsBackend:
                 if internal_clock_hz <= 0:
                     raise WaveFormsError("Digital output internal clock frequency is not available.")
                 clock_divider = int((internal_clock_hz / channel.clock_frequency_hz) / 2.0)
+                # Finding E: clock_divider is an integer, so the real achieved
+                # frequency can differ from the requested clock_frequency_hz --
+                # record it so that gap is visible instead of only ever
+                # recording the requested value. clock_divider == 0 (requested
+                # frequency close to/above internal_clock_hz/2) is left
+                # unrecorded rather than guessed at -- this codebase has no
+                # confirmed real-hardware behavior for a zero divider to derive
+                # an achieved-frequency formula from.
+                channel.achieved_clock_frequency_hz = (
+                    internal_clock_hz / (2.0 * clock_divider) if clock_divider > 0 else None
+                )
 
             self._check(self._dwf.FDwfDigitalOutEnableSet(h, idx, c_int(int(channel.enable))), "FDwfDigitalOutEnableSet")
             self._check(

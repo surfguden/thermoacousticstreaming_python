@@ -41,6 +41,7 @@ class FakeCamera:
         self.sequence_config = None
         self.exposure_ms = None
         self.capturing = False
+        self.simulate = True
 
     def initialize(self):
         self.calls.append(("camera", "initialize"))
@@ -52,6 +53,7 @@ class FakeCamera:
     def configure_exposure_time(self, exposure_ms):
         self.exposure_ms = exposure_ms
         self.calls.append(("camera", "configure_exposure_time", exposure_ms))
+        return exposure_ms
 
     def configure_sequence(self, settings):
         self.sequence_config = settings
@@ -101,6 +103,7 @@ class FakePump:
         self.calls = calls
         self.fill_level = 1.0
         self.dosing = False
+        self.simulate = True
 
     def initialize(self):
         self.calls.append(("pump", "initialize"))
@@ -128,6 +131,7 @@ class FakeValve:
     def __init__(self, calls):
         self.calls = calls
         self.position = None
+        self.simulate = True
 
     def initialize(self):
         self.calls.append(("valve", "initialize"))
