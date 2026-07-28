@@ -390,9 +390,17 @@ class WaveFormsBackend:
         h = c_int(handle)
         for channel in config.channels:
             idx = c_int(channel.channel_index)
-            self._configure_analog_node(h, idx, 0, channel.carrier)
+            carrier_out_of_range = self._configure_analog_node(h, idx, 0, channel.carrier)
+            fm_out_of_range = False
             if channel.fm_mod.enable:
-                self._configure_analog_node(h, idx, 1, channel.fm_mod)
+                fm_out_of_range = self._configure_analog_node(h, idx, 1, channel.fm_mod)
+            # Session 51: never assigned True anywhere before this -- WfgConfig.
+            # check_valid()/wfg_check_config_valid() existed but had no producer,
+            # so they always reported "valid" regardless of what was actually
+            # applied. Now reflects whether *this* configure_wfg() call clamped
+            # either node's frequency/amplitude against the device's own real
+            # AnalogOutNode*Info() range.
+            channel.out_of_range = carrier_out_of_range or fm_out_of_range
 
             trigger = channel.trigger
             self._check(self._dwf.FDwfAnalogOutRunSet(h, idx, c_double(trigger.sec_run)), "FDwfAnalogOutRunSet")
@@ -415,7 +423,7 @@ class WaveFormsBackend:
                 "FDwfAnalogOutConfigure",
             )
 
-    def _configure_analog_node(self, handle: c_int, channel_index: c_int, node: int, settings: object) -> None:
+    def _configure_analog_node(self, handle: c_int, channel_index: c_int, node: int, settings: object) -> bool:
         node_id = c_int(node)
         self._check(
             self._dwf.FDwfAnalogOutNodeEnableSet(handle, channel_index, node_id, c_int(int(settings.enable))),
@@ -430,12 +438,37 @@ class WaveFormsBackend:
             ),
             "FDwfAnalogOutNodeFunctionSet",
         )
+
+        # Session 51: the WaveForms SDK's own *Set functions never fail or
+        # reject an out-of-range value -- they silently clamp to whatever the
+        # device can actually do and still report success (confirmed against
+        # Digilent's own WaveForms SDK reference manual). So validate/clamp
+        # against the device's own live-read AnalogOutNode*Info() range
+        # ourselves, before the Set calls below, rather than trusting the SDK
+        # to reject anything or relying on a later Get-based readback to
+        # notice the substitution after the fact.
+        frequency_min = c_double()
+        frequency_max = c_double()
         self._check(
-            self._dwf.FDwfAnalogOutNodeFrequencySet(handle, channel_index, node_id, c_double(settings.frequency_hz)),
+            self._dwf.FDwfAnalogOutNodeFrequencyInfo(handle, channel_index, node_id, byref(frequency_min), byref(frequency_max)),
+            "FDwfAnalogOutNodeFrequencyInfo",
+        )
+        amplitude_min = c_double()
+        amplitude_max = c_double()
+        self._check(
+            self._dwf.FDwfAnalogOutNodeAmplitudeInfo(handle, channel_index, node_id, byref(amplitude_min), byref(amplitude_max)),
+            "FDwfAnalogOutNodeAmplitudeInfo",
+        )
+        clamped_frequency_hz = min(max(settings.frequency_hz, frequency_min.value), frequency_max.value)
+        clamped_amplitude_v = min(max(settings.amplitude_v, amplitude_min.value), amplitude_max.value)
+        out_of_range = clamped_frequency_hz != settings.frequency_hz or clamped_amplitude_v != settings.amplitude_v
+
+        self._check(
+            self._dwf.FDwfAnalogOutNodeFrequencySet(handle, channel_index, node_id, c_double(clamped_frequency_hz)),
             "FDwfAnalogOutNodeFrequencySet",
         )
         self._check(
-            self._dwf.FDwfAnalogOutNodeAmplitudeSet(handle, channel_index, node_id, c_double(settings.amplitude_v)),
+            self._dwf.FDwfAnalogOutNodeAmplitudeSet(handle, channel_index, node_id, c_double(clamped_amplitude_v)),
             "FDwfAnalogOutNodeAmplitudeSet",
         )
         self._check(
@@ -450,6 +483,7 @@ class WaveFormsBackend:
             self._dwf.FDwfAnalogOutNodePhaseSet(handle, channel_index, node_id, c_double(settings.phase_deg)),
             "FDwfAnalogOutNodePhaseSet",
         )
+        return out_of_range
 
     def configure_do(self, handle: int, config: DoConfig) -> None:
         h = c_int(handle)

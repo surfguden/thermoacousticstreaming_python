@@ -15,8 +15,11 @@ from PySide6.QtWidgets import QAbstractSpinBox, QCheckBox, QComboBox, QDoubleSpi
 from PySide6.QtWidgets import QApplication
 
 from thermo_acoustic import qt_ui
+from thermo_acoustic.ad2 import WfgChannelConfig, WfgConfig
 from thermo_acoustic.camera import SubRegion
 from thermo_acoustic.hardware_config import ZStageBackend, default_hardware_config
+from thermo_acoustic.instruments import AD2Sdk
+from thermo_acoustic.waveforms import WaveFormsBackend
 
 from conftest import build_with_retry
 
@@ -1974,6 +1977,63 @@ def test_syringe_selection_and_custom_volume_flow_into_flush_settings(monkeypatc
         window.close()
 
 
+class _FakeAD2ConfigureDwf:
+    """Purpose-built fake for _apply_wfg() -- lets frequency/amplitude
+    device ranges be set independently (Session 51), unlike a generic
+    blanket "*Info always returns some fixed value" fake."""
+
+    def __init__(self, frequency_range=(10.0, 1_000_000.0), amplitude_range=(-5.0, 5.0)):
+        self.frequency_range = frequency_range
+        self.amplitude_range = amplitude_range
+
+    def __getattr__(self, name):
+        def func(*args):
+            if name == "FDwfAnalogOutNodeFrequencyInfo":
+                self._assign(args[3], self.frequency_range[0])
+                self._assign(args[4], self.frequency_range[1])
+            elif name == "FDwfAnalogOutNodeAmplitudeInfo":
+                self._assign(args[3], self.amplitude_range[0])
+                self._assign(args[4], self.amplitude_range[1])
+            return 1
+        return func
+
+    @staticmethod
+    def _assign(byref_arg, value):
+        target = getattr(byref_arg, "_obj", byref_arg)
+        target.value = value
+
+
+def test_apply_wfg_surfaces_out_of_range_warning_in_status(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        window.app.ad2 = AD2Sdk(backend=WaveFormsBackend(dwf=_FakeAD2ConfigureDwf()))
+        window.app.ad2.device_handle = 123
+        config = WfgConfig(channels=[WfgChannelConfig(0), WfgChannelConfig(1)])
+        config.channels[0].carrier.amplitude_v = 999.0  # above the fake device's max
+
+        status = window._apply_wfg(config)
+
+        assert "WARNING" in status
+        assert "Ch1" in status
+        assert "Ch2" not in status
+    finally:
+        window.close()
+
+
+def test_apply_wfg_reports_no_warning_when_in_range(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        window.app.ad2 = AD2Sdk(backend=WaveFormsBackend(dwf=_FakeAD2ConfigureDwf()))
+        window.app.ad2.device_handle = 123
+        config = WfgConfig(channels=[WfgChannelConfig(0), WfgChannelConfig(1)])
+
+        status = window._apply_wfg(config)
+
+        assert status == "WFG configured"
+    finally:
+        window.close()
+
+
 _TOOLTIP_COVERAGE_WIDGET_TYPES = (QDoubleSpinBox, QSpinBox, QComboBox, QCheckBox, QLineEdit)
 
 
@@ -2028,12 +2088,16 @@ def test_every_value_widget_has_a_tooltip_and_visible_marker(monkeypatch, tmp_pa
         assert not unwanted_marker, f"widgets with no tooltip but an icon marker anyway: {unwanted_marker}"
 
         kept = sum(1 for _cls, _tip, has_tip, _marked in results if has_tip)
-        # 127 (Session 41 re-narrowing) + 2 new fields this session (Session
-        # 44): custom_syringe_inner_diameter_mm/custom_syringe_stroke_mm,
-        # both genuinely non-obvious (real Qmix SDK geometry parameters with
-        # no derivation from Custom Volume), so both got tooltips per the
-        # same classification criteria, not blanket-added.
-        assert kept == 129, f"expected 129 fields with a tooltip after Session 44's Custom syringe geometry fields, found {kept}"
+        # 129 (127, Session 41 re-narrowing, + 2, Session 44's
+        # custom_syringe_inner_diameter_mm/custom_syringe_stroke_mm) + 5 new
+        # Z-scan calibration tab fields this commit (Phase 4:
+        # z_start/z_end/step_size/exposure_ms/output_dir, all genuinely
+        # non-obvious ZScanCalibration.run() parameters) = 134. This value is
+        # correct for THIS commit in isolation -- a separate, still-uncommitted
+        # TEC integration effort (enabled/sim/resource + 6 scan controls, 9
+        # fields) is expected to bump this same assertion from 134 to 143 as
+        # part of its own future commit; do not preempt that number here.
+        assert kept == 134, f"expected 134 fields with a tooltip after this commit's Z-scan controls were added, found {kept}"
 
         # Spot-check a representative sample from both sides of the Session
         # 41 classification (full list and rationale in the changelog).

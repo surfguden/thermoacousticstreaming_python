@@ -57,3 +57,12 @@ desktop.ini
 # Local manual hardware probes that can issue real Thorlabs/BPC actions.
 # Keep out of the tracked automated test tree unless reviewed and renamed.
 hardware_tests/test_bpc_piezo_probe.py
+
+# Real-hardware verification run artifacts (TIFF frames, TDMS files, dated
+# run folders) -- multiple prior sessions (piezo Z-scan Session 48, camera/
+# AD2/full-workflow smoke runs, this session's Priority 1 hardware
+# verification) have written here; despite being referenced as "gitignored"
+# in earlier changelog entries, no rule for it actually existed until now
+# (found while cleaning up after Session 51's real-hardware pass) -- these
+# are throwaway verification outputs, never meant to be committed.
+hardware_tests/output/

@@ -432,6 +432,10 @@ class MainWindow(QMainWindow):
         self._camera_preview_timer = QTimer(self)
         self._camera_preview_timer.setInterval(100)
         self._camera_preview_timer.timeout.connect(self._capture_camera_image_continuous)
+        # Checked once per position inside ZScanCalibration.run() (Phase 4) --
+        # set True by _abort_zscan(), reset False at the start of each new
+        # _start_zscan() call.
+        self._zscan_abort_requested = False
 
         self._build_state()
         self._build_layout()
@@ -614,16 +618,45 @@ class MainWindow(QMainWindow):
             "alone can't determine both inner diameter and stroke length, so geometry is "
             "supplied explicitly via Custom Inner Diameter/Max Piston Stroke below instead."
         )
-        self.custom_syringe_inner_diameter_mm = _spin(1.0, decimals=3, minimum=0.001)
+        # Range-constrained to the same conservative, plausible-syringe bounds
+        # QmixPumpBackend.configure_syringe() itself now enforces (Session 51)
+        # -- imported directly, not duplicated as separate literals, so the
+        # two can't silently drift apart. No live device readback exists for
+        # syringe geometry (unlike PiezoStage.max_travel_um), so these bounds
+        # are the qmix_backend module's own hardcoded, documented values --
+        # inner_diameter_mm from BD's published 1mL-60mL product-line range,
+        # max_piston_stroke_mm from this specific pump module's own real
+        # mechanical travel ceiling (CETONI Low Pressure Hardware Manual
+        # Section 5.1, NEM-B101-02 E: "up to 65 mm", independent of whatever
+        # syringe is mounted -- not a BD-range-derived estimate). Real-time
+        # input constraint here is a UI-layer backstop in front of that same
+        # hardcoded backend rejection, exactly mirroring the Z-scan tab's
+        # [0, max_travel_um] pattern in spirit even though the underlying
+        # limit here isn't itself live-read.
+        from .qmix_backend import (
+            MAX_SYRINGE_INNER_DIAMETER_MM,
+            MAX_SYRINGE_STROKE_MM,
+            MIN_SYRINGE_INNER_DIAMETER_MM,
+            MIN_SYRINGE_STROKE_MM,
+        )
+
+        self.custom_syringe_inner_diameter_mm = _spin(
+            4.78, decimals=3, minimum=MIN_SYRINGE_INNER_DIAMETER_MM, maximum=MAX_SYRINGE_INNER_DIAMETER_MM
+        )
         self.custom_syringe_inner_diameter_mm.setToolTip(
             "Only used when Syringe = 'Custom'. The real inner (bore) diameter of the "
             "physical syringe, in mm -- sent directly to the Qmix SDK's set_syringe_param() "
             "as inner_diameter_mm (QmixPumpBackend.configure_syringe(), Session 44). Not "
             "derived from Custom Volume above; supply the syringe's actual spec value, the "
             "same way the three named BD presets use their own published inner diameters "
-            "(Session 17), not a value back-calculated from volume."
+            "(Session 17), not a value back-calculated from volume. Range-limited to "
+            f"[{MIN_SYRINGE_INNER_DIAMETER_MM}, {MAX_SYRINGE_INNER_DIAMETER_MM}] mm (Session 51) -- "
+            "configure_syringe() rejects the same range again server-side, since no live device "
+            "readback exists to validate against instead."
         )
-        self.custom_syringe_stroke_mm = _spin(1.0, decimals=3, minimum=0.001)
+        self.custom_syringe_stroke_mm = _spin(
+            55.75, decimals=3, minimum=MIN_SYRINGE_STROKE_MM, maximum=MAX_SYRINGE_STROKE_MM
+        )
         self.custom_syringe_stroke_mm.setToolTip(
             "Only used when Syringe = 'Custom'. The real maximum piston stroke (full travel "
             "length) of the physical syringe, in mm -- sent directly to the Qmix SDK's "
@@ -632,7 +665,12 @@ class MainWindow(QMainWindow):
             "spec value. The three named BD presets instead derive this value from their "
             "nominal volume (an unconfirmed assumption, Session 17) because no authoritative "
             "BD stroke figure was available -- Custom deliberately does not repeat that "
-            "assumption on unknown hardware, and asks for the real value instead."
+            "assumption on unknown hardware, and asks for the real value instead. Range-limited "
+            f"to [{MIN_SYRINGE_STROKE_MM}, {MAX_SYRINGE_STROKE_MM}] mm (Session 51) -- the upper "
+            "bound is this pump module's own real mechanical piston-travel ceiling (CETONI Low "
+            "Pressure Hardware Manual Section 5.1, NEM-B101-02 E: up to 65mm, independent of "
+            "syringe), not a padded BD-range estimate; configure_syringe() rejects the same range "
+            "again server-side, since no live device readback exists to validate against instead."
         )
         self._update_custom_syringe_volume_enabled()
         self.syringe.currentTextChanged.connect(lambda _text: self._update_custom_syringe_volume_enabled())
@@ -1084,6 +1122,55 @@ class MainWindow(QMainWindow):
         )
         self.average_fps = QLabel("0")
 
+        # --- Z-scan calibration tab (Phase 4): piezo_zscan.ZScanCalibration's
+        # own run() parameters, exposed 1:1 -- no hidden/derived values.
+        # z_start/z_end are range-constrained to the piezo's own live-read
+        # MaxTravel (matching PiezoStage's own no-hardcoded-limit convention,
+        # Session 46) rather than left to the generic +/-1e12 _spin() default
+        # -- PiezoStage.set_position() still clamps as a second line of
+        # defense, but this UI now also constrains input in real time instead
+        # of relying on that clamp as the only guard. Disabled with range
+        # [0, 0] until _apply_zscan_range() is called (via Query Piezo Range
+        # or Start Z-Scan's own connect step) -- see zscan_range_status.
+        self.zscan_z_start_um = _spin(0.0, decimals=2, minimum=0.0, maximum=0.0)
+        self.zscan_z_start_um.setEnabled(False)
+        self.zscan_z_start_um.setToolTip(
+            "Start Z position in micrometers -- ZScanCalibration.run()'s z_start_um. Inclusive: the "
+            "first captured frame targets this position (Session 47). Range-limited to [0, MaxTravel] "
+            "read live from the connected piezo (Session 46) -- disabled until Query Piezo Range or "
+            "Start Z-Scan has connected at least once."
+        )
+        self.zscan_z_end_um = _spin(0.0, decimals=2, minimum=0.0, maximum=0.0)
+        self.zscan_z_end_um.setEnabled(False)
+        self.zscan_z_end_um.setToolTip(
+            "End Z position in micrometers -- ZScanCalibration.run()'s z_end_um, must be >= Z Start. "
+            "Inclusive: round((Z End - Z Start) / Step Size) + 1 positions are captured (Session 47's "
+            "_build_targets()); the real per-frame position embedded in each filename is the "
+            "closed-loop readback, not this nominal target. Range-limited to [0, MaxTravel] read live "
+            "from the connected piezo (Session 46) -- disabled until Query Piezo Range or Start "
+            "Z-Scan has connected at least once."
+        )
+        self.zscan_range_status = QLabel("Connect device to see valid range")
+        self.zscan_range_status.setWordWrap(True)
+        self.zscan_step_size_um = _spin(1.0, decimals=3, minimum=0.001)
+        self.zscan_step_size_um.setToolTip(
+            "Step size in micrometers between consecutive Z positions -- must be > 0. If (Z End - Z "
+            "Start) isn't an exact multiple of this value, the step count is rounded to the nearest "
+            "whole number (Session 47); the saved filename still reflects the real measured position, "
+            "not the nominal target."
+        )
+        self.zscan_exposure_ms = _spin(40.0, decimals=3, minimum=0.001)
+        self.zscan_exposure_ms.setToolTip(
+            "Camera exposure time in milliseconds, applied once via configure_exposure_time() at the "
+            "start of the scan (Session 47) -- independent of whatever the manual Camera tab's own "
+            "ExposureTime(ms) is currently set to."
+        )
+        self.zscan_output_dir = QLineEdit(r"C:\test\zscan_calibration")
+        self.zscan_output_dir.setToolTip(
+            "Folder where each frame is saved as z_<measured_um>um.tif (real closed-loop readback, "
+            "not the commanded target -- Session 47). Created if it doesn't already exist."
+        )
+
     def _make_wfg_channel_state(self, index: int, frequency: float, amplitude: float) -> dict[str, object]:
         # frequency/amplitude are passed in Hz (caller-facing default values);
         # all frequency-class widgets below display/store kHz -- see the
@@ -1228,6 +1315,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._pump_tab(), "Pump&Valve")
         self.tabs.addTab(self._camera_tab(), "Camera")
         self.tabs.addTab(self._experiment_tab(), "Experiment")
+        self.tabs.addTab(self._zscan_tab(), "Z-Scan")
         self.tabs.currentChanged.connect(self._seed_experiment_ad2_if_experiment_tab)
         body.addWidget(self.tabs, 1)
         body.addWidget(self._error_panel())
@@ -1960,6 +2048,184 @@ class MainWindow(QMainWindow):
         outer.addWidget(scroll)
         return group
 
+    # --- Z-scan calibration tab (Phase 4) ---
+
+    def _zscan_tab(self) -> QWidget:
+        tab = QWidget()
+        grid = QGridLayout(tab)
+        grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        grid.addWidget(self._zscan_parameters_group(), 0, 0)
+        grid.addWidget(self._zscan_control_group(), 0, 1)
+        grid.setColumnStretch(2, 1)
+        return tab
+
+    def _zscan_parameters_group(self) -> QGroupBox:
+        group = QGroupBox("Z-Scan Calibration Parameters")
+        outer = QVBoxLayout(group)
+        form = QFormLayout()
+        form.addRow("Z Start (um)", self.zscan_z_start_um)
+        form.addRow("Z End (um)", self.zscan_z_end_um)
+        form.addRow("Step Size (um)", self.zscan_step_size_um)
+        form.addRow("Exposure Time (ms)", self.zscan_exposure_ms)
+        output_row = QHBoxLayout()
+        output_row.setContentsMargins(0, 0, 0, 0)
+        output_row.addWidget(self._wrap_with_tooltip_icon(self.zscan_output_dir))
+        browse = QPushButton("...")
+        browse.clicked.connect(lambda: self._browse_folder(self.zscan_output_dir))
+        output_row.addWidget(browse)
+        output_container = QWidget()
+        output_container.setLayout(output_row)
+        form.addRow("Output Directory", output_container)
+        outer.addLayout(form)
+        self._add_tooltip_icons(form)
+        outer.addWidget(self.zscan_range_status)
+        return group
+
+    def _zscan_control_group(self) -> QGroupBox:
+        group = QGroupBox("Scan Control")
+        layout = QVBoxLayout(group)
+        query_range = QPushButton("Query Piezo Range")
+        query_range.clicked.connect(self._query_zscan_range)
+        start = QPushButton("Start Z-Scan")
+        start.clicked.connect(self._start_zscan)
+        abort = QPushButton("Abort Z-Scan")
+        abort.clicked.connect(self._abort_zscan)
+        layout.addWidget(query_range)
+        layout.addWidget(start)
+        layout.addWidget(abort)
+        hint = QLabel(
+            "Requires the Camera tab's own Configure Camera to have already been run this session -- "
+            "this scan reuses the existing camera connection, it does not open one of its own. Query "
+            "Piezo Range connects briefly to read the device's live MaxTravel before you commit to a "
+            "scan; Start Z-Scan also does this on its own connect if you skip that step."
+        )
+        hint.setWordWrap(True)
+        hint.setMaximumWidth(260)
+        layout.addWidget(hint)
+        layout.addStretch()
+        return group
+
+    def _query_zscan_range(self) -> None:
+        from .thorlabs_piezo import PiezoStage, PiezoStageError
+
+        piezo = PiezoStage()
+        try:
+            piezo.connect()
+        except PiezoStageError as exc:
+            self.app.check_loop_error(str(exc))
+            self._set_status(f"Z-scan error: piezo connect failed: {exc}")
+            return
+        max_travel_um = piezo.max_travel_um
+        try:
+            piezo.disconnect()
+        except Exception:  # pragma: no cover - defensive cleanup path
+            pass
+        self._apply_zscan_range(max_travel_um)
+        self._set_status("Piezo range queried.")
+
+    def _apply_zscan_range(self, max_travel_um: float | None) -> None:
+        if max_travel_um is None:
+            return
+        self.zscan_z_start_um.setRange(0.0, max_travel_um)
+        self.zscan_z_end_um.setRange(0.0, max_travel_um)
+        self.zscan_z_start_um.setEnabled(True)
+        self.zscan_z_end_um.setEnabled(True)
+        self.zscan_range_status.setText(f"Valid range: 0.00 - {max_travel_um:.2f} um (live-read from device MaxTravel)")
+
+    def _start_zscan(self) -> None:
+        if self._busy_count:
+            self._set_status("Busy")
+            return
+        from .thorlabs_piezo import PiezoStage, PiezoStageError
+
+        if getattr(self.app.camera, "handle", None) is None:
+            self._set_status("Z-scan error: camera is not initialized -- run Configure Camera on the Camera tab first.")
+            return
+
+        output_dir = Path(self.zscan_output_dir.text())
+        step_size_um = float(self.zscan_step_size_um.value())
+        exposure_ms = float(self.zscan_exposure_ms.value())
+
+        piezo = PiezoStage()
+        try:
+            piezo.connect()
+        except PiezoStageError as exc:
+            self.app.check_loop_error(str(exc))
+            self._set_status(f"Z-scan error: piezo connect failed: {exc}")
+            return
+
+        # Apply/refresh the live MaxTravel-based range before reading Z
+        # Start/End -- on a first click (fields still disabled from a fresh
+        # tab, never queried) this both enables the fields and means the
+        # values read below are 0.0/0.0 (safe, just a degenerate single-frame
+        # scan); Query Piezo Range lets a user populate real values before
+        # ever clicking Start.
+        self._apply_zscan_range(piezo.max_travel_um)
+        z_start_um = float(self.zscan_z_start_um.value())
+        z_end_um = float(self.zscan_z_end_um.value())
+
+        # Real ClosedLoop confirmation dialog (Session 45/46's design
+        # decision), shown synchronously here -- before the scan's own
+        # background QThread starts -- since a QMessageBox must be shown
+        # from the UI thread, not from inside _run_action()'s worker thread.
+        if piezo.needs_closed_loop_confirmation():
+            answer = QMessageBox.question(
+                self,
+                "Confirm ClosedLoop Switch",
+                f"Piezo stage is currently in {piezo.position_control_mode} mode. Z-scan requires "
+                "ClosedLoop mode for position accuracy. Switch now?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                piezo.disconnect()
+                self._set_status("Z-scan cancelled: ClosedLoop switch declined.")
+                return
+            try:
+                piezo.switch_to_closed_loop()
+            except PiezoStageError as exc:
+                piezo.disconnect()
+                self.app.check_loop_error(str(exc))
+                self._set_status(f"Z-scan error: ClosedLoop switch failed: {exc}")
+                return
+
+        self._zscan_abort_requested = False
+        self._run_action(
+            lambda progress: self._run_zscan(piezo, z_start_um, z_end_um, step_size_um, exposure_ms, output_dir),
+            "Running Z-scan",
+        )
+
+    def _run_zscan(
+        self,
+        piezo,
+        z_start_um: float,
+        z_end_um: float,
+        step_size_um: float,
+        exposure_ms: float,
+        output_dir: Path,
+    ) -> str:
+        from .piezo_zscan import ZScanCalibration
+
+        scan = ZScanCalibration(piezo=piezo, camera=self.app.camera, should_abort=lambda: self._zscan_abort_requested)
+        try:
+            results = scan.run(
+                z_start_um=z_start_um,
+                z_end_um=z_end_um,
+                step_size_um=step_size_um,
+                output_dir=output_dir,
+                exposure_ms=exposure_ms,
+            )
+        finally:
+            try:
+                piezo.disconnect()
+            except Exception:  # pragma: no cover - defensive cleanup path
+                pass
+        return f"Z-scan complete: {len(results)} frames written to {output_dir}"
+
+    def _abort_zscan(self) -> None:
+        self._zscan_abort_requested = True
+        self._set_status("Z-scan abort requested")
+
     def _experiment_tab(self) -> QWidget:
         tab = QWidget()
         grid = QGridLayout(tab)
@@ -2528,6 +2794,20 @@ class MainWindow(QMainWindow):
             progress("status", "Writing WFG settings")
         self.app.ad2.config_wfg(config)
         self.app.ad2.wfg_start_stop_all_ch(config.running)
+        # Session 51: config_wfg()/wfg_start_stop_all_ch() -> WaveFormsBackend.
+        # configure_wfg() now sets channel.out_of_range=True per channel
+        # whenever the real device's own live AnalogOutNodeFrequencyInfo()/
+        # AmplitudeInfo() range required clamping the requested amplitude/
+        # frequency -- surfaced here so an operator never unknowingly runs
+        # with a silently-substituted value (the WaveForms SDK itself never
+        # errors on this, it just clamps and reports success).
+        if not config.check_valid():
+            # channel_index is 0-based internally; this project's own UI/TDMS
+            # labeling convention (Ch1/Ch2, _wfg_properties()) is 1-based.
+            out_of_range_channels = [
+                f"Ch{channel.channel_index + 1}" for channel in config.channels if channel.out_of_range
+            ]
+            return f"WFG configured -- WARNING: amplitude/frequency clamped to device limits on {', '.join(out_of_range_channels)}"
         return "WFG configured"
 
     def _mso_config_values(self) -> dict[str, object]:

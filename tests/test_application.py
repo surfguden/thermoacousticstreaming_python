@@ -40,7 +40,15 @@ from thermo_acoustic.imaq import (
 )
 from thermo_acoustic.instruments import AD2Sdk, CetoniPump, HamamatsuCamera, PriorZMotor, RegloPumpControl, SimulatedAD2Sdk, Valve
 from thermo_acoustic.messages import Message, MessageName
-from thermo_acoustic.qmix_backend import QmixPumpBackend, SYRINGE_PRESETS
+from thermo_acoustic.qmix_backend import (
+    MAX_SYRINGE_INNER_DIAMETER_MM,
+    MAX_SYRINGE_STROKE_MM,
+    MIN_SYRINGE_INNER_DIAMETER_MM,
+    MIN_SYRINGE_STROKE_MM,
+    QmixPumpBackend,
+    QmixPumpError,
+    SYRINGE_PRESETS,
+)
 from thermo_acoustic.serial_config import (
     visa_configure_serial_port,
     visa_configure_serial_port_instr,
@@ -945,6 +953,178 @@ def test_qmix_set_fill_level_treats_value_as_absolute_ml_not_fraction(tmp_path):
     )
 
 
+# -- Custom syringe geometry bounds (Session 51): no live device readback
+# exists for inner_diameter_mm/max_piston_stroke_mm (unlike max_flow_rate_ul_min/
+# max_volume_ml, read back from the pump right after set_syringe_param()
+# succeeds), so configure_syringe() rejects implausible values itself before
+# ever calling into the SDK -- these tests confirm that rejection, not just
+# document it.
+
+def test_configure_syringe_rejects_inner_diameter_below_minimum(tmp_path):
+    FakeQmixPumpModule.Pump.instances = []
+    backend = QmixPumpBackend(qmixbus=FakeQmixBusModule, qmixpump=FakeQmixPumpModule)
+    backend.initialize(tmp_path / "qmix-config")
+
+    with pytest.raises(QmixPumpError, match="inner_diameter_mm"):
+        backend.configure_syringe(
+            {"inner_diameter_mm": MIN_SYRINGE_INNER_DIAMETER_MM - 0.1, "max_piston_stroke_mm": 55.0}
+        )
+
+    pump = FakeQmixPumpModule.Pump.instances[0]
+    assert not any(call[0] == "set_syringe_param" for call in pump.calls)
+
+
+def test_configure_syringe_rejects_inner_diameter_above_maximum(tmp_path):
+    FakeQmixPumpModule.Pump.instances = []
+    backend = QmixPumpBackend(qmixbus=FakeQmixBusModule, qmixpump=FakeQmixPumpModule)
+    backend.initialize(tmp_path / "qmix-config")
+
+    with pytest.raises(QmixPumpError, match="inner_diameter_mm"):
+        backend.configure_syringe(
+            {"inner_diameter_mm": MAX_SYRINGE_INNER_DIAMETER_MM + 0.1, "max_piston_stroke_mm": 55.0}
+        )
+
+    pump = FakeQmixPumpModule.Pump.instances[0]
+    assert not any(call[0] == "set_syringe_param" for call in pump.calls)
+
+
+def test_configure_syringe_rejects_stroke_below_minimum(tmp_path):
+    FakeQmixPumpModule.Pump.instances = []
+    backend = QmixPumpBackend(qmixbus=FakeQmixBusModule, qmixpump=FakeQmixPumpModule)
+    backend.initialize(tmp_path / "qmix-config")
+
+    with pytest.raises(QmixPumpError, match="max_piston_stroke_mm"):
+        backend.configure_syringe(
+            {"inner_diameter_mm": 10.0, "max_piston_stroke_mm": MIN_SYRINGE_STROKE_MM - 0.1}
+        )
+
+    pump = FakeQmixPumpModule.Pump.instances[0]
+    assert not any(call[0] == "set_syringe_param" for call in pump.calls)
+
+
+def test_configure_syringe_rejects_stroke_above_maximum(tmp_path):
+    FakeQmixPumpModule.Pump.instances = []
+    backend = QmixPumpBackend(qmixbus=FakeQmixBusModule, qmixpump=FakeQmixPumpModule)
+    backend.initialize(tmp_path / "qmix-config")
+
+    with pytest.raises(QmixPumpError, match="max_piston_stroke_mm"):
+        backend.configure_syringe(
+            {"inner_diameter_mm": 10.0, "max_piston_stroke_mm": MAX_SYRINGE_STROKE_MM + 0.1}
+        )
+
+    pump = FakeQmixPumpModule.Pump.instances[0]
+    assert not any(call[0] == "set_syringe_param" for call in pump.calls)
+
+
+def test_configure_syringe_rejects_stroke_between_real_ceiling_and_old_padded_bound(tmp_path):
+    # Regression guard for the exact gap a prior version of MAX_SYRINGE_STROKE_MM
+    # left open: that constant was originally set to 200.0 (a BD-volume-range
+    # -derived padding estimate), which silently accepted anything up to
+    # 200mm even though this pump module's own real mechanical piston-travel
+    # ceiling is 65mm (CETONI Low Pressure Hardware Manual Section 5.1,
+    # NEM-B101-02 E) -- a value in (65, 200) would have been accepted and
+    # forwarded to set_syringe_param() before the fix, risking exactly the
+    # over-travel damage that manual's own ATTENTION warning describes.
+    # 100.0mm sits squarely in that now-closed gap.
+    FakeQmixPumpModule.Pump.instances = []
+    backend = QmixPumpBackend(qmixbus=FakeQmixBusModule, qmixpump=FakeQmixPumpModule)
+    backend.initialize(tmp_path / "qmix-config")
+    assert MAX_SYRINGE_STROKE_MM < 100.0 < 200.0, "this test only proves what it claims if 100.0 is still inside the closed gap"
+
+    with pytest.raises(QmixPumpError, match="max_piston_stroke_mm"):
+        backend.configure_syringe({"inner_diameter_mm": 10.0, "max_piston_stroke_mm": 100.0})
+
+    pump = FakeQmixPumpModule.Pump.instances[0]
+    assert not any(call[0] == "set_syringe_param" for call in pump.calls)
+
+
+def test_configure_syringe_accepts_values_exactly_at_bounds(tmp_path):
+    # Bounds are inclusive -- a value exactly at MIN/MAX must not be rejected.
+    FakeQmixPumpModule.Pump.instances = []
+    backend = QmixPumpBackend(qmixbus=FakeQmixBusModule, qmixpump=FakeQmixPumpModule)
+    backend.initialize(tmp_path / "qmix-config")
+
+    backend.configure_syringe(
+        {"inner_diameter_mm": MIN_SYRINGE_INNER_DIAMETER_MM, "max_piston_stroke_mm": MIN_SYRINGE_STROKE_MM}
+    )
+    backend.configure_syringe(
+        {"inner_diameter_mm": MAX_SYRINGE_INNER_DIAMETER_MM, "max_piston_stroke_mm": MAX_SYRINGE_STROKE_MM}
+    )
+
+    pump = FakeQmixPumpModule.Pump.instances[0]
+    assert ("set_syringe_param", MIN_SYRINGE_INNER_DIAMETER_MM, MIN_SYRINGE_STROKE_MM) in pump.calls
+    assert ("set_syringe_param", MAX_SYRINGE_INNER_DIAMETER_MM, MAX_SYRINGE_STROKE_MM) in pump.calls
+
+
+def test_configure_syringe_named_bd_presets_still_pass_the_new_bounds():
+    # All three named presets must remain valid under the new bounds --
+    # confirms the bounds were derived to comfortably include the existing,
+    # already-hardware-confirmed presets, not accidentally narrower than them.
+    for diameter_mm, stroke_mm in SYRINGE_PRESETS.values():
+        assert MIN_SYRINGE_INNER_DIAMETER_MM <= diameter_mm <= MAX_SYRINGE_INNER_DIAMETER_MM
+        assert MIN_SYRINGE_STROKE_MM <= stroke_mm <= MAX_SYRINGE_STROKE_MM
+
+
+# -- Pump flow rate vs. the pump's own reported max_flow_rate_ul_min
+# (Session 51): the value was already being read back from the device
+# (initialize()/configure_syringe()/configure_flow_unit() all populate it),
+# but generate_flow() never actually compared against it -- these tests
+# confirm the new rejection, in both directions (dispense/aspirate).
+
+def test_generate_flow_rejects_dispense_rate_above_max(tmp_path):
+    FakeQmixPumpModule.Pump.instances = []
+    backend = QmixPumpBackend(qmixbus=FakeQmixBusModule, qmixpump=FakeQmixPumpModule)
+    backend.initialize(tmp_path / "qmix-config")
+    assert backend.max_flow_rate_ul_min == 5000.0
+
+    with pytest.raises(QmixPumpError, match="max_flow_rate_ul_min"):
+        backend.generate_flow(5000.1)
+
+    pump = FakeQmixPumpModule.Pump.instances[0]
+    assert not any(call[0] == "generate_flow" for call in pump.calls)
+
+
+def test_generate_flow_rejects_aspirate_rate_above_max_magnitude(tmp_path):
+    # Negative flow_rate means aspirate (generate_flow()'s own docstring) --
+    # the magnitude must still be checked, not just the raw signed value.
+    FakeQmixPumpModule.Pump.instances = []
+    backend = QmixPumpBackend(qmixbus=FakeQmixBusModule, qmixpump=FakeQmixPumpModule)
+    backend.initialize(tmp_path / "qmix-config")
+
+    with pytest.raises(QmixPumpError, match="max_flow_rate_ul_min"):
+        backend.generate_flow(-5000.1)
+
+    pump = FakeQmixPumpModule.Pump.instances[0]
+    assert not any(call[0] == "generate_flow" for call in pump.calls)
+
+
+def test_generate_flow_accepts_rate_exactly_at_max(tmp_path):
+    # Inclusive bound -- exactly at max_flow_rate_ul_min must not be rejected.
+    FakeQmixPumpModule.Pump.instances = []
+    backend = QmixPumpBackend(qmixbus=FakeQmixBusModule, qmixpump=FakeQmixPumpModule)
+    backend.initialize(tmp_path / "qmix-config")
+
+    backend.generate_flow(-5000.0)
+
+    pump = FakeQmixPumpModule.Pump.instances[0]
+    assert ("generate_flow", -5000.0) in pump.calls
+
+
+def test_generate_flow_passes_through_when_max_flow_rate_not_yet_known():
+    # No live max_flow_rate_ul_min at all (e.g. configure_syringe()/
+    # initialize() never populated it) -- nothing to validate against, so
+    # this must behave exactly as before the Session 51 change: pass through
+    # unchanged, not silently invent a limit.
+    FakeQmixPumpModule.Pump.instances = []
+    pump_instance = FakeQmixPumpModule.Pump()
+    backend = QmixPumpBackend(qmixbus=FakeQmixBusModule, qmixpump=FakeQmixPumpModule, pump=pump_instance)
+    assert backend.max_flow_rate_ul_min is None
+
+    backend.generate_flow(999999.0)
+
+    assert ("generate_flow", 999999.0) in pump_instance.calls
+
+
 class FakeCameraBackend:
     def __init__(self):
         self.calls = []
@@ -1359,6 +1539,87 @@ def test_waveforms_low_level_wrappers():
     assert "FDwfDigitalOutWaitSet" in called
 
 
+# -- AD2 amplitude/frequency clamping against the device's own live
+# AnalogOutNode*Info() range (Session 51). Purpose-built fake, not the
+# generic FakeDwf above -- FakeDwf's blanket "*Info" handling returns a
+# degenerate (100.0, 100.0) for every Info call (frequency and amplitude
+# indistinguishable), which can't exercise clamping in a meaningful,
+# unambiguous direction.
+class FakeAD2ConfigureDwf:
+    def __init__(self, frequency_range=(10.0, 1_000_000.0), amplitude_range=(-5.0, 5.0)):
+        self.frequency_range = frequency_range
+        self.amplitude_range = amplitude_range
+        self.calls = []
+
+    def __getattr__(self, name):
+        def func(*args):
+            self.calls.append((name, args))
+            if name == "FDwfAnalogOutNodeFrequencyInfo":
+                self._assign(args[3], self.frequency_range[0])
+                self._assign(args[4], self.frequency_range[1])
+            elif name == "FDwfAnalogOutNodeAmplitudeInfo":
+                self._assign(args[3], self.amplitude_range[0])
+                self._assign(args[4], self.amplitude_range[1])
+            return 1
+        return func
+
+    @staticmethod
+    def _assign(byref_arg, value):
+        target = getattr(byref_arg, "_obj", byref_arg)
+        target.value = value
+
+
+def test_configure_wfg_clamps_out_of_range_amplitude_and_frequency_and_flags_channel():
+    fake = FakeAD2ConfigureDwf(frequency_range=(10.0, 1_000_000.0), amplitude_range=(-5.0, 5.0))
+    backend = WaveFormsBackend(dwf=fake)
+    channel = WfgChannelConfig(0)
+    channel.carrier.frequency_hz = 2_000_000.0  # above the fake device's max
+    channel.carrier.amplitude_v = 10.0  # above the fake device's max
+    config = WfgConfig(channels=[channel])
+
+    backend.configure_wfg(123, config)
+
+    assert channel.out_of_range is True
+    assert config.check_valid() is False
+    frequency_set_calls = [args for name, args in fake.calls if name == "FDwfAnalogOutNodeFrequencySet"]
+    amplitude_set_calls = [args for name, args in fake.calls if name == "FDwfAnalogOutNodeAmplitudeSet"]
+    assert frequency_set_calls[0][3].value == 1_000_000.0, "must clamp to the device's real max, not send the requested value unchanged"
+    assert amplitude_set_calls[0][3].value == 5.0, "must clamp to the device's real max, not send the requested value unchanged"
+
+
+def test_configure_wfg_leaves_in_range_values_unclamped_and_not_out_of_range():
+    fake = FakeAD2ConfigureDwf(frequency_range=(10.0, 1_000_000.0), amplitude_range=(-5.0, 5.0))
+    backend = WaveFormsBackend(dwf=fake)
+    channel = WfgChannelConfig(0)
+    channel.carrier.frequency_hz = 1000.0
+    channel.carrier.amplitude_v = 1.0
+    config = WfgConfig(channels=[channel])
+
+    backend.configure_wfg(123, config)
+
+    assert channel.out_of_range is False
+    assert config.check_valid() is True
+    frequency_set_calls = [args for name, args in fake.calls if name == "FDwfAnalogOutNodeFrequencySet"]
+    amplitude_set_calls = [args for name, args in fake.calls if name == "FDwfAnalogOutNodeAmplitudeSet"]
+    assert frequency_set_calls[0][3].value == 1000.0
+    assert amplitude_set_calls[0][3].value == 1.0
+
+
+def test_configure_wfg_checks_fm_mod_node_too_when_enabled():
+    fake = FakeAD2ConfigureDwf(frequency_range=(10.0, 1_000_000.0), amplitude_range=(-5.0, 5.0))
+    backend = WaveFormsBackend(dwf=fake)
+    channel = WfgChannelConfig(0)
+    channel.carrier.frequency_hz = 1000.0
+    channel.carrier.amplitude_v = 1.0
+    channel.fm_mod.enable = True
+    channel.fm_mod.amplitude_v = 999.0  # above the fake device's max
+    config = WfgConfig(channels=[channel])
+
+    backend.configure_wfg(123, config)
+
+    assert channel.out_of_range is True, "an out-of-range FM Mod node must flag the channel too, not just Carrier"
+
+
 def test_write_tdms_verification_catches_truncated_write(tmp_path, monkeypatch):
     class TruncatingTdmsWriter:
         def __init__(self, path):
@@ -1462,11 +1723,13 @@ def test_experiment2_writes_labview_metadata_tdms(tmp_path, monkeypatch):
         "WFGRunCh1",
         "WFGWaitCh1",
         "RepeatCh1",
+        "WFGOutOfRangeCh1",
         "WFGFreqCh2",
         "WFGAmpCh2",
         "WFGRunCh2",
         "WFGWaitCh2",
         "RepeatCh2",
+        "WFGOutOfRangeCh2",
         "DORun",
         "DOWait",
         "DOFreq",
@@ -1485,6 +1748,8 @@ def test_experiment2_writes_labview_metadata_tdms(tmp_path, monkeypatch):
     ):
         assert field in properties
     assert properties["DOFreq"] == 100.0
+    assert properties["WFGOutOfRangeCh1"] is False
+    assert properties["WFGOutOfRangeCh2"] is False
     channels = {item.name: item for item in objects if getattr(item, "kind", "") == "channel"}
     assert channels["ImageName"].data == ["frame_00000.tiff", "frame_00001.tiff"]
     assert len(channels["Timestamp"].data) == 2
@@ -1697,3 +1962,96 @@ def test_hamamatsu_dcam_backend_uses_sdk_wrapper(tmp_path):
     assert ("prop_setgetvalue", "EXPOSURETIME", 0.05) in handle.calls
     assert ("cap_firetrigger",) in handle.calls
     assert not handle.opened
+
+
+# -- Camera ROI pre-flight validation (Session 51): DCAM's own SUBARRAY
+# properties already reject an invalid combination via the existing
+# _check()/prop_setgetvalue() calls (confirmed by reading the vendored DCAM
+# error enum: INVALIDSUBARRAY = "SUBARRAYHPOS + SUBARRAYHSIZE is greater
+# than the number of horizontal pixel of sensor") -- these tests confirm
+# the new pre-flight check catches the same condition earlier, with a
+# clearer message, and before any SDK write happens at all.
+
+def test_validate_roi_against_limits_accepts_in_range_roi():
+    from thermo_acoustic.hamamatsu_dcam import HamamatsuDcamBackend
+
+    backend = HamamatsuDcamBackend()
+    limits = SubRegionLimits(
+        horizontal_offset=MinMaxInc(0, 2304, 1),
+        vertical_offset=MinMaxInc(0, 2304, 1),
+        horizontal_size=MinMaxInc(1, 2304, 1),
+        vertical_size=MinMaxInc(1, 2304, 1),
+    )
+    current_roi = SubRegion(0, 0, 2304, 2304)
+
+    backend._validate_roi_against_limits(SubRegion(0, 0, 100, 120), limits, current_roi)
+
+
+def test_validate_roi_against_limits_rejects_size_above_sensor_max():
+    from thermo_acoustic.hamamatsu_dcam import HamamatsuDcamBackend, HamamatsuDcamError
+
+    backend = HamamatsuDcamBackend()
+    limits = SubRegionLimits(
+        horizontal_offset=MinMaxInc(0, 2304, 1),
+        vertical_offset=MinMaxInc(0, 2304, 1),
+        horizontal_size=MinMaxInc(1, 2304, 1),
+        vertical_size=MinMaxInc(1, 2304, 1),
+    )
+    current_roi = SubRegion(0, 0, 2304, 2304)
+
+    with pytest.raises(HamamatsuDcamError, match="horizontal_size"):
+        backend._validate_roi_against_limits(SubRegion(0, 0, 5000, 120), limits, current_roi)
+
+
+def test_validate_roi_against_limits_rejects_offset_plus_size_exceeding_sensor():
+    # Mirrors DCAM's own INVALIDSUBARRAY condition: each of offset/size is
+    # individually in range, but their sum exceeds the sensor's real pixel
+    # count -- must still be rejected.
+    from thermo_acoustic.hamamatsu_dcam import HamamatsuDcamBackend, HamamatsuDcamError
+
+    backend = HamamatsuDcamBackend()
+    limits = SubRegionLimits(
+        horizontal_offset=MinMaxInc(0, 2304, 1),
+        vertical_offset=MinMaxInc(0, 2304, 1),
+        horizontal_size=MinMaxInc(1, 2304, 1),
+        vertical_size=MinMaxInc(1, 2304, 1),
+    )
+    current_roi = SubRegion(0, 0, 2304, 2304)
+
+    with pytest.raises(HamamatsuDcamError, match="exceeds the sensor's real horizontal pixel count"):
+        backend._validate_roi_against_limits(SubRegion(2000, 0, 2000, 120), limits, current_roi)
+
+
+def test_validate_roi_against_limits_uses_current_size_when_size_not_being_changed():
+    # horizontal_size=0 means configure_roi() won't call SUBARRAYHSIZE's Set
+    # this time -- the offset+size check must fall back to the *current*
+    # size (already in effect), not silently skip the combined check.
+    from thermo_acoustic.hamamatsu_dcam import HamamatsuDcamBackend, HamamatsuDcamError
+
+    backend = HamamatsuDcamBackend()
+    limits = SubRegionLimits(
+        horizontal_offset=MinMaxInc(0, 2304, 1),
+        vertical_offset=MinMaxInc(0, 2304, 1),
+        horizontal_size=MinMaxInc(1, 2304, 1),
+        vertical_size=MinMaxInc(1, 2304, 1),
+    )
+    current_roi = SubRegion(0, 0, 2304, 2304)  # full-width, already in effect
+
+    with pytest.raises(HamamatsuDcamError, match="exceeds the sensor's real horizontal pixel count"):
+        backend._validate_roi_against_limits(SubRegion(100, 0, 0, 0), limits, current_roi)
+
+
+def test_configure_roi_rejects_out_of_range_roi_before_any_sdk_write():
+    from thermo_acoustic.hamamatsu_dcam import HamamatsuDcamBackend, HamamatsuDcamError
+
+    backend = HamamatsuDcamBackend()
+    backend.dcam_module = FakeDcamModule
+    backend.dcamapi = FakeDcamApi
+    handle = backend.open_camera()
+
+    with pytest.raises(HamamatsuDcamError, match="horizontal_size"):
+        backend.configure_roi(SubRegion(0, 0, 5000, 120))
+
+    assert not any(call[0] == "prop_setgetvalue" and call[1] == "SUBARRAYHSIZE" for call in handle.calls), (
+        "an out-of-range ROI must be rejected before any SUBARRAY property is actually written"
+    )

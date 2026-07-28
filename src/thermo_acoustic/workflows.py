@@ -182,6 +182,7 @@ class Experiment2:
                 f"WFGRun{suffix}": "",
                 f"WFGWait{suffix}": "",
                 f"Repeat{suffix}": "",
+                f"WFGOutOfRange{suffix}": "",
             }
         return {
             f"WFGFreq{suffix}": channel.carrier.frequency_hz,
@@ -189,6 +190,12 @@ class Experiment2:
             f"WFGRun{suffix}": channel.trigger.sec_run,
             f"WFGWait{suffix}": channel.trigger.sec_wait,
             f"Repeat{suffix}": channel.trigger.repeat_count,
+            # Session 51: True whenever WaveFormsBackend.configure_wfg() had to
+            # clamp this channel's carrier/FM-mod frequency or amplitude to
+            # the real device's own live AnalogOutNode*Info() range -- so a
+            # silently-substituted drive value is recorded in the data itself,
+            # not just surfaced transiently in the UI status line.
+            f"WFGOutOfRange{suffix}": channel.out_of_range,
         }
 
     def _camera_properties(self, settings: dict[str, Any]) -> dict[str, Any]:

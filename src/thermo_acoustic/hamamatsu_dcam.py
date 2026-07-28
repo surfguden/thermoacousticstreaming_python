@@ -94,6 +94,16 @@ class HamamatsuDcamBackend:
                 horizontal_size=int(roi.get("horizontal_size", roi.get("width", 0)) or 0),
                 vertical_size=int(roi.get("vertical_size", roi.get("height", 0)) or 0),
             )
+        # Session 51: pre-flight check against the sensor's own real, live
+        # limits -- DCAM's own SUBARRAY properties already reject an invalid
+        # combination (INVALIDSUBARRAY, e.g. SUBARRAYHPOS + SUBARRAYHSIZE >
+        # sensor width) via the existing _check()/prop_setgetvalue() calls
+        # below, so this was never a silent-acceptance risk -- this just
+        # catches the same condition earlier, with a clearer, ROI-specific
+        # application-level message instead of a generic DCAM error surfacing
+        # only after the SDK round-trip.
+        limits, current_roi = self.read_subregion_limits_and_value()
+        self._validate_roi_against_limits(roi, limits, current_roi)
         props = self.dcam_module.DCAM_IDPROP
         mode = self.dcam_module.DCAMPROP.MODE
         self._check(self.dcam.prop_setvalue(props.SUBARRAYMODE, mode.OFF), "set SUBARRAYMODE off")
@@ -104,6 +114,54 @@ class HamamatsuDcamBackend:
         self._check(self.dcam.prop_setgetvalue(props.SUBARRAYHPOS, max(roi.horizontal_offset, 0)), "set SUBARRAYHPOS")
         self._check(self.dcam.prop_setgetvalue(props.SUBARRAYVPOS, max(roi.vertical_offset, 0)), "set SUBARRAYVPOS")
         self._check(self.dcam.prop_setvalue(props.SUBARRAYMODE, mode.ON), "set SUBARRAYMODE on")
+
+    def _validate_roi_against_limits(self, roi: SubRegion, limits: SubRegionLimits, current_roi: SubRegion) -> None:
+        if roi.horizontal_size > 0 and not (limits.horizontal_size.minimum <= roi.horizontal_size <= limits.horizontal_size.maximum):
+            raise HamamatsuDcamError(
+                f"ROI horizontal_size={roi.horizontal_size} is outside the sensor's real "
+                f"[{limits.horizontal_size.minimum}, {limits.horizontal_size.maximum}] range -- "
+                "rejected before reaching the DCAM SDK."
+            )
+        if roi.vertical_size > 0 and not (limits.vertical_size.minimum <= roi.vertical_size <= limits.vertical_size.maximum):
+            raise HamamatsuDcamError(
+                f"ROI vertical_size={roi.vertical_size} is outside the sensor's real "
+                f"[{limits.vertical_size.minimum}, {limits.vertical_size.maximum}] range -- "
+                "rejected before reaching the DCAM SDK."
+            )
+        horizontal_offset = max(roi.horizontal_offset, 0)
+        if not (limits.horizontal_offset.minimum <= horizontal_offset <= limits.horizontal_offset.maximum):
+            raise HamamatsuDcamError(
+                f"ROI horizontal_offset={horizontal_offset} is outside the sensor's real "
+                f"[{limits.horizontal_offset.minimum}, {limits.horizontal_offset.maximum}] range -- "
+                "rejected before reaching the DCAM SDK."
+            )
+        vertical_offset = max(roi.vertical_offset, 0)
+        if not (limits.vertical_offset.minimum <= vertical_offset <= limits.vertical_offset.maximum):
+            raise HamamatsuDcamError(
+                f"ROI vertical_offset={vertical_offset} is outside the sensor's real "
+                f"[{limits.vertical_offset.minimum}, {limits.vertical_offset.maximum}] range -- "
+                "rejected before reaching the DCAM SDK."
+            )
+        # Combined check -- mirrors DCAM's own documented INVALIDSUBARRAY
+        # condition ("SUBARRAYHPOS + SUBARRAYHSIZE is greater than the number
+        # of horizontal pixel of sensor"). Uses whichever size will actually
+        # be in effect after this call: the requested size if this call is
+        # changing it, otherwise the size already in effect (configure_roi()
+        # itself only calls SUBARRAYHSIZE/VSIZE's Set when size > 0).
+        effective_horizontal_size = roi.horizontal_size if roi.horizontal_size > 0 else current_roi.horizontal_size
+        if effective_horizontal_size and horizontal_offset + effective_horizontal_size > limits.horizontal_size.maximum:
+            raise HamamatsuDcamError(
+                f"ROI horizontal_offset({horizontal_offset}) + horizontal_size({effective_horizontal_size}) "
+                f"= {horizontal_offset + effective_horizontal_size} exceeds the sensor's real horizontal "
+                f"pixel count ({limits.horizontal_size.maximum}) -- rejected before reaching the DCAM SDK."
+            )
+        effective_vertical_size = roi.vertical_size if roi.vertical_size > 0 else current_roi.vertical_size
+        if effective_vertical_size and vertical_offset + effective_vertical_size > limits.vertical_size.maximum:
+            raise HamamatsuDcamError(
+                f"ROI vertical_offset({vertical_offset}) + vertical_size({effective_vertical_size}) "
+                f"= {vertical_offset + effective_vertical_size} exceeds the sensor's real vertical "
+                f"pixel count ({limits.vertical_size.maximum}) -- rejected before reaching the DCAM SDK."
+            )
 
     def configure_snapshot(self, settings: dict | None = None) -> None:
         if settings and "exposure_ms" in settings:

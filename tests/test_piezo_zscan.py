@@ -231,6 +231,42 @@ def test_open_loop_with_no_confirmation_callback_refuses_to_proceed(tmp_path, mo
     assert piezo.set_position_calls == []
 
 
+# -- Cooperative abort (Phase 4 UI integration) --
+
+def test_should_abort_stops_before_next_position_and_reports_partial(tmp_path, monkeypatch):
+    monkeypatch.setattr(piezo_zscan.time, "sleep", lambda s: None)
+    scan, piezo, _ = make_scan()
+    call_count = 0
+
+    def should_abort() -> bool:
+        nonlocal call_count
+        call_count += 1
+        return call_count > 2  # let the first 2 positions complete, then abort
+
+    scan.should_abort = should_abort
+
+    with pytest.raises(ZScanError) as exc_info:
+        scan.run(z_start_um=0.0, z_end_um=30.0, step_size_um=10.0, output_dir=tmp_path, exposure_ms=40.0)
+
+    message = str(exc_info.value)
+    assert "position 3/4" in message
+    assert "2 of 4" in message
+    assert "PARTIAL" in message
+    assert len(list(tmp_path.glob("*.tif"))) == 2
+    # The aborted position itself never reached the piezo/camera at all.
+    assert piezo.set_position_calls == [0.0, 10.0]
+
+
+def test_should_abort_none_never_checked_scan_runs_to_completion(tmp_path, monkeypatch):
+    monkeypatch.setattr(piezo_zscan.time, "sleep", lambda s: None)
+    scan, _, _ = make_scan()
+    assert scan.should_abort is None
+
+    results = scan.run(z_start_um=0.0, z_end_um=20.0, step_size_um=10.0, output_dir=tmp_path, exposure_ms=40.0)
+
+    assert len(results) == 3
+
+
 # -- Boundary: pump/valve/AD2/laser are never touched --
 
 def test_module_never_imports_other_hardware_classes():

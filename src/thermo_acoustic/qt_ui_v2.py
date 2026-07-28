@@ -141,6 +141,7 @@ class MainWindowV2(MainWindow):
         "MSO": "_mso_tab",
         "PumpValve": "_pump_tab",
         "Camera": "_camera_tab",
+        "ZScan": "_zscan_tab",
     }
     # Category 8 (Session 39): "PumpValve" (an internal dict key, smashed
     # together with no separator for use as a Python identifier/lookup key)
@@ -153,7 +154,7 @@ class MainWindowV2(MainWindow):
     # (self.tabs.addTab(self._pump_tab(), "Pump&Valve")) rather than
     # inventing new wording; the other three keys are already their own
     # correct display text, so this dict only needs the one entry.
-    _PANEL_DISPLAY_NAMES: dict[str, str] = {"PumpValve": "Pump&Valve"}
+    _PANEL_DISPLAY_NAMES: dict[str, str] = {"PumpValve": "Pump&Valve", "ZScan": "Z-Scan"}
 
     @classmethod
     def _panel_display_name(cls, panel_name: str) -> str:
@@ -196,7 +197,7 @@ class MainWindowV2(MainWindow):
         self.connection_button.clicked.connect(self._open_initialization_dialog)
         layout.addWidget(self.connection_button)
 
-        for name in ("WFG", "MSO", "PumpValve", "Camera"):
+        for name in ("WFG", "MSO", "PumpValve", "Camera", "ZScan"):
             button = QPushButton(self._panel_display_name(name))
             button.clicked.connect(lambda checked=False, panel_name=name: self._open_manual_panel(panel_name))
             layout.addWidget(button)

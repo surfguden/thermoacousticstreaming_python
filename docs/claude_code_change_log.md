@@ -1992,6 +1992,928 @@ count confirmed stable across repeated runs (no new leftover
 accumulation). Not a code-behavior change to the application itself --
 test-infrastructure/tooling only.
 
+### Session 50 -- New hardware, Phase 4: Z-scan calibration tab in qt_ui.py/qt_ui_v2.py
+
+**First UI-facing work for this feature -- Sessions 45-48 were driver/
+module-only, explicitly deferring UI integration.** New standalone
+"Z-Scan" tab in `qt_ui.py` (`self.tabs.addTab(self._zscan_tab(), "Z-Scan")`,
+parallel to Experiment, not nested inside it) exposing
+`piezo_zscan.ZScanCalibration.run()`'s real parameters 1:1 -- Z Start (um),
+Z End (um), Step Size (um), Exposure Time (ms), Output Directory -- plus
+Start Z-Scan/Abort Z-Scan controls and a real ClosedLoop confirmation
+`QMessageBox` (not a CLI prompt). `qt_ui_v2.py` exposes the identical tab
+as a new "Z-Scan" sidebar button/manual-panel dialog (`_MANUAL_PANEL_BUILDERS`
+entry, same pattern as the existing Camera/WFG/MSO/Pump&Valve panels),
+reusing the exact same widget instances qt_ui.py's tab uses, not copies.
+
+**Landed on top of a separate, parallel, uncommitted TEC integration
+effort already touching both UI files -- explicit instruction was to
+leave that diff completely alone.** Every new addition in both files was
+placed as a self-contained new block anchored on lines TEC's own diff
+does not touch (confirmed by inspecting each merged git hunk directly,
+not assumed): `_build_state()`'s new Z-scan widgets are appended
+immediately after TEC's own last `_build_state()` addition rather than
+interleaved with it; the new tab-builder/action methods
+(`_zscan_tab()`/`_zscan_parameters_group()`/`_zscan_control_group()`/
+`_query_zscan_range()`/`_apply_zscan_range()`/`_start_zscan()`/
+`_run_zscan()`/`_abort_zscan()`) live in a untouched ~380-line gap between
+two of TEC's own hunks; the new `self.tabs.addTab(..., "Z-Scan")` line and
+`qt_ui_v2.py`'s `_MANUAL_PANEL_BUILDERS`/`_PANEL_DISPLAY_NAMES`/sidebar-loop
+edits are each single-line diffs nowhere near any TEC hunk (TEC's v2
+changes are confined to `DEVICE_NAMES`/the Initialize-dialog device rows/
+the experiment-area grid/`HardwareRuntimeConfig`, none of which this
+feature touches at all). No TEC-authored line was modified anywhere in
+either file. `application.py`/`hardware_factory.py`/`workflows.py`/`tec.py`
+and their test files were not opened for editing at all this session.
+
+**Real-time range validation against the piezo's own live `MaxTravel`,
+not left to `PiezoStage.set_position()`'s existing clamp-and-return as
+the only defense -- a design decision confirmed explicitly before being
+logged, after the first version of this tab's report initially omitted
+it.** Z Start/Z End are `QDoubleSpinBox` fields whose range is set via
+`setRange(0.0, max_travel_um)` from a live device read, not hardcoded or
+left at the generic `_spin()` default of `+/-1e12`. Both fields start
+**disabled** (range pinned to `[0, 0]`) with a dedicated status label
+reading "Connect device to see valid range" until a real `max_travel_um`
+is available -- matching `PiezoStage`'s own "never assume, always
+live-read" convention (Session 46) rather than inventing a plausible-
+looking default range. Two paths populate the real range, both reusing
+the same `_apply_zscan_range(max_travel_um)` helper so there is exactly
+one enable/range-setting code path, not two divergent ones:
+1. **"Query Piezo Range"** -- a new dedicated button that connects,
+   reads `max_travel_um`, disconnects immediately, and applies the range
+   -- a deliberately lightweight connect/read/disconnect round trip (no
+   persistent piezo handle kept alive across clicks, avoiding a second
+   connection-lifecycle/cleanup path to manage beyond the one Start
+   Z-Scan already has) so a user can see and set real, in-range values
+   *before* ever clicking Start.
+2. **Start Z-Scan's own connect step** now also calls
+   `_apply_zscan_range(piezo.max_travel_um)` immediately after connecting,
+   before reading the Z Start/Z End widgets' current values -- so a first
+   Start click on a never-queried tab still ends up validated (the fields
+   were disabled/pinned at 0.0/0.0 the instant before this call, so that
+   specific click runs a degenerate single-position scan at 0um, which is
+   safe -- not a validation gap -- but worth knowing about; a user who
+   wants to scan a real range should click Query Piezo Range first, per
+   the control group's own hint label).
+`PiezoStage.set_position()`'s existing soft-clamp (Session 46) is
+unchanged and remains the second line of defense underneath this --
+this session adds real-time input constraint on top of it, not instead
+of it.
+
+**Cooperative abort added to `ZScanCalibration` itself (`piezo_zscan.py`),
+a small, additive, backward-compatible change -- required since
+`ZScanCalibration.run()` had no cancellation mechanism at all before this
+session, and "Start/Abort controls" was explicit scope.** New optional
+`should_abort: Callable[[], bool] | None = None` dataclass field, checked
+once per position (before that position's own move/settle/capture -- an
+in-flight position always finishes once started, never interrupted
+mid-move/mid-capture) via the same partial-completion `ZScanError`
+"PARTIAL" wording the existing move/capture-failure paths already use.
+`None` (the default, and every existing test's implicit behavior) means
+"never abort" -- fully backward compatible, confirmed by
+`test_should_abort_none_never_checked_scan_runs_to_completion`. Abort
+Z-Scan's UI action just sets `self._zscan_abort_requested = True`, which
+the running scan's own `should_abort=lambda: self._zscan_abort_requested`
+callable reads on its next per-position check.
+
+**ClosedLoop confirmation dialog is genuinely modal-shown, not
+simulated -- and shown before the scan's background thread even starts,
+for a specific Qt threading reason, not by accident.** `_run_action()`'s
+worker runs on a background `QThread`; a `QMessageBox` cannot safely be
+raised from that thread. So `_start_zscan()` connects to the piezo and
+checks/resolves the ClosedLoop question synchronously on the UI thread
+*before* calling `_run_action()` at all -- only the scan itself
+(move/settle/capture loop) runs in the background thread. Trade-off
+flagged explicitly, not hidden: the UI briefly blocks during the piezo's
+own `connect()` call (and the range-query round trip). Not measured this
+session against real hardware, but Session 48's real end-to-end run
+showed connect+init+6 frames totaling ~10.2s, most of which is settle/
+capture rather than connect itself.
+
+**Camera reuse, not a second connection.** The scan reuses
+`self.app.camera` (the same instance the manual Camera tab's Configure
+Camera / Image buttons already use) rather than opening an independent
+camera handle -- `_start_zscan()` checks `self.app.camera.handle is not
+None` first and fails with a clear status message ("run Configure Camera
+on the Camera tab first") rather than crashing if the camera was never
+initialized. The piezo, by contrast, is a strictly tab-owned connection
+(no shared `Application`-level instrument bundle entry for it) --
+connected fresh per Start-or-Query click and disconnected in a `finally`
+block immediately after, mirroring `piezo_zscan.py`'s own CLI `main()`
+exactly (Session 47).
+
+**New imports are local/lazy inside the methods that need them
+(`PiezoStage`/`PiezoStageError`/`ZScanCalibration`), not added to
+qt_ui.py's top-level import block** -- that block is one of the exact
+lines TEC's own diff already touches (`from .workflows import ...,
+TemperatureSeries`), so adding a new top-level import there would have
+been the one place this session's work could not avoid landing on a
+TEC-touched line.
+
+**Tests:** `tests/test_piezo_zscan.py` gained
+`test_should_abort_stops_before_next_position_and_reports_partial` and
+`test_should_abort_none_never_checked_scan_runs_to_completion` (15/15
+passing, up from 13). `tests/test_qt_ui_hardware_settings.py`'s explicit
+tooltip-count drift guard (Session 41's "protect a reviewed judgment call
+from silent drift" test) bumped from 138 to 143 for the 5 new genuinely
+non-obvious Z-scan fields (Z Start/Z End/Step Size/Exposure Time/Output
+Directory), each tooltipped per the same non-obvious-hardware-semantics
+classification criteria already used throughout, not blanket-added.
+
+**Files touched:** [src/thermo_acoustic/qt_ui.py](src/thermo_acoustic/qt_ui.py)
+(new tab + control methods, on top of TEC's existing uncommitted diff, no
+TEC line modified), [src/thermo_acoustic/qt_ui_v2.py](src/thermo_acoustic/qt_ui_v2.py)
+(new sidebar panel, same constraint), [src/thermo_acoustic/piezo_zscan.py](src/thermo_acoustic/piezo_zscan.py)
+(`should_abort` field + check), [tests/test_piezo_zscan.py](tests/test_piezo_zscan.py)
+(2 new tests), [tests/test_qt_ui_hardware_settings.py](tests/test_qt_ui_hardware_settings.py)
+(tooltip-count assertion updated). `application.py`/`hardware_factory.py`/
+`workflows.py`/`tec.py`/`test_hardware_factory.py`/`test_tec.py` not opened.
+
+**Verification:** full `tests/` suite green, 244/244, confirmed stable
+across 4 consecutive offscreen runs this session (one transient failure
+mid-session reproduced the already-documented Session 41/42 offscreen-Qt
+MainWindow-construction flakiness -- confirmed by re-running the specific
+failing test alone, where it passed; a different test failed the same way
+on a later full run, also passing alone -- consistent with the documented
+pattern of a roughly-fixed-point-in-the-suite object-lifecycle issue
+across many MainWindow instances in one process, not a regression from
+this session's changes). Manually smoke-tested (offscreen): `MainWindow`
+now has 7 tabs with "Z-Scan" last; `MainWindowV2`'s sidebar opens a
+"Z-Scan (Manual Test)" dialog; Z Start/Z End start disabled at `[0, 0]`
+with the "Connect device to see valid range" label; calling
+`_apply_zscan_range(123.45)` enables both fields with range `[0.0,
+123.45]` and updates the label to "Valid range: 0.00 - 123.45 um
+(live-read from device MaxTravel)"; Start Z-Scan with no camera
+initialized fails gracefully with a clear status message instead of
+crashing. **Not hardware-verified** -- no real PPC001/C15440-20UP run of
+the new UI path this session; Query Piezo Range/Start Z-Scan's connect
+step reuse `PiezoStage`'s already-hardware-confirmed (Session 45/48) call
+sequence, but the UI wiring itself (range application, disabled-state
+toggling, the `QMessageBox` confirmation path, Abort) has only been
+exercised via the offscreen test suite and manual smoke tests above, not
+against the physical device. Not yet committed -- held for review per
+explicit instruction before this session's work is committed.
+
+### Session 51 -- Hardware-safety parameter audit, Priority 1 (Item 1): Custom syringe geometry bounds
+
+**Follows a read-only audit (prior turn, not logged separately since it
+proposed no changes) that inventoried every hardware-safety-critical
+parameter across Valve/Pump/AD2/Camera/Laser/Piezo for whether an
+out-of-range value is currently rejected, clamped, or passed straight
+through unchecked.** That audit found `configure_syringe()`'s
+`inner_diameter_mm`/`max_piston_stroke_mm` (Session 44's Custom syringe
+feature) had only a presence check (`None` or not), no magnitude check
+at all -- unlike `max_flow_rate_ul_min`/`max_volume_ml`, which the same
+method reads back from the device immediately after
+`set_syringe_param()` succeeds. **A follow-up failure-mode investigation
+(same prior turn) found this was the one item across the whole audit
+that could not be resolved as "definitely safe" from available
+documentation**: CETONI's own SDK docs don't state whether pump firmware
+cross-checks these values against the physically mounted syringe, and
+the neMESYS firmware specification PDF could not be read in this
+environment (image-based, no extractable text layer) to confirm an
+independent actuator-travel software limit exists. Reprioritized to
+highest urgency on that basis, ahead of AD2/Camera/pump-flow-rate (all
+three of which research showed already fail safely one way or another).
+
+**Fix: a conservative, hardcoded app-level reject -- not a live-read
+limit, since no live device readback exists for these two parameters at
+all** (`PiezoStage.max_travel_um`'s pattern doesn't apply here; there is
+no equivalent "ask the syringe its own real geometry" call in the Qmix
+SDK). New module-level constants in
+[qmix_backend.py](src/thermo_acoustic/qmix_backend.py):
+`MIN_SYRINGE_INNER_DIAMETER_MM=1.0`, `MAX_SYRINGE_INNER_DIAMETER_MM=35.0`,
+`MIN_SYRINGE_STROKE_MM=10.0`, `MAX_SYRINGE_STROKE_MM=65.0`. The two
+bounds are **not derived from the same source** -- conflating them was
+a real mistake caught before commit (see correction note below):
+1. **Inner diameter bounds** span BD's full published 1mL-60mL product
+   line inner diameters (4.78mm-26.72mm -- confirmed via chemyx.com's BD
+   plastic syringe diameter chart, which independently reproduced this
+   project's own already-hardware-confirmed 1/5/10mL preset values
+   exactly, giving confidence in the rest of that same table's 3/20/30/
+   60mL entries too), padded to `[1.0, 35.0]` for legitimate brand/size
+   variation the three named presets don't cover. This also comfortably
+   matches CETONI's own Low Pressure Hardware Manual (Section 5.1,
+   NEM-B101-02 E), which clamps syringe *outer* diameter to 6-30mm on
+   this pump module -- 35mm as this constant's own ceiling since inner
+   diameter is always smaller than outer.
+2. **Stroke bounds' upper limit is this specific pump module's own real
+   mechanical piston-travel ceiling** -- CETONI Low Pressure Hardware
+   Manual, Section 5.1, NEM-B101-02 E: piston stroke "up to 65 mm",
+   independent of whatever syringe is mounted. **Not** a BD-range-derived
+   estimate (an earlier draft of this same fix, before review, padded
+   this module's own volume/diameter->stroke formula applied across the
+   BD 1mL-60mL range to `[10.0, 200.0]` instead -- see the correction
+   note below for why that was wrong).
+Not a precise engineering limit for inner diameter -- explicitly
+documented in-code as a data-entry-error backstop there (unit mixups,
+stray digits, transposed fields); the stroke upper bound, by contrast,
+*is* a precise, cited hardware ceiling, not a padded estimate.
+`configure_syringe()` now validates both values against these bounds
+**before** calling `pump.set_syringe_param(...)`, raising
+`QmixPumpError` naming the offending value, the valid range, and (for
+stroke specifically) the hardware manual citation, if either is outside
+it -- confirmed the three named `SYRINGE_PRESETS` (BD 1/5/10ml, max
+derived stroke 60.55mm for the 10ml preset) all still pass comfortably
+under the corrected 65mm ceiling, and confirmed at both boundaries: a
+value `0.1` below the minimum or `0.1` above the maximum is rejected,
+mirroring what happens exactly at the boundary (accepted, not rejected
+-- bounds are inclusive).
+
+**Correction made before commit, per explicit user instruction, after
+review caught a real safety mismatch in the draft above:** the stroke
+upper bound was originally set to `200.0` by padding this module's own
+BD-volume-derived stroke formula across the full 1mL-60mL range
+(43.7mm-107.0mm), the same treatment applied to the inner-diameter
+bound. That reasoning does not apply to stroke -- unlike inner diameter
+(a property of whatever syringe barrel is mounted), max piston stroke is
+bounded by *this pump module's own fixed mechanical linear-actuator
+travel*, a real, independent hardware ceiling regardless of the
+syringe. `200.0` left a genuine gap open: any value between the real
+65mm ceiling and the wrongly-padded 200mm would have been accepted by
+`configure_syringe()` and forwarded to `set_syringe_param()`, risking
+exactly the over-travel damage the manual's own ATTENTION warning in
+that section describes. Corrected to `65.0`, cited directly at the
+constant definition and at the `configure_syringe()` raise site, not
+just in this log entry. A dedicated regression test
+(`test_configure_syringe_rejects_stroke_between_real_ceiling_and_old_
+padded_bound`, `100.0mm`) now covers this exact gap so it can't
+silently reopen. `MIN_SYRINGE_STROKE_MM` (`10.0`) and both
+`inner_diameter_mm` bounds were not implicated and are unchanged.
+
+**Provenance added for `SYRINGE_PRESETS`' inner-diameter values
+(4.78/12.07/14.5mm), per explicit instruction to check `git log -p` for
+prior citation.** None existed: every version of this file back to the
+syringe feature's original introduction (`git log -p --follow` on
+`qmix_backend.py`) carried only "confirmed authoritative" with no
+external source recorded. Added directly at the `SYRINGE_PRESETS`
+definition: Chemyx BD Plastic Syringe reference table (chemyx.com),
+cross-checked against BD REF 309628/309649/300912 packaging.
+
+**UI side: the Custom syringe fields (Session 44's
+`custom_syringe_inner_diameter_mm`/`custom_syringe_stroke_mm` in
+`qt_ui.py`) now import and reuse these exact same constants as their
+`QDoubleSpinBox` range**, rather than duplicating the numbers as
+separate literals that could silently drift out of sync with
+`qmix_backend.py`'s own bounds. This constrains input in real time (the
+spin box itself won't accept a value outside `[1.0, 35.0]`/
+`[10.0, 65.0]`) as a UI-layer backstop in front of the same backend
+rejection -- in spirit the same "constrain the input, don't rely solely
+on the backend's own rejection" principle the Z-scan tab's
+`[0, max_travel_um]` range applies (Session 50), even though the
+underlying limit here is hardcoded rather than live-read, since no live
+syringe-geometry readback exists to derive it from instead. Both
+fields' default values were changed from `1.0`/`1.0` (the old
+generic-floor defaults, with the old stroke default of `1.0` actually
+below the *new* minimum of `10.0` and would have been silently clamped
+on load) to `4.78`/`55.75` -- the BD 1mL preset's own real diameter/
+derived-stroke values (`55.75mm`, comfortably under the corrected 65mm
+ceiling too) -- so the Custom fields start at a genuine plausible
+syringe geometry instead of an arbitrary placeholder that happens to
+need immediate silent correction. Both fields' tooltips now cite the
+hardware-manual source directly, not just the numeric range.
+
+**Tests:** `tests/test_application.py` gained
+`test_configure_syringe_rejects_inner_diameter_below_minimum`,
+`_above_maximum`, `test_configure_syringe_rejects_stroke_below_minimum`,
+`_above_maximum` (all confirm `QmixPumpError` is raised and
+`set_syringe_param` is never called on the fake pump),
+`test_configure_syringe_accepts_values_exactly_at_bounds` (confirms
+inclusive boundaries),
+`test_configure_syringe_named_bd_presets_still_pass_the_new_bounds`
+(confirms the bounds were derived wide enough to comfortably include the
+existing, already-hardware-confirmed presets, not accidentally narrower
+than them), and
+`test_configure_syringe_rejects_stroke_between_real_ceiling_and_old_
+padded_bound` (the correction's own regression guard, `100.0mm` --
+explicitly asserts `65.0 < 100.0 < 200.0` first, so the test only proves
+what it claims if `100.0` is still inside the now-closed gap) -- 7 new
+tests total, all against the existing `FakeQmixPumpModule`/
+`FakeQmixBusModule` fakes already used throughout this file, no live
+hardware or Qmix SDK DLL required.
+
+**Landed on top of the still-separate, still-untouched TEC integration
+diff, same constraint as Session 50.** `qmix_backend.py` and
+`tests/test_application.py` were not part of TEC's existing diff at all
+(confirmed via `git status` before editing) -- fully standalone changes,
+zero risk of interleaving. The Custom-syringe-field edit in `qt_ui.py`
+lands in `_build_state()`, in the existing Session 44 block (original
+lines 633-652), nowhere near any of TEC's own hunks in that file
+(confirmed the same way as Session 50's Z-scan additions -- by
+inspecting merged hunk boundaries directly, not assuming).
+
+**Files touched:** [qmix_backend.py](src/thermo_acoustic/qmix_backend.py)
+(4 new constants + validation in `configure_syringe()` + `SYRINGE_PRESETS`
+provenance comment), [qt_ui.py](src/thermo_acoustic/qt_ui.py) (Custom
+syringe field ranges + defaults + tooltips), [tests/test_application.py](tests/test_application.py)
+(7 new tests + import list extended).
+
+**Verification:** full `tests/` suite green, 265/265 (up from 244),
+confirmed stable across offscreen runs both before and after the
+stroke-bound correction. Manually re-smoke-tested after the correction:
+`custom_syringe_stroke_mm` reports range `(10.0, 65.0)` (not
+`(10.0, 200.0)`); `setValue(100.0)` on the stroke field is now clamped
+to `65.0` by Qt's own `QDoubleSpinBox` range enforcement, confirming the
+corrected UI-layer constraint is live, not just declared in a comment.
+Not yet committed -- this entry documents Priority 1 Item 1 (including
+its own pre-commit correction) only; Items 2-4 (AD2 amplitude/frequency
+read-back, Camera ROI pre-flight check, Pump flow-rate-vs-max check)
+were built and logged afterward, unaffected by this correction.
+**Real-hardware verification against the actual Qmix/neMESYS pump
+happened later this session -- see the dedicated hardware-verification
+entry below.**
+
+### Session 51 continued (Item 2): AD2 amplitude/frequency clamped against the device's own live range, `WfgChannelConfig.out_of_range` wired up
+
+**Reframed from "emergency hardware safety" to "correctness/data-integrity"
+after the failure-mode research this same audit did**: confirmed against
+Digilent's own WaveForms SDK reference manual (not assumed) that
+`FDwfAnalogOutNodeAmplitudeSet`/`FrequencySet` never fail or reject an
+out-of-range value -- they silently clamp to whatever the AD2 hardware
+can actually do (W1/W2 outputs are spec'd +/-5V) and still report
+success. So this was never a hardware-damage risk; the real risk is an
+operator unknowingly running with a silently-substituted drive
+amplitude/frequency, which matters for this project's own data
+integrity (a mis-recorded drive parameter is bad science, not broken
+hardware).
+
+**Real root-cause finding: the higher-level `analog_out_node_
+amplitude_set()`/`frequency_set()` wrapper methods (which already existed)
+are not what the real hardware configuration path actually calls.**
+`AD2Sdk.config_wfg()`/`wfg_configure()`/`wfg_start_stop_all_ch()` all
+funnel through `WaveFormsBackend.configure_wfg()`, which calls its own
+private `_configure_analog_node()` -- a method that talks to the raw
+`self._dwf.FDwfAnalogOutNode*` ctypes function pointers directly, not
+through the public wrapper methods at all. A fix aimed only at the
+public wrappers would never have been exercised by any real experiment
+run.
+
+**Fix, in `_configure_analog_node()`
+([waveforms.py:418](src/thermo_acoustic/waveforms.py:418)):** before
+either `FrequencySet`/`AmplitudeSet` call, now reads the device's own
+live `FDwfAnalogOutNodeFrequencyInfo`/`AmplitudeInfo` (real min/max,
+same underlying calls the already-existing but previously-unused
+`analog_out_node_frequency_info()`/`amplitude_info()` wrapper methods
+expose), clamps the requested `frequency_hz`/`amplitude_v` to that range
+in software before ever calling `*Set`, and returns whether either value
+actually needed clamping. `configure_wfg()`
+([waveforms.py:389](src/thermo_acoustic/waveforms.py:389)) now calls this
+once for the carrier node and once for the FM Mod node (only if enabled,
+matching existing behavior), and sets
+`channel.out_of_range = carrier_out_of_range or fm_out_of_range` --
+**the first place in this codebase that ever assigns `True` to this
+field.** `WfgConfig.check_valid()`/`AD2Sdk.wfg_check_config_valid()`
+already existed (confirmed dead in the prior audit -- no producer ever
+set the flag they check) and needed no changes themselves; they now
+report real information for the first time.
+
+**Surfaced in two places, per explicit instruction ("UI and logged
+experiment metadata"), not just the underlying flag:**
+1. **UI:** `qt_ui.py`'s `_apply_wfg()`
+   ([qt_ui.py:2836](src/thermo_acoustic/qt_ui.py:2836)) now checks
+   `config.check_valid()` after `config_wfg()`/`wfg_start_stop_all_ch()`
+   and, if any channel came back out of range, returns
+   `"WFG configured -- WARNING: amplitude/frequency clamped to device
+   limits on Ch1, Ch2"` (naming only the actually-affected 1-based
+   channel(s), matching this project's existing Ch1/Ch2 UI convention --
+   `channel_index` is 0-based internally) instead of the plain
+   `"WFG configured"` -- this becomes the visible status-bar text via the
+   existing `_run_action()`/`_handle_worker_finished()` machinery, no new
+   UI widget needed.
+2. **Logged experiment metadata:** `workflows.py`'s `_wfg_properties()`
+   ([workflows.py:215](src/thermo_acoustic/workflows.py:215)) gained a
+   new `WFGOutOfRangeCh1`/`WFGOutOfRangeCh2` TDMS property per repeat,
+   directly from `channel.out_of_range` -- so a silently-substituted
+   drive value is recorded in the data itself, not just a transient UI
+   status line that's gone the moment the next action overwrites it.
+
+**Tests:** a new purpose-built fake, `FakeAD2ConfigureDwf`
+(`tests/test_application.py`) -- deliberately not the existing generic
+`FakeDwf` in the same file, whose blanket `"*Info"`-suffix handling
+returns a degenerate `(100.0, 100.0)` for every Info call (frequency and
+amplitude indistinguishable, unable to exercise clamping in a specific
+direction). Lets frequency/amplitude device ranges be set independently.
+New tests: `test_configure_wfg_clamps_out_of_range_amplitude_and_
+frequency_and_flags_channel` (confirms clamping to the real max, not the
+requested value, and `out_of_range=True`),
+`test_configure_wfg_leaves_in_range_values_unclamped_and_not_out_of_range`
+(confirms no false positives), and
+`test_configure_wfg_checks_fm_mod_node_too_when_enabled` (confirms the FM
+Mod node, not just Carrier, can trigger the flag). A local, file-scoped
+equivalent fake (`_FakeAD2ConfigureDwf`) in
+`tests/test_qt_ui_hardware_settings.py` backs
+`test_apply_wfg_surfaces_out_of_range_warning_in_status` and
+`test_apply_wfg_reports_no_warning_when_in_range` (confirms the UI status
+text itself, both the warning and plain-success cases) -- not imported
+across test files, matching this project's existing per-file
+self-contained-fake convention. `test_experiment2_writes_labview_
+metadata_tdms` extended to assert `WFGOutOfRangeCh1`/`Ch2` are present
+and `False` for its existing in-range fixture data. 6 new tests total.
+
+**Landed cleanly, same standalone-from-TEC pattern as Item 1.**
+`waveforms.py` was never part of TEC's diff at all. The `qt_ui.py` edit
+(`_apply_wfg()`) and the `workflows.py` edit (`_wfg_properties()`) both
+sit in function bodies TEC's own diff never touches in either file
+(confirmed directly via `git diff`'s hunk boundaries, not assumed) --
+TEC's `workflows.py` changes are confined to a new `TemperatureSeries`
+class and a `tec_target_c`/`"TECTarget"` property a few lines above
+`_wfg_properties()`'s own definition, never inside it.
+
+**Files touched:** [waveforms.py](src/thermo_acoustic/waveforms.py)
+(`_configure_analog_node()` clamping + return value, `configure_wfg()`
+sets `out_of_range`), [qt_ui.py](src/thermo_acoustic/qt_ui.py)
+(`_apply_wfg()` status message), [workflows.py](src/thermo_acoustic/workflows.py)
+(`_wfg_properties()` new TDMS field), [tests/test_application.py](tests/test_application.py)
+(3 new tests + `FakeAD2ConfigureDwf` + 1 extended test),
+[tests/test_qt_ui_hardware_settings.py](tests/test_qt_ui_hardware_settings.py)
+(2 new tests + `_FakeAD2ConfigureDwf` + new imports).
+
+**Verification:** full `tests/` suite green, 255/255 (up from 250),
+confirmed via 2 consecutive offscreen runs -- one showed a single
+failure in an unrelated test (`test_v2_sidebar_opening_manual_panel_
+does_not_initialize_hardware`), confirmed to be the same already-
+documented Session 41/42 offscreen-Qt MainWindow-construction flakiness
+(passed immediately when re-run alone), not a regression from this
+change. **Still not hardware-verified as of this entry** -- the
+mechanism is proven against the purpose-built fake, not the physical
+device (Digilent's own documented `*Set`-never-fails/`*Info()`-is-
+authoritative behavior is the basis for trusting this generalizes, not
+a live re-confirmation). **Real-hardware verification for this item
+specifically was attempted later this session but blocked -- no
+physical Analog Discovery device was connected to the machine
+(confirmed via Device Manager USB VID scan: zero `VID_1443` devices
+present, despite the WaveForms SDK/runtime being installed) -- see the
+dedicated hardware-verification entry below for the full account,
+including the other three items which the same pass DID verify against
+real connected hardware.** Not yet committed, per the same
+review-before-commit instruction as Items 1 and Session 50. Items 3-4
+(Camera ROI pre-flight check, Pump flow-rate-vs-max check) remain
+separate and not yet started as of this
+entry.
+
+### Session 51 continued (Item 3): Camera ROI pre-flight bounds check
+
+**Explicitly framed as UX/fail-fast, not urgent, from the start** -- the
+failure-mode research already found DCAM's own SUBARRAY properties
+already reject an invalid combination via the existing `_check()`/
+`prop_setgetvalue()` calls in `configure_roi()` (confirmed by reading the
+vendored DCAM error enum directly: `INVALIDSUBARRAY = 0x8000082b`,
+*"the combination of subarray values are invalid, e.g. SUBARRAYHPOS +
+SUBARRAYHSIZE is greater than the number of horizontal pixel of
+sensor"*), and that a wrong ROI/exposure can't physically damage a
+camera sensor either way. This item just catches the same condition
+earlier, with a clearer, ROI-specific message, rather than a generic
+DCAM error surfacing only after a full SDK round-trip.
+
+**Fix, in `configure_roi()`
+([hamamatsu_dcam.py:86](src/thermo_acoustic/hamamatsu_dcam.py:86)):** now
+calls the already-existing `read_subregion_limits_and_value()` (which
+this method never called before, despite it already existing) to get
+both the sensor's real, live limits and the ROI currently in effect,
+then a new `_validate_roi_against_limits()` helper checks, in order:
+horizontal/vertical size against their own live
+`[minimum, maximum]`; horizontal/vertical offset against theirs; and a
+combined offset-plus-size check against the sensor's real pixel count
+-- deliberately mirroring DCAM's own documented `INVALIDSUBARRAY`
+condition, not a different check invented for this fix. The combined
+check uses whichever size will actually be in effect *after* this call
+(the requested size if `configure_roi()` is changing it this time,
+otherwise the size already in effect) -- confirmed by a dedicated test,
+since size=0 has a distinct meaning in this codebase ("don't change
+this axis's size," per `configure_roi()`'s own pre-existing
+`if roi.horizontal_size > 0:` guard around the real `Set` call), not
+"use the full sensor."
+
+**Tests (`tests/test_application.py`):** `test_validate_roi_against_
+limits_accepts_in_range_roi` (no false positives),
+`test_validate_roi_against_limits_rejects_size_above_sensor_max`,
+`test_validate_roi_against_limits_rejects_offset_plus_size_exceeding_
+sensor` (the actual INVALIDSUBARRAY-mirroring combined check, individually
+in-range values whose sum still exceeds the sensor),
+`test_validate_roi_against_limits_uses_current_size_when_size_not_
+being_changed` (confirms the size=0 fallback-to-current-size behavior
+specifically), and `test_configure_roi_rejects_out_of_range_roi_before_
+any_sdk_write` (confirms the rejection happens *before* any
+`prop_setgetvalue("SUBARRAYHSIZE", ...)` call reaches the fake SDK at
+all, not just that it eventually raises) -- 5 new tests, all against
+plain `SubRegion`/`SubRegionLimits`/`MinMaxInc` value objects or the
+existing shared `FakeDcamModule` fixture (whose generous `[0, 4096]`
+fixed range already comfortably covers `test_hamamatsu_dcam_backend_
+uses_sdk_wrapper`'s existing `SubRegion(4, 8, 100, 120)` call, confirmed
+unaffected), no new dedicated fake needed since a clearly-out-of-range
+value (`horizontal_size=5000`) was enough to exercise rejection against
+that same fixture's fixed bounds.
+
+**Landed cleanly, same standalone-from-TEC pattern as Items 1-2.**
+`hamamatsu_dcam.py` was never part of TEC's diff at all.
+
+**Files touched:** [hamamatsu_dcam.py](src/thermo_acoustic/hamamatsu_dcam.py)
+(`configure_roi()` pre-flight call + new `_validate_roi_against_limits()`),
+[tests/test_application.py](tests/test_application.py) (5 new tests).
+
+**Verification:** full `tests/` suite green, 260/260 (up from 255),
+confirmed stable across 2 consecutive offscreen runs, no flakiness this
+round. Not yet committed. Item 4 (Pump flow-rate-vs-max check) remains
+separate and not yet started as of this entry. **Real-hardware
+verification against the actual C15440-20UP happened later this
+session -- see the dedicated hardware-verification entry below, which
+also corrects this entry's own characterization of "the old DCAM
+behavior": DCAM's `INVALIDSUBARRAY` was found to fire only at the final
+`SUBARRAYMODE ON` call, not at the individual `SUBARRAYHSIZE`/
+`SUBARRAYHPOS` `prop_setgetvalue()` writes as implied above -- the new
+pre-flight check is a stronger improvement than originally stated here,
+see below for why.**
+
+### Session 51 continued (Item 4): Pump flow rate vs. its own reported max_flow_rate_ul_min -- Priority 1 complete
+
+**The last of the four Priority 1 items.** Failure-mode research (prior
+turn) found this one "probably safe by stepper-motor physics" (open-loop
+steppers generally stall/skip steps rather than break when asked to
+exceed real torque/speed capability) but not confirmed by CETONI's own
+documentation -- reason enough, per the user's own framing, to stop
+relying on an unconfirmed safe-failure mode when the actual limit value
+was already sitting right there unused.
+
+**Root cause: `max_flow_rate_ul_min` was already being read back from
+the device** (`initialize()` at
+[qmix_backend.py:86](src/thermo_acoustic/qmix_backend.py:86),
+re-populated by `configure_syringe()`/`configure_flow_unit()` too, since
+the real achievable max depends on syringe geometry and flow unit) --
+**but `generate_flow()` never actually compared the requested value
+against it**, unlike `configure_syringe()`'s own new bounds check
+(Item 1, same session). `LCP_GenerateFlow` was called with whatever was
+requested, unconditionally.
+
+**Fix, in `generate_flow()`
+([qmix_backend.py:156](src/thermo_acoustic/qmix_backend.py:156)):** now
+compares `abs(flow_rate)` against `self.max_flow_rate_ul_min` before
+calling `pump.generate_flow(...)`, raising `QmixPumpError` if it's
+exceeded. `abs()` specifically because `generate_flow()`'s own docstring
+states a negative value means aspirate and positive means dispense --
+the magnitude is what must not exceed the pump's own reported ceiling,
+in either direction; a signed-only comparison would have let an
+excessive aspirate rate straight through. `None` (meaning the pump
+hasn't reported a real ceiling yet, e.g. `configure_syringe()` was never
+called) skips the check entirely -- nothing to validate against, so this
+passes through exactly as it did before this fix, not a new invented
+default.
+
+**Tests (`tests/test_application.py`):**
+`test_generate_flow_rejects_dispense_rate_above_max`,
+`test_generate_flow_rejects_aspirate_rate_above_max_magnitude` (confirms
+the `abs()` requirement specifically -- a negative rate whose magnitude
+exceeds the max is still rejected, not let through because it's
+negative), `test_generate_flow_accepts_rate_exactly_at_max` (inclusive
+bound), and `test_generate_flow_passes_through_when_max_flow_rate_not_
+yet_known` (confirms the `None`-skips-validation path explicitly, not
+just implicitly relying on it never coming up) -- 4 new tests, all
+against the existing `FakeQmixPumpModule`/`FakeQmixBusModule` fakes
+already used throughout this file (whose fake pump's own
+`get_flow_rate_max()` returns `5000.0`, and the pre-existing
+`test_qmix_pump_backend_initializes_and_dispatches` already calls
+`generate_flow(-5000.0)` -- confirmed still passes, since `5000.0` is
+exactly at the boundary, not above it).
+
+**Landed cleanly, same standalone-from-TEC pattern as every other item
+this session.** `qmix_backend.py` was never part of TEC's diff at all
+(same file Item 1 already touched this session, no new entanglement
+risk introduced).
+
+**Files touched:** [qmix_backend.py](src/thermo_acoustic/qmix_backend.py)
+(`generate_flow()` bounds check), [tests/test_application.py](tests/test_application.py)
+(4 new tests).
+
+**Verification:** full `tests/` suite green, 264/264 (up from 260),
+confirmed stable across 2 consecutive offscreen runs, no flakiness this
+round. Not yet committed, per the same review-before-commit instruction
+as every other item this session. **Real-hardware verification against
+the actual Qmix/neMESYS pump happened later this session -- see the
+dedicated hardware-verification entry below.**
+
+**All four Priority 1 items from the hardware-safety audit are now
+implemented, tested, and logged, pending review before commit and
+pending real-hardware verification (see below).**
+
+### Session 51 continued: real-hardware verification of Priority 1 Items 1, 3, 4 (Item 2 blocked -- no device)
+
+**Explicit instruction: do not commit until real-hardware verification
+is done, both accept and reject paths, real bugs fixed and
+re-verified.** This entry follows the same reporting pattern as Session
+48's piezo hardware verification: what was tested, pass/fail per item,
+and every discrepancy documented individually and plainly, not
+compressed into a vague summary line.
+
+**Hardware discovery, done before touching anything (safe, read-only
+probes only):** Device Manager USB VID scan found a **Hamamatsu C15440**
+camera physically connected (`USB\VID_0661&PID_144B\500478`, Status OK)
+and a **CETONI VCI4 USB-to-CAN compact** adapter (Status OK) -- the real
+CETONI Qmix pump's own CAN interface. `C:\Program Files\QmixElements`
+(the real CETONI Elements software) and a genuine, specific single-pump
+project configuration
+(`C:\Users\Lab user\Desktop\Franzi\video paper 2\Paper 2 slow flow\
+Configurations\Cetoni_1pump_config_FM`) were found on disk, matching
+this repo's own `hardware_config.py:ONE_PUMP_QMIX_CONFIG_PATH` default
+exactly -- confirming this is the genuine lab machine, not a generic
+sandbox. A Thorlabs APT device (serial `44533854`, matching
+`PiezoStage`'s own default serial) was also present, unrelated to
+today's four items. **No Digilent Analog Discovery device was found** --
+zero `VID_1443` entries anywhere in Device Manager, even after the user
+attempted to connect one and a second scan. An initial, misleading
+signal (`FDwfEnum` reporting device count `1` with a blank name/serial)
+was investigated and dismissed as not real hardware -- likely a stale
+enumeration artifact from the WaveForms runtime, since no real AD2 has
+ever been discoverable via the actual PnP device list at any point this
+session.
+
+**Item 1 (Syringe geometry) -- PASS, no bugs found.** Connected via
+`QMIXSDK=C:\Users\Lab user\AppData\Local\CETONI_SDK` and the real
+`Cetoni_1pump_config_FM` project. **Accept path:**
+`configure_syringe({"name": "BD 1ml"})` succeeded; the pump reported a
+real, non-round `max_flow_rate_ul_min` before (`7316.42`) and after
+(`6686.74`, genuinely different once real syringe geometry was applied)
+-- confirming genuine device communication, not a fake. **Reject path:**
+`configure_syringe({"inner_diameter_mm": 10.0, "max_piston_stroke_mm":
+70.0})` (just above the real 65mm ceiling) raised `QmixPumpError` citing
+the manual, exactly as designed. **Verified with hardware-level proof,
+not just trust in the exception:** read `pump.get_syringe_param()`
+before and after the rejected call -- identical (`4.78mm`/`55.73mm`,
+the BD 1ml values) both times, confirming the rejected value never
+reached the device's own stored state.
+
+**Item 4 (Pump flow rate) -- PASS, no bugs found.** Same connection.
+Per explicit user direction (avoiding real motor motion given no visual
+confirmation of the physical syringe/tubing setup was possible),
+**accept path** used `generate_flow(0.0)` -- a genuinely valid,
+zero-actuation rate -- which reached the real `pump.generate_flow()` SDK
+call successfully with no exception; `stop_pumping()` was called
+immediately after as an additional safety measure regardless.
+**Reject path:** `generate_flow(max_flow_rate_ul_min + 100000.0)` raised
+`QmixPumpError` before any SDK call, citing the real reported max. No
+physical pump motion occurred at any point in this item's verification.
+
+**Item 3 (Camera ROI) -- PASS, no bugs in the fix, but a real finding
+that corrects how the fix's own changelog entry characterized "the old
+behavior."** Connected to the real C15440 directly (no `QMIXSDK`/CAN
+involved). Real sensor limits read: `horizontal_size`/`vertical_size`
+`[4, 2304]` (step 4), `horizontal_offset`/`vertical_offset` `[0, 2300]`
+(step 4) -- confirming the well-known 2304-pixel full resolution
+referenced throughout this project's history. **Accept path:** a valid
+ROI (`offset=100,100`, `size=800x600`) configured successfully in
+`0.3487s`, confirmed via readback -- no regression from the pre-fix
+behavior. **Reject path:** an invalid ROI (`offset=2000`,
+`size=2304` -- sum `4304` against the real `2304`px sensor) was rejected
+by the new pre-flight check in `0.0001s`; readback confirmed the ROI
+stayed unchanged (still the valid `800x600` one) after the rejected
+attempt.
+
+**Investigated as instructed ("compare timing/clarity against the old
+behavior... to confirm this is actually an improvement, not just
+different") -- this surfaced a real discrepancy from what Item 3's own
+prior research assumed, worth correcting rather than ignoring since it
+wasn't a test failure, just an inaccurate characterization:** bypassing
+the new pre-flight check and issuing the raw DCAM calls directly
+(`prop_setgetvalue(SUBARRAYHSIZE, 2304)` then
+`prop_setgetvalue(SUBARRAYHPOS, 2000)`) **both succeeded individually,
+with no error at all** -- DCAM does not validate the horizontal
+offset+size combination at the point of writing either property. The
+real `INVALIDSUBARRAY` error (confirmed: raised with code `-2147481557`
+= `0x8000082b`, matching the documented enum value exactly) only fires
+at the *final* `prop_setvalue(SUBARRAYMODE, ON)` call -- the last of
+five calls in `configure_roi()`'s own original sequence. **This means
+the pre-Session-51 code path would have transiently written the invalid
+`SUBARRAYHSIZE`/`SUBARRAYHPOS` values to the physical camera before
+failing at that last step**, not rejected them at the point of writing
+as the Item 3 changelog entry above implied. The new pre-flight check is
+therefore a **stronger improvement than originally documented**: it
+doesn't just surface the same error earlier with a clearer message, it
+prevents the device from ever being written into that invalid
+intermediate state at all. Not a bug in the fix itself -- the fix's own
+logic and every existing test remain correct, since the pre-flight
+check's own combined-sum condition is independently derived from the
+same documented `INVALIDSUBARRAY` semantics and was confirmed correct
+against real hardware in the reject-path test above. **Recovery
+confirmed:** after this raw-SDK investigation, the camera was reset to
+a full-frame ROI and normal `configure_roi()` operation was confirmed to
+resume with no lasting bad state -- re-opening the camera fresh showed
+it had already reverted to a sane full-frame reading on its own (DCAM's
+own behavior when `SUBARRAYMODE` is left off), not a stuck invalid
+state. The Item 3 entry above has been corrected in place to point here
+rather than left with the less-accurate original characterization.
+
+**Item 2 (AD2) -- BLOCKED, not hardware-verified this session.** No
+physical Analog Discovery device was ever detected despite the user's
+attempt to connect one (confirmed via a second Device Manager scan
+after connection). Per explicit user decision, this item proceeds
+**without** real-hardware verification for now -- the `should_abort`-
+equivalent mechanism (device-reported `AnalogOutNode*Info()` clamping,
+`out_of_range` wiring) remains verified only against the purpose-built
+fake from earlier in this session, not the physical device. Flagged as
+the one open item from this pass; AD2 hardware verification should
+happen in a future session once the device is physically connected.
+
+**No bugs were found in any of the three verified items' actual
+enforcement logic.** The one real discrepancy found (Item 3's DCAM
+`INVALIDSUBARRAY` timing) was in this session's own documentation of
+*why* the fix is an improvement, not in the fix's behavior -- corrected
+above, no code change required as a result.
+
+**Cleanup:** confirmed no new files were written by any verification
+script this session (`configure_syringe`/`generate_flow`/`configure_roi`/
+`read_subregion_limits_and_value` are all pure SDK-call/validation
+paths with no file I/O) -- `git status` showed no new untracked entries
+beyond what already existed before this pass. Separately, while
+confirming this, found `hardware_tests/output/` (containing prior
+sessions' real-run artifacts, including Session 48's own piezo
+verification output) was **never actually covered by `.gitignore`**,
+despite earlier changelog entries (including Session 48's) describing
+it as "gitignored, matching this project's established convention" --
+that convention existed in practice (nothing from it was ever
+committed) but not in the actual ignore rules. Added a real
+`hardware_tests/output/` rule to `.gitignore` now, with a comment
+explaining the gap.
+
+**Files touched:** [.gitignore](.gitignore) (new `hardware_tests/output/`
+rule). No source files changed as a result of this verification pass --
+all three verified items' existing implementations were confirmed
+correct as-is against real hardware.
+
+**Verification:** full `tests/` suite still green, 265/265 (unchanged --
+no code changes this pass). Real hardware: Items 1, 3, 4 confirmed
+pass (accept and reject paths, each with hardware-level evidence, not
+just a raised/not-raised exception). Item 2 not yet verified, device
+unavailable. **Ready for commit review with this one explicit caveat
+carried forward: Item 2 (AD2) is backed by fake-based tests only, not a
+live device.**
+
+### Session 51 continued: pre-commit hunk separation found a second, genuine entanglement -- the tooltip-count assertion
+
+**While carefully separating this session's own changes from the
+still-separate, still-untouched TEC integration diff via `git add -p`
+(hunk-by-hunk, verified after every file with `git diff --cached`/
+`git diff`), one genuine line-level entanglement was found and could
+not be resolved by hunk splitting alone** -- unlike every other shared
+file this session, where spatial separation (different lines/functions)
+made clean hunk-level staging straightforward and was independently
+verified for each file (`workflows.py`, `qt_ui_v2.py`, `qt_ui.py`, all
+confirmed hunk-by-hunk with zero TEC content in the staged diff).
+
+`tests/test_qt_ui_hardware_settings.py`'s `test_every_value_widget_has_
+a_tooltip_and_visible_marker` drift-guard assertion had been edited
+*twice* on the *same line*, sequentially: `129` (the real pre-session
+baseline) -> `138` (TEC's own uncommitted +9 fields) -> `143` (this
+session's own +5 Z-scan fields, added on top of TEC's own edit,
+Session 50). Since `git diff` only ever compares the working tree
+against the last commit, both edits collapsed into a single line-level
+change with no hunk boundary to split on -- reported to the user rather
+than guessed at, per the same standing instruction from Session 50
+("if... additions can't be cleanly distinguished... STOP and report").
+
+**Resolved per explicit user direction:** the assertion and its comment
+were rewritten to state the number correct for *this commit alone, in
+isolation* -- `129` (real baseline) `+ 5` (this session's own Z-scan
+fields) `= 134` -- with TEC's own eventual `+9` explicitly left for
+their own future commit to add, not preempted here. **This
+deliberately leaves one known, expected test failure in the current
+combined working tree** (real widget count is `143` with TEC's
+uncommitted diff still physically present in `qt_ui.py`, but the
+assertion this commit carries says `134`) **until TEC's own future
+commit bumps this same assertion line from `134` to `143` as part of
+its own change.** Confirmed by direct measurement, not just reasoning
+about it: `git stash --keep-index -u` temporarily set aside TEC's
+entire unstaged diff and untracked files, full `tests/` suite run
+against the resulting isolated (staged-content-only) working tree came
+back **264/265** (one offscreen-Qt-flakiness failure, confirmed
+transient by re-running alone and by two further full-suite runs each
+showing a *different* transient failure, never the same test twice) --
+critically, the tooltip-count assertion itself passed cleanly in that
+isolated state, confirming `134` really is correct for this commit
+standalone. `git stash pop` restored TEC's diff immediately afterward;
+the subsequent combined-state run reproduced exactly the one expected
+failure described above, `264/265`, nothing else.
+
+**A second, smaller staging mistake was caught and fixed during this
+same pre-commit pass, not left silent:** an initial `git add -p` batch
+for this file accidentally staged a `from pathlib import Path` import
+line alongside this session's own new imports -- that `Path` import is
+actually needed by one of TEC's own new test functions
+(`test_qt_ui_builds_one_experiment_group_per_tec_temperature`), not
+this session's work. Caught by inspecting the staged diff directly
+(not assumed correct from the `git add -p` transcript alone) and
+corrected via `git reset -p` before proceeding, leaving that one import
+line properly unstaged with the rest of TEC's diff.
+
+**Files touched by this correction:**
+[tests/test_qt_ui_hardware_settings.py](tests/test_qt_ui_hardware_settings.py)
+(assertion `143` -> `134`, comment rewritten to explain the split and
+point to this note).
+
+### Session 51 continued: Item 2 (AD2) hardware-verified -- the earlier "device not connected" conclusion was itself a diagnostic error
+
+**The user confirmed the AD2 works fine under the existing LabVIEW
+program, ruling out "device genuinely absent/broken" and pointing
+squarely at this session's own Python-side detection as the thing to
+re-examine -- same diagnostic discipline as the Session 45 BPC303
+class-mismatch investigation (real root cause found via direct
+evidence, not the first plausible guess accepted).**
+
+**Investigated in order, before touching any code, exactly as
+instructed:**
+1. **No competing process or service found holding the device.**
+   `Get-Process`/`Get-Service` (PowerShell) found no LabVIEW, WaveForms,
+   or any Digilent-named process or service running at the time of
+   re-testing. Only one `dwf.dll` exists anywhere on the machine
+   (`System32`, `SysWOW64`, and the WaveForms3 install directory, all
+   byte-identical by date, 2024-02-29) -- no version/path mismatch, no
+   legacy Digilent Adept Runtime installed alongside the current
+   WaveForms Runtime that could be silently claiming the device under
+   an older driver generation.
+2. **LabVIEW uses the identical underlying SDK, not a different driver
+   stack.** `labview_ports.py`'s own registry shows `AD2_SDK.lvclass`'s
+   VIs call into a custom LabVIEW wrapper library, `Olasdwf.lvlib`,
+   whose own VI names (`F Dwf Enum`, `F Dwf Device Open`, `F Dwf Analog
+   Out Node Amplitude Set`, etc.) are a direct, function-for-function
+   mirror of the WaveForms SDK's real C API -- the same `dwf.dll` this
+   Python codebase's own `waveforms.py` calls into via ctypes. Ruled
+   out "LabVIEW and Python are using genuinely different drivers" as
+   the explanation.
+3. **The actual bug, found by re-running this project's own
+   `WaveFormsBackend.enum_devices()`/`enum_device_name()`/
+   `enum_device_serial_number()` (no new script, the existing code
+   path): this specific Analog Discovery 2 unit enumerates over USB
+   under an FTDI bridge-chip Vendor ID (`VID_0403&PID_6014`, serial
+   `210321A18CE2`), not Digilent's own `VID_1443`** -- confirmed by the
+   real serial number read back from `enum_device_serial_number()`
+   matching, character for character, a "USB Serial Converter" PnP
+   entry already visible in the very first hardware-discovery pass
+   earlier this session, which was misclassified at the time as an
+   unrelated generic FTDI serial adapter rather than recognized as the
+   AD2 itself. **The earlier "no AD2 physically connected" conclusion
+   was a genuine investigative error** -- searching Device Manager for
+   the wrong Vendor ID and treating the absence of that specific VID as
+   proof of absence, the same class of premature-conclusion risk the
+   Session 45 piezo investigation guarded against by insisting on
+   independent confirmation (there, via `.NET` reflection against the
+   real DLL; here, via this project's own enumeration code returning a
+   real, matching name and serial rather than trusting a Device
+   Manager VID filter). Not a driver conflict, not an exclusive lock,
+   not a version mismatch -- a wrong assumption about which VID to look
+   for.
+
+**Re-ran this project's own enumeration code with no changes:**
+```
+enum_devices() count: 1
+  device 0: name='Analog Discovery 2' sn='SN:210321A18CE2' opened=False
+last error code: 0
+```
+Real name, real serial, `opened=False` (confirming nothing else
+currently holds it open). Proceeded to Item 2's hardware verification
+exactly as originally specified.
+
+**Item 2 (AD2) -- PASS, no bugs found.** Real hardware throughout,
+`configure_wfg()` always called with `running=False` so the analog
+output stage was never actually started -- no real signal appeared on
+the AD2's physical output pins at any point in this verification (the
+clamping/`out_of_range` logic being verified lives entirely in the
+Set-value computation inside `_configure_analog_node()`, independent of
+whether output is later started). Real device-reported ranges read
+first: frequency `[1e-6, 1e8]` Hz, amplitude `[0.01, 5.0]` V (Ch1
+Carrier node). **Accept path:** `amplitude_v=1.0`, `frequency_hz=1000.0`
+(both in range) -> `out_of_range=False`; read back via
+`analog_out_node_frequency_get()`/`amplitude_get()`: `1000.0000221897726`
+Hz / `0.9999862130521723` V -- matching the requested values within
+real DAC quantization, not exact floating-point equality, exactly as
+expected for physical hardware. **Reject path:** `amplitude_v=10.0`
+(above the real 5.0V max) -> `out_of_range=True`; real applied
+amplitude read back as `4.9996361796517474` V -- clamped to the
+device's own real ceiling, not the requested 10.0V. **UI status line**
+(`MainWindow._apply_wfg()`, real `AD2Sdk`+`WaveFormsBackend`, no fake):
+`'WFG configured -- WARNING: amplitude/frequency clamped to device
+limits on Ch1'` -- exact match to the designed message, naming only the
+actually-affected channel. **Logged TDMS metadata**
+(`Experiment2._settings_properties()`, real `WfgConfig` object straight
+from the hardware call): `WFGOutOfRangeCh1=True`,
+`WFGOutOfRangeCh2=False` -- correctly per-channel, not a blanket flag.
+
+**All four Priority 1 items are now hardware-verified with no bugs
+found in any of the four enforcement mechanisms.** The one earlier bug
+this whole verification pass surfaced (Item 2's own detection gap) was
+a diagnostic error in how *this session* checked for the device, not a
+defect in the `out_of_range`/clamping code itself, which behaved
+correctly the moment a real, correctly-identified device was available
+to test against.
+
+**Files touched:** none -- this entry is diagnostic and verification
+only, no code changes resulted from the Item 2 investigation (the
+device detection "gap" was never a code bug, so there was nothing in
+`waveforms.py`/`instruments.py`/`qt_ui.py` to fix).
+
+**Verification:** full `tests/` suite unaffected (still the one
+documented, expected failure from the tooltip-count entanglement above,
+264/265). Real hardware: Item 2 confirmed pass, accept and reject paths,
+UI status line, and TDMS metadata field, closing the last remaining gap
+from this session's hardware-verification pass.
+
 ---
 
 ## Known remaining open items as of this writing

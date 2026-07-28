@@ -24,16 +24,56 @@ def _syringe_stroke_mm(volume_ml: float, inner_diameter_mm: float) -> float:
 
 SYRINGE_PRESETS: dict[str, tuple[float, float]] = {
     # Inner diameters are BD syringe spec values (confirmed authoritative:
-    # 1mL=4.78mm, 5mL=12.07mm, 10mL=14.5mm). Stroke length is not an
-    # independently-sourced BD spec value -- it is derived here assuming
-    # the full nominal volume is delivered over the full piston travel
-    # with a cylindrical bore (stroke = volume / cross-sectional area).
-    # No authoritative real BD stroke-length figure was available to
+    # 1mL=4.78mm, 5mL=12.07mm, 10mL=14.5mm) -- Chemyx BD Plastic Syringe
+    # reference table (chemyx.com), cross-checked against BD REF
+    # 309628/309649/300912 packaging (no provenance for these three values
+    # was ever recorded in this repo's own history prior to Session 51;
+    # `git log -p` on this file shows only "confirmed authoritative" with
+    # no external citation, back to the syringe feature's original
+    # introduction -- added now, not re-deriving anything). Stroke length is
+    # not an independently-sourced BD spec value -- it is derived here
+    # assuming the full nominal volume is delivered over the full piston
+    # travel with a cylindrical bore (stroke = volume / cross-sectional
+    # area). No authoritative real BD stroke-length figure was available to
     # verify this assumption against.
     "BD 1ml": (4.78, _syringe_stroke_mm(1.0, 4.78)),
     "BD 5ml": (12.07, _syringe_stroke_mm(5.0, 12.07)),
     "BD 10ml": (14.50, _syringe_stroke_mm(10.0, 14.50)),
 }
+
+# Conservative app-level hard bounds for Custom syringe geometry -- unlike
+# max_flow_rate_ul_min/max_volume_ml (read back from the pump after
+# set_syringe_param() below), there is no live device readback for
+# inner_diameter_mm/max_piston_stroke_mm themselves, and CETONI's own SDK
+# documentation does not state that pump firmware validates them against
+# the syringe actually mounted. A wrong (too-large) value here could ask
+# set_syringe_param()'s downstream volume/position math to drive the
+# piston holder past its real physical travel.
+#
+# inner_diameter_mm: spans BD's full published 1mL-60mL product line
+# (4.78mm-26.72mm, chemyx.com's BD syringe chart -- consistent with the
+# three SYRINGE_PRESETS values above, which are the 1/5/10mL points on
+# that same range), padded to [1.0, 35.0] for legitimate brand/size
+# variation -- this also comfortably matches CETONI's own NEM-B101-02 E
+# hardware manual (Section 5.1), which clamps syringe *outer* diameter to
+# 6-30mm on this pump module; 35mm is used as this constant's own ceiling
+# since inner diameter is always smaller than outer.
+#
+# max_piston_stroke_mm: NOT a BD-range-derived value (a prior version of
+# this comment padded this module's own volume/diameter->stroke formula
+# to [10.0, 200.0], which was wrong -- CETONI's Low Pressure Hardware
+# Manual, Section 5.1, NEM-B101-02 E, states this specific pump module's
+# absolute mechanical piston travel is "up to 65 mm", independent of
+# whatever syringe is mounted; a configured stroke above that can command
+# the pump past its own real mechanical limit regardless of the syringe's
+# own barrel length, which is exactly the ATTENTION warning in that same
+# manual section). 65.0 is a real hardware ceiling, not a padded
+# BD-range estimate -- unlike inner_diameter_mm above, do not derive this
+# bound from syringe presets/volume math.
+MIN_SYRINGE_INNER_DIAMETER_MM = 1.0
+MAX_SYRINGE_INNER_DIAMETER_MM = 35.0
+MIN_SYRINGE_STROKE_MM = 10.0
+MAX_SYRINGE_STROKE_MM = 65.0
 
 
 @dataclass(slots=True)
@@ -132,7 +172,23 @@ class QmixPumpBackend:
     def generate_flow(self, flow_rate: float) -> None:
         pump = self._require_pump()
         self._enable_pump()
-        pump.generate_flow(float(flow_rate))
+        flow_rate = float(flow_rate)
+        # Session 51: max_flow_rate_ul_min is already populated (initialize(),
+        # configure_syringe(), configure_flow_unit() all read it back from the
+        # pump) but was never actually compared against here before this --
+        # LCP_GenerateFlow was called with whatever was requested,
+        # unconditionally. abs() because a negative flow_rate means aspirate,
+        # positive means dispense (generate_flow()'s own docstring) -- the
+        # magnitude is what must not exceed the pump's own reported ceiling,
+        # in either direction. None means the pump hasn't reported a real
+        # ceiling yet (e.g. configure_syringe() never called) -- nothing to
+        # validate against, so pass through unchanged, same as before.
+        if self.max_flow_rate_ul_min is not None and abs(flow_rate) > self.max_flow_rate_ul_min:
+            raise QmixPumpError(
+                f"Requested flow_rate={flow_rate!r} exceeds the pump's own reported "
+                f"max_flow_rate_ul_min={self.max_flow_rate_ul_min!r} -- rejected before reaching the pump SDK."
+            )
+        pump.generate_flow(flow_rate)
 
     def set_fill_level(self, fill_level: float, flow_rate: float | None = None) -> None:
         # fill_level is always an absolute mL value -- no auto-detection against
@@ -170,7 +226,23 @@ class QmixPumpBackend:
                 "max_piston_stroke_mm, or one of the known presets: "
                 + ", ".join(SYRINGE_PRESETS)
             )
-        pump.set_syringe_param(float(inner_diameter), float(stroke))
+        inner_diameter = float(inner_diameter)
+        stroke = float(stroke)
+        if not (MIN_SYRINGE_INNER_DIAMETER_MM <= inner_diameter <= MAX_SYRINGE_INNER_DIAMETER_MM):
+            raise QmixPumpError(
+                f"Syringe inner_diameter_mm={inner_diameter!r} is outside the plausible range "
+                f"[{MIN_SYRINGE_INNER_DIAMETER_MM}, {MAX_SYRINGE_INNER_DIAMETER_MM}] mm "
+                "(spanning BD's full 1mL-60mL product line) -- rejected before reaching the pump SDK."
+            )
+        if not (MIN_SYRINGE_STROKE_MM <= stroke <= MAX_SYRINGE_STROKE_MM):
+            raise QmixPumpError(
+                f"Syringe max_piston_stroke_mm={stroke!r} is outside the plausible range "
+                f"[{MIN_SYRINGE_STROKE_MM}, {MAX_SYRINGE_STROKE_MM}] mm "
+                "(this pump module's own absolute mechanical piston travel is up to 65mm, "
+                "CETONI Low Pressure Hardware Manual Section 5.1, NEM-B101-02 E) -- "
+                "rejected before reaching the pump SDK."
+            )
+        pump.set_syringe_param(inner_diameter, stroke)
         self.max_flow_rate_ul_min = float(pump.get_flow_rate_max())
         self.max_volume_ml = float(pump.get_volume_max())
 

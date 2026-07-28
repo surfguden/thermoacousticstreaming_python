@@ -62,6 +62,13 @@ class ZScanCalibration:
     # fail instead" -- the safe default for a routine that might be called
     # non-interactively.
     confirm_closed_loop_switch: Callable[[], bool] | None = None
+    # Optional cooperative-abort hook (Phase 4 UI integration): checked once
+    # per position, before that position's own move/settle/capture -- an
+    # in-flight position always finishes once started, matching this
+    # class's existing "stop, don't skip" partial-completion convention
+    # (see the move/capture-failure handling below) rather than interrupting
+    # a move/capture mid-flight. None (the default) means never abort.
+    should_abort: Callable[[], bool] | None = None
 
     def run(
         self,
@@ -97,6 +104,13 @@ class ZScanCalibration:
         results: list[ZScanFrameResult] = []
 
         for index, target_um in enumerate(targets):
+            if self.should_abort is not None and self.should_abort():
+                raise ZScanError(
+                    f"Z-scan aborted at position {index + 1}/{len(targets)} "
+                    f"(target={target_um:.2f} um). {len(results)} of {len(targets)} "
+                    "positions completed successfully before this abort -- this is a "
+                    "PARTIAL, incomplete stack, not silently treated as done."
+                )
             try:
                 results.append(self._acquire_one(target_um, output_dir, settle_delay_ms))
             except Exception as exc:
