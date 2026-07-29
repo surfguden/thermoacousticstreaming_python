@@ -665,7 +665,7 @@ def test_qt_ui_load_settings_auto_converts_legacy_hz_scale_frequencies(monkeypat
     assert window.wfg_channels[0]["frequency"].value() == pytest.approx(1975.0)
     assert window.exp_ch1_freq.value() == pytest.approx(1975.0)
     assert window.exp_ch2_freq.value() == pytest.approx(500.0)
-    assert "auto-converted" in window.status.text()
+    assert "auto-converted" in window.status.latest_text()
 
     # Once resaved, the file carries schema_version 2 and must not be
     # converted again on a subsequent load (that would silently divide a
@@ -678,7 +678,7 @@ def test_qt_ui_load_settings_auto_converts_legacy_hz_scale_frequencies(monkeypat
     reloaded_window = build_with_retry(qt_ui.MainWindow)
     assert reloaded_window.wfg_channels[0]["frequency"].value() == pytest.approx(1975.0)
     assert reloaded_window.exp_ch1_freq.value() == pytest.approx(1975.0)
-    assert "auto-converted" not in reloaded_window.status.text()
+    assert "auto-converted" not in reloaded_window.status.latest_text()
 
 
 def test_qt_ui_save_and_restore_passive_hardware_fields(monkeypatch, tmp_path):
@@ -1490,8 +1490,132 @@ def test_camera_adjust_without_prior_capture_reports_status(monkeypatch, tmp_pat
 
     window._adjust_camera_preview()
 
-    assert window.status.text() == "No image captured yet"
+    assert window.status.latest_text() == "No image captured yet"
     assert window._camera_preview is None
+
+
+def test_history_log_widget_accumulates_distinct_entries():
+    # Direct widget-level check that history genuinely accumulates -- not
+    # just that the widget exists, and not just that the latest entry is
+    # correct (a single-value display would also pass that check).
+    QApplication.instance() or QApplication([])
+    log = qt_ui.HistoryLogWidget()
+    assert log.count() == 0
+
+    log.add_entry("first")
+    log.add_entry("second")
+    log.add_entry("third")
+
+    assert log.count() == 3
+    assert [log.item(i).data(Qt.ItemDataRole.UserRole) for i in range(3)] == ["first", "second", "third"]
+    assert log.latest_text() == "third"
+    # Earlier entries are still genuinely present, not overwritten.
+    assert log.item(0).data(Qt.ItemDataRole.UserRole) == "first"
+    # Each row is timestamped.
+    assert log.item(0).text().startswith("[")
+    assert "first" in log.item(0).text()
+
+
+def test_history_log_widget_dedupes_consecutive_identical_entries():
+    # Several real call sites (_handle_worker_finished()'s "OK" branch,
+    # _safe_call()'s success path) re-report the same state on every
+    # successful action, not just on a genuine change -- without this,
+    # the log would fill with redundant identical rows on every click.
+    QApplication.instance() or QApplication([])
+    log = qt_ui.HistoryLogWidget()
+
+    log.add_entry("Ready")
+    log.add_entry("Ready")
+    log.add_entry("Ready")
+    assert log.count() == 1
+
+    log.add_entry("Busy")
+    assert log.count() == 2
+
+    # Not deduped against an entry further back than the immediately
+    # preceding one -- only true consecutive repeats collapse.
+    log.add_entry("Ready")
+    assert log.count() == 3
+
+
+def test_history_log_widget_auto_scrolls_unless_user_scrolled_up():
+    QApplication.instance() or QApplication([])
+    log = qt_ui.HistoryLogWidget()
+    log.resize(200, 60)  # small viewport so enough entries actually overflow it
+    for i in range(30):
+        log.add_entry(f"entry {i}")
+    QApplication.processEvents()
+
+    bar = log.verticalScrollBar()
+    assert bar.maximum() > 0, "test requires the list to actually overflow its viewport"
+    assert bar.value() == bar.maximum(), "should auto-scroll to the newest entry by default"
+
+    # User scrolls up to review history.
+    bar.setValue(0)
+    QApplication.processEvents()
+    log.add_entry("new entry while scrolled up")
+    QApplication.processEvents()
+
+    assert bar.value() == 0, "an incoming entry must not yank the view back down while scrolled up"
+
+    # Scrolling back to the bottom resumes auto-scroll for the next entry.
+    bar.setValue(bar.maximum())
+    QApplication.processEvents()
+    log.add_entry("final entry after returning to bottom")
+    QApplication.processEvents()
+
+    assert bar.value() == bar.maximum()
+
+
+def test_status_history_accumulates_across_multiple_status_changes(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        starting_count = window.status.count()
+
+        window._set_status("Initializing")
+        window._set_status("Running Experiment Frame")
+        window._set_status("ExperimentComplete")
+
+        # All three genuinely distinct messages are present, in order --
+        # not just the latest one, which a single-value QLineEdit would
+        # have shown before this change (it would only ever show
+        # "ExperimentComplete", with "Initializing" and "Running Experiment
+        # Frame" silently gone).
+        assert window.status.count() == starting_count + 3
+        new_entries = [
+            window.status.item(i).data(Qt.ItemDataRole.UserRole)
+            for i in range(starting_count, window.status.count())
+        ]
+        assert new_entries == ["Initializing", "Running Experiment Frame", "ExperimentComplete"]
+        assert window.status.latest_text() == "ExperimentComplete"
+    finally:
+        window.close()
+
+
+def test_error_log_accumulates_across_multiple_events(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        starting_count = window.error_log.count()
+
+        window._append_error_entry("OK", "0", "")
+        window._append_error_entry("ERROR", "1", "first failure")
+        window._append_error_entry("ERROR", "1", "second failure")
+
+        # Three distinct bundled entries accumulate -- not the latest
+        # overwriting the previous two, which the old three separate
+        # single-value fields would have done.
+        assert window.error_log.count() == starting_count + 3
+        new_entries = [
+            window.error_log.item(i).data(Qt.ItemDataRole.UserRole)
+            for i in range(starting_count, window.error_log.count())
+        ]
+        assert new_entries == [
+            "OK | code=0",
+            "ERROR | code=1 | first failure",
+            "ERROR | code=1 | second failure",
+        ]
+    finally:
+        window.close()
 
 
 def test_camera_preview_timer_starts_and_stops(monkeypatch, tmp_path):
@@ -2089,15 +2213,22 @@ def test_every_value_widget_has_a_tooltip_and_visible_marker(monkeypatch, tmp_pa
 
         kept = sum(1 for _cls, _tip, has_tip, _marked in results if has_tip)
         # 129 (127, Session 41 re-narrowing, + 2, Session 44's
-        # custom_syringe_inner_diameter_mm/custom_syringe_stroke_mm) + 5 new
-        # Z-scan calibration tab fields this commit (Phase 4:
-        # z_start/z_end/step_size/exposure_ms/output_dir, all genuinely
-        # non-obvious ZScanCalibration.run() parameters) = 134. This value is
-        # correct for THIS commit in isolation -- a separate, still-uncommitted
-        # TEC integration effort (enabled/sim/resource + 6 scan controls, 9
-        # fields) is expected to bump this same assertion from 134 to 143 as
-        # part of its own future commit; do not preempt that number here.
-        assert kept == 134, f"expected 134 fields with a tooltip after this commit's Z-scan controls were added, found {kept}"
+        # custom_syringe_inner_diameter_mm/custom_syringe_stroke_mm) + 5
+        # piezo Z-scan calibration tab fields (Phase 4:
+        # z_start/z_end/step_size/exposure_ms/output_dir, landed in commit
+        # 23e17d5) = 134, then -1 for the Status/Error Out history-log work:
+        # error_status/error_code/error_source were three separate QLabel/
+        # QLineEdit rows, one of which (error_code) carried a tooltip counted
+        # here; replaced with a single HistoryLogWidget (a QListWidget
+        # subclass, not in _TOOLTIP_COVERAGE_WIDGET_TYPES above, so its own
+        # tooltip is real but genuinely out of this sweep's scope) = 133.
+        # This value is correct for THIS commit in isolation -- a separate,
+        # still-uncommitted TEC integration effort (enabled/sim/resource + 6
+        # scan controls, 9 fields) is expected to bump this same assertion
+        # from 133 to 142 as part of its own future commit; verified
+        # empirically against this exact reconstruction before staging, not
+        # just computed by hand -- do not preempt that number here.
+        assert kept == 133, f"expected 133 fields with a tooltip after the Status/Error Out history-log change, found {kept}"
 
         # Spot-check a representative sample from both sides of the Session
         # 41 classification (full list and rationale in the changelog).

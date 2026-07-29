@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 from .application import Application
 from .hardware_factory import HardwareRuntimeConfig, apply_hardware_bundle, build_hardware_bundle
 from .instruments import SimulatedAD2Sdk
-from .qt_ui import MainWindow, install_focus_wheel_guard
+from .qt_ui import HistoryLogWidget, MainWindow, install_focus_wheel_guard
 
 
 class InitializationDialog(QDialog):
@@ -240,12 +240,23 @@ class MainWindowV2(MainWindow):
 
     def _v2_status_progress_group(self) -> QGroupBox:
         group = QGroupBox("Status / Progress")
-        group.setMinimumHeight(120)
+        # 140, not the old 120 -- self.status became a HistoryLogWidget
+        # (scrollable, multi-row) instead of a single-line QLineEdit, which
+        # raised this group's own real minimumSizeHint above the old hardcoded
+        # value (test_v2_no_group_box_is_squeezed_below_its_minimum_size_hint
+        # caught this: needed >=127 at 1440x860, measured empirically).
+        group.setMinimumHeight(140)
         grid = QGridLayout(group)
 
-        self.status = QLineEdit("System Not Initialized")
-        self.status.setReadOnly(True)
+        self.status = HistoryLogWidget()
         self.status.setMinimumWidth(320)
+        self.status.setMaximumHeight(90)
+        self.status.setToolTip(
+            "Full session history of every status change, newest at the bottom -- "
+            "not just the most recent one. Scroll up to review; scroll back to the "
+            "bottom (or wait for the next update while already at the bottom) to "
+            "resume auto-scrolling."
+        )
         self.queue_count = QLabel("0")
 
         # Elapsed Time / Time Left: confirmed dead (Session 39, Category 4) --
@@ -433,15 +444,15 @@ class MainWindowV2(MainWindow):
         form = QFormLayout(group)
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
 
-        self.error_status = QLabel("OK")
-        self.error_code = QLineEdit("0")
-        self.error_code.setReadOnly(True)
-        self.error_code.setToolTip("Always '0' when status='OK', '1' on any caught exception -- not a real DCAM/AD2/Qmix error code, just a boolean flag (_handle_worker_finished()).")
-        self.error_source = QLineEdit("")
-        self.error_source.setReadOnly(True)
-        form.addRow("Error Out status", self.error_status)
-        form.addRow("Error Out code", self.error_code)
-        form.addRow("Error Out source", self.error_source)
+        self.error_log = HistoryLogWidget()
+        self.error_log.setMaximumHeight(90)
+        self.error_log.setToolTip(
+            "Full session history of every status/code/source event, newest at the "
+            "bottom -- not just the most recent one. code is always '0' when "
+            "status='OK', '1' on any caught exception -- not a real DCAM/AD2/Qmix "
+            "error code, just a boolean flag (_handle_worker_finished())."
+        )
+        form.addRow("Error Out", self.error_log)
 
         # word-wrap: these four can display long runtime text (e.g. the
         # valve's real "Connected (unverified position response: '...')"

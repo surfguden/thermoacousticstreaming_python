@@ -25,6 +25,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -373,6 +375,52 @@ class ImagePreviewWindow(QDialog):
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API name
         self.closed.emit()
         super().closeEvent(event)
+
+
+class HistoryLogWidget(QListWidget):
+    """Append-only, timestamped history log for Status / Error Out.
+
+    Replaces a single-value display that a later message would silently
+    overwrite. `add_entry()` is the only write API -- deliberately not
+    named `setText()`, since "append a new row" and "replace the
+    displayed text" are different operations and conflating them would
+    be misleading to a future reader. Consecutive entries with identical
+    text are deduped (compared on the raw message, not the timestamped
+    display string), since several existing call sites -- e.g.
+    `_handle_worker_finished()`'s "OK" branch, `_safe_call()`'s success
+    path -- re-report the same status/error state on every successful
+    action, not just on a genuine change; without dedup this would
+    flood the log with redundant identical rows on every button click.
+    Auto-scrolls to the newest entry only when the view was already at
+    (or near) the bottom before the entry was added -- if the user has
+    scrolled up to review history, a new entry does not yank the view
+    back down.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+    def add_entry(self, text: str) -> None:
+        if self.count() > 0 and self.item(self.count() - 1).data(Qt.ItemDataRole.UserRole) == text:
+            return
+        at_bottom = self._is_scrolled_to_bottom()
+        timestamp = time.strftime("%H:%M:%S", time.localtime())
+        item = QListWidgetItem(f"[{timestamp}] {text}")
+        item.setData(Qt.ItemDataRole.UserRole, text)
+        self.addItem(item)
+        if at_bottom:
+            self.scrollToBottom()
+
+    def latest_text(self) -> str:
+        if self.count() == 0:
+            return ""
+        return str(self.item(self.count() - 1).data(Qt.ItemDataRole.UserRole))
+
+    def _is_scrolled_to_bottom(self) -> bool:
+        bar = self.verticalScrollBar()
+        return self.count() == 0 or bar.value() >= bar.maximum() - 2
 
 
 class ActionWorker(QObject):
@@ -1289,9 +1337,15 @@ class MainWindow(QMainWindow):
         exit_button.clicked.connect(self._exit_app)
         abort_button = QPushButton("Abort")
         abort_button.clicked.connect(self._abort)
-        self.status = QLineEdit("System Not Initialized")
-        self.status.setReadOnly(True)
+        self.status = HistoryLogWidget()
         self.status.setMinimumWidth(280)
+        self.status.setMaximumHeight(80)
+        self.status.setToolTip(
+            "Full session history of every status change, newest at the bottom -- "
+            "not just the most recent one. Scroll up to review; scroll back to the "
+            "bottom (or wait for the next update while already at the bottom) to "
+            "resume auto-scrolling."
+        )
         save_settings = QPushButton("Save Settings")
         save_settings.clicked.connect(self._save_settings)
         load_settings = QPushButton("Load Settings")
@@ -2542,19 +2596,23 @@ class MainWindow(QMainWindow):
 
     def _error_panel(self) -> QGroupBox:
         group = QGroupBox("Error Out")
-        group.setMaximumWidth(240)
-        form = QFormLayout(group)
-        self.error_status = QLabel("OK")
-        self.error_code = QLineEdit("0")
-        self.error_code.setReadOnly(True)
-        self.error_code.setToolTip("Always '0' when status='OK', '1' on any caught exception -- not a real DCAM/AD2/Qmix error code, just a boolean flag (_handle_worker_finished()).")
-        self.error_source = QLineEdit("")
-        self.error_source.setReadOnly(True)
-        form.addRow("status", self.error_status)
-        form.addRow("code", self.error_code)
-        form.addRow("source", self.error_source)
-        self._add_tooltip_icons(form)
+        group.setMaximumWidth(280)
+        layout = QVBoxLayout(group)
+        self.error_log = HistoryLogWidget()
+        self.error_log.setToolTip(
+            "Full session history of every status/code/source event, newest at the "
+            "bottom -- not just the most recent one. code is always '0' when "
+            "status='OK', '1' on any caught exception -- not a real DCAM/AD2/Qmix "
+            "error code, just a boolean flag (_handle_worker_finished())."
+        )
+        layout.addWidget(self.error_log)
         return group
+
+    def _append_error_entry(self, status: str, code: str, source: str) -> None:
+        text = f"{status} | code={code}"
+        if source:
+            text += f" | {source}"
+        self.error_log.add_entry(text)
 
     def _channel_config(self, state: dict[str, object]) -> WfgChannelConfig:
         # Frequency-class widgets (Carrier/FM Mod "Frequency", Sweep "Center/Top/
@@ -3375,9 +3433,7 @@ class MainWindow(QMainWindow):
     def _handle_shutdown_timeout(self) -> None:
         message = f"Shutdown timed out after {self._shutdown_timeout_s:.1f}s; forcing window close."
         self.app.check_loop_error(message)
-        self.error_status.setText("ERROR")
-        self.error_code.setText("1")
-        self.error_source.setText(message)
+        self._append_error_entry("ERROR", "1", message)
         self._set_status(message)
         self._shutdown_poll_timer.stop()
         self._handle_shutdown_finished(False, "Error", message, force_close=True)
@@ -3441,9 +3497,7 @@ class MainWindow(QMainWindow):
         message = f"{starting_status} timed out after {timeout_s:.1f}s; hardware worker is still running."
         self._timed_out_threads[thread] = message
         self.app.check_loop_error(message)
-        self.error_status.setText("ERROR")
-        self.error_code.setText("1")
-        self.error_source.setText(message)
+        self._append_error_entry("ERROR", "1", message)
         self._set_status(message)
 
     def _handle_worker_finished_for_thread(
@@ -3469,14 +3523,10 @@ class MainWindow(QMainWindow):
     def _handle_shutdown_finished(self, ok: bool, status: str, error: str, *, force_close: bool = False) -> None:
         self._shutdown_in_progress = False
         if ok:
-            self.error_status.setText("OK")
-            self.error_code.setText("0")
-            self.error_source.setText("")
+            self._append_error_entry("OK", "0", "")
             self._set_status(status)
         else:
-            self.error_status.setText("ERROR")
-            self.error_code.setText("1")
-            self.error_source.setText(error)
+            self._append_error_entry("ERROR", "1", error)
             self._set_status("Error")
         if (ok or force_close) and self._close_after_shutdown:
             self._cleanup_complete_for_close = True
@@ -3516,18 +3566,14 @@ class MainWindow(QMainWindow):
     def _handle_worker_finished(self, ok: bool, status: str, error: str) -> None:
         self._busy_count = max(self._busy_count - 1, 0)
         if ok:
-            self.error_status.setText("OK")
-            self.error_code.setText("0")
-            self.error_source.setText("")
+            self._append_error_entry("OK", "0", "")
             if status and status != "Ready":
                 self._set_status(status)
             else:
                 self._refresh_status()
         else:
             self.app.check_loop_error(error)
-            self.error_status.setText("ERROR")
-            self.error_code.setText("1")
-            self.error_source.setText(error)
+            self._append_error_entry("ERROR", "1", error)
             self._set_status("Error")
         if self._busy_count == 0 and self._controls_disabled_for_action and not self._shutdown_in_progress:
             self._set_controls_enabled(True)
@@ -3539,14 +3585,10 @@ class MainWindow(QMainWindow):
     def _safe_call(self, action) -> None:
         try:
             action()
-            self.error_status.setText("OK")
-            self.error_code.setText("0")
-            self.error_source.setText("")
+            self._append_error_entry("OK", "0", "")
         except Exception as exc:  # pragma: no cover - UI feedback path
             self.app.check_loop_error(exc)
-            self.error_status.setText("ERROR")
-            self.error_code.setText("1")
-            self.error_source.setText(str(exc))
+            self._append_error_entry("ERROR", "1", str(exc))
         finally:
             self._refresh_status()
 
@@ -3555,7 +3597,7 @@ class MainWindow(QMainWindow):
         self._refresh_status()
 
     def _refresh_status(self) -> None:
-        self.status.setText(self.app.status)
+        self.status.add_entry(self.app.status)
 
     def _preview_points(self, config: WfgConfig) -> list[float]:
         channel = config.channels[0]
@@ -3884,9 +3926,7 @@ class MainWindow(QMainWindow):
                     self.app.cleanup()
                 except Exception as exc:  # pragma: no cover - hidden-window teardown path
                     self.app.check_loop_error(exc)
-                    self.error_status.setText("ERROR")
-                    self.error_code.setText("1")
-                    self.error_source.setText(str(exc))
+                    self._append_error_entry("ERROR", "1", str(exc))
                 self._cleanup_complete_for_close = True
             else:
                 event.ignore()
