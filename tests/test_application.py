@@ -614,7 +614,7 @@ def test_run_experiment2_records_flush_failure_in_final_tdms(tmp_path, monkeypat
     # specific repeat.
     writes = install_fake_nptdms(monkeypatch)
     app = Application(ad2=SimulatedAD2Sdk())
-    monkeypatch.setattr(Application, "flush", lambda self, settings: False)
+    monkeypatch.setattr(Application, "flush", lambda self, settings, progress=None: False)
     experiment = Experiment2(
         experiment_folder=tmp_path / "experiment-flush-failed",
         flush_enabled=True,

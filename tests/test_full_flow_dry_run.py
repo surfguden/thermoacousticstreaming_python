@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sys
 
+import pytest
+
 from thermo_acoustic.application import Application
 from thermo_acoustic.workflows import Experiment2, ExperimentSeries2, FlushSettings
 
@@ -527,7 +529,7 @@ def test_run_experiment2_reports_flush_failure_instead_of_completing(tmp_path, m
     experiment = make_recording_experiment(calls, tmp_path, flush_enabled=True)
     app.experiment_series.enqueue_experiments([experiment])
 
-    monkeypatch.setattr(Application, "flush", lambda self, settings: False)
+    monkeypatch.setattr(Application, "flush", lambda self, settings, progress=None: False)
 
     with caplog.at_level("ERROR", logger="thermo_acoustic.application"):
         ok = app.run_experiment2()
@@ -538,3 +540,322 @@ def test_run_experiment2_reports_flush_failure_instead_of_completing(tmp_path, m
     assert any("Flush failed for experiment repeat" in record.message for record in caplog.records)
     assert not any(call[:2] == ("camera", "save_sequence") for call in calls)
     assert ("experiment", "cleanup") in calls
+
+
+# -- Phase 1 of the v2 sequence-visualization feature: run_experiment2()/
+# flush()/run_temperature_series() now accept an optional `progress`
+# callable and fire step_started/step_completed/step_failed around named
+# steps (see application.py's STEP_* constants and _report_step()). These
+# tests confirm the exact event sequence for each real branch and that a
+# failure at one step is attributed to that step specifically, with no
+# step_started for anything after it.
+
+
+def record_progress():
+    calls: list[tuple[str, object]] = []
+
+    def progress(kind: str, value: object) -> None:
+        calls.append((kind, value))
+
+    return progress, calls
+
+
+def step_names(calls: list[tuple[str, object]], kind: str) -> list[str]:
+    return [value for k, value in calls if k == kind]
+
+
+def test_run_experiment2_step_sequence_without_flush_or_ad2_wait(tmp_path):
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+    experiment = make_recording_experiment(calls, tmp_path)  # flush_enabled=False by default
+    app.experiment_series.enqueue_experiments([experiment])
+    progress, progress_calls = record_progress()
+
+    ok = app.run_experiment2(progress=progress)
+
+    assert ok is True
+    started = step_names(progress_calls, "step_started")
+    completed = step_names(progress_calls, "step_completed")
+    assert started == [
+        "InitializeExperiment",
+        "ConfigureWfg",
+        "ConfigureCamera",
+        "CaptureFrames",
+        "SaveResults",
+    ]
+    # Every started step also completed, in the same order -- no step left
+    # started-but-unresolved on the happy path.
+    assert completed == started
+    assert step_names(progress_calls, "step_failed") == []
+    # Conditional steps genuinely did not fire at all (not just "completed
+    # instantly") -- default config has no AD2 wait and flush_enabled=False.
+    assert "WaitForAd2Completion" not in started
+    assert "Flush" not in started
+
+
+def test_run_experiment2_step_sequence_with_flush_enabled(tmp_path):
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+    experiment = make_recording_experiment(calls, tmp_path, flush_enabled=True)
+    app.experiment_series.enqueue_experiments([experiment])
+    progress, progress_calls = record_progress()
+
+    ok = app.run_experiment2(progress=progress)
+
+    assert ok is True
+    started = step_names(progress_calls, "step_started")
+    assert started == [
+        "InitializeExperiment",
+        "ConfigureWfg",
+        "ConfigureCamera",
+        "CaptureFrames",
+        "Flush",
+        "SaveResults",
+    ]
+    assert step_names(progress_calls, "step_completed") == started
+    assert step_names(progress_calls, "step_failed") == []
+
+
+def test_run_experiment2_step_sequence_with_ad2_completion_wait(tmp_path, monkeypatch):
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+    experiment = make_recording_experiment(calls, tmp_path)
+    experiment.wfg_config = finite_wfg_config(sec_run=1.0, sec_wait=0.5)
+    app.experiment_series.enqueue_experiments([experiment])
+    progress, progress_calls = record_progress()
+
+    # Same deterministic-clock technique as
+    # test_application_full_flow_waits_only_for_remaining_ad2_time -- no
+    # real sleeping, so this stays fast.
+    clock = {"now": 100.0}
+    monkeypatch.setattr("thermo_acoustic.application.time.monotonic", lambda: clock["now"])
+    original_image_sequence = app.camera.image_sequence
+
+    def image_sequence_with_elapsed_capture(frame_count=0, partial_capture_folder=None):
+        frames = original_image_sequence(frame_count, partial_capture_folder)
+        clock["now"] += 1.2
+        return frames
+
+    app.camera.image_sequence = image_sequence_with_elapsed_capture
+    monkeypatch.setattr(Application, "wait", lambda self, seconds: None)
+
+    ok = app.run_experiment2(progress=progress)
+
+    assert ok is True
+    started = step_names(progress_calls, "step_started")
+    assert started == [
+        "InitializeExperiment",
+        "ConfigureWfg",
+        "ConfigureCamera",
+        "CaptureFrames",
+        "WaitForAd2Completion",
+        "SaveResults",
+    ]
+    assert step_names(progress_calls, "step_completed") == started
+    assert step_names(progress_calls, "step_failed") == []
+
+
+def test_run_experiment2_step_failure_in_initialize_experiment(tmp_path):
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+    experiment = make_recording_experiment(calls, tmp_path)
+
+    def raise_boom():
+        raise RuntimeError("boom: create_folder_and_tdms")
+
+    experiment.create_folder_and_tdms = raise_boom
+    app.experiment_series.enqueue_experiments([experiment])
+    progress, progress_calls = record_progress()
+
+    with pytest.raises(RuntimeError, match="boom: create_folder_and_tdms"):
+        app.run_experiment2(progress=progress)
+
+    assert step_names(progress_calls, "step_started") == ["InitializeExperiment"]
+    assert step_names(progress_calls, "step_completed") == []
+    assert progress_calls[-1] == ("step_failed", ("InitializeExperiment", "boom: create_folder_and_tdms"))
+
+
+def test_run_experiment2_step_failure_in_configure_wfg(tmp_path):
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+
+    def raise_boom(config):
+        raise RuntimeError("boom: config_wfg")
+
+    app.ad2.config_wfg = raise_boom
+    experiment = make_recording_experiment(calls, tmp_path)
+    app.experiment_series.enqueue_experiments([experiment])
+    progress, progress_calls = record_progress()
+
+    with pytest.raises(RuntimeError, match="boom: config_wfg"):
+        app.run_experiment2(progress=progress)
+
+    assert step_names(progress_calls, "step_started") == ["InitializeExperiment", "ConfigureWfg"]
+    assert step_names(progress_calls, "step_completed") == ["InitializeExperiment"]
+    assert progress_calls[-1] == ("step_failed", ("ConfigureWfg", "boom: config_wfg"))
+
+
+def test_run_experiment2_step_failure_in_configure_camera(tmp_path):
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+
+    def raise_boom(exposure_ms):
+        raise RuntimeError("boom: configure_exposure_time")
+
+    app.camera.configure_exposure_time = raise_boom
+    experiment = make_recording_experiment(calls, tmp_path)
+    app.experiment_series.enqueue_experiments([experiment])
+    progress, progress_calls = record_progress()
+
+    with pytest.raises(RuntimeError, match="boom: configure_exposure_time"):
+        app.run_experiment2(progress=progress)
+
+    assert step_names(progress_calls, "step_started") == ["InitializeExperiment", "ConfigureWfg", "ConfigureCamera"]
+    assert step_names(progress_calls, "step_completed") == ["InitializeExperiment", "ConfigureWfg"]
+    assert progress_calls[-1] == ("step_failed", ("ConfigureCamera", "boom: configure_exposure_time"))
+
+
+def test_run_experiment2_step_failure_in_capture_frames(tmp_path):
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+
+    def raise_boom(frame_count=0, partial_capture_folder=None):
+        raise RuntimeError("boom: image_sequence")
+
+    app.camera.image_sequence = raise_boom
+    experiment = make_recording_experiment(calls, tmp_path)
+    app.experiment_series.enqueue_experiments([experiment])
+    progress, progress_calls = record_progress()
+
+    with pytest.raises(RuntimeError, match="boom: image_sequence"):
+        app.run_experiment2(progress=progress)
+
+    assert step_names(progress_calls, "step_started") == [
+        "InitializeExperiment",
+        "ConfigureWfg",
+        "ConfigureCamera",
+        "CaptureFrames",
+    ]
+    assert step_names(progress_calls, "step_completed") == ["InitializeExperiment", "ConfigureWfg", "ConfigureCamera"]
+    assert progress_calls[-1] == ("step_failed", ("CaptureFrames", "boom: image_sequence"))
+    # stop_capture() still runs in image_sequence()'s enclosing finally,
+    # even though the step itself failed -- existing cleanup behavior is
+    # unchanged by the new step wrapping.
+    assert ("camera", "stop_capture") in calls
+
+
+def test_run_experiment2_step_failure_in_wait_for_ad2_completion(tmp_path, monkeypatch):
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+    experiment = make_recording_experiment(calls, tmp_path)
+    experiment.wfg_config = finite_wfg_config(sec_run=1.0, sec_wait=0.5)
+    app.experiment_series.enqueue_experiments([experiment])
+    progress, progress_calls = record_progress()
+
+    def raise_boom(self, seconds):
+        raise RuntimeError("boom: wait")
+
+    monkeypatch.setattr(Application, "wait", raise_boom)
+
+    with pytest.raises(RuntimeError, match="boom: wait"):
+        app.run_experiment2(progress=progress)
+
+    assert step_names(progress_calls, "step_started") == [
+        "InitializeExperiment",
+        "ConfigureWfg",
+        "ConfigureCamera",
+        "CaptureFrames",
+        "WaitForAd2Completion",
+    ]
+    assert step_names(progress_calls, "step_completed") == [
+        "InitializeExperiment",
+        "ConfigureWfg",
+        "ConfigureCamera",
+        "CaptureFrames",
+    ]
+    assert progress_calls[-1] == ("step_failed", ("WaitForAd2Completion", "boom: wait"))
+
+
+def test_run_experiment2_step_failure_in_flush(tmp_path):
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+    experiment = make_recording_experiment(calls, tmp_path, flush_enabled=True)
+    app.experiment_series.enqueue_experiments([experiment])
+    progress, progress_calls = record_progress()
+
+    def raise_boom(position):
+        raise RuntimeError("boom: valve.set_position")
+
+    app.valve.set_position = raise_boom
+
+    with pytest.raises(RuntimeError, match="boom: valve.set_position"):
+        app.run_experiment2(progress=progress)
+
+    assert step_names(progress_calls, "step_started") == [
+        "InitializeExperiment",
+        "ConfigureWfg",
+        "ConfigureCamera",
+        "CaptureFrames",
+        "Flush",
+    ]
+    assert step_names(progress_calls, "step_completed") == [
+        "InitializeExperiment",
+        "ConfigureWfg",
+        "ConfigureCamera",
+        "CaptureFrames",
+    ]
+    assert progress_calls[-1] == ("step_failed", ("Flush", "boom: valve.set_position"))
+
+
+def test_run_experiment2_step_failure_in_save_results(tmp_path):
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+
+    def raise_boom(image_data, folder):
+        raise RuntimeError("boom: save_sequence")
+
+    app.camera.save_sequence = raise_boom
+    experiment = make_recording_experiment(calls, tmp_path)
+    app.experiment_series.enqueue_experiments([experiment])
+    progress, progress_calls = record_progress()
+
+    with pytest.raises(RuntimeError, match="boom: save_sequence"):
+        app.run_experiment2(progress=progress)
+
+    assert step_names(progress_calls, "step_started") == [
+        "InitializeExperiment",
+        "ConfigureWfg",
+        "ConfigureCamera",
+        "CaptureFrames",
+        "SaveResults",
+    ]
+    assert step_names(progress_calls, "step_completed") == [
+        "InitializeExperiment",
+        "ConfigureWfg",
+        "ConfigureCamera",
+        "CaptureFrames",
+    ]
+    assert progress_calls[-1] == ("step_failed", ("SaveResults", "boom: save_sequence"))
+
+
+def test_run_experiment2_step_completed_fires_even_when_flush_returns_false(tmp_path, monkeypatch):
+    # flush() returning False (e.g. a pump-wait timeout) is not an
+    # exception -- per _report_step()'s own documented design, that's
+    # still a step_completed, not a step_failed. This is the deliberate
+    # behavior confirmed for Phase 1 (see application.py's _report_step
+    # docstring); the caller distinguishes "step ran but the overall
+    # experiment still stopped" via the existing ExperimentFlushFailed
+    # status event, not a second failure channel.
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+    experiment = make_recording_experiment(calls, tmp_path, flush_enabled=True)
+    app.experiment_series.enqueue_experiments([experiment])
+    progress, progress_calls = record_progress()
+
+    monkeypatch.setattr(Application, "flush", lambda self, settings, progress=None: False)
+
+    ok = app.run_experiment2(progress=progress)
+
+    assert ok is False
+    assert app.status == "ExperimentFlushFailed"
+    assert step_names(progress_calls, "step_failed") == []
