@@ -13,6 +13,11 @@ python tools\run_ui.py
 python -m pytest -q
 ```
 
+On Windows, `launch_gui.bat` (double-click, or run from a terminal) does the
+same thing as `python tools\run_ui.py`, using a fixed Conda environment path
+instead of whatever `python` currently resolves to on your PATH -- see the
+"Launchers" section below for both the v1 and v2 variants.
+
 ## Application Status
 
 The runnable application is `tools/run_ui.py`, which launches
@@ -30,7 +35,25 @@ The DOCustom, DOClock, and Zstack tabs are intentionally omitted.
 `src/thermo_acoustic/qt_ui_v2.py` (`MainWindowV2`) is an in-development
 preview UI that reuses `qt_ui.py`'s widget-building and manual-test-panel
 code (WFG/MSO/Pump&Valve/Camera open as dialogs from a sidebar). It is not
-yet hardware-verified and is not the default launch target until approved.
+yet hardware-verified and is **not the default launch target** until
+approved -- it must be launched explicitly (see "Launchers" below), never by
+running `tools/run_ui.py`/`launch_gui.bat` alone.
+
+## Launchers
+
+Two clearly-separate launchers exist for the two UIs, on purpose -- never a
+single script with a mode switch, so there's no way to launch the wrong one
+by mistake:
+
+| Launches | Windows batch file (double-click) | Dev command |
+| --- | --- | --- |
+| v1 (`qt_ui.py`, `MainWindow`) -- the validated, default UI | `launch_gui.bat` | `python tools\run_ui.py` |
+| v2 (`qt_ui_v2.py`, `MainWindowV2`) -- in-development preview, not hardware-verified | `launch_gui_v2.bat` | `python tools\run_ui_v2.py` |
+
+The `.bat` files use a fixed Conda environment path (edit `PYTHON_EXE` at the
+top of either script if that path changes); the `tools/run_ui*.py` scripts
+use whatever `python` currently resolves to instead, which is more
+convenient for day-to-day development.
 
 Hardware support currently works in three layers:
 
