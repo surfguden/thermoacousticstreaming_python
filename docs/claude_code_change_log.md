@@ -3931,6 +3931,89 @@ consistent with every other entry this session. Not committed, per
 instruction. Issues 2-4 above remain open, prioritized for dedicated
 follow-up sessions.
 
+### Session 55 -- Fixed SerialTextCommandBackend.query()'s readline()/\r timing bug (Session 54's top follow-up)
+
+**The bug, precisely.** `query()` called `self.port.readline()`, which
+(per pyserial's own generic default implementation) only stops early on
+a literal `b"\n"` byte or an empty `read()`. This backend's own `write()`
+already terminates every outgoing command with `self.line_ending`
+(`"\r"` by default) -- and the valve, the only real device confirmed to
+talk to this backend, only ever terminates its responses the same way.
+Since `readline()` was looking for the wrong byte, every call drained
+the correct `"\r"`-terminated response instantly into its internal
+buffer, then blocked for the *entire* remaining `timeout_s` on the next
+read waiting for a `"\n"` that was never coming, before finally giving
+up and returning the (correct) bytes it already had. Real-hardware
+timing characterization (Session 54) had already caught the symptom
+(~5.02s response time against a 5.0s `timeout_s`, repeatably) without
+yet fixing the cause.
+
+**Confirmed the installed pyserial version before assuming an API,
+per instruction.** `pip show pyserial` -> `3.5`, and
+`inspect.getsource(serial.Serial.read_until)` against the actually
+installed package (not documentation, not memory) confirmed this
+version's `read_until(expected=b"\n", size=None)` signature -- the
+`expected` keyword is correct for 3.5+; pre-3.5 used `terminator`
+instead, a real documented breaking rename, so this was worth checking
+rather than assuming.
+
+**Fix:** `query()` now calls
+`self.port.read_until(expected=self.line_ending.encode("ascii"))`
+instead of `self.port.readline()` -- reading until the exact same
+terminator `write()` already sends with, taken from the instance's own
+`line_ending` field rather than a newly hardcoded `b"\r"`, so the two
+stay in sync if `line_ending` is ever changed for a different device.
+
+**Searched for the same bug pattern elsewhere before assuming this was
+the only call site**, per instruction: `readline(` appears exactly once
+in `src/`, this one call site
+([instruments.py](src/thermo_acoustic/instruments.py)). Two standalone
+scratch probe scripts in `hardware_tests/`
+(`test_valve_command_probe.py`, `test_valve_command_probe_v2.py`) read
+raw serial responses via `ser.read(64)` instead -- a related but
+distinct pattern (blocks for the timeout waiting for a fixed byte count
+rather than the wrong terminator), and out of scope here since they're
+one-off manual diagnostic scripts, not part of the production backend.
+
+**New regression test file, [tests/test_instruments.py](tests/test_instruments.py)**
+(no dedicated test file for `instruments.py` existed before this).
+`_FakeCarriageReturnOnlyPort` reimplements pyserial 3.5's real
+`read_until()` algorithm (confirmed via the same `inspect.getsource`
+call above) and a `readline()` that faithfully reproduces the real,
+hardware-confirmed failure mode: drain whatever's buffered, then block
+the full configured timeout on the next `read()` before giving up.
+Two tests: `test_query_returns_as_soon_as_carriage_return_terminator_arrives`
+proves the fixed `query()` returns in well under the configured timeout
+once the `"\r"`-terminated response is available; `test_readline_based_read_would_have_blocked_for_the_full_timeout`
+directly exercises the fake's `readline()` (the exact call the old code
+made) to prove it reproduces the real slow-path behavior on its own,
+independent of the fix.
+
+**Verified the regression test actually catches the bug**, same
+discipline as every prior finding: temporarily reverted `query()` back
+to `self.port.readline()`, reran `test_instruments.py` -- the
+fast-path test failed as expected (`query() took 0.300s ... assert
+0.300... < 0.1`), confirming it would have caught this exact
+regression; restored the fix immediately after and reran clean.
+
+**Files touched:** [instruments.py](src/thermo_acoustic/instruments.py)
+(`SerialTextCommandBackend.query()`), new
+[tests/test_instruments.py](tests/test_instruments.py) (2 tests).
+
+**Verification:** tested -- full `tests/` suite green, 287/287 (up from
+285; 2 new tests), modulo the same already-documented (Session
+41/42/48) offscreen-Qt/Shiboken flakiness in
+`test_qt_ui_hardware_settings.py` (a different single test failed on 1
+of 2 full-suite runs during verification, always passing cleanly alone)
+-- confirmed via `git diff` that nothing this session touches
+`qt_ui.py`/`qt_ui_v2.py`. Not hardware-verified against the real valve
+yet -- flagged as a natural next step, since this is the exact call
+path Session 54's real-hardware timing characterization exercised, but
+doing so requires bench access this session didn't have. TEC's own
+uncommitted diff confirmed untouched throughout. Not committed, per
+instruction -- proposed separately from Task 1 (Session 53's flush fix
+commit) above.
+
 ---
 
 ## Known remaining open items as of this writing

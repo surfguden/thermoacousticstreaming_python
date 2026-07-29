@@ -137,15 +137,18 @@ decision only the user can make).
   (`instruments.py:SerialTextCommandBackend.query()`) with a real
   `\r`-terminated read (e.g. pyserial's `read_until(expected=b"\r")`),
   matching this codebase's own documented `line_ending = "\r"` *write*
-  convention instead of contradicting it on the *read* side. **Not fixed
-  yet** -- Session 54 used a session-local timeout override
-  (`SerialTextCommandBackend(timeout_s=5.0)`, not touching the shared
-  class default) to continue its own real-hardware verification work
-  without addressing the root cause. **Status: OPEN, prioritized as the
-  top follow-up from Session 54's real-hardware verification pass** --
-  needs a regression test proving the old `readline()` behavior would
-  have blocked for the full timeout on a correctly `\r`-terminated
-  response, before landing the fix.
+  convention instead of contradicting it on the *read* side. **Fixed
+  (Session 55):** `query()` now calls `self.port.read_until(expected=
+  self.line_ending.encode("ascii"))`, confirmed against the actually
+  installed pyserial version (`3.5`, via `pip show` + `inspect.getsource`
+  -- `read_until`'s `expected` keyword is correct for 3.5+, `terminator`
+  for older versions) rather than assumed. Regression test added
+  ([tests/test_instruments.py](tests/test_instruments.py)), verified to
+  fail against the old `readline()`-based code before the fix landed.
+  **Status: RESOLVED in code, not yet hardware-verified** -- Session 55
+  had no bench access; confirming the fixed `query()` actually returns
+  quickly against the real valve (not just the fake port) remains a
+  natural follow-up next time real hardware is available.
 
 ## Data-integrity gaps
 

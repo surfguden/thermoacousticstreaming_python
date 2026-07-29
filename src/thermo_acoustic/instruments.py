@@ -72,7 +72,16 @@ class SerialTextCommandBackend:
         self.write(command)
         if self.port is None:
             raise RuntimeError("Serial port is not open.")
-        return self.port.readline().decode("ascii", errors="replace")
+        # readline() splits on b"\n", but this backend's own devices are
+        # only ever confirmed to terminate responses with line_ending
+        # ("\r" by default -- see write() above). Real-hardware timing
+        # characterization (Session 54) showed every query() call blocking
+        # for the entire configured timeout_s before returning, regardless
+        # of how quickly the device actually responded -- the signature of
+        # readline() never finding the "\n" it was looking for. Reading
+        # until the same terminator this backend writes with fixes that.
+        terminator = self.line_ending.encode("ascii")
+        return self.port.read_until(expected=terminator).decode("ascii", errors="replace")
 
     def close(self) -> None:
         if self.port is not None:
