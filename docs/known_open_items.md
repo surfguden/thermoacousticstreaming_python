@@ -173,8 +173,9 @@ decision only the user can make).
   starts at `0.0` in a fresh process regardless of the real device's actual
   loaded volume.** No method anywhere in the pump path calls the real Qmix
   SDK's `get_fill_level()` to sync the tracked Python-side value against
-  hardware state -- `refill()` only ever sets a full-capacity value, it does
-  not read back the true current level, and nothing runs at
+  hardware state -- `refill()` only ever set a full-capacity value (and, until
+  Session 57, an arbitrary hardcoded `1.0` at that -- see below), it did not
+  read back the true current level, and nothing ran at
   `Application.initialize()` time to reconcile the two. **Confirmed on real
   hardware (Session 54):** a fresh process's `pump.fill_level` read `0.0`
   immediately after `initialize()` while the real syringe still had
@@ -201,7 +202,17 @@ decision only the user can make).
   confirming the fixed sync actually reads the real Qmix pump's true fill
   level (not just the fake backend) remains a natural follow-up next time
   real hardware is available, same caveat as the
-  `SerialTextCommandBackend.query()` fix above.
+  `SerialTextCommandBackend.query()` fix above. **Session 57 closed a
+  related, separately-discovered gap in the same method family:**
+  `CetoniPump.refill()` itself still hardcoded `self.fill_level = 1.0`
+  after calling `backend.refill()`, regardless of the syringe's real
+  capacity -- found during a code-health audit (finding 5a), not this
+  entry's own original scope. Fixed the same way: syncs from
+  `backend.read_fill_level()` for the real-backend path; the simulated
+  (`backend=None`) path now derives from a new `max_volume_ml` field
+  (defaulting to `1.0` for backward compatibility) instead of an
+  unconditional hardcoded value. See the Session 57 changelog entry for
+  full detail.
 - **Syringe stroke length is a derived value, not an independently-sourced
   BD spec figure.** Session 17. Computed as `volume / cross-sectional area`
   assuming full nominal volume over full piston travel in a cylindrical bore

@@ -950,6 +950,7 @@ def test_cetoni_backend_commands():
         ("configure_syringe", {"diameter_mm": 10}),
         ("configure_flow_unit", "ul/min"),
         ("refill",),
+        ("read_fill_level",),
         ("set_fill_level", 0.5),
         ("generate_flow", 2.5),
         ("read_status",),
@@ -980,6 +981,37 @@ def test_cetoni_pump_initialize_without_backend_leaves_fill_level_untouched():
     pump = CetoniPump(simulate=True, backend=None)
     pump.initialize()
     assert pump.fill_level == 0.0
+
+
+def test_cetoni_pump_refill_syncs_fill_level_from_real_backend_not_hardcoded_1ml():
+    # Code-health audit finding 5a: refill() used to hardcode
+    # self.fill_level = 1.0 regardless of the real syringe's true
+    # capacity. A BD 5ml syringe (real inner diameter 12.07 mm) refilled
+    # to its real 5.0 ml capacity on the actual device, but the old code
+    # would have left pump.fill_level reading 1.0 -- wrong for every
+    # syringe except a coincidental 1 mL one. 5.0 (not 1.0, not 0.0) so
+    # this can't pass by coincidence with the old hardcoded default.
+    backend = FakePumpBackend(fill_level=5.0)
+    pump = CetoniPump(simulate=False, backend=backend)
+    pump.configure_syringe({"name": "BD 5ml", "inner_diameter_mm": 12.07, "max_piston_stroke_mm": 43.75})
+
+    pump.refill()
+
+    assert pump.fill_level == pytest.approx(5.0)
+
+
+def test_cetoni_pump_refill_without_backend_uses_configured_max_volume():
+    pump = CetoniPump(simulate=True, backend=None, max_volume_ml=5.0)
+    pump.refill()
+    assert pump.fill_level == pytest.approx(5.0)
+
+
+def test_cetoni_pump_refill_without_backend_defaults_to_1ml_when_unconfigured():
+    # Backward-compatible default for existing simulated-mode callers that
+    # never set max_volume_ml -- unchanged from the old hardcoded behavior.
+    pump = CetoniPump(simulate=True, backend=None)
+    pump.refill()
+    assert pump.fill_level == 1.0
 
 
 class FakeQmixBusModule:

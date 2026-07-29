@@ -638,6 +638,12 @@ class CetoniPump:
     syringe_config: dict | None = None
     flow_unit: str | None = None
     referenced: bool = False
+    # Used by refill() when simulating (backend=None) to fill to the
+    # syringe's actual configured capacity instead of an arbitrary
+    # hardcoded value. Defaults to 1.0 for backward compatibility with
+    # existing simulated-mode callers that never set this explicitly --
+    # not a claim that 1.0 mL is a realistic syringe capacity.
+    max_volume_ml: float = 1.0
 
     def initialize(self) -> None:
         if not self.enabled:
@@ -658,7 +664,16 @@ class CetoniPump:
     def refill(self) -> None:
         if self.backend is not None:
             self.backend.refill()
-        self.fill_level = 1.0
+            # Same fix as initialize() above, same reason: the real
+            # backend's own refill() fills the physical syringe to its
+            # true max_volume_ml (see QmixPumpBackend.refill()), which is
+            # essentially never exactly 1.0 mL -- the old hardcoded
+            # self.fill_level = 1.0 here desynced the Python-side value
+            # from real hardware state immediately after every refill(),
+            # for any syringe other than a 1 mL one (audit finding 5a).
+            self.fill_level = self.backend.read_fill_level()
+        else:
+            self.fill_level = self.max_volume_ml
 
     def empty(self) -> None:
         if self.backend is not None:

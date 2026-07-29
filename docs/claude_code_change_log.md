@@ -4090,6 +4090,126 @@ untouched (the sync lives entirely in `instruments.py`/`qmix_backend.py`
 instead), so TEC's own uncommitted diff there is unaffected by this
 change at all, not just verified-untouched.
 
+### Session 57 -- Code-health audit (read-only) plus one immediate fix: CetoniPump.refill()'s hardcoded fill_level=1.0
+
+**Audit, read-only, no fixes during the sweep itself.** First systematic
+code-health pass over `src/thermo_acoustic/` (excluding `tec.py` and
+TEC-authored hunks entirely -- not read, not evaluated, per standing
+instruction). Five categories, reported to the user before any fix was
+authorized:
+
+1. **Duplicated logic across hardware modules.** Three independently
+   written "lazy SDK import" methods with the same shape
+   (`QmixPumpBackend._load_sdk()`, `HamamatsuDcamBackend._load_sdk()`,
+   `PiezoStage._load_kinesis()` -- the last one's own docstring even
+   says it "follows this project's existing SDK-backend pattern," the
+   duplication was noticed once and repeated anyway); a near
+   line-for-line duplicated thread+timeout+queue wrapper at two layers
+   (`Application._run_cleanup_call_with_timeout()` and
+   `QmixPumpBackend._run_close_step()`); an inconsistent guard-method
+   pattern (`_require_pump()`/`_require_connected()` vs. inlined
+   duplicate checks in `SerialTextCommandBackend`).
+2. **Dead code.** `src/thermo_acoustic/main.py` (16 lines, orphaned CLI
+   stub, zero references anywhere). Four LabVIEW-VI-parity scaffold
+   modules totaling ~454 lines (`utilities.py`, `imaq.py`,
+   `filetypes.py`, `serial_config.py`) confirmed to map to
+   `labview_ports.py` entries but never wired into the real pipeline --
+   only referenced by their own unit tests in `tests/test_application.py`.
+   `RegloPumpControl` cross-referenced against the already-tracked
+   Session 11 item in `known_open_items.md` (not a new finding).
+3. **Inconsistent error-handling/logging.** Only 4 of 12 checked modules
+   define a `logger`; four different close()/cleanup() error-handling
+   shapes across backends with no shared convention; a genuine,
+   currently-uncaught recurrence of Finding F's exact silent-except-pass
+   pattern in `thorlabs_piezo.py`'s `connect()` rollback path (no
+   logger available in that module at all, consistent with the first
+   point); a softer instance in `hamamatsu_dcam.py`'s `_ensure_buffer()`.
+4. **application.py/workflows.py complexity.** `application.py` (614
+   lines) spans 5 distinct responsibility clusters (message-bus
+   plumbing, instrument accessor boilerplate, abort/error infra, AD2/
+   camera timing-budget math, experiment orchestration) --
+   `run_experiment2()` alone (~127 lines) is the concrete complexity
+   concern, not the class as a whole. `workflows.py` (459 lines) is
+   tightly cohesive around `Experiment2`/`ExperimentSeries2` and shows
+   no comparable evidence a split would help.
+5. **Comment/docstring accuracy.** Finding 5a (below) was the standout.
+   No stray `TODO`/`FIXME`/`deprecated` markers found anywhere in `src/`.
+
+User approved acting on finding 5a immediately; everything else (1a/1b/1c,
+2a, 2b, 3a/3b/3c/3d, 4) stays documented for a future decision, not
+queued as follow-up tasks.
+
+**Finding 5a, fixed: `CetoniPump.refill()`
+([instruments.py](src/thermo_acoustic/instruments.py)) hardcoded
+`self.fill_level = 1.0` after calling `backend.refill()`, regardless of
+the syringe's real configured capacity.** The real backend
+(`QmixPumpBackend.refill()`) correctly fills the *actual device* to its
+true `max_volume_ml` -- for any syringe other than exactly 1 mL (e.g.
+the BD 5ml/10ml presets), this immediately desynced the Python-side
+`fill_level` from real hardware state right after every `refill()` call,
+the same failure class Session 56 just fixed for `initialize()`, except
+uncaught until the next `initialize()`. No test anywhere asserted
+`fill_level` after `refill()` -- confirmed by grep, this was completely
+uncaught by the suite.
+
+**Fix, mirroring Session 56's `initialize()` fix exactly:** for the
+real-backend path, `refill()` now calls `self.backend.read_fill_level()`
+right after `self.backend.refill()` succeeds (same already-existing
+`PumpBackend` Protocol method, no new backend surface needed). For the
+simulated (`backend=None`) path, added a new `max_volume_ml: float =
+1.0` field to `CetoniPump` -- `refill()` now derives from that instead
+of the hardcoded literal. The default (`1.0`) is deliberately unchanged
+from the old behavior for backward compatibility with existing
+simulated-mode callers that never set it explicitly (one existing test,
+`test_qt_ui_hardware_settings.py`'s neighbor in `test_application.py`
+at line ~693, asserts exactly this default and still passes unmodified).
+**Deliberately not wired further:** `configure_syringe()` does not
+auto-populate `max_volume_ml` from a resolved preset/geometry (e.g.
+"BD 5ml" -> `5.0`) -- doing so would require either duplicating
+`qmix_backend.py`'s `SYRINGE_PRESETS`/diameter-stroke-to-volume math
+inside `instruments.py` or introducing a new cross-module dependency,
+which is a separate design decision beyond "fix the hardcoded 1.0" and
+was not authorized for this task.
+
+**Regression tests, [tests/test_application.py](tests/test_application.py)
+(3 new):** `test_cetoni_pump_refill_syncs_fill_level_from_real_backend_not_hardcoded_1ml`
+uses a fake backend reporting `5.0` ml (BD 5ml preset context,
+`inner_diameter_mm=12.07`, deliberately not `1.0` so it can't pass by
+coincidence) and confirms `fill_level` matches the real reading, not
+the old hardcoded value; `test_cetoni_pump_refill_without_backend_uses_configured_max_volume`
+confirms the new `max_volume_ml` field is honored when set;
+`test_cetoni_pump_refill_without_backend_defaults_to_1ml_when_unconfigured`
+confirms the backward-compatible default. `test_cetoni_backend_commands`'s
+expected call list gained the new `("read_fill_level",)` call right
+after `("refill",)`.
+
+**Verified the regression tests actually catch the gap**, same
+discipline as every prior finding: temporarily reverted `refill()` to
+the old hardcoded `self.fill_level = 1.0`, reran -- 3 tests failed as
+expected (`test_cetoni_backend_commands`, both new real-backend/
+configured-max-volume tests; the unconfigured-default test correctly
+still passed, confirming backward compatibility); restored immediately
+after and reran clean.
+
+**Files touched:** [instruments.py](src/thermo_acoustic/instruments.py)
+(`CetoniPump.max_volume_ml` field, `CetoniPump.refill()`),
+[tests/test_application.py](tests/test_application.py) (3 new tests, 1
+existing assertion updated). `qmix_backend.py` deliberately untouched --
+`QmixPumpBackend.refill()`'s own real-device behavior was already
+correct; only the Python-side bookkeeping in `instruments.py` was wrong.
+
+**Verification:** tested -- full `tests/` suite green, 293/293 (up from
+290; 3 new tests), modulo the same already-documented (Sessions
+41/42/48) offscreen-Qt/Shiboken flakiness in
+`test_qt_ui_hardware_settings.py` (hit unusually hard again this
+session, flagged to the user as worth a dedicated look, not investigated
+further here) -- confirmed via `git diff` that nothing this session
+touches `qt_ui.py`/`qt_ui_v2.py`. Not hardware-verified against the real
+Qmix pump yet, same caveat as Sessions 55/56. `application.py`
+deliberately untouched throughout (fix lives entirely in
+`instruments.py`), so TEC's own uncommitted diff is unaffected, not
+just verified-untouched.
+
 ---
 
 ## Known remaining open items as of this writing
