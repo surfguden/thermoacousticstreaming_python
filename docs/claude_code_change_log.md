@@ -3597,7 +3597,11 @@ hardware-verified -- flagged as a separate follow-up, same as commit
 whether the real Qmix/neMESYS firmware itself rejects a negative
 absolute fill-level target gracefully (as opposed to Python now
 catching it first) has not been confirmed against real hardware and
-requires bench access.** Not committed, per instruction.
+requires bench access.** **Update:** committed -- confirmed cleanly
+separable (its own isolated hunk, not line-entangled) from TEC's own
+uncommitted diff in the same file before staging, same
+reconstruction-and-verify discipline as every other hunk-separated
+commit this project has made.
 
 ### Session 54 -- Real-hardware verification, Item 1: valve default COM port was wrong (COM6 -> COM5), a standing documentation error
 

@@ -338,6 +338,32 @@ class Application:
                 f"Flush volume {settings.flush_volume_ml} ml exceeds syringe capacity "
                 f"{settings.syringe_volume_ml} ml; refusing to flush."
             )
+        # Hardware-safety-priority fix (found by an end-to-end simulated
+        # dry-run verification pass, not a fresh audit): the capacity check
+        # above only bounds flush_volume_ml against the syringe's total
+        # physical capacity -- it says nothing about whether the syringe
+        # currently holds enough liquid to flush *right now*. Without this,
+        # new_fill_level below could go negative with no error at all: the
+        # automated path never calls refill()/reference_move() (confirmed
+        # manual-only, Session 21), so an operator starting a series before
+        # refilling, or a series that has already drawn the syringe down,
+        # would silently succeed with a normal-looking "ExperimentComplete"/
+        # data.tdms and a physically impossible negative pump.fill_level
+        # pushed straight to set_fill_level() -- and, on real hardware,
+        # straight to the Qmix SDK. docs/hardware_safety_patterns.md's
+        # decision tree: this is neither a live device query nor a fixed
+        # vendor-manual ceiling -- it's already-known in-memory application
+        # state (self.pump.fill_level, no vendor research or device round
+        # trip needed) -- but the "reject, don't clamp" choice still
+        # applies, for the same reason Patterns (c)/(d) reject rather than
+        # substitute a value: silently flushing less than requested would
+        # itself be a data-integrity bug, since the FlushVolume recorded in
+        # data.tdms would then no longer match what actually happened.
+        if settings.flush_volume_ml > self.pump.fill_level:
+            raise ValueError(
+                f"Flush volume {settings.flush_volume_ml} ml exceeds the syringe's current fill level "
+                f"{self.pump.fill_level} ml; refusing to flush -- refill the syringe first."
+            )
         self.fire_status_event("Flushing")
         self.valve.set_position(1)
         self.valve.wait_until_ready(timeout_s=1.0)
