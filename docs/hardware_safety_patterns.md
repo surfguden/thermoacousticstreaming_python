@@ -281,3 +281,114 @@ after `set_syringe_param()` succeeds), it's simply enforced at a different
 call site (`generate_flow()`) than where it's read (`configure_syringe()`).
 Don't assume "pump module" implies "hardcoded" -- check which specific
 parameter has a live read and which doesn't before choosing a pattern.
+
+---
+
+## Standard hardware-cleanup shape (for new hardware modules going forward)
+
+**Not one of the four out-of-range enforcement patterns above** -- a
+separate, additional convention for a different problem: how a new
+hardware module's `close()`/`cleanup()`/`disconnect()` should handle
+failures during its own multi-step teardown.
+
+**Context:** a code-health audit (Session 57) found this codebase
+currently has four different, independently-evolved shapes for this --
+`HamamatsuDcamBackend.close()` logs individual failures and swallows
+them (best-effort, never raises); `QmixPumpBackend.close()` collects
+error strings from each step, thread-timeout-wraps each one, and
+raises a single combined error at the end; `PiezoStage.disconnect()`
+collects error strings (no timeout) and raises combined;
+`Application._cleanup_instruments()` has its own independently
+implemented thread-timeout wrapper and raises combined too, logging as
+it goes. **None of the four were changed to match this note or each
+other** -- this section does not retroactively unify them; it only
+sets the expectation for what comes next.
+
+**For any NEW hardware module added to this project, use
+`QmixPumpBackend.close()`'s collect-errors + timeout-wrap +
+combined-raise shape as the template**, with one addition the cited
+worked example itself doesn't currently do (`qmix_backend.py` has no
+logger at all -- see the code-health audit's logging-consistency
+finding): log each individual failure as it's discovered, not only at
+the very end, so a partial teardown leaves a trace even if the final
+combined exception is somehow lost by the caller.
+
+- Collect error strings from each teardown step rather than raising
+  immediately on the first failure -- so one device/resource's failure
+  doesn't prevent attempting cleanup on the others.
+- Wrap each step in the existing timeout-protection pattern (thread +
+  `queue.Queue`, same shape as `QmixPumpBackend._run_close_step()`/
+  `Application._run_cleanup_call_with_timeout()`) so a hung SDK call
+  during cleanup can't block the whole teardown indefinitely.
+- Log each failure as it's found.
+- Raise a single combined error at the end summarizing everything that
+  failed, rather than either swallowing everything silently or
+  stopping at the first failure.
+
+**Skeleton:**
+```python
+import logging
+import queue
+import threading
+
+logger = logging.getLogger(__name__)
+
+@dataclass(slots=True)
+class NewDeviceBackend:
+    close_timeout_s: float = 5.0
+    device: Any = None
+
+    def close(self) -> None:
+        errors: list[str] = []
+        errors.extend(self._run_close_step("stop", self._stop))
+        errors.extend(self._run_close_step("release", self._release))
+        self.device = None
+        if errors:
+            raise NewDeviceError("; ".join(errors))
+
+    def _run_close_step(self, name: str, action) -> list[str]:
+        result_queue: queue.Queue[BaseException | None] = queue.Queue(maxsize=1)
+
+        def run() -> None:
+            try:
+                action()
+            except BaseException as exc:  # pragma: no cover - defensive SDK cleanup path
+                result_queue.put(exc)
+            else:
+                result_queue.put(None)
+
+        worker = threading.Thread(target=run, name=f"newdevice-close-{name}", daemon=True)
+        worker.start()
+        worker.join(max(self.close_timeout_s, 0.0))
+        if worker.is_alive():
+            message = f"NewDevice {name} timed out after {self.close_timeout_s:.1f}s."
+            logger.error(message)
+            return [message]
+        try:
+            error = result_queue.get_nowait()
+        except queue.Empty:  # pragma: no cover - thread completed without reporting
+            message = f"NewDevice {name} finished without reporting a result."
+            logger.error(message)
+            return [message]
+        if error is not None:
+            message = f"NewDevice {name} failed: {error}"
+            logger.error(message)
+            return [message]
+        return []
+```
+
+**Worked example (existing, not retroactively changed to add
+logging):** `src/thermo_acoustic/qmix_backend.py`'s
+`QmixPumpBackend.close()` (`qmix_backend.py:283-293`) and
+`_run_close_step()` (`qmix_backend.py:295-316`) -- read these for the
+collect-errors + timeout-wrap + combined-raise shape itself; the
+logging addition above is this note's own recommendation for new code,
+not something the cited example currently does.
+
+**This does not retroactively apply to the four existing
+implementations named above.** `HamamatsuDcamBackend.close()`,
+`PiezoStage.disconnect()`, and `Application._cleanup_instruments()`
+are left exactly as they are. Whether to eventually unify all four (or
+which of the four shapes is actually the right one to standardize on)
+is a separate design decision this note does not make on its own --
+see `docs/known_open_items.md`'s cross-reference to this section.

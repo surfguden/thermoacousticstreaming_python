@@ -1,3 +1,24 @@
+"""LabVIEW-migration-parity reference material -- not part of the
+production runtime path.
+
+Each function/class here maps to a specific original LabVIEW VI (see
+`labview_ports.py`'s `python_name=` entries for the exact mapping).
+This module exists to prove migration completeness/traceability --
+evidence that no original LabVIEW capability (error-cluster handling,
+dialogs, string/text utilities) was silently dropped during the port --
+even though the actual production pipeline now uses different, more
+direct Python equivalents instead (standard `logging` and `QMessageBox`
+in place of these LabVIEW-mimicking error/dialog helpers).
+
+Confirmed (code-health audit, Session 57) to have zero cross-references
+from any other file in `src/thermo_acoustic/` or from `tools/`; only
+referenced by its own unit tests in `tests/test_application.py`. This
+is intentional, not dead code awaiting cleanup -- do not remove or
+flag this module without an explicit decision to do so. See
+`docs/known_open_items.md`'s "LabVIEW-migration-parity scaffolding"
+note for the cross-reference.
+"""
+
 from __future__ import annotations
 
 import re

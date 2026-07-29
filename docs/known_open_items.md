@@ -319,6 +319,28 @@ decision only the user can make).
   document that genuinely matches a "confirmed out of scope" framing --
   see Part 2 of the report for why the *specific* "Peltier TEC background
   temperature control confirmed out of scope" example could not be found).
+- **LabVIEW-migration-parity scaffolding modules -- intentionally retained,
+  not dead code.** `utilities.py`, `imaq.py`, `filetypes.py`,
+  `serial_config.py` (~454 lines total) each map to specific original
+  LabVIEW VIs (`labview_ports.py`'s `python_name=` entries) but have zero
+  cross-references from any other file in `src/thermo_acoustic/` or from
+  `tools/` -- confirmed by a code-health audit (Session 57), which
+  initially flagged this as a dead-code candidate before the user
+  clarified their purpose: proving migration completeness/traceability,
+  i.e. evidence that no original LabVIEW capability was silently dropped
+  during the port, even where production code now uses a different,
+  more direct implementation instead (DCAM/PIL instead of `imaq.py`,
+  `logging`/`QMessageBox` instead of `utilities.py`'s LabVIEW-mimicking
+  dialog/error helpers, hardcoded serial params instead of
+  `serial_config.py`'s `VisaSerialConfig`). Each of the four files now
+  carries an explicit module-level docstring stating this (Session 57).
+  **Status: CONFIRMED INTENTIONAL, not a gap** -- do not remove or
+  re-flag as dead code without an explicit decision to do so; unlike
+  `ui.py` above, this is not "awaiting a removal decision," it's settled.
+  (`RegloPumpControl`, tracked separately above under Data-integrity
+  gaps as part of the LabVIEW port registry's own incompleteness, is a
+  genuinely different situation -- an unwired driver dataclass, not
+  migration-parity reference material -- and remains its own open item.)
 
 ## Other
 
@@ -355,3 +377,17 @@ decision only the user can make).
   directories were left as-is (no admin rights available). **Status: OPEN**
   (the 35 stuck directories), **RESOLVED** (no new accumulation going
   forward).
+- **Four inconsistent hardware close()/cleanup() shapes, no shared
+  convention.** Code-health audit finding 3b (Session 57):
+  `HamamatsuDcamBackend.close()`, `QmixPumpBackend.close()`,
+  `PiezoStage.disconnect()`, and `Application._cleanup_instruments()`
+  each independently evolved a different error-handling shape for
+  device teardown. None were changed to match each other -- that
+  remains a real design decision for someone to make, not resolved by
+  this entry. `docs/hardware_safety_patterns.md`'s new "Standard
+  hardware-cleanup shape" section (added Session 57) documents
+  `QmixPumpBackend.close()`'s shape as the required template for any
+  *new* hardware module going forward, without retroactively touching
+  the four existing ones. **Status: OPEN for the four existing
+  implementations (documented, not unified); RESOLVED for future code**
+  (a convention now exists where none did before).
