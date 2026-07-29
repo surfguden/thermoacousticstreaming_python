@@ -102,6 +102,8 @@ class PumpBackend(Protocol):
 
     def set_fill_level(self, fill_level: float, flow_rate: float | None = None) -> None: ...
 
+    def read_fill_level(self) -> float: ...
+
     def configure_syringe(self, config: dict | None) -> None: ...
 
     def configure_flow_unit(self, unit: str | None) -> None: ...
@@ -642,6 +644,15 @@ class CetoniPump:
             return
         if self.backend is not None:
             self.backend.initialize(self.configuration_path)
+            # fill_level otherwise stays at its Python-side dataclass default
+            # (0.0) regardless of what the real syringe actually holds --
+            # found on real hardware (Session 54 dry-run): a fresh process
+            # read 0.0 while the syringe still had ~0.05 ml loaded from a
+            # prior session. Syncing from the real device's own readback
+            # here means flush()'s fill-level guard (Session 53) checks
+            # reality instead of a stale assumption from the moment the
+            # process started.
+            self.fill_level = self.backend.read_fill_level()
         self.referenced = True
 
     def refill(self) -> None:

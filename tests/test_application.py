@@ -881,12 +881,17 @@ def test_serial_text_backend_has_longer_bounded_write_timeout():
 
 
 class FakePumpBackend:
-    def __init__(self):
+    def __init__(self, fill_level=0.0):
         self.calls = []
         self.status = False
+        self.fill_level = fill_level
 
     def initialize(self, configuration_path):
         self.calls.append(("initialize", configuration_path))
+
+    def read_fill_level(self):
+        self.calls.append(("read_fill_level",))
+        return self.fill_level
 
     def refill(self):
         self.calls.append(("refill",))
@@ -941,6 +946,7 @@ def test_cetoni_backend_commands():
 
     assert backend.calls == [
         ("initialize", pump.configuration_path),
+        ("read_fill_level",),
         ("configure_syringe", {"diameter_mm": 10}),
         ("configure_flow_unit", "ul/min"),
         ("refill",),
@@ -952,6 +958,28 @@ def test_cetoni_backend_commands():
         ("stop",),
         ("close",),
     ]
+
+
+def test_cetoni_pump_initialize_syncs_fill_level_from_real_backend():
+    # Regression guard for the real-hardware dry-run finding (Session 54):
+    # fill_level previously stayed at CetoniPump's own Python-side dataclass
+    # default (0.0) after initialize(), regardless of what the real syringe
+    # actually held -- a fresh process disagreed with reality until this
+    # sync. 0.73 (not 0.0, not any prior default) so this can't pass by
+    # coincidence.
+    backend = FakePumpBackend(fill_level=0.73)
+    pump = CetoniPump(simulate=False, backend=backend)
+    assert pump.fill_level == 0.0
+
+    pump.initialize()
+
+    assert pump.fill_level == pytest.approx(0.73)
+
+
+def test_cetoni_pump_initialize_without_backend_leaves_fill_level_untouched():
+    pump = CetoniPump(simulate=True, backend=None)
+    pump.initialize()
+    assert pump.fill_level == 0.0
 
 
 class FakeQmixBusModule:
@@ -997,6 +1025,7 @@ class FakeQmixPumpModule:
             self.pumping = False
             self.max_flow = 5000.0
             self.max_volume = 10.0
+            self.fill_level = 0.0
             FakeQmixPumpModule.Pump.instances.append(self)
 
         def lookup_by_device_index(self, index):
@@ -1034,6 +1063,10 @@ class FakeQmixPumpModule:
         def get_volume_max(self):
             self.calls.append(("get_volume_max",))
             return self.max_volume
+
+        def get_fill_level(self):
+            self.calls.append(("get_fill_level",))
+            return self.fill_level
 
         def set_syringe_param(self, inner_diameter_mm, max_piston_stroke_mm):
             self.calls.append(("set_syringe_param", inner_diameter_mm, max_piston_stroke_mm))
@@ -1122,6 +1155,20 @@ def test_qmix_pump_backend_initializes_and_dispatches(tmp_path):
     assert ("calibrate",) in pump.calls
     assert ("set_fill_level", 0.0, 5000.0) in pump.calls
     assert ("set_fill_level", 10.0, 5000.0) in pump.calls
+
+
+def test_qmix_pump_backend_reads_real_fill_level_from_sdk(tmp_path):
+    FakeQmixPumpModule.Pump.instances = []
+    backend = QmixPumpBackend(qmixbus=FakeQmixBusModule, qmixpump=FakeQmixPumpModule)
+    backend.initialize(tmp_path / "qmix-config")
+
+    pump = FakeQmixPumpModule.Pump.instances[0]
+    # Simulates a real syringe that still has partial volume loaded from a
+    # prior session -- not 0.0, so this test can't pass by coincidence.
+    pump.fill_level = 0.73
+
+    assert backend.read_fill_level() == pytest.approx(0.73)
+    assert ("get_fill_level",) in pump.calls
 
 
 def test_qmix_set_fill_level_treats_value_as_absolute_ml_not_fraction(tmp_path):

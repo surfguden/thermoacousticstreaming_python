@@ -187,14 +187,21 @@ decision only the user can make).
   `flush()` wrongly refuse a legitimate flush after any app restart with
   partial volume already loaded, rather than over-drawing the syringe. It is
   a usability/correctness gap, not a hardware-safety regression, but it will
-  recur on every restart until fixed. **Fix direction:** add a
-  `read_fill_level()`-style method to `QmixPumpBackend` that calls the SDK's
-  `get_fill_level()` and returns it, then call it from
-  `Application.initialize()` (or an explicit UI-triggered sync action) to
-  reconcile `pump.fill_level` against real hardware state before any flush
-  decision is made. **Status: OPEN, second-priority follow-up from Session
-  54's real-hardware verification pass** (after the
-  `SerialTextCommandBackend.query()` fix above).
+  recur on every restart until fixed. **Fixed (Session 56):**
+  `QmixPumpBackend.read_fill_level()` wraps the SDK's `get_fill_level()`;
+  `CetoniPump.initialize()` now calls it right after `backend.initialize()`
+  succeeds and syncs `self.fill_level` from the real reading (only when a
+  real backend is present, never for a simulated pump). Deliberately
+  placed inside `CetoniPump.initialize()` rather than
+  `Application.initialize()`, keeping `application.py` -- which still
+  carries TEC's own uncommitted diff -- untouched. Regression tests added
+  ([tests/test_application.py](tests/test_application.py)), verified to
+  fail against the old code before the fix landed. **Status: RESOLVED in
+  code, not yet hardware-verified** -- Session 56 had no bench access;
+  confirming the fixed sync actually reads the real Qmix pump's true fill
+  level (not just the fake backend) remains a natural follow-up next time
+  real hardware is available, same caveat as the
+  `SerialTextCommandBackend.query()` fix above.
 - **Syringe stroke length is a derived value, not an independently-sourced
   BD spec figure.** Session 17. Computed as `volume / cross-sectional area`
   assuming full nominal volume over full piston travel in a cylindrical bore

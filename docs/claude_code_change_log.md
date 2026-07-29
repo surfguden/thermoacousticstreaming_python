@@ -4014,6 +4014,82 @@ uncommitted diff confirmed untouched throughout. Not committed, per
 instruction -- proposed separately from Task 1 (Session 53's flush fix
 commit) above.
 
+### Session 56 -- Synced CetoniPump.fill_level from real device readback at initialize() time (Session 54's second follow-up)
+
+**The gap, precisely.** `CetoniPump.fill_level` is a Python-side
+dataclass field defaulting to `0.0` -- nothing anywhere ever called the
+real Qmix SDK's own `Pump.get_fill_level()` to reconcile it against
+what the physical syringe actually holds. `refill()`/`empty()` only
+ever *command* the pump to a known target (full/empty), they don't
+*read back* the current state, so they're no substitute for a genuine
+sync. Confirmed on real hardware (Session 54 dry-run): a fresh process
+read `pump.fill_level == 0.0` while the real syringe still held ~0.05
+ml loaded from a prior session -- worked around manually at the time by
+reading `get_fill_level()` and assigning it onto `app.pump.fill_level`
+before starting a series. **Consequence was fail-safe, not unsafe**:
+Session 53's flush() fill-level guard (already committed) just wrongly
+refused a legitimate flush on the stale `0.0`, rather than
+under/overshooting -- but it recurred on every single app restart with
+partial volume loaded, which is every normal day of use, not an edge
+case.
+
+**Fix:** `CetoniPump.initialize()` now calls the new
+`backend.read_fill_level()` right after `backend.initialize()`
+succeeds, and sets `self.fill_level` from that real reading -- placed
+inside `CetoniPump.initialize()` itself (not `Application.initialize()`),
+since that's the one place already guaranteed the backend is truly
+connected (`enabled` is checked first) and it keeps `application.py`
+-- which already carries TEC's own uncommitted diff -- untouched.
+`QmixPumpBackend.read_fill_level()`
+([qmix_backend.py](src/thermo_acoustic/qmix_backend.py)) is a thin
+wrapper around the real SDK's `Pump.get_fill_level()` (confirmed
+present and working during Session 54's real-hardware testing), and
+`read_fill_level()` was added to the `PumpBackend` Protocol
+([instruments.py](src/thermo_acoustic/instruments.py)) alongside it.
+Only runs when `self.backend is not None` (i.e. never for a simulated
+pump), matching every other real-backend-only call in this class.
+
+**Regression tests, [tests/test_application.py](tests/test_application.py):**
+`test_cetoni_pump_initialize_syncs_fill_level_from_real_backend`
+constructs a fresh `CetoniPump` with a fake backend reporting `0.73`
+ml (deliberately not `0.0` or any other prior default, so the test
+can't pass by coincidence), confirms `fill_level` starts at the stale
+Python default `0.0` before `initialize()` and matches the real
+reading after; `test_cetoni_pump_initialize_without_backend_leaves_fill_level_untouched`
+confirms a simulated pump (`backend=None`) is correctly left alone;
+`test_qmix_pump_backend_reads_real_fill_level_from_sdk` covers the SDK
+wrapper directly. `FakePumpBackend`/`FakeQmixPumpModule.Pump` (both
+pre-existing fakes in this test file) gained `read_fill_level()`/
+`get_fill_level()`; `test_cetoni_backend_commands`'s expected call
+list was updated to include the new `("read_fill_level",)` call
+immediately after `("initialize", ...)`.
+
+**Verified the regression tests actually catch the gap**, same
+discipline as every prior finding: temporarily reverted
+`CetoniPump.initialize()`'s sync line, reran -- both
+`test_cetoni_backend_commands` and the new sync test failed as
+expected (`assert 0.0 == 0.73`); restored immediately after and reran
+clean.
+
+**Files touched:** [instruments.py](src/thermo_acoustic/instruments.py)
+(`PumpBackend` Protocol, `CetoniPump.initialize()`),
+[qmix_backend.py](src/thermo_acoustic/qmix_backend.py)
+(`QmixPumpBackend.read_fill_level()`),
+[tests/test_application.py](tests/test_application.py) (3 new tests,
+2 existing fakes/assertions updated).
+
+**Verification:** tested -- full `tests/` suite green, 290/290 (up
+from 287; 3 new tests), modulo the same already-documented (Sessions
+41/42/48) offscreen-Qt/Shiboken flakiness in
+`test_qt_ui_hardware_settings.py` -- confirmed via `git diff` that
+nothing this session touches `qt_ui.py`/`qt_ui_v2.py`. Not
+hardware-verified against the real Qmix pump yet -- flagged as a
+natural next step, same caveat as Session 55's fix above, requires
+bench access this session didn't have. `application.py` deliberately
+untouched (the sync lives entirely in `instruments.py`/`qmix_backend.py`
+instead), so TEC's own uncommitted diff there is unaffected by this
+change at all, not just verified-untouched.
+
 ---
 
 ## Known remaining open items as of this writing

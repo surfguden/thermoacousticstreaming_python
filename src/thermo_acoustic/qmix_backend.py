@@ -190,6 +190,9 @@ class QmixPumpBackend:
             )
         pump.generate_flow(flow_rate)
 
+    def read_fill_level(self) -> float:
+        return float(self._require_pump().get_fill_level())
+
     def set_fill_level(self, fill_level: float, flow_rate: float | None = None) -> None:
         # fill_level is always an absolute mL value -- no auto-detection against
         # a 0.0-1.0 fraction. That heuristic previously misread legitimate small
