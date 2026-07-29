@@ -215,8 +215,12 @@ Priority items:
    - Current hardware uses one pump and the current one-pump QmixElements config.
 
 5. Valve COM/position mapping.
-   - Current Python defaults to COM6, but LabVIEW screenshot candidate mentions
-     COM5 and old docs/defaults varied.
+   - Resolved: Python's default is now COM5, confirmed against real hardware
+     (the valve responds correctly to the documented status-query protocol on
+     COM5, not the previously-documented COM6 -- corroborated by an earlier
+     session too, so this was a standing documentation error, not a transient
+     reassignment). This also matches the LabVIEW screenshot candidate this
+     entry originally flagged, which named COM5, not COM6.
    - Position 1/2 fluidic meaning is unresolved.
 
 6. Flush semantics.

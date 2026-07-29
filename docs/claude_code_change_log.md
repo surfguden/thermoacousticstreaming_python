@@ -3439,6 +3439,494 @@ across all 7 findings, confirmed via `git status`/`git diff` hunk
 inspection before and after each change. Not committed, per
 instruction -- awaiting review.**
 
+**Update: committed.** All 7 findings landed as commit `a59aa1f`
+("Fix seven silent-failure and data-integrity gaps in
+run_experiment2()'s data.tdms record"), with `application.py`/
+`workflows.py` hunk-separated from TEC's own uncommitted diff before
+staging (verified via reconstructed-content diffing, not assumed --
+`git diff --cached` confirmed zero TEC-related lines, `git diff`
+confirmed the working tree still carried exactly TEC's untouched
+content afterward). `docs/known_open_items.md`/
+`docs/hardware_safety_patterns.md` (from the separate consolidation
+task that preceded this session) landed separately as commit `86442bc`.
+
+### Session 53 -- Full simulated end-to-end dry-run verification (Initialize -> multi-repeat series -> shutdown), one Priority-1-class finding fixed
+
+**Context: every hardware module had been verified independently
+(pump, valve, AD2, camera, piezo) across this project's history, but no
+single pass had run the actual combined `run_experiment2()` sequence
+with all modules interacting together end-to-end**, checking for
+resource conflicts, timing collisions, or state leaking between
+modules that unit-level tests can't catch by construction. Commit
+`a59aa1f`'s seven data-integrity fixes made this newly meaningful: a
+dry-run's resulting `data.tdms` should now actually be trustworthy, not
+just "the run completed."
+
+**Existing simulated path found and used, not built from scratch.**
+`hardware_factory.build_hardware_bundle()` + `apply_hardware_bundle()`
+is the real, already-existing production wiring -- the exact code path
+`qt_ui.py`'s Initialize button calls when all four sim checkboxes are
+checked (the documented safe default). It builds `SimulatedAD2Sdk`,
+`HamamatsuCamera(simulate=True)`, `CetoniPump(simulate=True)`,
+`Valve(simulate=True)` (all `backend=None`, no real SDK/DLL touched)
+plus a disabled `TecController` -- confirmed a safe no-op by *reading*
+`tec.py` (not editing it): `TecController.initialize()`/`cleanup()`
+both short-circuit cleanly when `enabled=False`, and `build_hardware_bundle()`
+always constructs a real `SimulatedTecBackend()` regardless of
+`tec_enabled`, so including it in the wiring is inert.
+
+**What was run.** A standalone scratchpad script (not committed to the
+repo -- a one-off verification tool, not permanent test infrastructure)
+drove `Application` through `initialize() -> multi-repeat series ->
+cleanup() -> re-initialize()`, against the real filesystem and the
+genuinely-installed `nptdms` 1.11.0 package (not the pytest suite's
+fake), in four scenarios: (1) 3-repeat series, flush enabled; (2)
+2-repeat series, flush disabled, fresh `Application`; (3) two
+back-to-back series on the *same* `Application` instance with no
+`cleanup()` between them, probing cross-series state leakage; (4) a
+3-repeat series with `stop_fired` set mid-series, directly re-testing
+Session 32's own abort-stops-queuing fix and the same *class* of bug
+Finding A found (an implicit ordering assumption).
+
+**Result: pass, with one finding.** All 9 repeats across the four
+scenarios completed (`ExperimentComplete`), zero entries in
+`app.errors`, no thread leakage (`threading.enumerate()` checked
+independently before/after `cleanup()` in *every* one of the four
+scenarios, not just the first two -- closing a gap this verification's
+own first pass had left open and explicitly disclosed), re-`initialize()`
+immediately after `cleanup()` succeeded cleanly, mid-series abort
+stopped exactly after repeat 1 with `repeat_002/` never created. All
+seven Finding A-G fixes verified correct end-to-end: `SimAD2`/
+`SimCamera`/`SimPump`/`SimValve` read `True` throughout, `FlushCompleted`
+correctly `True`/`""` depending on whether flush ran, `TriggerSource`/
+`MasterPulse*` fields present and correct, image/timestamp channel
+counts matched frame counts. (`WFGOutOfRangeCh1=False` and
+`DOFreqActual=""` are the *expected* simulated-mode values --
+`SimulatedAD2Sdk` never calls the real clamp/divider logic -- not gaps.)
+
+**The one finding: `Application.flush()` validated flush volume against
+the syringe's total *capacity*, never against how much liquid is
+actually loaded right now.** [application.py:345-350](src/thermo_acoustic/application.py:345)
+(pre-fix) only checked `flush_volume_ml > syringe_volume_ml` (default
+60mL) before computing `new_fill_level = self.pump.fill_level -
+settings.flush_volume_ml` and pushing it straight to `set_fill_level()`
+-- nothing checked the result wasn't negative. `refill()`/
+`reference_move()` are confirmed manual-only, never called from the
+automated path (Session 21), so a real operator who starts a series
+before refilling -- or whose fill level is already low from a prior
+series -- would previously get a silent negative `pump.fill_level` with
+no error, no warning, and a completely normal-looking
+`"ExperimentComplete"`/`data.tdms`. On real hardware this reaches
+`QmixPumpBackend.set_fill_level()`, which passes the value straight to
+the real Qmix SDK unconditionally -- whether the real firmware itself
+rejects a negative absolute fill-level target gracefully is unconfirmed
+in this repo.
+- **Reproduction (no fix needed to see it):**
+  ```python
+  app = Application(pump=CetoniPump(simulate=True))  # fill_level defaults to 0.0
+  app.flush(FlushSettings(flush_flowrate=200.0, flush_volume_ml=0.05, wait_after_flush_s=0.0))
+  assert app.pump.fill_level == -0.05  # negative, no error, no warning
+  ```
+- **Why no existing unit test caught this:** the one test exercising
+  `flush()`'s happy path (`test_flush_sets_valve_and_status`) explicitly
+  pre-sets `app.pump.fill_level = 60.0` before calling `flush()` --
+  sidestepping the very default state (`fill_level=0.0`) this end-to-end
+  dry run started from and exposed directly.
+
+**User instruction: treat this with the same priority as the earlier
+syringe-stroke hardware-safety work (commit `23e17d5`), not as a
+lower-priority data-integrity note -- fixed in this same session, not
+deferred.**
+
+**Fix, classified per `docs/hardware_safety_patterns.md`'s own decision
+tree, not guessed at.** This case doesn't fit any of the four existing
+patterns exactly -- it's neither a live device query (Patterns
+(a)/(b)) nor a fixed vendor-manual ceiling (Pattern (d)): the "limit"
+is already-known in-memory application state (`self.pump.fill_level`,
+tracked in Python, no vendor research or device round trip needed).
+**But the reject-vs-clamp choice still follows the same reasoning as
+Patterns (c)/(d):** clamping the flush to whatever's actually available
+would itself be a data-integrity bug, since the `FlushVolume` value
+already recorded in `data.tdms` (written by the earlier `save_settings()`
+calls, before `flush()` ever runs) would then silently no longer match
+what was actually drawn. [application.py:345-374](src/thermo_acoustic/application.py:345):
+new check, `settings.flush_volume_ml > self.pump.fill_level`, raises
+`ValueError` naming both values and instructing "refill the syringe
+first" -- placed before any valve/pump call, same as the existing
+capacity check right above it, so a rejected flush leaves `fill_level`
+and `valve.position` completely untouched.
+
+**Test:** `test_flush_rejects_volume_exceeding_current_fill_level`
+([tests/test_application.py](tests/test_application.py)) -- deliberately
+starts from `CetoniPump()`'s real default (`fill_level=0.0`), not a
+pre-set value (asserted explicitly, so the test can't silently start
+from the wrong state), confirms the `ValueError`, and confirms
+`fill_level`/`valve.position` are both unchanged after the rejection
+(rejected before any hardware call, not after one that partially ran).
+`test_flush_accepts_volume_exactly_at_current_fill_level` covers the
+inclusive boundary (flushing exactly what's loaded, down to 0.0
+remaining, is physically valid). **Verified the regression test
+actually catches the bug**, same discipline as Findings A-G:
+temporarily removed the new check and re-ran the rejection test alone
+-- failed (`DID NOT RAISE`); restored immediately after.
+
+**One existing test required updating, not because it was wrong, but
+because it relied on the now-closed gap without realizing it.**
+`test_run_experiment2_records_flush_success_in_final_tdms` (Finding D,
+this session) pre-set `app.pump.fill_level = 1.0` while flushing 6.0 mL
+-- passed before this fix only because nothing checked the mismatch.
+Updated to `fill_level = 60.0` (comfortably sufficient), which is what
+the test's own intent (a genuinely successful flush) already required.
+
+**Files touched:** [application.py](src/thermo_acoustic/application.py)
+(`flush()`, new pre-flight check), [tests/test_application.py](tests/test_application.py)
+(2 new tests, 1 existing test's setup corrected).
+
+**Verification:** tested -- full `tests/` suite green, 285/285 (up from
+283; 2 new tests), modulo the same already-documented (Session 41/42/48)
+offscreen-Qt/Shiboken flakiness in `test_qt_ui_v2.py` (a different
+single test failed on 2 of 3 full-suite runs during verification,
+always passing cleanly alone or as part of just that file) -- confirmed
+via `git diff` that nothing this session touches `qt_ui_v2.py` at all.
+Re-ran the full simulated end-to-end dry-run script (all four
+scenarios, including the two independently-verified thread-leak checks)
+against the fixed code -- clean pass, `pump.fill_level` now correctly
+`0.95` (not negative) after a `1.0 -> flush 0.05` sequence. **Not
+hardware-verified -- flagged as a separate follow-up, same as commit
+`23e17d5`'s own precedent for items needing physical verification:
+whether the real Qmix/neMESYS firmware itself rejects a negative
+absolute fill-level target gracefully (as opposed to Python now
+catching it first) has not been confirmed against real hardware and
+requires bench access.** Not committed, per instruction.
+
+### Session 54 -- Real-hardware verification, Item 1: valve default COM port was wrong (COM6 -> COM5), a standing documentation error
+
+**Found while beginning real-hardware verification of Session 53's
+findings.** `Application.initialize()` against real hardware
+(AD2/camera/pump enabled, real backends) succeeded through AD2, camera,
+and pump, then failed at the valve: `ValveError: Valve did not respond
+on COM6`. Investigated properly rather than assumed a hardware fault:
+1. **Ruled out port contention or a hidden/undiscovered port.** A
+   read-only status-query probe (`S\r`, the documented handshake, no
+   position-changing command) against every COM port Windows currently
+   exposes (`serial.tools.list_ports.comports()` and
+   `Get-PnpDevice -Class Ports`, cross-checked against each other, both
+   returning the identical 4-port set: COM1/4/5/6) got silence on all
+   four at a 1.0s timeout. No competing process held any port
+   (`Get-Process` clean).
+2. **Traced the real USB topology** (`DEVPKEY_Device_Parent` walk from
+   each COM port's PnP instance up to the root hub) rather than
+   guessing: COM4/COM5/COM6's FTDI adapters, the AD2's own FTDI
+   adapter, the CETONI VCI4 pump-CAN interface, and the piezo's APT
+   USB device are all physically riding the same two-tier USB hub
+   assembly (confirmed by the user as a real single multi-port
+   hub/dock, not three independently-cabled adapters as originally
+   assumed) -- explaining why an earlier physical unplug test (part of
+   this same investigation, not described further here) took all three
+   COM ports down simultaneously.
+3. **Retried the status query with a longer timeout (3.0s) and
+   line-ending variants** (`\r` documented, `\r\n` alternate, no
+   terminator) specifically to distinguish a genuine hardware fault
+   from a protocol-level mismatch or a device still settling after a
+   power-cycle: **COM5 responded correctly** (`S\r` -> `01\r`, and
+   `S\r\n` -> `01\r`; no response to a bare `S` with no terminator,
+   consistent with the device genuinely requiring a real line
+   terminator, not evidence of a different protocol). `01` parses
+   cleanly under the existing `Valve._apply_status_response()` logic as
+   position 1 (Open), `status_note="confirmed"` -- a well-formed,
+   correct reply, not a marginal/garbled one. COM4 and COM6 remained
+   silent across every timeout/line-ending combination tried.
+4. **Confirmed independently by the user as a standing issue, not
+   tonight's artifact**: COM5 had already been identified as the
+   valve's real port in a prior session too. This matches
+   `docs/labview_migration_completeness_audit.md`'s own pre-existing
+   (and previously never acted on) note that "LabVIEW screenshot
+   candidate mentions COM5" -- the correct port was hinted at in this
+   project's own documentation long before this session, just never
+   independently verified or corrected in the actual default.
+
+**This is the same class of mistake as the Session 51 AD2 wrong-VID
+investigation** (a real, present, working device, looked for under the
+wrong identifier) -- not a hardware failure, and not this session's own
+artifact.
+
+**Fix.** `Valve.visa_resource` default
+([instruments.py:698-706](src/thermo_acoustic/instruments.py:698)):
+`"COM6"` -> `"COM5"`, cited in a code comment. `qt_ui.py`'s matching
+UI default ([qt_ui.py:525](src/thermo_acoustic/qt_ui.py:525)):
+`QLineEdit("COM6")` -> `QLineEdit("COM5")`. Docs updated to match:
+`docs/current_workflow_audit.md`'s "Valve COM/position mapping" row
+(now "COM port confirmed" instead of "Unresolved"),
+`docs/labview_migration_completeness_audit.md`'s item 5 (marked
+resolved, cross-referencing its own prior COM5 hint),
+`hardware_tests/README.md`'s serial-resources line,
+`hardware_tests/test_serial_discovery.py`'s `DEFAULT_PORTS` dict, and
+`hardware_tests/test_valve_command_probe.py`'s two usage-example
+strings (illustrative only, not enforced defaults).
+
+**Deliberately left unchanged, per explicit scope, not overlooked:**
+`hardware_tests/test_real_workflow_smoke.py` and its own
+`tests/test_real_workflow_smoke_plan.py` suite (~10 `COM6` references)
+-- this script already requires an *explicit* `--valve-port` choice
+(`{"COM5", "COM6"}`, both already valid) for its real-full-workflow
+mode, so there is no silent-stale-default risk there the way there was
+in `instruments.py`'s dataclass default; changing its own internal
+default would additionally require updating roughly a dozen test
+assertions in a parallel file, out of proportion for what the user
+asked. `src/thermo_acoustic/ui.py` (confirmed dead since Session 7,
+592 lines, no importers) left untouched, matching this project's own
+established convention (Session 36) of not selectively editing pieces
+of that file. Every `tests/test_application.py`/
+`test_hardware_factory.py`/`test_qt_ui_hardware_settings.py`/
+`test_qt_ui_v2.py` fixture that passes `visa_resource`/`valve_resource`
+explicitly (rather than relying on the dataclass default) needed no
+change -- confirmed by reading each one, not assumed.
+
+**One test genuinely depended on the old default and needed
+updating**, not a bug in the test: `test_valve_and_prior_backend_commands`
+constructs a bare `Valve(backend=..., command_position_1=...,
+command_position_2=...)` with no explicit `visa_resource`, asserting
+the resulting `("write", "OPEN COM6")` command -- updated to
+`"OPEN COM5"`.
+
+**COM4 and COM6's real identity remains deliberately unresolved, per
+explicit instruction.** Both are confirmed present, confirmed silent to
+the valve's own protocol, and cannot be tested against a TEC/Meerstetter
+protocol because none exists anywhere in this repository (grepped
+exhaustively: `tec.py` and every doc mentioning MeCom all state the
+real register map/protocol was never implemented, by explicit design,
+"to avoid inventing hardware commands" without a reviewed client) --
+inventing one from outside knowledge to fire at real hardware was
+correctly declined, per instruction. This stays a genuine open item,
+not chased further.
+
+**Files touched:** [instruments.py](src/thermo_acoustic/instruments.py),
+[qt_ui.py](src/thermo_acoustic/qt_ui.py),
+[docs/current_workflow_audit.md](docs/current_workflow_audit.md),
+[docs/labview_migration_completeness_audit.md](docs/labview_migration_completeness_audit.md),
+[hardware_tests/README.md](hardware_tests/README.md),
+[hardware_tests/test_serial_discovery.py](hardware_tests/test_serial_discovery.py),
+[hardware_tests/test_valve_command_probe.py](hardware_tests/test_valve_command_probe.py),
+[tests/test_application.py](tests/test_application.py) (1 existing
+test's assertion corrected).
+
+**Verification:** tested -- full `tests/` suite green, 285/285 (same
+count as before; no test added or removed, one assertion corrected).
+Real hardware: the corrected port itself is real-hardware-confirmed
+(the status-query response described above *is* the verification, not
+a downstream consequence of it). TEC files not touched -- confirmed via
+`git diff` before and after. Not committed, per instruction --
+real-hardware verification of the rest of Session 53's findings
+continues below.
+
+### Session 54 continued: full real-hardware verification pass (closing the loop on Session 53's simulated dry-run)
+
+**Context.** Every hardware module had been verified independently
+across this project's history (pump, valve, AD2, camera, piezo), but
+no single pass had run the actual combined `run_experiment2()` sequence
+with all modules interacting together end-to-end on real hardware.
+Session 53's simulated dry-run covered this class of scenario in
+simulation; this session re-ran the same class of scenarios against
+real hardware, plus the flush() boundary question Session 53 left
+formally unconfirmed. User explicitly authorized real experiment
+sequences (not just probe/identify calls) on pump, valve, AD2, camera,
+and piezo for this session.
+
+**Result: all three scenario groups PASS.** Full detail below; a
+complete, unfiltered issue log (kept per explicit instruction to
+over-collect, not filter for severity) was also produced this session
+and is summarized here.
+
+**Scenario 1 -- full experiment sequence on real hardware: PASS.**
+Real `Application.initialize()` (AD2/camera/pump/valve all real, TEC
+disabled/simulated and untouched) succeeded cleanly once the valve
+port fix above was in place. A 3-repeat series (conservative
+parameters: 15ms exposure, 2 frames/repeat, AD2 Ch1 1000Hz/0.3V/0.2s
+run -- a low-amplitude test signal, not a real acoustic drive
+configuration -- flush 0.01ml/repeat @ 200 uL/min, matching Session
+31-33's own established real-hardware flow-rate convention) completed
+all 3 repeats (`ExperimentComplete`), zero `app.errors`, clean
+`cleanup()` with **zero thread leak** (`threading.enumerate()` checked
+before/after), and a clean re-`initialize()` immediately after
+`cleanup()`. Real `data.tdms` metadata confirmed every relevant
+Session 52/53 fix working correctly on real hardware, not just in
+simulation: `SimAD2=False`/`SimCamera=False`/`SimPump=False`/
+`SimValve=False` for all 3 repeats (Finding B), `FlushCompleted=True`
+for all 3 (Finding D), `WFGOutOfRangeCh1=False` (0.3V/1000Hz correctly
+not flagged, well within the real AD2's range). **Notably,
+`ExposureTime=15.00025`, not exactly the requested `15.0`** -- real
+DCAM exposure quantization, correctly captured as the actually-applied
+value rather than echoed back (Finding E confirmed working on real
+hardware, not just against the quantizing fake used in its own unit
+test). A separate 3-repeat series with `fire_stop_event()` called
+after repeat 1 (mirroring `qt_ui.py`'s `_abort()`) correctly stopped
+before repeat 2 started -- `repeat_002`/`repeat_003` folders never
+created, 2 repeats correctly left in the queue -- re-confirming Session
+32's fix on real hardware in this session, not just relying on Session
+31-33's own prior confirmation.
+
+**Scenario 2 -- flush() boundary check against real Qmix firmware:
+PASS, answers Session 53's open question.** Real syringe confirmed
+empty first (`get_fill_level()` -> `0.0`ml, read directly via the raw
+Qmix SDK, not the Python-tracked value), then filled to a known,
+controlled `~0.10`ml via a small real motion (`200` uL/min, matching
+the same established convention). **Reject path:** requested `0.15`ml
+against the real `0.10`ml fill level -- `ValueError` raised; real
+`get_fill_level()` readback identical before and after
+(`0.09999509429297194` both times); real valve position identical
+before and after (`1` both times) -- proves the real Qmix SDK's own
+`set_fill_level()` call was never reached and the valve was never
+touched, not just that an exception happened to fire. **Accept path:**
+requested `0.05`ml (within the same `0.10`ml level) -- succeeded; real
+fill level genuinely dropped from `0.09999509429297194` to
+`0.04999482006952973`, a real, measured decrease matching the request;
+valve ended at position 2 (Closed), `flush()`'s normal end state. This
+makes the original open question ("does the real Qmix/neMESYS firmware
+itself reject a negative absolute fill-level target gracefully?") moot
+for any request that goes through `Application.flush()` normally -- the
+app-level guard now categorically prevents that scenario from ever
+reaching the SDK. The firmware's own behavior in a hypothetically
+bypassed case remains formally unconfirmed by design (deliberately not
+attempted, since doing so would require routing around the new safety
+guard).
+
+**Scenario 3 -- Piezo Z-Scan UI end-to-end on real hardware: PASS,
+first time ever through the UI, not just the CLI.** Session 47/48
+verified `piezo_zscan.py`'s CLI directly; the UI wrapper
+(`qt_ui.py`'s Z-Scan tab -- Start button, the real `QMessageBox`
+ClosedLoop confirmation, Abort button, `_zscan_abort_requested` flag)
+had never been exercised against physical hardware before this
+session (Session 50's own entry says so explicitly). Driven via
+genuine `QTest.mouseClick()` on the real `QPushButton` widgets (not
+calling `_start_zscan()`/`_abort_zscan()` as bare Python method
+calls), with `QMessageBox.question` monkeypatched to auto-answer Yes
+(this project's own established test-suite technique for driving
+modal dialogs programmatically -- the real ClosedLoop-confirmation
+*logic* still runs for real; only the blocking modal wait itself is
+scripted, since no interactive human was available to click it).
+**Full scan**, parameters matching Session 48's own already-verified
+real-hardware example exactly (Z 200-210um, step 2um, exposure 20ms):
+`Query Piezo Range` click correctly populated the real range (`0.00 -
+450.00 um`, matching Session 45/46's known real MaxTravel); `Start
+Z-Scan` click completed all 6 real frames (`z_0200.31um.tif` ...
+`z_0210.04um.tif` -- real measured closed-loop positions with small
+settling residuals, exactly as designed); status `"Z-scan complete: 6
+frames written"`; zero errors. **Mid-scan abort**: `Start Z-Scan`
+click, waited for real frames to land on disk, then a real `Abort
+Z-Scan` click -- scan correctly stopped after 3 of 6 positions (the
+in-flight position at abort-click time was allowed to finish, matching
+Session 47's documented `should_abort` check timing), and
+`app.errors` recorded the exact "PARTIAL" wording designed in Session
+47 (`"Z-scan aborted at position 4/6 (target=206.00 um). 3 of 6
+positions completed successfully before this abort -- this is a
+PARTIAL, incomplete stack, not silently treated as done."`) -- the
+first time that exact message has ever been produced by a real Abort
+click on real hardware, not just a unit test. **Residual gap, disclosed
+not glossed over:** the piezo was already in `CloseLoop` mode both
+runs this session, so neither the dialog's "confirm and switch" nor its
+"decline" branch was actually exercised against real hardware -- the
+same limitation Session 48 already documented for its own CLI run.
+Still open for a future session where the device happens to start in
+`OpenLoop`.
+
+**Issue log -- everything observed this session, not filtered for
+severity, per explicit instruction to over-collect.** Four items found;
+two already addressed (the valve port, above), two deliberately left
+open per "verify first, fix later," to become dedicated follow-up
+tasks:
+
+1. **Valve default COM port was wrong (COM6 -> COM5)** -- covered in
+   the entry immediately above this one.
+2. **`SerialTextCommandBackend.query()` uses `readline()`, which splits
+   on `\n`, but the valve's real protocol only ever sends `\r` -- the
+   highest-value finding of this session, per explicit user framing.**
+   Discovered while diagnosing why `Application.initialize()` still
+   failed on the *correct* port (COM5) with the class's default
+   `timeout_s=1.0`. Direct timing characterization (`S\r` query,
+   `timeout=5.0`, 3 repeated attempts) showed the device responds
+   correctly and consistently (`b'01\r'` every time) but **each call
+   takes the full configured timeout window to return** (~5.02-5.03s
+   against a 5.0s timeout, every time) -- not "however long the device
+   actually takes." Root cause: `query()`
+   ([instruments.py](src/thermo_acoustic/instruments.py)) calls
+   `self.port.readline()`, which defaults to splitting on `\n` (LF).
+   This device's real protocol (and this codebase's own `line_ending =
+   "\r"` convention used for *writing*) only ever terminates a
+   response with `\r` (CR), never `\n` -- so `readline()` never sees
+   the terminator it's actually looking for and always blocks for the
+   entire timeout before returning whatever is in the buffer at that
+   point, rather than returning promptly once the real response has
+   fully arrived. **Affects every caller of
+   `SerialTextCommandBackend.query()`**, not just this one probe --
+   `Valve.initialize()`, `Valve._apply_status_response()`'s call
+   sites, and `Valve.wait_until_ready()`'s own poll loop all go
+   through this same method. `wait_until_ready()`'s poll loop has
+   likely been silently paying the full per-call timeout cost on every
+   single iteration for its entire existence, not occasionally --
+   making its real elapsed time before giving up likely far longer
+   than its own nominal `timeout_s` parameter would suggest. May
+   retroactively explain prior "valve seems slow" observations from
+   earlier real-hardware sessions that were never root-caused before
+   now. **Not fixed this session, per explicit instruction** -- a
+   session-local workaround (a separately-constructed `Valve` with
+   `SerialTextCommandBackend(timeout_s=5.0)`, not touching the shared
+   class default) was used to continue the rest of this session's
+   real-hardware work. Becomes the highest-priority dedicated follow-up
+   task.
+3. **No fill-level readback/sync path anywhere in this codebase --
+   `pump.fill_level` always starts at `0.0` in a fresh process,
+   regardless of the real device's actual current state.** Discovered
+   directly: starting the full-sequence test (Scenario 1) in a fresh
+   process with the syringe genuinely at `~0.05`ml real fill level
+   (confirmed moments earlier by Scenario 2's own real SDK readback),
+   `Application.flush()`'s new guard (Session 53) rejected a
+   perfectly legitimate `0.01`ml flush request, because the
+   Python-tracked value was `0.0` (the dataclass default for a
+   brand-new `CetoniPump` instance with no memory of the prior
+   process's real motion). Root cause confirmed by reading the code:
+   `CetoniPump.fill_level` is only ever updated by this project's own
+   code calling `set_fill_level()`/`refill()`/`empty()` through that
+   exact object; nothing anywhere calls the real SDK's own
+   `get_fill_level()` (confirmed to exist and work, used directly for
+   this session's own Scenario 2 verification) to sync the tracked
+   value from reality. `refill()` is the only existing way to set a
+   known-real value, but it always commands a full refill to the
+   syringe's maximum capacity, not a "read what's actually there"
+   query. **Real-world consequence:** any app restart while the
+   physical syringe genuinely still has partial volume loaded now
+   actively blocks legitimate flushes (previously the same mismatch
+   was silent and could under/overshoot; the Session 53 fix makes the
+   *absence* of a sync path newly consequential, not the fix itself
+   wrong). **Not fixed this session** -- worked around for this
+   session's own testing by manually reading `get_fill_level()` and
+   assigning it to `app.pump.fill_level` before starting the series.
+   Fails safe (rejects rather than silently mis-flushing), so left as
+   a follow-up candidate, not a safety stop.
+4. **Environment gotcha, not a code bug:** any piezo-touching
+   real-hardware script needs the `exp_ctrl` conda environment
+   specifically (`C:\Users\Lab user\.conda\envs\exp_ctrl`), not the
+   base/system Python -- confirmed via `conda env list`. Session 45
+   had installed `pythonnet` into this environment specifically;
+   pump/valve/AD2/camera scripts work fine under base Python since
+   they don't need pythonnet, but the piezo's Kinesis .NET interop
+   does. This isn't documented anywhere obvious in this repo and cost
+   real diagnostic time this session (`ImportError`-style failure,
+   `pythonnet is not installed in this environment`, on an otherwise
+   correctly-written script). Flagged as a documentation follow-up.
+
+**Files touched this pass:** none beyond the valve-port-fix entry
+above -- this entry is verification/diagnostic only, no further code
+changes. Real-hardware run artifacts (TIFFs, `data.tdms` files) were
+written to temporary directories outside the repo and are not part of
+this repo's own tracked/gitignored output conventions.
+
+**Verification:** real hardware throughout, described in full above --
+this entry *is* the verification for Scenarios 1-3. TEC files/hunks
+confirmed untouched via `git diff` before and after every step,
+consistent with every other entry this session. Not committed, per
+instruction. Issues 2-4 above remain open, prioritized for dedicated
+follow-up sessions.
+
 ---
 
 ## Known remaining open items as of this writing

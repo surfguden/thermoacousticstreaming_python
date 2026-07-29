@@ -88,7 +88,8 @@ paths.
   `QMIXSDK` environment variable if set, otherwise derives a local path.
 - Qmix configuration path default:
   `C:\Users\Public\Documents\QmixElements\Projects`.
-- Serial resources: valve default `COM6`, Prior Z-stage default `COM7`.
+- Serial resources: valve default `COM5` (real-hardware-confirmed; `COM6` was
+  a standing documentation error), Prior Z-stage default `COM7`.
 - Serial defaults: 9600 baud, 8 data bits, no parity, 1 stop bit, no flow
   control, 10 s config timeout, and `\r\n` line ending in the serial backend.
 - DCAM camera device index default: `0`.

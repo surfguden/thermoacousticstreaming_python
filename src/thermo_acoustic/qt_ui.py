@@ -515,7 +515,7 @@ class MainWindow(QMainWindow):
         self.thorlabs_apt_backend = QLineEdit(hardware_defaults.z_stage.thorlabs_apt_backend)
         self.thorlabs_apt_discovery_only = QCheckBox("Discovery only")
         self.thorlabs_apt_discovery_only.setChecked(hardware_defaults.z_stage.thorlabs_apt_discovery_only)
-        self.valve_resource = QLineEdit("COM6")
+        self.valve_resource = QLineEdit("COM5")  # real-hardware-confirmed default -- see Valve.visa_resource (instruments.py)
         # Relocated here from _instrument_group() (Session 40): that method
         # is v1-tab-only -- qt_ui_v2.py's InitializationDialog builds its own
         # separate form around this same widget without ever calling

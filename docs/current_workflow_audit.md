@@ -89,7 +89,7 @@ unchanged and can still move pump and valve when real backends are connected.
 | AD2 DO Custom | Legacy/nonessential | Do not run unless later evidence shows it is required |
 | Qmix pump discovery | Active standalone only | One-pump config validated for discovery/readback |
 | Qmix pump flow | Do not run yet | Pump motion and flow require separate explicit gate |
-| Valve COM/position mapping | Unresolved | COM6 likely valve; position 1/2 effects not confirmed |
+| Valve COM/position mapping | COM port confirmed | Valve confirmed on COM5 (real-hardware status-query response, corroborated by an earlier session too -- COM6 was a standing documentation error, not this session's own artifact); position 1/2 effects not confirmed |
 | Flush | Disabled by default | Can move pump and switch valve when enabled |
 | Prior COM7 Z-stage | Legacy/obsolete | COM7 absent and current hardware is APT USB |
 | Thorlabs/APT Z-stage | Discovery-only | APT Piezo Controller serial `44533854` found; no motion wired |

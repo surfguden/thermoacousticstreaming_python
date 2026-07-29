@@ -17,7 +17,7 @@ Safety:
 
 Usage:
   python hardware_tests\\test_valve_command_probe.py --list
-  python hardware_tests\\test_valve_command_probe.py --port COM6 --command-name cr_1 --confirm SEND
+  python hardware_tests\\test_valve_command_probe.py --port COM5 --command-name cr_1 --confirm SEND
 """
 
 import argparse
@@ -56,7 +56,7 @@ CANDIDATES = {
 
 def main():
     parser = argparse.ArgumentParser(description="Rheodyne MX valve command probe (single-shot)")
-    parser.add_argument("--port", help="Serial port, e.g. COM6")
+    parser.add_argument("--port", help="Serial port, e.g. COM5")
     parser.add_argument("--baud", type=int, default=9600, help="Baud rate (default 9600, matches app)")
     parser.add_argument("--timeout", type=float, default=1.0, help="Serial timeout seconds")
     parser.add_argument("--command-name", choices=list(CANDIDATES.keys()),

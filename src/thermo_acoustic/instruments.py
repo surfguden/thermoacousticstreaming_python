@@ -699,7 +699,14 @@ class ValveError(RuntimeError):
 class Valve:
     enabled: bool = True
     simulate: bool = True
-    visa_resource: str = "COM6"
+    # Real-hardware-confirmed default (a real-hardware verification session,
+    # re-confirmed by a prior session too, not a one-off): the valve responds
+    # correctly to the documented "S" status-query protocol on COM5, not the
+    # previously-documented COM6 -- COM6 was a standing documentation error,
+    # not a transient port reassignment. LabVIEW screenshot evidence
+    # (docs/labview_migration_completeness_audit.md) already hinted COM5 was
+    # the real candidate; this was never independently verified until now.
+    visa_resource: str = "COM5"
     backend: TextCommandBackend | None = None
     # Confirmed physical semantics: position 1 = Open, position 2 = Closed.
     # Safety-relevant -- surfaced explicitly in the UI (qt_ui.py/qt_ui_v2.py

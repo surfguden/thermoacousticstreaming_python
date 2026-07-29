@@ -372,6 +372,42 @@ def test_flush_sets_valve_and_status():
     assert app.status == "FlushComplete"
 
 
+def test_flush_rejects_volume_exceeding_current_fill_level():
+    # Regression test found by an end-to-end simulated dry-run verification
+    # pass (not a unit test written against a hand-primed happy-path state):
+    # every existing flush test pre-sets pump.fill_level to a comfortably
+    # large value before calling flush() -- CetoniPump.fill_level's own
+    # dataclass default is 0.0, and the automated path never calls
+    # refill()/reference_move() (confirmed manual-only, Session 21), so a
+    # real operator who starts a series before refilling would previously
+    # get a silent negative fill_level with no error at all. Deliberately
+    # starts from the *default* fill_level (0.0), not a pre-set one, to
+    # exercise exactly the state a fresh Application actually starts in.
+    app = Application()
+    assert app.pump.fill_level == 0.0, "sanity check: this test must start from the real default, not a pre-set value"
+
+    with pytest.raises(ValueError, match="exceeds the syringe's current fill level"):
+        app.flush(FlushSettings(flush_flowrate=200.0, flush_volume_ml=0.05, wait_after_flush_s=0.0))
+
+    assert app.pump.fill_level == 0.0, "fill_level must be unchanged -- rejected before any pump/valve call, not after"
+    assert app.valve.position == 1, "must not even move the valve once the volume is rejected"
+    assert app.status != "FlushComplete"
+
+
+def test_flush_accepts_volume_exactly_at_current_fill_level():
+    # Inclusive boundary, matching this project's established convention
+    # (e.g. the syringe-geometry bounds in qmix_backend.py) -- flushing
+    # exactly what's currently loaded (down to 0.0 remaining) is physically
+    # valid and must not be rejected.
+    app = Application()
+    app.pump.fill_level = 0.05
+
+    ok = app.flush(FlushSettings(flush_flowrate=200.0, flush_volume_ml=0.05, wait_after_flush_s=0.0))
+
+    assert ok
+    assert app.pump.fill_level == pytest.approx(0.0)
+
+
 def test_flush_settings_timeout_converts_ul_per_minute_to_seconds():
     # Real-hardware regression: this exact combination (0.05 ml / 200 uL/min)
     # was declared a flush failure after ~5.25s on a real Qmix pump that was
@@ -606,7 +642,7 @@ def test_run_experiment2_records_flush_success_in_final_tdms(tmp_path, monkeypat
     # never ran at all).
     writes = install_fake_nptdms(monkeypatch)
     app = Application(ad2=SimulatedAD2Sdk())
-    app.pump.fill_level = 1.0
+    app.pump.fill_level = 60.0  # comfortably >= flush_volume_ml, so the flush itself succeeds
     experiment = Experiment2(
         experiment_folder=tmp_path / "experiment-flush-ok",
         flush_enabled=True,
@@ -726,7 +762,7 @@ def test_valve_and_prior_backend_commands():
     valve.set_position(2)
     valve.cleanup()
     assert valve_backend.commands == [
-        ("write", "OPEN COM6"),
+        ("write", "OPEN COM5"),  # Valve.visa_resource's real-hardware-confirmed default
         ("query", "S"),
         ("write", "P2"),
         ("close",),

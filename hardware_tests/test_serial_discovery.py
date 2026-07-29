@@ -9,7 +9,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 UI_STATE_PATH = ROOT / ".thermo_acoustic_ui.json"
 DEFAULT_PORTS = {
-    "MX valve default": "COM6",
+    "MX valve default": "COM5",  # real-hardware-confirmed; COM6 was a standing documentation error
     "Prior Z-stage default": "COM7",
 }
 

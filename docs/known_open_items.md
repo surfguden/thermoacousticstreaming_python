@@ -108,6 +108,45 @@ decision only the user can make).
   is Thorlabs/APT via the *separate*, unrelated piezo Z-scan calibration
   feature, Sessions 45-50). **Status: OPEN.**
 
+## Communication reliability gaps
+
+- **`SerialTextCommandBackend.query()` uses pyserial's `readline()`, which
+  splits on `\n`, but every device confirmed to talk to it (the valve) only
+  ever terminates a response with `\r`.** Since `readline()` never sees the
+  terminator it's actually looking for, every single query blocks for the
+  *entire* configured `timeout_s` before returning, regardless of how
+  quickly the real device actually responded -- this is a genuine backend
+  bug, not "the device is slow." **Confirmed on real hardware (Session
+  54):** a direct timing characterization of the valve's `S\r` status
+  query showed a correct, consistent response (`b'01\r'`) every time, but
+  each call took the *entire* configured timeout window to return
+  (~5.02-5.03s against a `timeout=5.0` call, repeatably; a `timeout=1.0`
+  call returned nothing and made `Valve.initialize()` fail outright) --
+  the signature of "blocks until timeout, not until response," not "the
+  device needs N seconds to answer." **Affects every caller of
+  `SerialTextCommandBackend.query()`**, not just this one probe --
+  `Valve.initialize()`, `Valve._apply_status_response()`'s call sites,
+  and critically `Valve.wait_until_ready()`'s own poll loop, which has
+  likely been silently paying the full per-call timeout cost on every
+  single iteration for its entire existence, not occasionally -- its real
+  elapsed time before giving up is likely far longer than its own nominal
+  `timeout_s` parameter would suggest. May retroactively explain prior
+  "valve seems slow" observations from earlier real-hardware sessions
+  that were never root-caused before now. **Fix direction:** replace
+  `self.port.readline()` in `query()`
+  (`instruments.py:SerialTextCommandBackend.query()`) with a real
+  `\r`-terminated read (e.g. pyserial's `read_until(expected=b"\r")`),
+  matching this codebase's own documented `line_ending = "\r"` *write*
+  convention instead of contradicting it on the *read* side. **Not fixed
+  yet** -- Session 54 used a session-local timeout override
+  (`SerialTextCommandBackend(timeout_s=5.0)`, not touching the shared
+  class default) to continue its own real-hardware verification work
+  without addressing the root cause. **Status: OPEN, prioritized as the
+  top follow-up from Session 54's real-hardware verification pass** --
+  needs a regression test proving the old `readline()` behavior would
+  have blocked for the full timeout on a correctly `\r`-terminated
+  response, before landing the fix.
+
 ## Data-integrity gaps
 
 - **TDMS write verification's own field-count/content assertions are
@@ -127,6 +166,32 @@ decision only the user can make).
   convention exists in-repo to compare against. An independent audit found at
   least one tooltip still carrying older "unverifiable" wording after the
   label was corrected elsewhere. **Status: OPEN.**
+- **`CetoniPump.fill_level` has no readback/sync mechanism, so it always
+  starts at `0.0` in a fresh process regardless of the real device's actual
+  loaded volume.** No method anywhere in the pump path calls the real Qmix
+  SDK's `get_fill_level()` to sync the tracked Python-side value against
+  hardware state -- `refill()` only ever sets a full-capacity value, it does
+  not read back the true current level, and nothing runs at
+  `Application.initialize()` time to reconcile the two. **Confirmed on real
+  hardware (Session 54):** a fresh process's `pump.fill_level` read `0.0`
+  immediately after `initialize()` while the real syringe still had
+  approximately `0.05` ml physically loaded from a prior session; the
+  mismatch was worked around manually for that session only by calling the
+  real SDK's `get_fill_level()` directly and assigning the result onto
+  `app.pump.fill_level`. **Consequence:** this fails safe, not unsafe --
+  Session 53's own `flush()` fix (`application.py`) now rejects any flush
+  volume exceeding the tracked fill level, so a stale `0.0` just makes
+  `flush()` wrongly refuse a legitimate flush after any app restart with
+  partial volume already loaded, rather than over-drawing the syringe. It is
+  a usability/correctness gap, not a hardware-safety regression, but it will
+  recur on every restart until fixed. **Fix direction:** add a
+  `read_fill_level()`-style method to `QmixPumpBackend` that calls the SDK's
+  `get_fill_level()` and returns it, then call it from
+  `Application.initialize()` (or an explicit UI-triggered sync action) to
+  reconcile `pump.fill_level` against real hardware state before any flush
+  decision is made. **Status: OPEN, second-priority follow-up from Session
+  54's real-hardware verification pass** (after the
+  `SerialTextCommandBackend.query()` fix above).
 - **Syringe stroke length is a derived value, not an independently-sourced
   BD spec figure.** Session 17. Computed as `volume / cross-sectional area`
   assuming full nominal volume over full piston travel in a cylindrical bore
