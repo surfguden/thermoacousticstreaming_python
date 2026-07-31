@@ -774,12 +774,21 @@ class Valve:
         if text in ("*", "**"):
             self.status_note = "busy"
             return True
-        if text == "":
-            self.status_note = "ready"
-            return True
-        digits = "".join(ch for ch in text if ch.isdigit())
-        if digits and int(digits) in (1, 2):
-            self.position = int(digits)
+        # The MX status reply is an explicit position token, not arbitrary
+        # chatter containing a digit. In particular, do not treat strings
+        # such as ``device=1`` or ``foo2bar`` as a confirmed valve position.
+        # ``01``/``02`` are the observed protocol replies; the other exact
+        # forms keep compatibility with existing simulated/echo responses.
+        position_responses = {
+            "1": 1,
+            "01": 1,
+            "P01": 1,
+            "2": 2,
+            "02": 2,
+            "P02": 2,
+        }
+        if text in position_responses:
+            self.position = position_responses[text]
             self.status_note = "confirmed"
             return True
         self.status_note = f"unverified position response: {text!r}"

@@ -2244,6 +2244,22 @@ class MainWindow(QMainWindow):
                 return
 
         self._zscan_abort_requested = False
+        # ClosedLoop is a control-mode prerequisite, not permission to move.
+        # Ask separately and synchronously in the GUI thread before the
+        # background scan worker can configure the camera or move the PPC001.
+        answer = QMessageBox.question(
+            self,
+            "Confirm PPC001 Motion",
+            f"This will move the PPC001 piezo from {z_start_um:.2f} to {z_end_um:.2f} um "
+            f"in {step_size_um:.2f} um steps and capture calibration images. Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            piezo.disconnect()
+            self._set_status("Z-scan cancelled: PPC001 motion not authorized.")
+            return
+
         self._run_action(
             lambda progress: self._run_zscan(piezo, z_start_um, z_end_um, step_size_um, exposure_ms, output_dir),
             "Running Z-scan",
@@ -2260,7 +2276,12 @@ class MainWindow(QMainWindow):
     ) -> str:
         from .piezo_zscan import ZScanCalibration
 
-        scan = ZScanCalibration(piezo=piezo, camera=self.app.camera, should_abort=lambda: self._zscan_abort_requested)
+        scan = ZScanCalibration(
+            piezo=piezo,
+            camera=self.app.camera,
+            confirm_motion=lambda: True,
+            should_abort=lambda: self._zscan_abort_requested,
+        )
         try:
             results = scan.run(
                 z_start_um=z_start_um,

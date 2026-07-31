@@ -74,8 +74,9 @@ unchanged and can still move pump and valve when real backends are connected.
 | Qmix/neMESYS pump | `CetoniPump` + `QmixPumpBackend` | Discovery/status validated only; main workflow real init remains gated |
 | Valve position 1/2 | `Valve.set_position(1/2)` | Mapping unresolved; do not switch yet |
 | Flush | `Application.flush()` | Gated by `flush_enabled`; unsafe with real pump/valve until validated |
-| Prior Z-stage | `PriorZMotor` on COM7 | Legacy/obsolete for current hardware |
-| Thorlabs/APT Z-stage | `thorlabs_apt.py` passive discovery | Discovery-only; no motion backend wired |
+| Legacy Prior Z-stage | Retained migration reference only; no active factory path | Obsolete for current PPC001 hardware |
+| Thorlabs/APT discovery | `thorlabs_apt.py` passive discovery | Discovery-only; no motion |
+| PPC001 manual Z-scan | `qt_ui.py` Z-Scan tab + `thorlabs_piezo.py`/`piezo_zscan.py` | Manual, separately authorized calibration-motion feature; outside the canonical experiment sequence and passive APT discovery |
 
 ## Active vs Legacy Classification
 
@@ -92,7 +93,8 @@ unchanged and can still move pump and valve when real backends are connected.
 | Valve COM/position mapping | COM port confirmed | Valve confirmed on COM5 (real-hardware status-query response, corroborated by an earlier session too -- COM6 was a standing documentation error, not this session's own artifact); position 1/2 effects not confirmed |
 | Flush | Disabled by default | Can move pump and switch valve when enabled |
 | Prior COM7 Z-stage | Legacy/obsolete | COM7 absent and current hardware is APT USB |
-| Thorlabs/APT Z-stage | Discovery-only | APT Piezo Controller serial `44533854` found; no motion wired |
+| Thorlabs/APT passive discovery | Discovery-only | APT Piezo Controller serial `44533854` found by passive enumeration |
+| PPC001 Z-scan calibration | Manual, separately authorized motion | GUI Z-Scan tab can connect to the PPC001 and, after a dedicated motion confirmation, move it for calibration; it is not part of `Application.run_experiment2()` or the passive APT discovery helper |
 
 ## Risk Table
 
@@ -108,7 +110,8 @@ unchanged and can still move pump and valve when real backends are connected.
 | Valve position 1/2 | High | Do not switch until COM/position mapping is verified |
 | Flush | High | Disabled by default; can move pump and valve when enabled |
 | Prior Z | High/invalid | COM7 is not present; do not use for current Z-stage |
-| Thorlabs/APT Z | Medium | Discovery-only; no enable/home/move/jog/poll/settings commands |
+| Thorlabs/APT passive discovery | Medium | Discovery-only helper still does not enable/home/move/jog/poll/settings |
+| PPC001 manual Z-scan | High | Manual GUI feature can poll, switch to ClosedLoop after confirmation, then requires a second explicit motion confirmation before moving the piezo; keep outside canonical experiment workflow |
 
 ## Validated Hardware Milestones
 

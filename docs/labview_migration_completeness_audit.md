@@ -131,6 +131,7 @@ The table classifies status in the current Python program, not just the raw
 | Z-stack | `Application.z_stack()` | Migrated but unsafe/obsolete with current Z hardware |
 | Thorlabs/APT Z discovery | `thorlabs_apt.py` | New Python discovery-only support, not LabVIEW equivalent |
 
+| PPC001 manual Z-scan calibration | `thorlabs_piezo.py`, `piezo_zscan.py`, Qt Z-Scan tab | New Python manual PPC001/Kinesis calibration-motion feature. It requires a dedicated motion authorization, is outside LabVIEW `RunExperiment2` equivalence, and is distinct from passive APT discovery. |
 ## C. Semantic Equivalence Assessment
 
 | Area | Equivalence assessment |
@@ -148,7 +149,7 @@ The table classifies status in the current Python program, not just the raw
 | Pump flow | Python has refill/empty/generate flow/set fill level/reference. Not validated for current one-pump hardware beyond discovery/readback. |
 | Flush order | Python now uses the LabVIEW-style combined `set_fill_level(level, flow_rate)` call for the first pump move, then waits, switches valve, waits, and updates the final fill level. Real semantics remain hardware-sensitive. |
 | Valve commands | Python opens COM resource and writes `P01`/`P02` with CR termination through `SerialTextCommandBackend`. The status query is protocol-derived and should still be treated cautiously until hardware-confirmed. |
-| Z-stage | Prior COM7 implementation maps LabVIEW Prior VIs, but current hardware is a Thorlabs/APT piezo controller. The migrated Prior path is not equivalent to current hardware. |
+| Z-stage | Prior COM7 implementation maps LabVIEW Prior VIs, but current hardware is a Thorlabs/PPC001 piezo controller using Kinesis. The migrated Prior path is not equivalent to current hardware. A separate manually authorized PPC001 Z-Scan calibration path exists in Python, but it is not part of the canonical `RunExperiment2` workflow or the passive APT discovery path. |
 | Save/metadata | Python saves TIFF frames and writes `data.tdms` with experiment/camera/image metadata. Exact field-by-field LabVIEW parity still requires review against real LabVIEW output files. |
 | Cleanup order | Python cleanup order is camera, pump, valve, Z motor, AD2. LabVIEW cleanup included these classes. Equivalence is broad, but pump cleanup calls stop and Qmix bus stop/close if real. |
 
@@ -230,8 +231,10 @@ Priority items:
 
 7. Z-stage replacement issue.
    - LabVIEW/Python Prior COM7 migration exists.
-   - Current hardware is Thorlabs/APT USB, serial `44533854`.
-   - Future motion work needs a separate Thorlabs/APT backend, not Prior COM7.
+   - Current hardware is Thorlabs/PPC001 USB, serial `44533854`.
+   - Manual PPC001 Z-scan calibration exists in Python as a separate Kinesis
+     GUI/CLI path. It requires explicit motion authorization even when already
+     ClosedLoop, and is not a LabVIEW `RunExperiment2` replacement or passive
 
 8. Save/metadata equivalence.
    - TIFF frame saving works.

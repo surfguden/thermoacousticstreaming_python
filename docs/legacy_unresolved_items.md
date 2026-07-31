@@ -14,11 +14,17 @@ confirmation, or a focused implementation task resolves them.
   does not enable, poll, home, jog, move, or configure it. The legacy Prior COM7
   path remains present for compatibility but is not valid for the currently
   connected Z-stage.
-- **Manual BPC piezo probe remains quarantined.**
-  `hardware_tests/test_bpc_piezo_probe.py` is a local manual hardware probe with
-  real action paths, including polling and a gated move/voltage-change command.
-  It is intentionally ignored by `.gitignore` and must not become part of
-  automated pytest collection without a separate review.
+- **Manual PPC001 Z-scan is integrated only as a manual calibration feature.**
+  The Qt Z-Scan tab can connect to the PPC001/PFM450(E), query live travel
+  range, optionally switch to ClosedLoop after explicit confirmation, and then
+  requires a separate explicit motion authorization before moving the piezo.
+  It is not part of the canonical `Application.run_experiment2()` experiment
+  sequence and should not be treated as automatic experiment Z motion or as
+  discovery-only support.
+- **Manual PPC001 piezo probe remains quarantined.**
+  `hardware_tests/manual_ppc001_piezo_probe.py` is a local manual hardware probe
+  with real action paths, including polling and a gated move/voltage-change
+  command. It is intentionally ignored by `.gitignore`, deliberately not named
 - **Qmix/pump real-motion semantics still need hardware confirmation.** The
   one-pump Qmix configuration is the current validated setup, and the UI now
   labels the flow-rate sign convention. Real pump flow, reference move,

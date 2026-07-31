@@ -26,15 +26,17 @@ main experiment program. No scripts have been created yet.
 - Cetoni/Qmix pump through the Qmix SDK Python wrapper and QmixElements project
   configuration.
 - MX Valve 2 through serial text commands over a COM/VISA-style resource.
-- Prior Z motor/stage through serial text commands over a COM/VISA-style
-  resource.
+- Current Z hardware through a Thorlabs PPC001/PFM450(E) precision-piezo path.
+  It uses the Kinesis USB API, not a generic serial-device backend. The old
+  Prior COM7 implementation is retained only as migration history.
 - A Reglo pump control data class and LabVIEW port references exist, but there
   is no real Reglo backend comparable to the Qmix backend in the current Python
   source.
 
 No direct Python control path was found for a laser, high-voltage amplifier,
-heater, NI-DAQmx device, or separate piezo/acoustic driver. Acoustic drive
-appears to be represented indirectly through the AD2 wavegen/digital-output
+heater, or NI-DAQmx device. The PPC001 precision-piezo path is a separate
+manual Z-Scan/calibration feature, not a canonical experiment actuator path.
+Acoustic drive appears to be represented indirectly through the AD2
 paths.
 
 ## Hardware-Related Files
@@ -152,9 +154,11 @@ semantics, and operator confirmation.
   - type: `APT Piezo Controller`
 - No controller was opened, no motor was enabled, no polling was started, and
   no motion, home, jog, identify, or settings commands were sent.
-- Future Z-stage integration should add a Thorlabs/APT/Kinesis piezo Z-stage
-  backend instead of trying to make the old Prior `COM7` backend work with the
-  new hardware.
+- The current application uses a separate PPC001 precision-piezo/Z-Scan path;
+  it remains a manually authorized calibration-motion path outside canonical
+  experiment motion. ClosedLoop mode is a prerequisite for accuracy, not an
+  authorization to move. Do not revive the old Prior `COM7` path for the new
+  hardware.
 
 ## Pump Hardware History
 

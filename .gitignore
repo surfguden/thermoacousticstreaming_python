@@ -54,9 +54,9 @@ desktop.ini
 .agents/
 .claude/
 
-# Local manual hardware probes that can issue real Thorlabs/BPC actions.
+# Local manual hardware probes that can issue real Thorlabs/PPC001 actions.
 # Keep out of the tracked automated test tree unless reviewed and renamed.
-hardware_tests/test_bpc_piezo_probe.py
+hardware_tests/manual_ppc001_piezo_probe.py
 
 # Real-hardware verification run artifacts (TIFF frames, TDMS files, dated
 # run folders) -- multiple prior sessions (piezo Z-scan Session 48, camera/

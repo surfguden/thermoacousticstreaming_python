@@ -783,14 +783,15 @@ def test_valve_initialize_raises_on_empty_status_response():
     assert not valve.initialized
 
 
-def test_valve_initialize_accepts_explicit_valid_status_response():
-    valve_backend = FakeTextBackend({"S": "2\r"})
+@pytest.mark.parametrize(("response", "position"), [("01\r", 1), ("2\r", 2), ("P02\r", 2)])
+def test_valve_initialize_accepts_explicit_valid_status_response(response, position):
+    valve_backend = FakeTextBackend({"S": response})
     valve = Valve(backend=valve_backend, visa_resource="COM6")
 
     valve.initialize()
 
     assert valve.initialized
-    assert valve.position == 2
+    assert valve.position == position
     assert valve.status_note == "confirmed"
 
 
@@ -818,6 +819,17 @@ def test_valve_initialize_rejects_unparseable_status_response():
 
     assert not valve.initialized
     assert "unverified" in valve.status_note
+@pytest.mark.parametrize("response", ["device=1\r", "foo2bar\r"])
+def test_valve_initialize_rejects_chatter_that_only_contains_a_position_digit(response):
+    valve = Valve(backend=FakeTextBackend({"S": response}), visa_resource="COM5")
+
+    with pytest.raises(Exception, match="unrecognized status"):
+        valve.initialize()
+
+    assert not valve.initialized
+    assert valve.status_note == f"unverified position response: {response.strip()!r}"
+
+
 
 
 def test_valve_wait_until_ready_polls_until_confirmed_and_is_bounded_when_busy():

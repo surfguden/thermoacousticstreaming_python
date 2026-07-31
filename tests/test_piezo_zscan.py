@@ -66,10 +66,15 @@ class FakeCamera:
         return np.zeros((4, 4), dtype=np.uint16)
 
 
-def make_scan(piezo=None, camera=None, confirm=None) -> tuple[ZScanCalibration, FakePiezo, FakeCamera]:
+def make_scan(piezo=None, camera=None, confirm=None, confirm_motion=lambda: True) -> tuple[ZScanCalibration, FakePiezo, FakeCamera]:
     piezo = piezo or FakePiezo()
     camera = camera or FakeCamera()
-    scan = ZScanCalibration(piezo=piezo, camera=camera, confirm_closed_loop_switch=confirm)
+    scan = ZScanCalibration(
+        piezo=piezo,
+        camera=camera,
+        confirm_closed_loop_switch=confirm,
+        confirm_motion=confirm_motion,
+    )
     return scan, piezo, camera
 
 
@@ -187,11 +192,38 @@ def test_already_closed_loop_never_invokes_confirmation_callback(tmp_path, monke
         raise AssertionError("confirm callback must not be invoked when already ClosedLoop")
 
     piezo = FakePiezo(mode="CloseLoop")
-    scan, _, _ = make_scan(piezo=piezo, confirm=confirm_should_never_be_called)
+    scan, _, _ = make_scan(
+        piezo=piezo,
+        confirm=confirm_should_never_be_called,
+        confirm_motion=lambda: True,
+    )
 
     scan.run(z_start_um=0.0, z_end_um=0.0, step_size_um=10.0, output_dir=tmp_path, exposure_ms=40.0)
 
     assert piezo.switch_to_closed_loop_calls == 0
+
+
+def test_closed_loop_still_requires_explicit_motion_authorization(tmp_path, monkeypatch):
+    monkeypatch.setattr(piezo_zscan.time, "sleep", lambda s: None)
+    piezo = FakePiezo(mode="CloseLoop")
+    scan, _, camera = make_scan(piezo=piezo, confirm_motion=None)
+
+    with pytest.raises(ZScanError, match="motion authorization"):
+        scan.run(z_start_um=0.0, z_end_um=10.0, step_size_um=10.0, output_dir=tmp_path, exposure_ms=40.0)
+
+    assert piezo.set_position_calls == []
+    assert camera.configure_exposure_time_calls == []
+
+
+def test_declined_motion_authorization_aborts_before_any_movement(tmp_path, monkeypatch):
+    monkeypatch.setattr(piezo_zscan.time, "sleep", lambda s: None)
+    piezo = FakePiezo(mode="CloseLoop")
+    scan, _, _ = make_scan(piezo=piezo, confirm_motion=lambda: False)
+
+    with pytest.raises(ZScanError, match="declined PPC001 motion authorization"):
+        scan.run(z_start_um=0.0, z_end_um=10.0, step_size_um=10.0, output_dir=tmp_path, exposure_ms=40.0)
+
+    assert piezo.set_position_calls == []
 
 
 def test_open_loop_with_confirmed_switch_proceeds(tmp_path, monkeypatch):
@@ -298,3 +330,20 @@ def test_scan_only_calls_piezo_and_camera_methods_no_other_hardware_touched(tmp_
 
     assert len(results) == 3
     assert camera.capture_snapshot_calls == 3
+
+
+def test_manual_ppc001_probe_is_quarantined_and_not_a_pytest_test():
+    repo_root = Path(__file__).resolve().parents[1]
+    gitignore = (repo_root / ".gitignore").read_text(encoding="utf-8")
+    assert "hardware_tests/manual_ppc001_piezo_probe.py" in gitignore
+    assert "hardware_tests/test_bpc_piezo_probe.py" not in gitignore
+
+    probe = repo_root / "hardware_tests" / "manual_ppc001_piezo_probe.py"
+    if not probe.exists():
+        return
+    assert not probe.name.startswith("test_")
+    source = probe.read_text(encoding="utf-8")
+    assert "Manual Thorlabs PPC001 Precision Piezo Controller probe" in source
+    assert "BPC303 Benchtop Piezo Controller probe" not in source
+    assert "historical" in source.lower()
+    assert "--confirm SEND" in source

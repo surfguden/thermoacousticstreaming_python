@@ -108,6 +108,11 @@ decision only the user can make).
   is Thorlabs/APT via the *separate*, unrelated piezo Z-scan calibration
   feature, Sessions 45-50). **Status: OPEN.**
 
+- **PPC001 Z-scan remains a manual Kinesis calibration-motion path, not a
+  discovery-only feature.** Passive `thorlabs_apt.py` discovery is separate.
+  Connecting or observing ClosedLoop mode does not itself authorize movement:
+  the Z-Scan GUI and CLI require a distinct affirmative motion authorization
+  before a calibration scan. **Status: ACTIVE MANUAL-ONLY SAFETY BOUNDARY.**
 ## Communication reliability gaps
 
 - **`SerialTextCommandBackend.query()` uses pyserial's `readline()`, which

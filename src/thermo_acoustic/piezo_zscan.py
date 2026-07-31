@@ -62,6 +62,12 @@ class ZScanCalibration:
     # fail instead" -- the safe default for a routine that might be called
     # non-interactively.
     confirm_closed_loop_switch: Callable[[], bool] | None = None
+    # ClosedLoop only establishes a position-control mode; it is never an
+    # authorization to move hardware. Every scan must receive a separate,
+    # affirmative motion authorization from its GUI or CLI caller. None is a
+    # fail-closed default so direct/non-interactive use cannot move merely
+    # because the controller was already in ClosedLoop.
+    confirm_motion: Callable[[], bool] | None = None
     # Optional cooperative-abort hook (Phase 4 UI integration): checked once
     # per position, before that position's own move/settle/capture -- an
     # in-flight position always finishes once started, matching this
@@ -89,6 +95,7 @@ class ZScanCalibration:
             raise ValueError(f"settle_delay_ms must be >= 0, got {settle_delay_ms}")
 
         self._ensure_closed_loop()
+        self._ensure_motion_authorized()
 
         # Explicit exposure_ms parameter, applied here rather than trusting
         # whatever the camera happens to be pre-configured to -- a
@@ -170,6 +177,15 @@ class ZScanCalibration:
             raise ZScanError("User declined to switch the piezo stage to ClosedLoop mode -- scan aborted.")
         self.piezo.switch_to_closed_loop()
 
+    def _ensure_motion_authorized(self) -> None:
+        if self.confirm_motion is None:
+            raise ZScanError(
+                "No explicit PPC001 motion authorization was provided -- refusing to start a Z-scan. "
+                "ClosedLoop mode alone does not authorize piezo movement."
+            )
+        if not self.confirm_motion():
+            raise ZScanError("User declined PPC001 motion authorization -- scan aborted before any movement.")
+
 
 def _print_step(message: str) -> None:
     print(f"[piezo-zscan] {message}", flush=True)
@@ -181,6 +197,12 @@ def _cli_confirm_closed_loop(piezo: Any) -> bool:
         f"Device is currently in {current_mode} mode. Z-scan requires ClosedLoop "
         "for position accuracy. Switch now? [y/n]"
     )
+    answer = input("> ").strip().lower()
+    return answer == "y"
+
+
+def _cli_confirm_motion() -> bool:
+    print("This will move the PPC001 piezo through the requested Z-scan range and capture images. Continue? [y/n]")
     answer = input("> ").strip().lower()
     return answer == "y"
 
@@ -217,6 +239,7 @@ def main(argv: list[str] | None = None) -> int:
         piezo=piezo,
         camera=camera,
         confirm_closed_loop_switch=lambda: _cli_confirm_closed_loop(piezo),
+        confirm_motion=_cli_confirm_motion,
     )
 
     try:

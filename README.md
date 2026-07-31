@@ -62,9 +62,10 @@ Hardware support currently works in three layers:
   The WFG and MSO tabs both use this path for real hardware. The MSO tab can
   capture CH1, CH2, or both channels, configure the AnalogIn trigger source,
   and plot captured traces with time and voltage axes.
-- Valve and Z-stage serial devices: real COM-port text command transport is
-  implemented with `pyserial` and is selected by clearing the relevant simulate
-  toggle or enabling the Z-stage.
+- Valve serial transport: real COM-port text command transport is implemented
+  with `pyserial` and is selected by clearing the valve's Simulate toggle. The
+  current Z hardware is a Thorlabs PPC001 controlled through the Kinesis USB
+  API; its manual calibration motion is not a generic serial-device path.
 - Hamamatsu camera and Cetoni/Qmix pump: real SDK backends are implemented in
   `thermo_acoustic.hamamatsu_dcam` and `thermo_acoustic.qmix_backend`, with
   simulator paths still available through the UI toggles. Real operation still
