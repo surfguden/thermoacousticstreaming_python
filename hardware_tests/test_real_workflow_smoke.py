@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 import os
 from pathlib import Path
+import shutil
 import sys
 import time
 
@@ -100,6 +101,36 @@ def print_value(label: str, value: object) -> None:
     print(f"  {label}: {value}", flush=True)
 
 
+def prune_old_run_dirs(output_dir: Path, prefix: str, keep_last: int) -> None:
+    """Delete the oldest timestamped run directories directly under
+    `output_dir` matching this script's own `{prefix}_YYYYMMDD_HHMMSS`
+    naming convention, keeping only the `keep_last - 1` most recent --
+    called right before a new run directory with the same prefix is
+    about to be created, so the total settles back to exactly
+    `keep_last` once that new one exists. Matches keep_last == 0 (no
+    pruning at all -- an operator explicitly opting out) and directories
+    that don't exist yet (nothing to prune on a first run). Only
+    directories starting with this exact `{prefix}_` are touched, so
+    pointing --output-dir at a folder shared across multiple modes only
+    prunes that mode's own history, never a different mode's runs.
+
+    Without this, hardware_tests/output/ silently regrows without bound
+    every real-hardware session -- found accumulated to 4.89 GB across
+    1,443 files before a cleanup pass, none of it ever pruned by
+    anything (Session 58's disk-cleanup investigation).
+    """
+    if keep_last <= 0 or not output_dir.exists():
+        return
+    candidates = sorted(
+        (path for path in output_dir.iterdir() if path.is_dir() and path.name.startswith(f"{prefix}_")),
+        key=lambda path: path.name,
+    )
+    excess = len(candidates) - (keep_last - 1)
+    for old_dir in candidates[:excess]:
+        print_step(f"pruning old run directory (--keep-last {keep_last}): {old_dir}")
+        shutil.rmtree(old_dir, ignore_errors=True)
+
+
 def real_camera_only_plan() -> SmokePlan:
     defaults = default_hardware_config()
     return SmokePlan(
@@ -119,7 +150,7 @@ def real_camera_only_plan() -> SmokePlan:
             valve_enabled=False,
             sim_valve=True,
             z_enabled=False,
-            prior_resource=defaults.z_stage.prior_resource,
+            thorlabs_apt_serial=defaults.z_stage.thorlabs_apt_serial,
             valve_resource="COM6",
             cetoni_config_path=defaults.qmix.config_path,
         ),
@@ -147,7 +178,7 @@ def real_camera_real_ad2_low_risk_plan() -> SmokePlan:
             valve_enabled=False,
             sim_valve=True,
             z_enabled=False,
-            prior_resource=defaults.z_stage.prior_resource,
+            thorlabs_apt_serial=defaults.z_stage.thorlabs_apt_serial,
             valve_resource="COM6",
             cetoni_config_path=defaults.qmix.config_path,
         ),
@@ -176,7 +207,7 @@ def real_camera_real_ad2_acoustic_short_plan() -> SmokePlan:
             valve_enabled=False,
             sim_valve=True,
             z_enabled=False,
-            prior_resource=defaults.z_stage.prior_resource,
+            thorlabs_apt_serial=defaults.z_stage.thorlabs_apt_serial,
             valve_resource="COM6",
             cetoni_config_path=defaults.qmix.config_path,
         ),
@@ -205,7 +236,7 @@ def real_camera_led_trigger_check_plan() -> SmokePlan:
             valve_enabled=False,
             sim_valve=True,
             z_enabled=False,
-            prior_resource=defaults.z_stage.prior_resource,
+            thorlabs_apt_serial=defaults.z_stage.thorlabs_apt_serial,
             valve_resource="COM6",
             cetoni_config_path=defaults.qmix.config_path,
         ),
@@ -235,7 +266,7 @@ def real_full_workflow_short_plan(valve_port: str, *, flush_enabled: bool = Fals
             valve_enabled=True,
             sim_valve=False,
             z_enabled=False,
-            prior_resource=defaults.z_stage.prior_resource,
+            thorlabs_apt_serial=defaults.z_stage.thorlabs_apt_serial,
             valve_resource=valve_port,
             cetoni_config_path=defaults.qmix.config_path,
         ),
@@ -1319,6 +1350,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ad2-timing-plan", action="store_true", help="Print low-risk AD2 timing verification sequence without touching hardware.")
     parser.add_argument("--led-trigger-plan", action="store_true", help="Print the real camera + AD2 green-wire LED trigger check plan without touching hardware.")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "hardware_tests" / "_smoke_output")
+    parser.add_argument(
+        "--keep-last",
+        type=int,
+        default=4,
+        help=(
+            "Before a new run directory is created under --output-dir, prune older "
+            "same-mode run directories so at most this many (including the new one) "
+            "remain. 0 disables pruning entirely. Default: 4."
+        ),
+    )
     parser.add_argument("--frames", type=int, default=None)
     parser.add_argument("--exposure-ms", type=float, default=None)
     parser.add_argument("--device-index", type=int, default=0, help="WaveForms device index for real AD2 smoke modes. Default: 0.")
@@ -1395,6 +1436,7 @@ def main() -> int:
     if args.real_camera_real_ad2_low_risk:
         if args.confirm != CONFIRM_TEXT:
             raise SystemExit(f"This mode requires --confirm {CONFIRM_TEXT}")
+        prune_old_run_dirs(args.output_dir, "camera_ad2_lowrisk", args.keep_last)
         run_real_camera_real_ad2_low_risk(
             args.output_dir,
             args.frames,
@@ -1409,6 +1451,7 @@ def main() -> int:
             raise SystemExit(f"This mode requires --confirm {CONFIRM_TEXT}")
         if not args.acknowledge_timing_uncertain:
             raise SystemExit(TIMING_UNCERTAIN_REFUSAL)
+        prune_old_run_dirs(args.output_dir, "camera_ad2_acoustic_short", args.keep_last)
         run_real_camera_real_ad2_acoustic_short(
             args.output_dir,
             args.frames,
@@ -1424,6 +1467,7 @@ def main() -> int:
             raise SystemExit(f"This mode requires --confirm {CONFIRM_TEXT}")
         if not args.acknowledge_timing_uncertain:
             raise SystemExit(TIMING_UNCERTAIN_REFUSAL)
+        prune_old_run_dirs(args.output_dir, "led_trigger_check", args.keep_last)
         run_real_camera_led_trigger_check(
             args.output_dir,
             args.frames,
@@ -1445,6 +1489,7 @@ def main() -> int:
             raise SystemExit("This mode requires explicit --valve-port COM5 or COM6")
         if args.flush_enabled and not args.acknowledge_pump_valve_real:
             raise SystemExit(PUMP_VALVE_REAL_REFUSAL)
+        prune_old_run_dirs(args.output_dir, "full_workflow_short", args.keep_last)
         run_real_full_workflow_short(
             args.output_dir,
             args.frames,
@@ -1460,6 +1505,7 @@ def main() -> int:
         return 0
     if args.real_camera_only:
         require_confirmation_if_needed(plan, args.confirm)
+        prune_old_run_dirs(args.output_dir, "real_camera_only", args.keep_last)
         run_real_camera_only(args.output_dir, args.frames, args.exposure_ms, args.preset, args.apply_roi)
         return 0
 

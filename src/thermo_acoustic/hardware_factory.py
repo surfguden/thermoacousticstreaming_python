@@ -7,8 +7,10 @@ from typing import Any
 
 from .hamamatsu_dcam import HamamatsuDcamBackend
 from .hardware_config import default_hardware_config
-from .instruments import AD2Sdk, CetoniPump, HamamatsuCamera, PriorZMotor, SerialTextCommandBackend, SimulatedAD2Sdk, Valve
+from .instruments import AD2Sdk, CetoniPump, HamamatsuCamera, SerialTextCommandBackend, SimulatedAD2Sdk, Valve, ZStage
 from .qmix_backend import QmixPumpBackend
+from .tec import MeerstetterTecBackend, SimulatedTecBackend, TecController
+from .thorlabs_piezo import PiezoStage
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,9 +24,16 @@ class HardwareRuntimeConfig:
     valve_enabled: bool
     sim_valve: bool
     z_enabled: bool
-    prior_resource: str
+    # Real Thorlabs piezo device serial (thorlabs_piezo.PiezoStage connects
+    # by serial number, not a COM port) -- replaces the legacy prior_resource
+    # ('COM7', a port that never existed on this lab's hardware and was
+    # never actually the real piezo; see pending_feedback.md item 4/5).
+    thorlabs_apt_serial: str
     valve_resource: str
     cetoni_config_path: str | Path
+    tec_enabled: bool = False
+    sim_tec: bool = True
+    tec_port: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,7 +42,8 @@ class HardwareBundle:
     camera: HamamatsuCamera
     pump: CetoniPump
     valve: Valve
-    z_motor: PriorZMotor
+    z_motor: ZStage
+    tec: TecController
 
 
 def _ensure_qmixsdk_env() -> None:
@@ -70,14 +80,18 @@ def build_hardware_bundle(config: HardwareRuntimeConfig) -> HardwareBundle:
         enabled=config.valve_enabled,
         simulate=config.sim_valve,
         visa_resource=config.valve_resource,
-        backend=None if config.sim_valve else SerialTextCommandBackend(),
+        backend=None if config.sim_valve else SerialTextCommandBackend(device_name="valve"),
     )
-    z_motor = PriorZMotor(
+    z_motor = ZStage(
         enabled=config.z_enabled,
-        visa_resource=config.prior_resource,
-        backend=None if not config.z_enabled else SerialTextCommandBackend(),
+        stage=PiezoStage(serial_number=config.thorlabs_apt_serial),
     )
-    return HardwareBundle(ad2=ad2, camera=camera, pump=pump, valve=valve, z_motor=z_motor)
+    tec = TecController(
+        enabled=config.tec_enabled,
+        simulate=config.sim_tec,
+        backend=SimulatedTecBackend() if config.sim_tec else MeerstetterTecBackend(port=config.tec_port or None),
+    )
+    return HardwareBundle(ad2=ad2, camera=camera, pump=pump, valve=valve, z_motor=z_motor, tec=tec)
 
 
 def apply_hardware_bundle(app: Any, bundle: HardwareBundle) -> None:
@@ -85,4 +99,5 @@ def apply_hardware_bundle(app: Any, bundle: HardwareBundle) -> None:
     app.set_hamamatsu(bundle.camera)
     app.set_cetoni_pump(bundle.pump)
     app.set_valve(bundle.valve)
-    app.set_prior_zmotor(bundle.z_motor)
+    app.set_z_stage(bundle.z_motor)
+    app.set_tec_controller(bundle.tec)

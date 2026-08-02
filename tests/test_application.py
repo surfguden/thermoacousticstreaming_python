@@ -38,7 +38,16 @@ from thermo_acoustic.imaq import (
     imaq_write_bmp_file_2,
     imaq_write_png_file_2,
 )
-from thermo_acoustic.instruments import AD2Sdk, CetoniPump, HamamatsuCamera, PriorZMotor, RegloPumpControl, SimulatedAD2Sdk, Valve
+from thermo_acoustic.instruments import (
+    AD2Sdk,
+    AD2SdkError,
+    CetoniPump,
+    HamamatsuCamera,
+    RegloPumpControl,
+    SimulatedAD2Sdk,
+    Valve,
+    ZStage,
+)
 from thermo_acoustic.messages import Message, MessageName
 from thermo_acoustic.qmix_backend import (
     MAX_SYRINGE_INNER_DIAMETER_MM,
@@ -54,6 +63,7 @@ from thermo_acoustic.serial_config import (
     visa_configure_serial_port_instr,
     visa_configure_serial_port_serial_instr,
 )
+from thermo_acoustic.thorlabs_piezo import PiezoStage
 from thermo_acoustic.utilities import (
     DialogType,
     DialogTypeEnum,
@@ -96,7 +106,7 @@ from thermo_acoustic.utilities import (
     trim_whitespace,
     trim_whitespace_one_sided,
 )
-from thermo_acoustic.waveforms import WaveFormsBackend
+from thermo_acoustic.waveforms import WaveFormsBackend, WaveFormsError
 from thermo_acoustic.workflows import Experiment2, ExperimentSeries2, FlushSettings
 
 
@@ -372,6 +382,42 @@ def test_flush_sets_valve_and_status():
     assert app.status == "FlushComplete"
 
 
+def test_flush_stops_before_pump_move_when_first_valve_position_is_not_ready(monkeypatch):
+    app = Application()
+    app.pump.fill_level = 60.0
+    pump_moves = []
+    monkeypatch.setattr(Valve, "wait_until_ready", lambda self, timeout_s=1.0: False)
+    monkeypatch.setattr(CetoniPump, "set_fill_level", lambda self, fill_level, flow_rate=None: pump_moves.append((fill_level, flow_rate)))
+
+    ok = app.flush(FlushSettings(flush_flowrate=10.0, flush_volume_ml=6.0, wait_after_flush_s=0.0))
+
+    assert not ok
+    assert app.valve.position == 1
+    assert pump_moves == []
+    assert app.status == "FlushValvePosition1NotReady"
+
+
+def test_flush_stops_before_final_pump_move_when_second_valve_position_is_not_ready(monkeypatch):
+    app = Application()
+    app.pump.fill_level = 60.0
+    pump_moves = []
+    readiness = iter((True, False))
+    monkeypatch.setattr(Valve, "wait_until_ready", lambda self, timeout_s=1.0: next(readiness))
+
+    def set_fill_level(self, fill_level, flow_rate=None):
+        pump_moves.append((fill_level, flow_rate))
+        self.fill_level = fill_level
+
+    monkeypatch.setattr(CetoniPump, "set_fill_level", set_fill_level)
+
+    ok = app.flush(FlushSettings(flush_flowrate=10.0, flush_volume_ml=6.0, wait_after_flush_s=0.0))
+
+    assert not ok
+    assert app.valve.position == 2
+    assert pump_moves == [(54.0, 10.0)]
+    assert app.status == "FlushValvePosition2NotReady"
+
+
 def test_flush_rejects_volume_exceeding_current_fill_level():
     # Regression test found by an end-to-end simulated dry-run verification
     # pass (not a unit test written against a hand-primed happy-path state):
@@ -408,6 +454,151 @@ def test_flush_accepts_volume_exactly_at_current_fill_level():
     assert app.pump.fill_level == pytest.approx(0.0)
 
 
+class _FakePumpBackendWithRealFillLevel:
+    """A real backend is attached but wait_for_pump() will report the move
+    never completed -- read_fill_level() stands in for what the real device
+    would report if it only partially moved (or didn't move at all)."""
+
+    def __init__(self, real_fill_level: float):
+        self.real_fill_level = real_fill_level
+
+    def set_fill_level(self, fill_level, flow_rate=None):
+        pass
+
+    def refill(self):
+        pass
+
+    def empty(self):
+        pass
+
+    def read_fill_level(self) -> float:
+        return self.real_fill_level
+
+
+def test_flush_resyncs_fill_level_from_real_hardware_when_wait_for_pump_times_out(monkeypatch):
+    # H1 (instruments.py line-by-line review): set_fill_level() updates
+    # self.pump.fill_level optimistically, to the requested target, before
+    # the real pump confirms it got there. Previously, if wait_for_pump()
+    # timed out, nothing re-synced fill_level from real hardware -- it was
+    # silently left at the unconfirmed target (54.0 here), not the real,
+    # possibly-different value (57.3 here) the backend actually reports.
+    app = Application()
+    app.pump.fill_level = 60.0
+    app.pump.backend = _FakePumpBackendWithRealFillLevel(real_fill_level=57.3)
+    monkeypatch.setattr(Application, "wait_for_pump", lambda self, timeout_s: False)
+
+    ok = app.flush(FlushSettings(flush_flowrate=10.0, flush_volume_ml=6.0, wait_after_flush_s=0.0))
+
+    assert not ok
+    assert app.pump.fill_level == pytest.approx(57.3), (
+        "must be re-synced from the real backend, not left at the optimistic "
+        "target (54.0) set_fill_level() assigned before the timeout"
+    )
+
+
+# H1 (qmix_backend.py line-by-line review): Application.refill()/empty()
+# now wrap CetoniPump.refill()/empty() with the same wait_for_pump()/
+# resync architecture flush() already uses -- mirrors the flush tests above.
+def test_application_refill_waits_for_completion_and_ends_with_accurate_fill_level(monkeypatch):
+    app = Application()
+    app.pump.fill_level = 0.2
+    app.pump.max_volume_ml = 1.0
+    app.pump.backend = _FakePumpBackendWithRealFillLevel(real_fill_level=1.0)
+    monkeypatch.setattr(Application, "wait_for_pump", lambda self, timeout_s: True)
+
+    ok = app.refill()
+
+    assert ok
+    assert app.pump.fill_level == pytest.approx(1.0)
+    assert app.status == "RefillComplete"
+
+
+def test_application_refill_resyncs_fill_level_from_real_hardware_when_wait_for_pump_times_out(monkeypatch):
+    # Without this fix, CetoniPump.refill()'s own internal sync (which runs
+    # immediately after issuing the async move, before any wait) would leave
+    # fill_level at whatever premature value the pump happened to report at
+    # that instant -- not the value actually confirmed once the wait ends.
+    app = Application()
+    app.pump.fill_level = 0.2
+    app.pump.max_volume_ml = 1.0
+    app.pump.backend = _FakePumpBackendWithRealFillLevel(real_fill_level=0.63)
+    monkeypatch.setattr(Application, "wait_for_pump", lambda self, timeout_s: False)
+
+    ok = app.refill()
+
+    assert not ok
+    assert app.pump.fill_level == pytest.approx(0.63), (
+        "must reflect the real backend's current reading, not the "
+        "optimistic max_volume_ml target refill() is aiming for"
+    )
+    assert app.status == "RefillTimedOut"
+
+
+def test_application_empty_waits_for_completion_and_ends_with_accurate_fill_level(monkeypatch):
+    app = Application()
+    app.pump.fill_level = 0.8
+    app.pump.backend = _FakePumpBackendWithRealFillLevel(real_fill_level=0.0)
+    monkeypatch.setattr(Application, "wait_for_pump", lambda self, timeout_s: True)
+
+    ok = app.empty()
+
+    assert ok
+    assert app.pump.fill_level == pytest.approx(0.0)
+    assert app.status == "EmptyComplete"
+
+
+def test_application_empty_resyncs_fill_level_from_real_hardware_when_wait_for_pump_times_out(monkeypatch):
+    app = Application()
+    app.pump.fill_level = 0.8
+    app.pump.backend = _FakePumpBackendWithRealFillLevel(real_fill_level=0.31)
+    monkeypatch.setattr(Application, "wait_for_pump", lambda self, timeout_s: False)
+
+    ok = app.empty()
+
+    assert not ok
+    assert app.pump.fill_level == pytest.approx(0.31), (
+        "must reflect the real backend's current reading, not the "
+        "optimistic 0.0 target empty() is aiming for"
+    )
+    assert app.status == "EmptyTimedOut"
+
+
+# Finding 1 (qt_ui.py/qt_ui_v2.py targeted UI audit, 2026-07-31):
+# Application.go_to_level() wraps CetoniPump.set_fill_level() with the same
+# wait_for_pump()/resync architecture refill()/empty() already use -- mirrors
+# the refill()/empty() tests above.
+def test_application_go_to_level_waits_for_completion_and_ends_with_accurate_fill_level(monkeypatch):
+    app = Application()
+    app.pump.fill_level = 0.2
+    app.pump.backend = _FakePumpBackendWithRealFillLevel(real_fill_level=0.55)
+    monkeypatch.setattr(Application, "wait_for_pump", lambda self, timeout_s: True)
+
+    ok = app.go_to_level(0.55, 10.0)
+
+    assert ok
+    assert app.pump.fill_level == pytest.approx(0.55)
+    assert app.status == "GoToLevelComplete"
+
+
+def test_application_go_to_level_resyncs_fill_level_from_real_hardware_when_wait_for_pump_times_out(monkeypatch):
+    # Without this fix, set_fill_level()'s own optimistic assignment (to the
+    # requested target, 0.55 here) would be left uncorrected after a timeout
+    # -- not re-synced to the real backend's current reading (0.4 here).
+    app = Application()
+    app.pump.fill_level = 0.2
+    app.pump.backend = _FakePumpBackendWithRealFillLevel(real_fill_level=0.4)
+    monkeypatch.setattr(Application, "wait_for_pump", lambda self, timeout_s: False)
+
+    ok = app.go_to_level(0.55, 10.0)
+
+    assert not ok
+    assert app.pump.fill_level == pytest.approx(0.4), (
+        "must reflect the real backend's current reading, not the "
+        "optimistic 0.55 target go_to_level() is aiming for"
+    )
+    assert app.status == "GoToLevelTimedOut"
+
+
 def test_flush_settings_timeout_converts_ul_per_minute_to_seconds():
     # Real-hardware regression: this exact combination (0.05 ml / 200 uL/min)
     # was declared a flush failure after ~5.25s on a real Qmix pump that was
@@ -432,21 +623,21 @@ def test_application_instrument_accessors():
     camera = HamamatsuCamera()
     pump = CetoniPump()
     valve = Valve()
-    z_motor = PriorZMotor()
+    z_motor = ZStage()
     series = ExperimentSeries2()
 
     app.set_ad2_sdk(ad2)
     app.set_hamamatsu(camera)
     app.set_cetoni_pump(pump)
     app.set_valve(valve)
-    app.set_prior_zmotor(z_motor)
+    app.set_z_stage(z_motor)
     app.set_experiment_series_general(series)
 
     assert app.get_ad2_sdk() is ad2
     assert app.get_hamamatsu() is camera
     assert app.get_cetoni_pump() is pump
     assert app.get_valve() is valve
-    assert app.get_prior_zmotor() is z_motor
+    assert app.get_z_stage() is z_motor
     assert app.get_experiment_series_general() is series
 
 
@@ -495,7 +686,7 @@ def test_cleanup_times_out_blocked_device_and_continues_to_later_devices():
     assert ("ad2", "cleanup") in calls
 
 
-def test_application_error_handlers_and_z_stack():
+def test_application_error_handlers():
     app = Application(ad2=SimulatedAD2Sdk())
 
     assert not app.check_loop_error()
@@ -507,13 +698,6 @@ def test_application_error_handlers_and_z_stack():
     assert app.status == "MainLoopError"
     assert app.stop_fired
     assert len(app.errors) == 2
-
-    app = Application(ad2=SimulatedAD2Sdk())
-    images = app.z_stack([0.0, 1.5, 3.0], exposure_ms=7.5)
-    assert len(images) == 3
-    assert app.camera.exposure_ms == 7.5
-    assert app.z_motor.position == 3.0
-    assert app.status == "ZStackComplete"
 
 
 def test_run_experiment2_processes_one_experiment(tmp_path, monkeypatch):
@@ -576,6 +760,48 @@ def test_run_experiment2_records_real_wfg_clamping_in_final_tdms(tmp_path, monke
     )
 
 
+def test_run_experiment2_records_real_wfg_clamping_in_final_tdms_when_wfg_config_is_a_dict(tmp_path, monkeypatch):
+    # Finding 1 regression test (application.py review, Session 67): the
+    # test above proves the re-snapshot mechanism works when
+    # experiment.wfg_config is a typed WfgConfig -- this proves it also
+    # works when it's a dict, the OTHER type Experiment2.wfg_config's own
+    # annotation documents as valid (and hardware_tests/
+    # test_real_workflow_smoke.py actually uses in real-hardware runs).
+    # coerce_wfg_config() returns a brand-new, disconnected WfgConfig when
+    # given a dict, so without the fix, WaveFormsBackend.configure_wfg()'s
+    # real clamping would land on an object experiment.wfg_config never
+    # sees again, and the second save_settings() call would keep reading
+    # the untouched original dict's pre-configure defaults.
+    writes = install_fake_nptdms(monkeypatch)
+    fake_dwf = FakeAD2ConfigureDwf(frequency_range=(10.0, 1_000_000.0), amplitude_range=(-5.0, 5.0))
+    ad2 = AD2Sdk(backend=WaveFormsBackend(dwf=fake_dwf), device_handle=123)
+    app = Application(ad2=ad2)
+    app.pump.fill_level = 1.0
+    experiment = Experiment2(
+        experiment_folder=tmp_path / "experiment-clamped-dict",
+        wfg_config={"frequency_hz": 1000.0, "amplitude_v": 10.0},
+    )
+    app.experiment_series.enqueue_experiments([experiment])
+
+    ok = app.run_experiment2()
+
+    assert ok
+    assert isinstance(experiment.wfg_config, WfgConfig), (
+        "run_experiment2() must replace the dict with the confirmed, clamped WfgConfig"
+    )
+    assert experiment.wfg_config.channels[0].out_of_range is True, (
+        "sanity check: the fake device range must actually force a clamp"
+    )
+    tdms_path = tmp_path / "experiment-clamped-dict" / "data.tdms"
+    objects = writes[str(tdms_path)]
+    experiment_group = next(item for item in objects if getattr(item, "kind", "") == "group" and item.name == "Experiment")
+    assert experiment_group.properties["WFGOutOfRangeCh1"] is True, (
+        "the FINAL data.tdms written for this repeat must reflect the real clamping that just "
+        "happened during config_wfg(), even though experiment.wfg_config started out as a dict "
+        "-- not the pre-configure default from a disconnected coerced copy"
+    )
+
+
 def test_run_experiment2_records_simulated_vs_real_instruments_in_final_tdms(tmp_path, monkeypatch):
     # Finding B regression test: without this fix, data.tdms carried no
     # SimAD2/SimCamera/SimPump/SimValve fields at all -- a simulated dry-run
@@ -602,6 +828,181 @@ def test_run_experiment2_records_simulated_vs_real_instruments_in_final_tdms(tmp
     assert properties["SimCamera"] is True
     assert properties["SimPump"] is True
     assert properties["SimValve"] is True
+    # Part 3 (enabled-state recording): AD2 was genuinely disabled for this
+    # run, distinct from "simulated" -- SimAD2 alone can't tell these apart.
+    assert properties["AD2Enabled"] is False
+    assert properties["CameraEnabled"] is True
+    assert properties["PumpEnabled"] is True
+    assert properties["ValveEnabled"] is True
+
+
+class _PoisonBackend:
+    """Raises on any attribute access -- proves a disabled instrument's
+    per-step methods never reach real hardware at all, not just that they
+    happen to no-op safely. Full-project audit finding (2026-07-31):
+    previously AD2Sdk silently no-op'd when disabled (and falsely reported
+    success), while Camera/Pump/Valve would actually attempt real hardware
+    calls despite being marked disabled -- neither behavior is exercised
+    here, since after the orchestrator fix none of these methods should be
+    reached at all."""
+
+    def __getattr__(self, name):
+        raise AssertionError(f"disabled instrument's backend must not be touched (attempted: {name!r})")
+
+
+def test_run_experiment2_skips_disabled_ad2_steps_without_touching_backend(tmp_path, monkeypatch):
+    writes = install_fake_nptdms(monkeypatch)
+    app = Application(ad2=AD2Sdk(enabled=False, backend=_PoisonBackend()))
+    experiment = Experiment2(experiment_folder=tmp_path / "experiment-ad2-disabled")
+    app.experiment_series.enqueue_experiments([experiment])
+
+    ok = app.run_experiment2()
+
+    assert ok
+    assert app.ad2.triggered is False, "pc_trigger() must not have run at all, not even a no-op success"
+    tdms_path = tmp_path / "experiment-ad2-disabled" / "data.tdms"
+    objects = writes[str(tdms_path)]
+    experiment_group = next(item for item in objects if getattr(item, "kind", "") == "group" and item.name == "Experiment")
+    assert experiment_group.properties["AD2Enabled"] is False
+
+
+def test_run_experiment2_skips_disabled_camera_steps_without_touching_backend(tmp_path, monkeypatch):
+    writes = install_fake_nptdms(monkeypatch)
+    app = Application(camera=HamamatsuCamera(enabled=False, simulate=False, backend=_PoisonBackend()))
+    experiment = Experiment2(experiment_folder=tmp_path / "experiment-camera-disabled")
+    app.experiment_series.enqueue_experiments([experiment])
+
+    ok = app.run_experiment2()
+
+    assert ok
+    assert app.camera.capturing is False
+    tdms_path = tmp_path / "experiment-camera-disabled" / "data.tdms"
+    objects = writes[str(tdms_path)]
+    experiment_group = next(item for item in objects if getattr(item, "kind", "") == "group" and item.name == "Experiment")
+    assert experiment_group.properties["CameraEnabled"] is False
+
+
+def test_run_experiment2_skips_flush_when_pump_disabled_without_touching_backend(tmp_path, monkeypatch):
+    writes = install_fake_nptdms(monkeypatch)
+    # ad2=SimulatedAD2Sdk() explicitly -- Application's default AD2Sdk() is
+    # real and enabled=True, which would otherwise try to open a real AD2
+    # device here (unrelated to what this test is checking).
+    app = Application(
+        ad2=SimulatedAD2Sdk(), pump=CetoniPump(enabled=False, simulate=False, backend=_PoisonBackend())
+    )
+    experiment = Experiment2(
+        experiment_folder=tmp_path / "experiment-pump-disabled",
+        flush_enabled=True,
+        flush_settings=FlushSettings(flush_flowrate=10.0, flush_volume_ml=0.1, wait_after_flush_s=0.0),
+    )
+    app.experiment_series.enqueue_experiments([experiment])
+
+    ok = app.run_experiment2()
+
+    assert ok, "flush must be skipped, not attempted -- attempting it against a disabled pump would be the bug"
+    tdms_path = tmp_path / "experiment-pump-disabled" / "data.tdms"
+    objects = writes[str(tdms_path)]
+    experiment_group = next(item for item in objects if getattr(item, "kind", "") == "group" and item.name == "Experiment")
+    properties = experiment_group.properties
+    assert properties["PumpEnabled"] is False
+    assert properties["FlushCompleted"] == "", "flush was skipped, not attempted -- must not read as completed or failed"
+
+
+def test_run_experiment2_skips_flush_when_valve_disabled_without_touching_backend(tmp_path, monkeypatch):
+    writes = install_fake_nptdms(monkeypatch)
+    app = Application(
+        ad2=SimulatedAD2Sdk(), valve=Valve(enabled=False, simulate=False, backend=_PoisonBackend())
+    )
+    experiment = Experiment2(
+        experiment_folder=tmp_path / "experiment-valve-disabled",
+        flush_enabled=True,
+        flush_settings=FlushSettings(flush_flowrate=10.0, flush_volume_ml=0.1, wait_after_flush_s=0.0),
+    )
+    app.experiment_series.enqueue_experiments([experiment])
+
+    ok = app.run_experiment2()
+
+    assert ok
+    tdms_path = tmp_path / "experiment-valve-disabled" / "data.tdms"
+    objects = writes[str(tdms_path)]
+    experiment_group = next(item for item in objects if getattr(item, "kind", "") == "group" and item.name == "Experiment")
+    properties = experiment_group.properties
+    assert properties["ValveEnabled"] is False
+    assert properties["FlushCompleted"] == ""
+
+
+def test_ad2sdk_pc_trigger_raises_instead_of_silently_succeeding_when_disabled():
+    ad2 = AD2Sdk(enabled=False, backend=_PoisonBackend())
+    with pytest.raises(AD2SdkError):
+        ad2.pc_trigger()
+    assert ad2.triggered is False
+
+
+def test_ad2sdk_config_wfg_raises_instead_of_silently_succeeding_when_disabled():
+    ad2 = AD2Sdk(enabled=False, backend=_PoisonBackend())
+    with pytest.raises(AD2SdkError):
+        ad2.config_wfg(WfgConfig())
+
+
+def test_ad2sdk_config_do_clock_special_raises_instead_of_silently_succeeding_when_disabled():
+    ad2 = AD2Sdk(enabled=False, backend=_PoisonBackend())
+    with pytest.raises(AD2SdkError):
+        ad2.config_do_clock_special(DoConfig())
+
+
+# M3 (instruments.py line-by-line review): the same silent-no-op pattern
+# pc_trigger()/config_wfg()/config_do_clock_special() had (fixed above) was
+# also present in these 8 methods -- extended to all of them.
+def test_ad2sdk_wfg_configure_raises_instead_of_silently_succeeding_when_disabled():
+    ad2 = AD2Sdk(enabled=False, backend=_PoisonBackend())
+    with pytest.raises(AD2SdkError):
+        ad2.wfg_configure(WfgConfig())
+
+
+def test_ad2sdk_wfg_start_stop_all_ch_raises_instead_of_silently_succeeding_when_disabled():
+    ad2 = AD2Sdk(enabled=False, backend=_PoisonBackend())
+    with pytest.raises(AD2SdkError):
+        ad2.wfg_start_stop_all_ch(True)
+
+
+def test_ad2sdk_config_do_custom_raises_instead_of_silently_succeeding_when_disabled():
+    ad2 = AD2Sdk(enabled=False, backend=_PoisonBackend())
+    with pytest.raises(AD2SdkError):
+        ad2.config_do_custom(DoConfig())
+
+
+def test_ad2sdk_do_configure_raises_instead_of_silently_succeeding_when_disabled():
+    ad2 = AD2Sdk(enabled=False, backend=_PoisonBackend())
+    with pytest.raises(AD2SdkError):
+        ad2.do_configure(DoConfig())
+
+
+def test_ad2sdk_do_reset_raises_instead_of_silently_succeeding_when_disabled():
+    ad2 = AD2Sdk(enabled=False, backend=_PoisonBackend())
+    with pytest.raises(AD2SdkError):
+        ad2.do_reset()
+
+
+def test_ad2sdk_start_stop_do_raises_instead_of_silently_succeeding_when_disabled():
+    ad2 = AD2Sdk(enabled=False, backend=_PoisonBackend())
+    with pytest.raises(AD2SdkError):
+        ad2.start_stop_do(True)
+
+
+def test_ad2sdk_capture_scope_raises_instead_of_silently_returning_empty_when_disabled():
+    # Highest-value fix in this set: capture_scope()/capture_scope_channels()
+    # are live and manually reachable (qt_ui.py's MSO tab), and previously
+    # returned misleadingly-empty data with zero indication AD2 was disabled
+    # rather than a real capture genuinely returning zero samples.
+    ad2 = AD2Sdk(enabled=False, backend=_PoisonBackend())
+    with pytest.raises(AD2SdkError):
+        ad2.capture_scope()
+
+
+def test_ad2sdk_capture_scope_channels_raises_instead_of_silently_returning_empty_when_disabled():
+    ad2 = AD2Sdk(enabled=False, backend=_PoisonBackend())
+    with pytest.raises(AD2SdkError):
+        ad2.capture_scope_channels(channel_indices=[0, 1])
 
 
 def test_run_experiment2_records_flush_failure_in_final_tdms(tmp_path, monkeypatch):
@@ -704,13 +1105,11 @@ def test_stateful_instrument_methods():
     valve.cleanup()
     assert not valve.initialized
 
-    z_motor = PriorZMotor()
+    z_motor = ZStage(enabled=False)
     z_motor.initialize()
-    z_motor.go_to_abs_pos(12.3)
-    assert z_motor.read_position() == 12.3
-    assert not z_motor.read_movement()
-    z_motor.zero_pos()
-    assert z_motor.read_position() == 0.0
+    assert z_motor.status_note == ""
+    z_motor.cleanup()
+    assert z_motor.status_note == ""
 
     camera = HamamatsuCamera(simulate=True)
     camera.initialize()
@@ -769,6 +1168,30 @@ def test_valve_and_prior_backend_commands():
     ]
 
 
+class _FakeTextBackendThatRaisesOnWrite:
+    def write(self, command):
+        raise RuntimeError("simulated serial write failure")
+
+    def query(self, command):
+        raise AssertionError("not used in this test")
+
+    def close(self):
+        pass
+
+
+def test_valve_set_position_does_not_update_position_when_write_raises():
+    # M2 (instruments.py line-by-line review): self.position was previously
+    # assigned before backend.write() -- a raised exception left self.position
+    # claiming a move that was never actually sent to the real valve.
+    valve = Valve(backend=_FakeTextBackendThatRaisesOnWrite())
+    assert valve.position == 1
+
+    with pytest.raises(RuntimeError, match="simulated serial write failure"):
+        valve.set_position(2)
+
+    assert valve.position == 1, "must not claim position 2 -- the write that would have sent it failed"
+
+
 def test_valve_initialize_raises_on_empty_status_response():
     valve_backend = FakeTextBackend({"S": ""})
     valve = Valve(backend=valve_backend, visa_resource="COM6")
@@ -819,6 +1242,8 @@ def test_valve_initialize_rejects_unparseable_status_response():
 
     assert not valve.initialized
     assert "unverified" in valve.status_note
+
+
 @pytest.mark.parametrize("response", ["device=1\r", "foo2bar\r"])
 def test_valve_initialize_rejects_chatter_that_only_contains_a_position_digit(response):
     valve = Valve(backend=FakeTextBackend({"S": response}), visa_resource="COM5")
@@ -828,8 +1253,6 @@ def test_valve_initialize_rejects_chatter_that_only_contains_a_position_digit(re
 
     assert not valve.initialized
     assert valve.status_note == f"unverified position response: {response.strip()!r}"
-
-
 
 
 def test_valve_wait_until_ready_polls_until_confirmed_and_is_bounded_when_busy():
@@ -844,43 +1267,54 @@ def test_valve_wait_until_ready_polls_until_confirmed_and_is_bounded_when_busy()
     assert result is False
     assert elapsed_s < 0.5, "a persistently busy valve must not hang past roughly its timeout"
 
-    motor_backend = FakeTextBackend({"P": "12.5", "$": "IDLE"})
-    motor = PriorZMotor(backend=motor_backend)
-    motor.initialize()
-    motor.go_to_abs_pos(12.5)
-    assert motor.read_position() == 12.5
-    assert not motor.read_movement()
-    motor.zero_pos()
-    motor.cleanup()
-    assert motor_backend.commands == [
-        ("write", "OPEN COM7"),
-        ("write", "G 12.5"),
-        ("query", "P"),
-        ("query", "$"),
-        ("write", "Z"),
-        ("close",),
-    ]
+
+def test_z_stage_initialize_connects_the_real_piezo_and_reports_status_note():
+    # Pending feedback item 5, Part B1: ZStage replaces the legacy
+    # PriorZMotor/COM7 path -- confirms initialize() actually calls the real
+    # PiezoStage.connect() (not a divergent second connection path) and
+    # captures the real connection detail (serial/travel/mode) into
+    # status_note for the Initialize dialog's Z-stage row to display.
+    from test_thorlabs_piezo import FakeBenchtopPrecisionPiezo, FakeChannel, FakeDevice, FakeDeviceManagerCLI
+
+    FakeDevice.instances = []
+    FakeDeviceManagerCLI.build_device_list_calls = 0
+    device = FakeDevice("44533854", channel=FakeChannel(max_travel_um=450.0, mode="CloseLoop"))
+    FakeBenchtopPrecisionPiezo.next_device = device
+    stage = PiezoStage(
+        serial_number="44533854",
+        device_manager_cli=FakeDeviceManagerCLI,
+        benchtop_precision_piezo_cls=FakeBenchtopPrecisionPiezo,
+        closed_loop_mode="CloseLoop",
+        decimal_type=float,
+    )
+    z_motor = ZStage(enabled=True, stage=stage)
+
+    z_motor.initialize()
+
+    assert stage.connected
+    assert "44533854" in z_motor.status_note
+    assert "450.0" in z_motor.status_note
+    assert "CloseLoop" in z_motor.status_note
+
+    z_motor.cleanup()
+    assert not stage.connected
+    assert z_motor.status_note == ""
 
 
-def test_prior_zmotor_read_position_logs_and_keeps_last_known_on_unparseable_response(caplog):
-    # Finding G regression test: a garbled/partial serial response was
-    # previously indistinguishable from "position unchanged" -- the
-    # ValueError from float() was silently swallowed with a bare `pass`,
-    # with no way for anyone to know the read actually failed. Confirms
-    # both halves: the stale value really is what's returned (existing,
-    # correct fallback behavior, unchanged), AND the failure is now logged
-    # (the actual gap this finding closes).
-    motor = PriorZMotor(backend=FakeTextBackend({"P": "not-a-number"}), visa_resource="COM9")
-    motor.position = 3.5  # simulates a real prior successful read
+def test_z_stage_disabled_never_touches_the_real_piezo():
+    class TrackedStage(PiezoStage):
+        connect_called: bool = False
 
-    with caplog.at_level("ERROR", logger="thermo_acoustic.instruments"):
-        result = motor.read_position()
+        def connect(self) -> None:
+            self.connect_called = True
+            raise AssertionError("PiezoStage.connect() must not be called when ZStage is disabled")
 
-    assert result == 3.5, "must still return the last-known position, not crash or silently reset to 0"
-    assert any(
-        "could not parse position" in record.message and "not-a-number" in record.message and "COM9" in record.message
-        for record in caplog.records
-    ), caplog.records
+    z_motor = ZStage(enabled=False, stage=TrackedStage())
+
+    z_motor.initialize()
+
+    assert z_motor.stage.connect_called is False
+    assert z_motor.status_note == ""
 
 
 def test_serial_text_backend_has_longer_bounded_write_timeout():
@@ -993,6 +1427,55 @@ def test_cetoni_pump_initialize_without_backend_leaves_fill_level_untouched():
     pump = CetoniPump(simulate=True, backend=None)
     pump.initialize()
     assert pump.fill_level == 0.0
+
+
+def test_cetoni_pump_initialize_does_not_falsely_claim_referenced():
+    # Real-hardware finding: initialize() never calls calibrate()/
+    # reference_move(), so it has no basis to set referenced=True. Pumps
+    # with an incremental encoder (this project's real Nemesys Low
+    # Pressure Pump) report is_position_sensing_initialized()=False after
+    # a power cycle until an actual reference move completes -- the old
+    # code set referenced=True unconditionally at the end of initialize(),
+    # which was misleading (claimed a reference move happened when it
+    # never did). Only reference_move() itself should set the flag.
+    backend = FakePumpBackend(fill_level=0.19)
+    pump = CetoniPump(simulate=False, backend=backend)
+    assert pump.referenced is False
+    assert pump.initialized is False
+
+    pump.initialize()
+
+    # initialize() itself succeeded (used by qt_ui_v2.py's pump connection-
+    # status row) even though no reference move ever happened.
+    assert pump.initialized is True
+    assert pump.referenced is False
+    assert ("reference_move",) not in backend.calls
+
+
+def test_cetoni_pump_reference_move_sets_referenced_true():
+    backend = FakePumpBackend()
+    pump = CetoniPump(simulate=False, backend=backend)
+    assert pump.referenced is False
+
+    pump.reference_move()
+
+    assert pump.referenced is True
+    assert ("reference_move",) in backend.calls
+
+
+def test_cetoni_pump_cleanup_resets_initialized():
+    # H2 (instruments.py line-by-line review): cleanup() never reset
+    # `initialized`, so the pump connection-status UI (wired to this flag)
+    # would keep showing "Connected" after a real disconnect -- matches the
+    # pattern Valve.cleanup() already got right.
+    backend = FakePumpBackend()
+    pump = CetoniPump(simulate=False, backend=backend)
+    pump.initialize()
+    assert pump.initialized is True
+
+    pump.cleanup()
+
+    assert pump.initialized is False
 
 
 def test_cetoni_pump_refill_syncs_fill_level_from_real_backend_not_hardcoded_1ml():
@@ -1199,6 +1682,23 @@ def test_qmix_pump_backend_initializes_and_dispatches(tmp_path):
     assert ("calibrate",) in pump.calls
     assert ("set_fill_level", 0.0, 5000.0) in pump.calls
     assert ("set_fill_level", 10.0, 5000.0) in pump.calls
+
+
+def test_qmix_configure_flow_unit_accepts_micro_sign_and_legacy_mojibake(tmp_path):
+    FakeQmixPumpModule.Pump.instances = []
+    backend = QmixPumpBackend(qmixbus=FakeQmixBusModule, qmixpump=FakeQmixPumpModule)
+    backend.initialize(tmp_path / "qmix-config")
+    pump = FakeQmixPumpModule.Pump.instances[0]
+
+    for unit in (chr(0x00B5) + "L/min", chr(0x00C2) + chr(0x00B5) + "L/min"):
+        pump.calls.clear()
+        backend.configure_flow_unit(unit)
+        assert (
+            "set_flow_unit",
+            FakeQmixPumpModule.UnitPrefix.micro,
+            FakeQmixPumpModule.VolumeUnit.litres,
+            FakeQmixPumpModule.TimeUnit.per_minute,
+        ) in pump.calls
 
 
 def test_qmix_pump_backend_reads_real_fill_level_from_sdk(tmp_path):
@@ -1850,6 +2350,34 @@ def test_configure_do_leaves_achieved_frequency_none_when_no_clock_requested():
     assert channel.achieved_clock_frequency_hz is None
 
 
+def test_configure_do_rejects_unsupported_output_mode_instead_of_defaulting_to_pushpull():
+    # Finding 1 regression test (waveforms.py review, Session 66): output_mode
+    # is a free-form str field with no validation anywhere upstream (unlike
+    # function/trigger_source, which are real enums coerced by ad2.py's
+    # _coerce_enum() before ever reaching this file) -- this is the only real
+    # defense point in the whole pipeline. A typo must raise, not silently
+    # command the real AD2 digital output into push-pull mode.
+    fake = FakeDwf()
+    backend = WaveFormsBackend(dwf=fake)
+    channel = DoSingleChannelConfig(channel_index=0, enable=True, output_mode="OpenDrainn")
+    config = DoConfig(channels=[channel])
+
+    with pytest.raises(WaveFormsError, match="OpenDrainn"):
+        backend.configure_do(123, config)
+
+
+def test_configure_do_accepts_known_output_modes_case_and_space_insensitively():
+    fake = FakeDwf()
+    backend = WaveFormsBackend(dwf=fake)
+    channel = DoSingleChannelConfig(channel_index=0, enable=True, output_mode="Open Drain")
+    config = DoConfig(channels=[channel])
+
+    backend.configure_do(123, config)  # must not raise
+
+    output_set_calls = [args for name, args in fake.calls if name == "FDwfDigitalOutOutputSet"]
+    assert any(args[2].value == 1 for args in output_set_calls), "OpenDrain must map to DWF mode 1"
+
+
 def test_run_experiment2_records_do_clock_achieved_frequency_in_final_tdms(tmp_path, monkeypatch):
     # Finding E regression test, end-to-end: drives the real run_experiment2()
     # call order (config_do_clock_special() mutates the same DoConfig object
@@ -2103,6 +2631,122 @@ def test_experiment2_writes_labview_metadata_tdms(tmp_path, monkeypatch):
     assert len(channels["Timestamp"].data) == 2
 
 
+def test_experiment2_writes_wfg_carrier_trigger_and_fm_mod_fields_to_tdms(tmp_path, monkeypatch):
+    # Finding 1 regression test (workflows.py review, Session 68): carrier.
+    # function/offset_v/symmetry_percent/phase_deg, trigger.source, and the
+    # entire fm_mod sub-carrier were never recorded in data.tdms at all --
+    # real, user-editable Experiment-tab fields (qt_ui.py's
+    # exp_ch1_function/exp_ch1_offset/exp_ch1_symmetry/exp_ch1_phase) with no
+    # way to reconstruct which waveform shape an experiment actually used.
+    # Uses distinguishable, non-default values for every field on Ch1 (with
+    # fm_mod enabled) and Ch2 (with fm_mod left disabled, its dataclass
+    # default) so a bug that read the wrong field, hardcoded a default, or
+    # mixed up the fm_mod-disabled sentinel would be caught.
+    writes = install_fake_nptdms(monkeypatch)
+    experiment = Experiment2(
+        experiment_folder=tmp_path / "repeat_wfg_fields",
+        wfg_config=WfgConfig(
+            running=True,
+            channels=[
+                WfgChannelConfig(
+                    0,
+                    carrier=CarrierSettings(
+                        frequency_hz=1_000_000.0,
+                        amplitude_v=3.0,
+                        offset_v=0.25,
+                        symmetry_percent=60.0,
+                        phase_deg=15.0,
+                        function=WaveformFunction.SQUARE,
+                    ),
+                    trigger=TriggerSettings(sec_run=0.5, sec_wait=0.1, source=TriggerSource.PC),
+                    fm_mod=CarrierSettings(
+                        enable=True,
+                        frequency_hz=500.0,
+                        amplitude_v=0.5,
+                        offset_v=0.1,
+                        symmetry_percent=40.0,
+                        phase_deg=5.0,
+                        function=WaveformFunction.TRIANGLE,
+                    ),
+                ),
+                WfgChannelConfig(
+                    1,
+                    carrier=CarrierSettings(frequency_hz=2000.0, amplitude_v=1.0),
+                    trigger=TriggerSettings(sec_run=0.25, sec_wait=0.2),
+                    # fm_mod left at its dataclass default (enable=False) --
+                    # must degrade to the "" sentinel, not report its own
+                    # default frequency_hz/amplitude_v as if they were real
+                    # applied FM-mod settings.
+                ),
+            ],
+        ),
+    )
+
+    experiment.create_folder_and_tdms()
+    experiment.save_settings()
+
+    tdms_path = tmp_path / "repeat_wfg_fields" / "data.tdms"
+    properties = next(
+        item for item in writes[str(tdms_path)] if getattr(item, "kind", "") == "group" and item.name == "Experiment"
+    ).properties
+
+    assert properties["WFGFunctionCh1"] == "Square"
+    assert properties["WFGOffsetCh1"] == 0.25
+    assert properties["WFGSymmetryCh1"] == 60.0
+    assert properties["WFGPhaseCh1"] == 15.0
+    assert properties["WFGTriggerSourceCh1"] == "trigsrcPC"
+
+    assert properties["WFGFMEnabledCh1"] is True
+    assert properties["WFGFMFreqCh1"] == 500.0
+    assert properties["WFGFMAmpCh1"] == 0.5
+    assert properties["WFGFMFunctionCh1"] == "Triangle"
+    assert properties["WFGFMOffsetCh1"] == 0.1
+    assert properties["WFGFMSymmetryCh1"] == 40.0
+    assert properties["WFGFMPhaseCh1"] == 5.0
+
+    # Ch2: real carrier fields present, but fm_mod disabled -> sentinel.
+    assert properties["WFGFunctionCh2"] == "Sine"
+    assert properties["WFGTriggerSourceCh2"] == "trigsrcNone"
+    assert properties["WFGFMEnabledCh2"] is False
+    assert properties["WFGFMFreqCh2"] == ""
+    assert properties["WFGFMAmpCh2"] == ""
+    assert properties["WFGFMFunctionCh2"] == ""
+
+
+def test_experiment2_wfg_fm_mod_fields_default_to_sentinel_when_channel_absent(tmp_path, monkeypatch):
+    # Companion test: when a channel slot itself is entirely absent (not just
+    # fm_mod disabled within a present channel), every new field -- including
+    # the fm_mod cluster -- must degrade to the same "" sentinel as the
+    # pre-existing WFGFreq/WFGAmp fields, not crash on channel being None.
+    writes = install_fake_nptdms(monkeypatch)
+    experiment = Experiment2(
+        experiment_folder=tmp_path / "repeat_wfg_absent",
+        wfg_config=WfgConfig(running=False, channels=[]),
+    )
+
+    experiment.create_folder_and_tdms()
+    experiment.save_settings()
+
+    tdms_path = tmp_path / "repeat_wfg_absent" / "data.tdms"
+    properties = next(
+        item for item in writes[str(tdms_path)] if getattr(item, "kind", "") == "group" and item.name == "Experiment"
+    ).properties
+
+    for suffix in ("Ch1", "Ch2"):
+        assert properties[f"WFGFunction{suffix}"] == ""
+        assert properties[f"WFGOffset{suffix}"] == ""
+        assert properties[f"WFGSymmetry{suffix}"] == ""
+        assert properties[f"WFGPhase{suffix}"] == ""
+        assert properties[f"WFGTriggerSource{suffix}"] == ""
+        assert properties[f"WFGFMEnabled{suffix}"] is False
+        assert properties[f"WFGFMFreq{suffix}"] == ""
+        assert properties[f"WFGFMAmp{suffix}"] == ""
+        assert properties[f"WFGFMFunction{suffix}"] == ""
+        assert properties[f"WFGFMOffset{suffix}"] == ""
+        assert properties[f"WFGFMSymmetry{suffix}"] == ""
+        assert properties[f"WFGFMPhase{suffix}"] == ""
+
+
 def test_experiment2_writes_camera_sequence_cluster_to_tdms(tmp_path, monkeypatch):
     # Finding C regression test: Session 22 made this whole cluster
     # (masterpulse mode/source/interval/burst + trigger source/polarity/
@@ -2200,6 +2844,91 @@ def test_ad2_real_class_dispatches_to_waveforms_backend():
         ("reset_do", 777),
         ("close", 777),
     ]
+
+
+class FakeWaveFormsBackendThatRaisesOnConfigure(FakeWaveFormsBackend):
+    def __init__(self):
+        super().__init__()
+        self.fail = False
+
+    def configure_wfg(self, handle, config):
+        super().configure_wfg(handle, config)
+        if self.fail:
+            raise WaveFormsError("simulated configure_wfg failure")
+
+    def configure_do(self, handle, config):
+        super().configure_do(handle, config)
+        if self.fail:
+            raise WaveFormsError("simulated configure_do failure")
+
+
+# Finding 2 regression tests (waveforms.py review, Session 66): the 5th
+# instance today of the optimistic-update-before-confirmation shape --
+# config_wfg()/wfg_configure()/config_do_custom()/config_do_clock_special()
+# previously committed the new config to self.wfg_config/self.do_config
+# *before* the real backend call was confirmed to succeed. Each test
+# confirms a successful call first (establishing a real "last confirmed"
+# config), then a failing call, then asserts the field still points to the
+# exact same (unchanged) confirmed object -- not a new one reflecting the
+# failed request.
+
+
+def test_config_wfg_leaves_wfg_config_unchanged_when_backend_call_fails():
+    backend = FakeWaveFormsBackendThatRaisesOnConfigure()
+    ad2 = AD2Sdk(backend=backend)
+    ad2.config_wfg(WfgConfig(running=False))
+    confirmed_config = ad2.get_wfg_config()
+
+    backend.fail = True
+    with pytest.raises(WaveFormsError):
+        ad2.config_wfg(WfgConfig(running=True))
+
+    assert ad2.get_wfg_config() is confirmed_config
+    assert ad2.get_wfg_config().running is False
+
+
+def test_wfg_configure_leaves_wfg_config_unchanged_when_backend_call_fails():
+    backend = FakeWaveFormsBackendThatRaisesOnConfigure()
+    ad2 = AD2Sdk(backend=backend)
+    ad2.wfg_configure(WfgConfig(running=False))
+    confirmed_config = ad2.get_wfg_config()
+
+    backend.fail = True
+    with pytest.raises(WaveFormsError):
+        ad2.wfg_configure(WfgConfig(running=True))
+
+    assert ad2.get_wfg_config() is confirmed_config
+    assert ad2.get_wfg_config().running is False
+
+
+def test_config_do_custom_leaves_do_config_unchanged_when_backend_call_fails():
+    backend = FakeWaveFormsBackendThatRaisesOnConfigure()
+    ad2 = AD2Sdk(backend=backend)
+    ad2.config_do_custom(DoConfig(running=False))
+    confirmed_config = ad2.get_do_config()
+
+    backend.fail = True
+    with pytest.raises(WaveFormsError):
+        ad2.config_do_custom(DoConfig(running=True))
+
+    assert ad2.get_do_config() is confirmed_config
+    assert ad2.do_custom_config is confirmed_config
+    assert ad2.get_do_config().running is False
+
+
+def test_config_do_clock_special_leaves_do_config_unchanged_when_backend_call_fails():
+    backend = FakeWaveFormsBackendThatRaisesOnConfigure()
+    ad2 = AD2Sdk(backend=backend)
+    ad2.config_do_clock_special(DoConfig(running=False))
+    confirmed_config = ad2.get_do_config()
+
+    backend.fail = True
+    with pytest.raises(WaveFormsError):
+        ad2.config_do_clock_special(DoConfig(running=True))
+
+    assert ad2.get_do_config() is confirmed_config
+    assert ad2.do_clock_settings is confirmed_config
+    assert ad2.get_do_config().running is False
 
 
 class FakeDcamApi:
@@ -2405,6 +3134,103 @@ def test_hamamatsu_close_logs_swallowed_cleanup_errors_instead_of_silently_passi
     assert any("failed to stop capture" in m and "stop capture failed" in m for m in messages), messages
     assert any("failed to release buffer" in m and "buffer release failed" in m for m in messages), messages
     assert backend.dcam is None, "cleanup must still complete despite both logged failures"
+
+
+def test_ensure_buffer_logs_swallowed_buf_release_failure_instead_of_silently_passing(caplog):
+    # Finding 2 regression test (hamamatsu_dcam.py review, Session 65): the
+    # same silent-failure shape as Finding F above, in _ensure_buffer()'s
+    # own buf_release() call, which was still a bare `except Exception:
+    # pass` with zero logging. Confirms the failure is now logged AND that
+    # the retry behavior (buf_alloc() still gets attempted) is unchanged --
+    # only the silence is fixed.
+    from thermo_acoustic.hamamatsu_dcam import HamamatsuDcamBackend
+
+    backend = HamamatsuDcamBackend()
+    backend.dcam_module = FakeDcamModule
+    backend.dcamapi = FakeDcamApi
+    backend.dcam = FakeDcamModule.Dcam(0)
+    backend.dcam.opened = True
+
+    def raise_buffer_release_failure():
+        raise RuntimeError("buffer release failed")
+
+    backend.dcam.buf_release = raise_buffer_release_failure
+
+    with caplog.at_level("ERROR", logger="thermo_acoustic.hamamatsu_dcam"):
+        backend._ensure_buffer(3)  # must not raise -- buf_alloc() retry still proceeds
+
+    messages = [record.message for record in caplog.records]
+    assert any("failed to release existing buffer" in m and "buffer release failed" in m for m in messages), messages
+    assert ("buf_alloc", 3) in backend.dcam.calls, "the buf_alloc() retry must still happen despite the logged failure"
+    assert backend.allocated_buffer_frames == 3
+
+
+def test_read_readout_time_returns_none_on_genuine_query_failure_not_zero(caplog):
+    # Finding 3 regression test (hamamatsu_dcam.py review, Session 65): a
+    # genuine live query failure (property exists, prop_getvalue() itself
+    # returns False) must not be indistinguishable from a real 0.0 second
+    # readout -- previously both collapsed to the same plausible-looking
+    # 0.0. Confirms the failure now surfaces as None (this project's
+    # existing "value unavailable" TDMS sentinel, see _tdms_scalar()) and
+    # is logged as a failed transaction rather than silently swallowed.
+    from thermo_acoustic.hamamatsu_dcam import HamamatsuDcamBackend
+
+    backend = HamamatsuDcamBackend()
+    backend.dcam_module = FakeDcamModule
+    backend.dcamapi = FakeDcamApi
+    handle = backend.open_camera()
+
+    def failing_prop_getvalue(prop):
+        if prop == "TIMING_READOUTTIME":
+            return False
+        return handle.values.get(prop, 0)
+
+    handle.prop_getvalue = failing_prop_getvalue
+
+    with caplog.at_level("ERROR", logger="thermo_acoustic.hamamatsu_dcam"):
+        result = backend.read_readout_time()
+
+    assert result is None, "a genuine query failure must not be reported as a plausible 0.0 reading"
+
+
+def test_read_readout_time_still_returns_real_zero_when_device_reports_it():
+    # Companion to the above: a real, successfully-read 0.0 (a genuinely
+    # fast readout) must still come through as 0.0, not be swept up by the
+    # None-on-failure handling.
+    from thermo_acoustic.hamamatsu_dcam import HamamatsuDcamBackend
+
+    backend = HamamatsuDcamBackend()
+    backend.dcam_module = FakeDcamModule
+    backend.dcamapi = FakeDcamApi
+    handle = backend.open_camera()
+    handle.values["TIMING_READOUTTIME"] = 0.0
+
+    assert backend.read_readout_time() == 0.0
+
+
+def test_check_camera_timing_budget_raises_when_readout_time_unavailable(tmp_path):
+    # Finding 3 (application.py side): read_readout_time() returning None
+    # must not crash this safety check with a bare TypeError from
+    # max(None, 0.0), and must not silently treat "unknown" as "0.0 s" --
+    # either would defeat the point of the check (LabVIEW's own "N is
+    # Vertical is max for <fps> fps" readback), which exists specifically
+    # to refuse an FPS the real hardware can't sustain.
+    from thermo_acoustic.ad2 import DoConfig, DoSingleChannelConfig
+
+    class UnavailableReadoutCamera:
+        exposure_ms = 5.0
+
+        def read_readout_time(self):
+            return None
+
+    app = Application(ad2=SimulatedAD2Sdk(), camera=UnavailableReadoutCamera())
+    experiment = Experiment2(
+        experiment_folder=tmp_path / "experiment-readout-unavailable",
+        do_clock_settings=DoConfig(channels=[DoSingleChannelConfig(channel_index=0, enable=True, clock_frequency_hz=100.0)]),
+    )
+
+    with pytest.raises(ValueError, match="readout time"):
+        app._check_camera_timing_budget(experiment)
 
 
 def test_configure_exposure_time_returns_real_applied_value_not_requested(tmp_path):

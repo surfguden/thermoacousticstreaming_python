@@ -18,6 +18,8 @@ from .ad2 import (
     coerce_wfg_config,
 )
 from .camera import SubRegion, SubRegionLimits
+from .hw_logging import log_call
+from .thorlabs_piezo import PiezoStage
 from .waveforms import WaveFormsBackend
 
 logger = logging.getLogger(__name__)
@@ -44,22 +46,29 @@ class SerialTextCommandBackend:
     write_timeout_s: float = 5.0
     line_ending: str = "\r"
     port: object | None = None
+    # Which device this instance's transactions get tagged as in the shared
+    # hw_logging log (e.g. "valve") -- set by the caller that constructs this
+    # backend, since the backend itself is generic and has no device identity
+    # of its own. Left at the generic default only if a caller forgets to set it.
+    device_name: str = "serial"
 
     def _open(self, resource: str) -> None:
         if self.port is not None:
             return
-        try:
-            import serial
-        except ImportError as exc:  # pragma: no cover - depends on optional runtime package
-            raise RuntimeError("pyserial is required for real serial hardware. Install with: python -m pip install pyserial") from exc
-        self.port = serial.Serial(
-            resource,
-            baudrate=self.baud_rate,
-            timeout=self.timeout_s,
-            write_timeout=self.write_timeout_s,
-        )
+        with log_call(self.device_name, "connect", command=resource) as result:
+            try:
+                import serial
+            except ImportError as exc:  # pragma: no cover - depends on optional runtime package
+                raise RuntimeError("pyserial is required for real serial hardware. Install with: python -m pip install pyserial") from exc
+            self.port = serial.Serial(
+                resource,
+                baudrate=self.baud_rate,
+                timeout=self.timeout_s,
+                write_timeout=self.write_timeout_s,
+            )
+            result["response"] = "connected"
 
-    def write(self, command: str) -> None:
+    def _send(self, command: str) -> None:
         text = command.strip()
         if text.upper().startswith("OPEN "):
             self._open(text.split(maxsplit=1)[1])
@@ -68,25 +77,51 @@ class SerialTextCommandBackend:
             raise RuntimeError("Serial port is not open.")
         self.port.write((command + self.line_ending).encode("ascii"))
 
+    def write(self, command: str) -> None:
+        if command.strip().upper().startswith("OPEN "):
+            # _send() -> _open() already logs this as its own "connect"
+            # transaction -- avoid a redundant second "write" line for the
+            # same pseudo-command.
+            self._send(command)
+            return
+        with log_call(self.device_name, "write", command=command) as result:
+            self._send(command)
+            result["response"] = "sent"
+
     def query(self, command: str) -> str:
-        self.write(command)
-        if self.port is None:
-            raise RuntimeError("Serial port is not open.")
-        # readline() splits on b"\n", but this backend's own devices are
-        # only ever confirmed to terminate responses with line_ending
-        # ("\r" by default -- see write() above). Real-hardware timing
-        # characterization (Session 54) showed every query() call blocking
-        # for the entire configured timeout_s before returning, regardless
-        # of how quickly the device actually responded -- the signature of
-        # readline() never finding the "\n" it was looking for. Reading
-        # until the same terminator this backend writes with fixes that.
-        terminator = self.line_ending.encode("ascii")
-        return self.port.read_until(expected=terminator).decode("ascii", errors="replace")
+        with log_call(self.device_name, "query", command=command) as result:
+            self._send(command)
+            if self.port is None:
+                raise RuntimeError("Serial port is not open.")
+            # readline() splits on b"\n", but this backend's own devices are
+            # only ever confirmed to terminate responses with line_ending
+            # ("\r" by default -- see write() above). Real-hardware timing
+            # characterization (Session 54) showed every query() call blocking
+            # for the entire configured timeout_s before returning, regardless
+            # of how quickly the device actually responded -- the signature of
+            # readline() never finding the "\n" it was looking for. Reading
+            # until the same terminator this backend writes with fixes that.
+            terminator = self.line_ending.encode("ascii")
+            response = self.port.read_until(expected=terminator).decode("ascii", errors="replace")
+            result["response"] = response
+        return response
 
     def close(self) -> None:
-        if self.port is not None:
-            self.port.close()
-        self.port = None
+        with log_call(self.device_name, "close") as result:
+            # M1 (instruments.py line-by-line review): self.port must be
+            # reset to None even if port.close() itself raises -- otherwise
+            # a future _open() sees self.port is not None and skips
+            # reopening entirely, permanently reusing the broken handle,
+            # and a future close() tries to close the same broken handle
+            # again. The exception itself still propagates (log_call()
+            # logs and re-raises), this only guarantees the reset happens
+            # first.
+            try:
+                if self.port is not None:
+                    self.port.close()
+            finally:
+                self.port = None
+            result["response"] = "closed"
 
 
 class PumpBackend(Protocol):
@@ -146,7 +181,7 @@ class CameraBackend(Protocol):
 
     def update_roi_limits(self, limits: SubRegionLimits | None = None) -> SubRegionLimits: ...
 
-    def read_readout_time(self) -> float: ...
+    def read_readout_time(self) -> float | None: ...
 
     def sw_trigger(self) -> None: ...
 
@@ -159,6 +194,10 @@ class RegloPumpControl:
     direction: str = "clockwise"
     speed: float = 0.0
     volume_ml: float | None = None
+
+
+class AD2SdkError(RuntimeError):
+    pass
 
 
 @dataclass(slots=True)
@@ -201,9 +240,18 @@ class AD2Sdk:
         return self.device_handle
 
     def pc_trigger(self) -> None:
+        # Was: silently no-op'd and still set self.triggered = True when
+        # handle was None (AD2 disabled) -- a real experiment run with AD2
+        # disabled would report a successful trigger that never reached
+        # hardware, with nothing in the UI/log/experiment record to reveal
+        # it. Same reasoning as config_wfg()/config_do_clock_special()
+        # above: the real automated path now checks ad2.enabled and skips
+        # this call entirely when disabled, so reaching here with a None
+        # handle is a caller bug.
         handle = self.open_and_use_first_device()
-        if handle is not None:
-            self.get_backend().trigger_pc(handle)
+        if handle is None:
+            raise AD2SdkError("pc_trigger() called while AD2 is disabled -- caller must check ad2.enabled first.")
+        self.get_backend().trigger_pc(handle)
         self.triggered = True
 
     def get_wfg_config(self) -> WfgConfig:
@@ -215,10 +263,30 @@ class AD2Sdk:
         self.wfg_config = coerce_wfg_config(config)
 
     def config_wfg(self, config: WfgConfig | dict | None) -> None:
-        self.set_wfg_config(config)
+        # Finding 2 (waveforms.py review, Session 66): self.wfg_config is
+        # only committed after the real backend call succeeds -- previously
+        # assigned up front (via set_wfg_config()), so a failure partway
+        # through a multi-channel configure_wfg() call (each channel issues
+        # several independent _check()-guarded DWF calls) left self.wfg_config
+        # reflecting the requested-but-never-(fully)-applied configuration,
+        # not the last confirmed one. Same shape as hamamatsu_dcam.py's
+        # configure_sequence() fix earlier today.
+        new_config = coerce_wfg_config(config)
         handle = self.open_and_use_first_device()
-        if handle is not None:
-            self.get_backend().configure_wfg(handle, self.get_wfg_config())
+        if handle is None:
+            # open_and_use_first_device() only returns None when self.enabled
+            # is False (a real device failure raises instead, never returns a
+            # falsy handle -- see WaveFormsBackend.open_device()). Callers on
+            # the real automated path (Application.run_experiment2()) are
+            # expected to check ad2.enabled themselves and skip this call
+            # entirely when disabled -- reaching here with a disabled device
+            # is a caller bug, not a legitimate "disabled" outcome to
+            # silently absorb (previously this method silently no-op'd,
+            # which let a disabled AD2 report a successful WFG configuration
+            # that never actually reached hardware).
+            raise AD2SdkError("config_wfg() called while AD2 is disabled -- caller must check ad2.enabled first.")
+        self.get_backend().configure_wfg(handle, new_config)
+        self.wfg_config = new_config
 
     def wfg_check_config_valid(self) -> bool:
         return self.get_wfg_config().check_valid()
@@ -240,10 +308,16 @@ class AD2Sdk:
         self.wfg_configure_carrier_single_ch(channel_index, channel)
 
     def wfg_configure(self, config: WfgConfig | dict | None) -> None:
-        self.set_wfg_config(config)
+        # M3 (instruments.py line-by-line review): same fix as config_wfg()
+        # above -- raise instead of silently no-op'ing when AD2 is disabled.
+        # Finding 2 (waveforms.py review, Session 66): same commit-after-
+        # confirmation reordering as config_wfg() above.
+        new_config = coerce_wfg_config(config)
         handle = self.open_and_use_first_device()
-        if handle is not None:
-            self.get_backend().configure_wfg(handle, self.get_wfg_config())
+        if handle is None:
+            raise AD2SdkError("wfg_configure() called while AD2 is disabled -- caller must check ad2.enabled first.")
+        self.get_backend().configure_wfg(handle, new_config)
+        self.wfg_config = new_config
 
     def wfg_configure_read_back(self) -> WfgConfig:
         return self.get_wfg_config()
@@ -251,8 +325,11 @@ class AD2Sdk:
     def wfg_start_stop_all_ch(self, running: bool) -> None:
         self.get_wfg_config().running = running
         handle = self.open_and_use_first_device()
-        if handle is not None:
-            self.get_backend().configure_wfg(handle, self.get_wfg_config())
+        if handle is None:
+            raise AD2SdkError(
+                "wfg_start_stop_all_ch() called while AD2 is disabled -- caller must check ad2.enabled first."
+            )
+        self.get_backend().configure_wfg(handle, self.get_wfg_config())
 
     def get_do_config(self) -> DoConfig:
         if self.do_config is None:
@@ -260,18 +337,34 @@ class AD2Sdk:
         return self.do_config
 
     def config_do_custom(self, config: DoConfig | dict | None) -> None:
-        self.do_custom_config = coerce_do_config(config)
-        self.do_config = self.do_custom_config
+        # Finding 2 (waveforms.py review, Session 66): commit do_custom_config/
+        # do_config only after the real backend call succeeds -- same
+        # reasoning as config_wfg() above.
+        new_config = coerce_do_config(config)
         handle = self.open_and_use_first_device()
-        if handle is not None:
-            self.get_backend().configure_do(handle, self.get_do_config())
+        if handle is None:
+            raise AD2SdkError(
+                "config_do_custom() called while AD2 is disabled -- caller must check ad2.enabled first."
+            )
+        self.get_backend().configure_do(handle, new_config)
+        self.do_custom_config = new_config
+        self.do_config = new_config
 
     def config_do_clock_special(self, settings: DoConfig | dict | None) -> None:
-        self.do_clock_settings = coerce_do_config(settings)
-        self.do_config = self.do_clock_settings
+        # Finding 2 (waveforms.py review, Session 66): same reordering as
+        # config_wfg()/config_do_custom() above.
+        new_config = coerce_do_config(settings)
         handle = self.open_and_use_first_device()
-        if handle is not None:
-            self.get_backend().configure_do(handle, self.get_do_config())
+        if handle is None:
+            # Same reasoning as config_wfg() above -- the real automated
+            # path is expected to check ad2.enabled and skip this call
+            # entirely when disabled.
+            raise AD2SdkError(
+                "config_do_clock_special() called while AD2 is disabled -- caller must check ad2.enabled first."
+            )
+        self.get_backend().configure_do(handle, new_config)
+        self.do_clock_settings = new_config
+        self.do_config = new_config
 
     def do_config_trigger(self, trigger_source: str) -> None:
         for channel in self.get_do_config().channels:
@@ -302,20 +395,25 @@ class AD2Sdk:
     def do_configure(self, config: DoConfig | dict | None) -> None:
         self.do_config = coerce_do_config(config)
         handle = self.open_and_use_first_device()
-        if handle is not None:
-            self.get_backend().configure_do(handle, self.get_do_config())
+        if handle is None:
+            raise AD2SdkError("do_configure() called while AD2 is disabled -- caller must check ad2.enabled first.")
+        self.get_backend().configure_do(handle, self.get_do_config())
 
     def do_reset(self) -> None:
         handle = self.open_and_use_first_device()
-        if handle is not None:
-            self.get_backend().reset_do(handle)
+        if handle is None:
+            raise AD2SdkError("do_reset() called while AD2 is disabled -- caller must check ad2.enabled first.")
+        self.get_backend().reset_do(handle)
         self.do_config = DoConfig()
 
     def start_stop_do(self, running: bool) -> None:
         self.get_do_config().running = running
         handle = self.open_and_use_first_device()
-        if handle is not None:
-            self.get_backend().configure_do(handle, self.get_do_config())
+        if handle is None:
+            raise AD2SdkError(
+                "start_stop_do() called while AD2 is disabled -- caller must check ad2.enabled first."
+            )
+        self.get_backend().configure_do(handle, self.get_do_config())
 
     def mso_init(self, phdwf: object | int | None = None) -> None:
         if phdwf is None:
@@ -331,9 +429,16 @@ class AD2Sdk:
         range_v: float = 1.0,
         offset_v: float = 0.0,
     ) -> list[float]:
+        # M3 (instruments.py line-by-line review): previously returned []
+        # silently when AD2 was disabled -- indistinguishable from a real
+        # capture that genuinely returned zero samples. The real UI caller
+        # (qt_ui.py's MSO tab, via capture_scope_channels()) already runs
+        # through _run_action()/ActionWorker, which surfaces this cleanly as
+        # a status message, not a crash (confirmed against the identical
+        # pattern used by config_wfg()/pc_trigger() earlier).
         handle = self.open_and_use_first_device()
         if handle is None:
-            return []
+            raise AD2SdkError("capture_scope() called while AD2 is disabled -- caller must check ad2.enabled first.")
         self.mso_config = MsoConfig(
             device_handle=handle,
             range_ch1=range_v if channel_index == 0 else None,
@@ -362,7 +467,9 @@ class AD2Sdk:
     ) -> dict[int, list[float]]:
         handle = self.open_and_use_first_device()
         if handle is None:
-            return {}
+            raise AD2SdkError(
+                "capture_scope_channels() called while AD2 is disabled -- caller must check ad2.enabled first."
+            )
         self.mso_config = MsoConfig(
             device_handle=handle,
             range_ch1=range_v if 0 in channel_indices else None,
@@ -611,7 +718,7 @@ class HamamatsuCamera:
             self.roi_limits = limits
         return self.roi_limits
 
-    def read_readout_time(self) -> float:
+    def read_readout_time(self) -> float | None:
         if self.backend is not None:
             return self.backend.read_readout_time()
         return 0.0
@@ -638,6 +745,12 @@ class CetoniPump:
     syringe_config: dict | None = None
     flow_unit: str | None = None
     referenced: bool = False
+    # Set True once initialize() completes (mirrors Valve/QmixPumpBackend's
+    # own "initialized" flags) -- distinct from `referenced`, which now only
+    # means "a physical reference move was confirmed". qt_ui_v2.py's pump
+    # connection-status row uses this, not `referenced`, matching the same
+    # pattern the Valve row already uses (`valve.initialized`).
+    initialized: bool = False
     # Used by refill() when simulating (backend=None) to fill to the
     # syringe's actual configured capacity instead of an arbitrary
     # hardcoded value. Defaults to 1.0 for backward compatibility with
@@ -645,21 +758,41 @@ class CetoniPump:
     # not a claim that 1.0 mL is a realistic syringe capacity.
     max_volume_ml: float = 1.0
 
+    def sync_fill_level(self) -> None:
+        # Re-read the real fill level from hardware and update self.fill_level
+        # to match -- the single canonical place this project's own repeated
+        # "self.fill_level = self.backend.read_fill_level()" pattern (Session
+        # 56/57, and Session 63's flush-timeout fix below) should live, so it
+        # can't drift between call sites. No-op when simulated (backend is
+        # None) -- there is no real device to read back from; the simulated/
+        # bookkeeping value is already authoritative in that case.
+        if self.backend is not None:
+            self.fill_level = self.backend.read_fill_level()
+
     def initialize(self) -> None:
         if not self.enabled:
             return
         if self.backend is not None:
             self.backend.initialize(self.configuration_path)
-            # fill_level otherwise stays at its Python-side dataclass default
-            # (0.0) regardless of what the real syringe actually holds --
-            # found on real hardware (Session 54 dry-run): a fresh process
-            # read 0.0 while the syringe still had ~0.05 ml loaded from a
-            # prior session. Syncing from the real device's own readback
-            # here means flush()'s fill-level guard (Session 53) checks
-            # reality instead of a stale assumption from the moment the
-            # process started.
-            self.fill_level = self.backend.read_fill_level()
-        self.referenced = True
+        # fill_level otherwise stays at its Python-side dataclass default
+        # (0.0) regardless of what the real syringe actually holds --
+        # found on real hardware (Session 54 dry-run): a fresh process
+        # read 0.0 while the syringe still had ~0.05 ml loaded from a
+        # prior session. Syncing from the real device's own readback
+        # here means flush()'s fill-level guard (Session 53) checks
+        # reality instead of a stale assumption from the moment the
+        # process started.
+        self.sync_fill_level()
+        self.initialized = True
+        # Deliberately not setting self.referenced here -- initialize() never
+        # calls calibrate()/reference_move(), so it has no basis to claim a
+        # physical reference move happened. Real pumps with an incremental
+        # encoder (e.g. this project's Nemesys Low Pressure Pump) report
+        # is_position_sensing_initialized()=False until reference_move()
+        # actually runs and completes; only reference_move() itself should
+        # set referenced=True, and only after confirming success (it already
+        # does, via QmixPumpBackend.reference_move()'s poll-until-confirmed
+        # or raise).
 
     def refill(self) -> None:
         if self.backend is not None:
@@ -671,7 +804,7 @@ class CetoniPump:
             # self.fill_level = 1.0 here desynced the Python-side value
             # from real hardware state immediately after every refill(),
             # for any syringe other than a 1 mL one (audit finding 5a).
-            self.fill_level = self.backend.read_fill_level()
+            self.sync_fill_level()
         else:
             self.fill_level = self.max_volume_ml
 
@@ -724,6 +857,11 @@ class CetoniPump:
         self.stop()
         if self.backend is not None:
             self.backend.close()
+        # H2 (instruments.py line-by-line review): previously never reset,
+        # so the pump connection-status UI (wired to this flag) would keep
+        # showing "Connected" after a real cleanup/disconnect -- matches the
+        # pattern Valve.cleanup() already gets right.
+        self.initialized = False
 
 
 class ValveError(RuntimeError):
@@ -743,9 +881,9 @@ class Valve:
     # the real candidate; this was never independently verified until now.
     visa_resource: str = "COM5"
     backend: TextCommandBackend | None = None
-    # Confirmed physical semantics: position 1 = Open, position 2 = Closed.
-    # Safety-relevant -- surfaced explicitly in the UI (qt_ui.py/qt_ui_v2.py
-    # Pump&Valve controls and status readouts), not just documented here.
+    # Protocol-confirmed numeric positions. The physical fluidic routing of
+    # P01/P02 remains a bench-confirmation item; do not infer Open/Closed
+    # semantics from the serial position token alone.
     command_position_1: str = "P01"
     command_position_2: str = "P02"
     status_query_command: str = "S"
@@ -795,13 +933,18 @@ class Valve:
         return False
 
     def set_position(self, position: int) -> None:
-        # position=1 -> Open, position=2 -> Closed (see class-level note above).
+        # Position numbers map directly to the protocol tokens P01/P02. Their
+        # physical routing is intentionally not inferred here.
         if position not in (1, 2):
             raise ValueError(f"Unsupported valve position: {position}")
-        self.position = position
+        # M2 (instruments.py line-by-line review): self.position is now only
+        # assigned after backend.write() returns without raising -- assigning
+        # it first (the old order) meant a raised exception from write() left
+        # self.position claiming a move that was never actually sent.
         if self.backend is not None:
             command = self.command_position_1 if position == 1 else self.command_position_2
             self.backend.write(command)
+        self.position = position
 
     def wait_until_ready(self, timeout_s: float = 1.0, poll_interval_s: float = 0.05) -> bool:
         # Bounded poll of the same "S\r" handshake used at initialize() time,
@@ -809,9 +952,8 @@ class Valve:
         # after set_position(). A real disconnect (empty response) still
         # raises ValveError immediately via _apply_status_response -- only a
         # "still busy" result is tolerated up to the timeout, at which point
-        # this returns False and the caller proceeds anyway (matching the
-        # previous fixed-sleep behavior, so this cannot hang longer than
-        # timeout_s).
+        # this returns False. Hardware workflows must treat that as an
+        # unconfirmed position and stop their next actuator command.
         if self.backend is None:
             return True
         deadline = time.monotonic() + max(timeout_s, 0.0)
@@ -832,60 +974,41 @@ class Valve:
 
 
 @dataclass(slots=True)
-class PriorZMotor:
+class ZStage:
+    """Initialize-dialog-facing wrapper around the real Thorlabs piezo
+    Z-stage (thorlabs_piezo.PiezoStage), matching the same enabled/
+    initialize()/cleanup() shape every other HardwareBundle member already
+    uses (HamamatsuCamera/CetoniPump/Valve each wrap a real SDK backend the
+    same way) -- so the Initialize dialog's uniform per-instrument loop can
+    treat the Z-stage like every other device. Reuses PiezoStage's own real
+    connect()/disconnect() untouched; does not create a second, divergent
+    connection path.
+
+    Replaces the legacy PriorZMotor/COM7 path (pending_feedback.md item 4):
+    PriorZMotor pointed the Initialize dialog's "Z-stage" checkbox at a
+    serial port ('COM7') that never existed on this lab's hardware and was
+    never actually the real piezo -- confirmed via real-hardware
+    investigation, not assumed. z_stack()/go_to_abs_pos() (the only other
+    PriorZMotor-specific API) had zero real callers anywhere in the live
+    UI/experiment path (confirmed via a repo-wide search), so nothing else
+    depended on that class either.
+    """
+
     enabled: bool = False
-    visa_resource: str = "COM7"
-    backend: TextCommandBackend | None = None
-    position: float = 0.0
-    initialized: bool = False
-    moving: bool = False
+    stage: PiezoStage = field(default_factory=PiezoStage)
+    status_note: str = ""
 
     def initialize(self) -> None:
-        self.initialized = True
-        if self.backend is not None:
-            self.backend.write(f"OPEN {self.visa_resource}")
-
-    def go_to_abs_pos(self, position: float) -> None:
-        self.moving = True
-        if self.backend is not None:
-            self.backend.write(f"G {position}")
-        self.position = position
-        self.moving = False
-
-    def read_position(self) -> float:
-        if self.backend is not None:
-            response = self.backend.query("P")
-            try:
-                self.position = float(response.strip())
-            except ValueError:
-                # Finding G (silent-failure/data-integrity sweep): previously
-                # silently kept returning the last-known self.position with
-                # no indication the read failed -- a garbled/partial serial
-                # response was indistinguishable from "position unchanged".
-                # Logged (not raised) since this device is separately flagged
-                # legacy/obsolete (current Z hardware is the Thorlabs piezo,
-                # thorlabs_piezo.py) with no current caller to break.
-                logger.error(
-                    "PriorZMotor.read_position(): could not parse position from response %r on %s; "
-                    "returning last-known position %.3f instead of a fresh read",
-                    response,
-                    self.visa_resource,
-                    self.position,
-                )
-        return self.position
-
-    def read_movement(self) -> bool:
-        if self.backend is not None:
-            response = self.backend.query("$")
-            self.moving = response.strip() not in {"0", "IDLE", "READY"}
-        return self.moving
-
-    def zero_pos(self) -> None:
-        if self.backend is not None:
-            self.backend.write("Z")
-        self.position = 0.0
+        self.status_note = ""
+        if not self.enabled:
+            return
+        self.stage.connect()
+        self.status_note = (
+            f"serial={self.stage.serial_number}, max_travel_um={self.stage.max_travel_um}, "
+            f"mode={self.stage.position_control_mode}"
+        )
 
     def cleanup(self) -> None:
-        if self.backend is not None:
-            self.backend.close()
-        self.initialized = False
+        if self.stage.connected:
+            self.stage.disconnect()
+        self.status_note = ""

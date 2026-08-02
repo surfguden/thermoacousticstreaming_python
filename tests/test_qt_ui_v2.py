@@ -8,9 +8,18 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QWheelEvent
-from PySide6.QtWidgets import QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QGroupBox, QLabel, QLineEdit, QPushButton, QSpinBox
+from PySide6.QtWidgets import QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QGridLayout, QGroupBox, QLabel, QLineEdit, QPushButton, QSpinBox
 
 from thermo_acoustic import qt_ui, qt_ui_v2
+from thermo_acoustic.application import (
+    STEP_CAPTURE_FRAMES,
+    STEP_CONFIGURE_CAMERA,
+    STEP_CONFIGURE_WFG,
+    STEP_FLUSH,
+    STEP_INITIALIZE_EXPERIMENT,
+    STEP_SAVE_RESULTS,
+    STEP_WAIT_FOR_AD2_COMPLETION,
+)
 from thermo_acoustic.hardware_factory import HardwareRuntimeConfig
 
 from conftest import build_with_retry
@@ -167,8 +176,14 @@ def test_v2_valve_status_flags_unverified_and_busy_responses(monkeypatch, tmp_pa
         window.app.valve.initialized = True
 
         window.app.valve.status_note = "confirmed"
+        window.app.valve.position = 1
         window._refresh_status()
         assert window.valve_connection_status.text() == "Connected"
+        assert window.valve_position_status.text() == "1 (P01)"
+
+        window.app.valve.position = 2
+        window._refresh_status()
+        assert window.valve_position_status.text() == "2 (P02)"
 
         window.app.valve.status_note = "unverified position response: 'ERR'"
         window._refresh_status()
@@ -246,10 +261,57 @@ def test_v2_initialization_dialog_reuses_existing_config_widgets(monkeypatch, tm
         assert window.valve_enabled in checkboxes
         assert window.sim_valve in checkboxes
         assert window.z_enabled in checkboxes
+        assert window.tec_enabled in checkboxes
+        assert window.sim_tec in checkboxes
         assert window.thorlabs_apt_discovery_only in checkboxes
         assert "Only one UI window should control real hardware at a time. Close the other UI window before initializing here." in labels
         assert "Z-stage" in dialog._status_labels
         assert dialog._status_labels["Z-stage"].text() == "Waiting"
+        assert "TEC" in dialog._status_labels
+        assert dialog._status_labels["TEC"].text() == "Waiting"
+    finally:
+        window.close()
+
+
+def _unwrap_grid_cell(grid: QGridLayout, row: int, col: int):
+    """The cell's real widget, unwrapping the tooltip-icon container
+    _wrap_with_tooltip_icon() creates for any tooltipped field (same
+    pattern as _form_field_widget() above, for QGridLayout cells instead
+    of QFormLayout rows)."""
+    widget = grid.itemAtPosition(row, col).widget()
+    layout = widget.layout()
+    if layout is not None and layout.count():
+        return layout.itemAt(0).widget()
+    return widget
+
+
+def test_v2_initialization_dialog_device_column_order_is_device_simulate_enable(monkeypatch, tmp_path):
+    # Pending feedback item 2: was Enable | Simulate | Device; reordered to
+    # Device | Simulate | Enable (device identity first, then whether it's
+    # simulated, then whether it's enabled at all).
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        dialog = build_with_retry(window._ensure_initialization_dialog)
+        devices_group = next(
+            group for group in dialog.findChildren(QGroupBox) if group.title() == "Devices"
+        )
+        grid = devices_group.layout()
+        assert isinstance(grid, QGridLayout)
+
+        header_texts = [grid.itemAtPosition(0, col).widget().text() for col in range(4)]
+        assert header_texts == ["Device", "Simulate", "Enable", "Progress"]
+
+        rows = (
+            (1, "AD2", window.sim_ad2, window.ad2_enabled),
+            (2, "Camera", window.sim_camera, window.camera_enabled),
+            (3, "Pump", window.sim_pump, window.pump_enabled),
+            (4, "Valve", window.sim_valve, window.valve_enabled),
+            (6, "TEC", window.sim_tec, window.tec_enabled),
+        )
+        for row, name, simulate_widget, enable_widget in rows:
+            assert grid.itemAtPosition(row, 0).widget().text() == name
+            assert _unwrap_grid_cell(grid, row, 1) is simulate_widget
+            assert _unwrap_grid_cell(grid, row, 2) is enable_widget
     finally:
         window.close()
 
@@ -267,10 +329,13 @@ def test_v2_initialization_progress_uses_existing_instrument_order(monkeypatch, 
         valve_enabled=True,
         sim_valve=True,
         z_enabled=False,
-        prior_resource="COM7",
-        valve_resource="COM6",
-        cetoni_config_path=tmp_path,
-    )
+        thorlabs_apt_serial="44533854",
+            valve_resource="COM6",
+            cetoni_config_path=tmp_path,
+            tec_enabled=False,
+            sim_tec=True,
+            tec_port="",
+        )
     try:
         result = window._initialize_system(config, lambda kind, value: events.append((kind, value)))
 
@@ -281,6 +346,7 @@ def test_v2_initialization_progress_uses_existing_instrument_order(monkeypatch, 
             ("Pump", "In Progress"),
             ("Valve", "In Progress"),
             ("Z-stage", "In Progress"),
+            ("TEC", "In Progress"),
         ]
         assert window.app.status == "System Initialized"
         window._refresh_status()
@@ -583,5 +649,109 @@ def test_v2_every_value_widget_has_a_tooltip_and_visible_marker(monkeypatch, tmp
         assert window.dcam_source.toolTip()  # unverified status, kept
         assert not window.wfg_channels[0]["frequency"].toolTip()  # self-evident, removed
         assert not window.flush_count.toolTip()  # self-evident, removed
+    finally:
+        window.close()
+
+
+def test_v2_experiment_sequence_view_has_seven_cards_in_named_step_order(monkeypatch, tmp_path):
+    # Phase 2 (v2 sequence-visualization): confirm the step-card container
+    # has exactly one card per named per-repeat step from application.py's
+    # STEP_* constants (run_experiment2()'s own traced order), in that same
+    # order, with the numbered titles the cards were built with. TEC scan's
+    # SetTecTarget/WaitTecStable wrap the sequence from outside once per
+    # temperature point (see application.py's STEP_* design note) and are
+    # deliberately NOT cards here -- covered separately below.
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        view = build_with_retry(window._experiment_sequence_view)
+
+        assert view.step_names() == [
+            STEP_INITIALIZE_EXPERIMENT,
+            STEP_CONFIGURE_WFG,
+            STEP_CONFIGURE_CAMERA,
+            STEP_CAPTURE_FRAMES,
+            STEP_WAIT_FOR_AD2_COMPLETION,
+            STEP_FLUSH,
+            STEP_SAVE_RESULTS,
+        ]
+
+        expected_titles = {
+            STEP_INITIALIZE_EXPERIMENT: "1. Initialize Experiment",
+            STEP_CONFIGURE_WFG: "2. Configure WFG",
+            STEP_CONFIGURE_CAMERA: "3. Configure Camera",
+            STEP_CAPTURE_FRAMES: "4. Capture Frames",
+            STEP_WAIT_FOR_AD2_COMPLETION: "5. Wait For AD2 Completion",
+            STEP_FLUSH: "6. Flush",
+            STEP_SAVE_RESULTS: "7. Save Results",
+        }
+        for step_name, expected_title in expected_titles.items():
+            assert view.step_card(step_name).title() == expected_title
+    finally:
+        window.close()
+
+
+def test_v2_experiment_sequence_view_embeds_the_real_shared_group_widgets(monkeypatch, tmp_path):
+    # Each card re-parents v2's *existing*, already-validated group-box
+    # builders whole (not rebuilt) -- confirm identity, matching this file's
+    # established reuse-verification convention (e.g.
+    # test_v2_experiment_area_exposes_fm_sweep_and_frequency_scanning above).
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        view = build_with_retry(window._experiment_sequence_view)
+
+        init_card = view.step_card(STEP_INITIALIZE_EXPERIMENT)
+        assert init_card.isAncestorOf(window.series_path)
+
+        wfg_card = view.step_card(STEP_CONFIGURE_WFG)
+        assert wfg_card.isAncestorOf(window.exp_ad2_channels[0]["enable"])
+        assert wfg_card.isAncestorOf(window.exp_ad2_channels[1]["enable"])
+        assert wfg_card.isAncestorOf(window.exp_sweep_start_khz)
+        assert wfg_card.isAncestorOf(window.exp_freq_scan_start_khz)
+
+        camera_card = view.step_card(STEP_CONFIGURE_CAMERA)
+        assert camera_card.isAncestorOf(window.exp_camera_fps)
+        assert camera_card.isAncestorOf(window.exp_frames)
+
+        flush_card = view.step_card(STEP_FLUSH)
+        assert flush_card.isAncestorOf(window.exp_flush_flowrate)
+        assert flush_card.isAncestorOf(window.exp_wait_after_flush)
+    finally:
+        window.close()
+
+
+def test_v2_experiment_sequence_view_placeholder_cards_show_honest_empty_state(monkeypatch, tmp_path):
+    # CaptureFrames/WaitForAd2Completion/SaveResults currently have no
+    # Experiment-tab-specific configuration of their own (their real
+    # behavior is entirely derived from other steps' settings) -- confirm
+    # they get the honest "no configuration" placeholder rather than
+    # invented content, and that no real field widget leaked into them.
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        view = build_with_retry(window._experiment_sequence_view)
+
+        for step_name in (STEP_CAPTURE_FRAMES, STEP_WAIT_FOR_AD2_COMPLETION, STEP_SAVE_RESULTS):
+            card = view.step_card(step_name)
+            labels = card.findChildren(QLabel)
+            assert len(labels) == 1
+            assert "No Experiment-tab configuration" in labels[0].text()
+    finally:
+        window.close()
+
+
+def test_v2_experiment_sequence_view_excludes_tec_scan_which_stays_a_separate_section(monkeypatch, tmp_path):
+    # Design decision recorded alongside application.py's STEP_* constants:
+    # SetTecTarget/WaitTecStable wrap the per-repeat step list from outside,
+    # once per temperature point -- the TEC-scan configuration group is
+    # rendered as its own separate top-level section by
+    # _center_experiment_area(), not one of this view's per-repeat cards.
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        view = build_with_retry(window._experiment_sequence_view)
+        assert window._experiment_sequence_view() is view
+
+        for step_name in view.step_names():
+            card = view.step_card(step_name)
+            assert not card.isAncestorOf(window.exp_tec_scan_enable)
+            assert not card.isAncestorOf(window.exp_tec_points)
     finally:
         window.close()

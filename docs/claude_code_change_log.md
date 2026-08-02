@@ -6,18 +6,19 @@ is not the live source of truth for the current repository state. For the
 current state, always check `git log`, `git status`, `git diff`, and the
 code itself.
 
-**Current repo-state note, refreshed after independent audit.** The old
+**Current repo-state note, refreshed during independent audit on
+2026-07-30.** The old
 top-level caveat in this document said the branch history ended at
 `5419043` and that none of the work below had been committed. That is no
-longer true. As of the refresh that added this note, branch `junjiebranch`
-has commits through `8149bc1` (`Harden valve initialize() to reject
-unrecognized status responses`), with `4105fa8` as the preceding Session
-39 UI-audit commit. The working tree is still not clean: `qt_ui.py`,
-`qt_ui_v2.py`, tooltip/layout-related tests, this changelog, and untracked
-helper/probe files contain additional post-commit work. Current code/tests
-also contain explicit **Session 41**, **Session 42**, and **Session 44**
-references, so Session 40 is not the latest documented edit state in the
-working tree.
+longer true. As of this audit pass, branch `junjiebranch` has commits
+through `556eea2` (`Replace Status/Error Out single-value displays with
+scrollable session history (HistoryLogWidget)`). The working tree is not
+clean and includes TEC-related source/tests, UI/workflow edits, hardware
+smoke-script edits, documentation updates, and untracked helper files.
+Current code/docs/tests also contain explicit references through at least
+**Session 58**. Treat this changelog as a historical narrative, not as an
+authoritative live inventory; re-check `git log`, `git status`, `git diff`,
+and the code before acting on any session claim.
 
 **Caveat on methodology -- read this before treating the document as
 authoritative.** Earlier sections were compiled from a mix of git
@@ -707,6 +708,12 @@ Label/layout-only fixes from a fresh screenshot review of both UIs (Initializati
 **Files touched:** [qt_ui.py](src/thermo_acoustic/qt_ui.py), [qt_ui_v2.py](src/thermo_acoustic/qt_ui_v2.py), [tests/test_qt_ui_hardware_settings.py](tests/test_qt_ui_hardware_settings.py) (1 test updated for the shortened labels, 2 new tests added).
 
 **Verification:** tested (183 passing, full suite, 2 new tests this session, 1 existing test updated for the new shortened label text, all other pre-existing tests -- including the group-box layout-squeeze regression guard, re-run against every group touched this session -- pass unmodified). No functional/value changes: every fix in this session is label text, widget parent/position, or layout structure only; no widget's read value, signal wiring, or downstream config-building logic changed. Not hardware-verified -- purely cosmetic/layout, no hardware interaction possible to verify against.
+
+> **Current-status correction (independent audit):** the historical
+> Open/Closed claim below was supported here only by the earlier session's
+> report, while the live workflow/migration audits retain physical P01/P02
+> routing as unverified. Current UI text therefore uses the protocol-confirmed
+> `P01`/`P02` names only; see `docs/known_open_items.md` for the holding item.
 
 ### Session 37 -- Valve Open/Closed labeling; MSO tab dead-space fix; WFG QScrollArea re-verified as still needed
 
@@ -4210,13 +4217,1219 @@ deliberately untouched throughout (fix lives entirely in
 `instruments.py`), so TEC's own uncommitted diff is unaffected, not
 just verified-untouched.
 
+### Session 58 -- Status/Error Out replaced with scrollable session history (HistoryLogWidget)
+
+Status (top toolbar) and Error Out (standalone panel) were single-line
+`QLineEdit`/`QLabel` fields each new message silently overwrote --
+history was gone the instant the next status changed. New
+`HistoryLogWidget(QListWidget)`: `add_entry(text)` appends a
+timestamped row instead of replacing the display (deliberately not
+named `setText()` -- "append" and "replace" are different operations).
+Consecutive identical entries are deduped, since several existing call
+sites (`_handle_worker_finished()`'s "OK" branch, `_safe_call()`'s
+success path) re-report the same state on every successful action, not
+just on a genuine change, and without dedup that would flood the log.
+Auto-scrolls to the newest entry only when already at the bottom, so
+scrolling up to review history isn't yanked back down by the next
+incoming message.
+
+`self.status` is now a `HistoryLogWidget`; the one existing call site
+(`_refresh_status()`) needed one line changed. The three separate
+`error_status`/`error_code`/`error_source` fields were consolidated
+into one `error_log` `HistoryLogWidget` plus a new
+`_append_error_entry(status, code, source)` helper bundling all three
+into one row; rewrote the 9 call-site triplets across
+`_handle_shutdown_timeout`/`_handle_action_timeout`/
+`_handle_shutdown_finished`/`_handle_worker_finished`/`_safe_call`/
+`closeEvent`. `qt_ui_v2.py` has its own separate, independently
+constructed copies of these widgets (not reused from v1) -- updated to
+the same type, the minimum needed to keep it working against the
+shared inherited setter methods, not new v2 functionality. One
+knock-on fix: `_v2_status_progress_group()`'s hardcoded minimum height
+(120) was too small for the new multi-row widget's real size hint,
+caught by the existing
+`test_v2_no_group_box_is_squeezed_below_its_minimum_size_hint` guard;
+bumped to 140.
+
+**5 new tests** in `tests/test_qt_ui_hardware_settings.py`: direct
+widget-level accumulation/dedup/auto-scroll behavior, plus two
+integration tests confirming multiple distinct status/error events
+accumulate through a real `MainWindow` rather than the latest
+overwriting the previous ones. Existing tests reading
+`window.status.text()` were updated to `.latest_text()` (added
+specifically for this, kept for backward-compatible single-value
+reads). The tooltip-coverage regression guard was updated 134 -> 133
+(`error_code`'s own tooltip was one of the counted fields;
+`HistoryLogWidget` isn't a tracked widget type for that sweep).
+`tests/test_qt_ui_v2.py` needed no changes at all.
+
+**Files touched:** [qt_ui.py](src/thermo_acoustic/qt_ui.py),
+[qt_ui_v2.py](src/thermo_acoustic/qt_ui_v2.py),
+[tests/test_qt_ui_hardware_settings.py](tests/test_qt_ui_hardware_settings.py).
+
+**Verification:** tested -- full suite green at the time, modulo the
+same already-documented (Sessions 41/42/48) offscreen-Qt/Shiboken
+flakiness. Committed later this session (`556eea2`) via the same
+hunk-reconstruction-and-verify discipline as every other TEC-entangled
+file this session -- all 31 hunks across `qt_ui.py`'s diff turned out
+cleanly non-overlapping with TEC's own uncommitted diff (no hunk mixed
+both at the line level), confirmed by diffing the reconstruction
+against both HEAD and the working tree before staging.
+
+### Session 58, Part 1 -- Dual UI launcher: launch_gui_v2.bat, tools/run_ui_v2.py
+
+Added `launch_gui_v2.bat` (mirrors `launch_gui.bat` exactly, launching
+`thermo_acoustic.qt_ui_v2` instead of `qt_ui`) and
+[tools/run_ui_v2.py](tools/run_ui_v2.py) (mirrors
+[tools/run_ui.py](tools/run_ui.py) the same way) -- `launch_gui.bat`
+and `tools/run_ui.py` themselves are untouched, confirmed via `git
+diff` showing zero changes to either. Checked first whether
+`tools/run_ui.py` is actually used by anything before assuming a
+sibling was worth adding, per instruction: it is -- both
+[README.md](README.md) and `docs/HANDOVER.md` document and reference
+it directly as the primary dev entry point. `docs/HANDOVER.md` is left
+untouched -- it's an explicitly point-in-time historical handover
+document (old machine paths, a stale "20 passed" test count), not a
+living doc; rewriting it would misrepresent its own nature, same
+reasoning already applied elsewhere in this project's history to
+avoid rewriting frozen changelog narrative. [README.md](README.md)
+gained a new "Launchers" section listing both `.bat` files and both
+`tools/run_ui*.py` scripts side by side with which UI each opens, plus
+a note that `launch_gui.bat` itself was not previously documented
+there at all (only `tools/run_ui.py` was). `hardware_tests/README.md`
+was checked and is not the right home -- it has zero existing
+main-GUI-launcher content, being entirely about `hardware_tests/`
+probe scripts. v2's own default-launch-target status is unchanged
+(still not launched by `launch_gui.bat`/`tools/run_ui.py`, per
+`docs/legacy_unresolved_items.md`); this only makes v2 reachable by
+explicit choice.
+
+**Committed** (`395ba9a`) -- brand-new files plus a README.md edit,
+none of it touching anything TEC-authored, so no hunk separation was
+needed.
+
+### Session 58, Part 2 -- v2 sequence-visualization, Phase 1: backend step decomposition
+
+**Design decisions recorded, not left conversational.** A new comment
+block at the top of [application.py](src/thermo_acoustic/application.py)
+(directly above the `STEP_*` name constants) documents both: (1) Flush
+is one card/step, not decomposed into sub-steps -- `flush()` fires
+exactly one `step_started`/`step_completed`/`step_failed` trio around
+its entire body; (2) when a TEC scan is enabled, the v2 UI is expected
+to show a single reused step-card list, not one per temperature point
+-- the current target/point-in-sequence is a separate top-level
+indicator outside the list. This is why `SetTecTarget`/`WaitTecStable`
+are their own two steps wrapping `run_temperature_series()`'s
+per-point loop from outside, not folded into `run_experiment2()`'s own
+per-repeat steps.
+
+**Mechanism:** a new `_report_step(progress, name)` context manager
+(module-level, not a method -- no `self` state needed) fires
+`progress("step_started", name)` on entry, `progress("step_completed",
+name)` on a normal exit, and `progress("step_failed", (name,
+str(exc)))` then re-raises on any exception -- a no-op wrapper when
+`progress` is `None`. Documented explicitly in its own docstring: only
+exceptions trigger `step_failed`; a step that returns normally with a
+"didn't succeed" result (e.g. `flush()`'s own `return False` on a
+pump-wait timeout) still reports `step_completed`, matching this
+module's existing convention of using status events/return values, not
+exceptions, for expected non-exceptional stop conditions like abort or
+timeout.
+
+**`run_experiment2()`, `flush()`, `run_temperature_series()` all gained
+an optional `progress: Callable[[str, object], None] | None = None`
+parameter**, defaulting to `None`. Wrapped the named steps exactly as
+scoped: `InitializeExperiment` (dequeue's own `NoExperiment` early
+return stays outside any step, since it's not really "step 1" failing,
+just nothing to run), `ConfigureWfg`, `ConfigureCamera`,
+`CaptureFrames` (the existing inner `try/finally` around
+`start_capture()`/`pc_trigger()`/`image_sequence()`/`stop_capture()` is
+preserved exactly, just now also wrapped by the step boundary),
+`WaitForAd2Completion` (only entered, so only fires, when
+`remaining_ad2_wait_s > 0`, exactly as scoped), `Flush` (wraps `flush()`'s
+entire body, called from `run_experiment2()` via
+`self.flush(experiment.flush_settings, progress=progress)` -- not
+separately wrapped at the call site, since `flush()` also has two other
+call sites, `handle_message()`'s `MessageName.FLUSH` handler and a
+manual "Flush" button in `qt_ui.py`, both of which now benefit from the
+same wrapping automatically if a `progress` is ever passed there too),
+`SaveResults`. `run_temperature_series()` gained `SetTecTarget`
+(wrapping `tec.apply_static_setpoint()`) and `WaitTecStable` (wrapping
+`tec.wait_until_stable()`) once per temperature point, and threads
+`progress` down into each `run_experiment2(progress=progress)` call in
+its per-repeat loop. `TecAbortedError` from `wait_until_stable()` still
+propagates through `_report_step`'s own `except Exception` (firing
+`step_failed` for `WaitTecStable`, since `TecAbortedError` is an
+`Exception`) before being caught by `run_temperature_series()`'s own
+existing `except TecAbortedError:` handler -- confirmed this composes
+correctly, not just assumed.
+
+**Verified v1 and all existing tests are completely unaffected**, the
+single most important check per instruction: full suite green with zero
+changes needed beyond three real, expected compatibility fixes caused
+by the new keyword-only `progress` parameter (not by any behavior
+change) -- two test doubles that fully replaced `Application.flush`
+with a lambda lacking a `progress` parameter
+(`tests/test_application.py`, `tests/test_full_flow_dry_run.py`), and
+one `run_experiment2()` override in `tests/test_tec.py` missing the
+same. All three now accept `progress=None`. No other caller anywhere in
+`hardware_tests/`, `tools/`, or the rest of the test suite passes
+`progress` at all, so their behavior is byte-for-byte unchanged -- the
+new parameter is purely additive.
+
+**New tests, 14 total:** [tests/test_full_flow_dry_run.py](tests/test_full_flow_dry_run.py)
+(using its existing `FakeAD2`/`FakeCamera`/`FakePump`/`FakeValve`
+fakes, no new fake infrastructure needed) covers the happy-path step
+sequence with flush disabled, with flush enabled, and with a real
+`WaitForAd2Completion` wait (reusing the same deterministic-clock
+monkeypatch technique an existing test already used, so no real
+sleeping); a dedicated failure-injection test per named step
+(`InitializeExperiment` through `SaveResults`, plus `Flush`), each
+confirming the exact `step_failed` name/message, that every step
+*before* the failure point still shows `step_completed`, and that
+*no* step after the failure point ever fires `step_started`; and one
+test confirming `flush()` returning `False` (not raising) still
+reports `step_completed`, not `step_failed`, per the documented design.
+[tests/test_tec.py](tests/test_tec.py) adds three more: the
+`SetTecTarget`/`WaitTecStable` pair firing once per temperature point
+(2 points -> 4 step events, not folded into a stubbed
+`run_experiment2()`'s own events), and a failure-injection test for
+each of the two TEC steps.
+
+**Files touched:** [application.py](src/thermo_acoustic/application.py)
+(`_report_step()`, `STEP_*` constants + design-decision comment,
+`progress` parameter on all three methods),
+[tests/test_application.py](tests/test_application.py) (1 lambda
+signature fix), [tests/test_full_flow_dry_run.py](tests/test_full_flow_dry_run.py)
+(1 lambda signature fix + 9 new tests),
+[tests/test_tec.py](tests/test_tec.py) (1 override signature fix + 3
+new tests). `tec.py` itself untouched, confirmed via `git diff` --
+this task only added new plumbing around `run_temperature_series()`'s
+existing calls into it.
+
+**Verification:** tested -- full `tests/` suite green, 313/313 (up
+from 299; 14 new tests: 11 in `test_full_flow_dry_run.py`, 3 in
+`test_tec.py` -- written per-step rather than parametrized, for
+clarity, per the instructed "confirm the right step is reported as
+failed... at each individual named step"), modulo the same
+already-documented
+(Sessions 41/42/48) offscreen-Qt/Shiboken flakiness (a different
+random `test_qt_ui_hardware_settings.py`/`test_qt_ui_v2.py` test each
+run, always clean in isolation) -- confirmed via `git diff` that this
+task touches neither `qt_ui.py` nor `qt_ui_v2.py` at all (Phase 1 is
+backend-only, no UI wiring yet). **Update:** committed (`64fdc99`) via
+the reconstruction-and-verify discipline established this session --
+`run_temperature_series()` itself doesn't exist in this commit's base
+at all (it's TEC's own uncommitted addition), so its own
+`SetTecTarget`/`WaitTecStable` step-wrapping remains bundled with
+TEC's own work rather than included in this commit; everything else
+(the `STEP_*` constants, `_report_step()`, and the `progress`
+parameter/wrapping in `flush()`/`run_experiment2()`) is self-contained
+and committed cleanly. Phase 2 (UI work) proceeded after this
+commit landed -- see below.
+
+### Session 58 continued -- hardware_tests/output/ disk cleanup (4.89 GB -> ~0) plus a retention convention going forward
+
+**Investigation first, then execution, per instruction.** Confirmed
+`.gitignore`'s `hardware_tests/output/` rule was genuinely working
+(`git status --short`/`--ignored` and `git ls-files` all confirmed --
+nothing tracked, nothing visible, zero git impact from anything done to
+this directory) before touching anything. Broke down all 8
+subdirectories by size/file count/date range and cross-referenced every
+name against the changelog and `docs/known_open_items.md` (zero hits in
+the latter) -- found that the two subdirectories whose names suggested
+a deliberately-preserved reference dataset
+(`piezo_zscan_verification/session48_first_real_scan/`,
+`qt_ui_e2e_verification/abort_mid_repeat2/` +
+`.../session33_flush_retry/`) no longer actually contained the
+sessions they're named after: every file's modification timestamp was
+recent (24/27 Jul 2026), not the original Session 33/48 dates, meaning
+later runs had silently overwritten the same script-defined path names
+with fresh captures. Reported this finding rather than assuming either
+way; user confirmed after review that the changelog's own prose (pixel
+ranges, resolution, pass/fail) is the durable record and authorized
+deleting everything.
+
+**Correction offered but not needed:** asked to fix the `.gitignore`
+comment's session attribution (reported as saying "Session 53");
+re-checked the actual file first and it already correctly said
+"Session 51" -- the mislabel was in an earlier verbal summary of the
+finding, not in the file itself. Left untouched rather than making a
+needless edit.
+
+**Deleted:** all content under `hardware_tests/output/` (the directory
+itself kept, empty) -- 4.89 GB, 1,443 files, confirmed via `du -sh`
+before (4.9G) and after (4.0K). `git status --short` before and after
+the deletion diffed byte-for-byte identical, confirming zero git
+impact, not just assumed from the gitignore rule's existence.
+
+**Retention convention added, so this doesn't silently regrow.**
+Confirmed the regrowth mechanism first: every real-hardware mode in
+[hardware_tests/test_real_workflow_smoke.py](hardware_tests/test_real_workflow_smoke.py)
+already creates a fresh `{name}_{timestamp}` run directory on every
+invocation and never deletes an old one -- the script's own default
+output path (`hardware_tests/_smoke_output`) doesn't even exist on
+disk, confirming every real run to date was pointed at
+`hardware_tests/output/<name>` by explicit operator `--output-dir`,
+not the script's own default. Added `prune_old_run_dirs(output_dir,
+prefix, keep_last)` (module-level helper) and a new `--keep-last`
+CLI flag (default `4`, `0` disables pruning) -- called once per
+real-hardware mode, right before that mode's own `run_dir` is created,
+pruning older same-prefix run directories down to `keep_last - 1` so
+the total settles back to exactly `keep_last` once the new run
+directory exists. Prefix-scoped deliberately (not a blanket
+"newest-N-of-everything" prune): if an operator ever points
+`--output-dir` at a folder shared across multiple modes, pruning one
+mode's history can't delete a different mode's most recent run.
+
+**Tests, 6 new, [tests/test_real_workflow_smoke_plan.py](tests/test_real_workflow_smoke_plan.py)**
+(the existing tracked test file for this script, reusing its own
+established `load_smoke_module()` pattern): direct unit tests of
+`prune_old_run_dirs()` covering the core "N+2 exist, keep_last=N,
+confirm N-1 remain" contract, prefix-isolation (a differently-prefixed
+sibling directory survives untouched), `keep_last=0` disabling pruning
+entirely, and a no-op on a not-yet-existing `output_dir`; plus one
+true end-to-end test through `main()` matching the exact scenario
+requested -- 5 (`N+2` for `keep_last=3`) fake pre-existing timestamped
+folders, run once (with the real hardware runner mocked out, matching
+this file's own established testing convention), confirm exactly the
+newest 3 remain (2 old + the one new run just created); plus a test
+confirming `--keep-last` defaults to `4` when not passed explicitly.
+
+**Files touched:**
+[hardware_tests/test_real_workflow_smoke.py](hardware_tests/test_real_workflow_smoke.py)
+(`prune_old_run_dirs()`, `--keep-last` flag, 5 call sites -- one per
+real-hardware mode that creates a timestamped run directory),
+[tests/test_real_workflow_smoke_plan.py](tests/test_real_workflow_smoke_plan.py)
+(6 new tests). `.gitignore` unchanged (already correct, see above).
+
+**Verification:** tested -- full `tests/` suite green, 319/319 (up
+from 313; 6 new tests), modulo the same already-documented (Sessions
+41/42/48) offscreen-Qt/Shiboken flakiness, confirmed unrelated via
+isolation reruns of the affected files. Disk space confirmed recovered
+via `du -sh` before/after; git impact confirmed zero via `git status`
+before/after, not assumed from the gitignore rule alone.
+
+### Session 58, Part 3 -- v2 sequence-visualization, Phase 2: Configuration Mode UI (ExperimentSequenceView)
+
+**Card-to-group mapping, a judgment call recorded in-code, not a
+settled design.** New `ExperimentSequenceView(QWidget)` in
+[qt_ui_v2.py](src/thermo_acoustic/qt_ui_v2.py): a static, vertically
+stacked list of `QGroupBox` "cards," one per named per-repeat step
+from `application.py`'s `STEP_*` constants
+(`add_step_card(step_name, title, content=None)` /
+`step_card(step_name)` / `step_names()`). Each card re-parents an
+*existing*, already-validated v2 group-box builder whole -- not
+rebuilt, not split field-by-field -- matching this project's
+established "v2 reuses validated panel builders instead of a second
+implementation" convention. `InitializeExperiment` gets
+`_v2_sequence_control_group()`; `ConfigureWfg` gets a new composite of
+`_v2_ad2_output_group()` plus the existing FM Sweep and Frequency
+Scanning groups side by side; `ConfigureCamera` gets
+`_v2_acquisition_group()`; `Flush` gets the existing
+`_experiment_flush_group()`. `CaptureFrames`, `WaitForAd2Completion`,
+and `SaveResults` currently have no Experiment-tab-specific
+configuration of their own (their real behavior is entirely derived
+from other steps' settings) -- `add_step_card()` gives those an
+honest "No Experiment-tab configuration specific to this step." italic
+placeholder rather than inventing content.
+
+**TEC-scan design decision (recorded alongside `application.py`'s
+`STEP_*` constants, not re-derived here):** `SetTecTarget`/
+`WaitTecStable` wrap the per-repeat step list from *outside*, once per
+temperature point -- they are deliberately not cards in this view. The
+existing `_experiment_temperature_group()` (TEC Temperature Scan) stays
+a separate top-level section in `_center_experiment_area()`, above the
+sequence view, matching that same "wraps from outside" relationship
+even in Configuration Mode. No live-mode wiring yet -- no in-flight
+card highlighting, no per-card failure attribution from
+`_report_step()`'s `progress()` events, no point-in-sequence
+indicator for the TEC scan. That's Phase 3, not started.
+
+**`_center_experiment_area()` rewritten from a `QGridLayout` to a
+`QVBoxLayout`** to accommodate the new sequence view as one more
+stacked section alongside the existing status/progress group, TEC
+temperature group, and waveform monitoring group -- a layout-container
+change only, no field ever moved between groups.
+
+**4 new tests** in [tests/test_qt_ui_v2.py](tests/test_qt_ui_v2.py):
+card count/order/titles match the `STEP_*` constants exactly; each
+mapped card genuinely contains the *same* widget instances the rest of
+v2 already binds (`window.series_path`, `window.exp_ad2_channels`,
+`window.exp_sweep_start_khz`, `window.exp_freq_scan_start_khz`,
+`window.exp_camera_fps`, `window.exp_frames`,
+`window.exp_flush_flowrate`, `window.exp_wait_after_flush` -- identity
+via `QWidget.isAncestorOf()`, not copies); the three placeholder cards
+show the honest empty-state text and nothing else; and the TEC-scan
+fields (`window.exp_tec_scan_enable`, `window.exp_tec_points`) are
+confirmed absent from every step card, staying in their own separate
+section as designed.
+
+**Files touched:** [qt_ui_v2.py](src/thermo_acoustic/qt_ui_v2.py)
+(`ExperimentSequenceView`, `_experiment_sequence_view()`,
+`_center_experiment_area()` rewrite), [tests/test_qt_ui_v2.py](tests/test_qt_ui_v2.py)
+(4 new tests).
+
+**Verification:** tested -- full `tests/` suite green, 323/323 (up
+from 319; 4 new tests), modulo the same already-documented (Sessions
+41/42/48) offscreen-Qt/Shiboken flakiness (one `qt_ui_v2.py` test hit
+it on a full-suite run, confirmed unrelated via a clean isolation
+rerun). Not yet committed -- `qt_ui_v2.py` still carries TEC's own
+uncommitted diff, so this needs the same hunk-reconstruction-and-verify
+discipline as every other TEC-entangled file this session before it
+can land.
+
+---
+
+### Session 59 -- GlobalExposure: resolved True-case against real LabVIEW source, made False-case conservative
+
+**Goal:** `Experiment2`'s `GlobalExposure` setting (camera is a Hamamatsu
+ORCA-Fusion BT / C15440-20UP, a rolling-shutter sensor with no true global
+shutter) is wired to `HamamatsuDcamBackend.configure_trigger_global_exposure()`,
+which sets the real DCAM property `DCAM_IDPROP_TRIGGER_GLOBALEXPOSURE`
+(`GLOBALRESET` when enabled, `DELAYED` when disabled) -- but that mapping
+had never been checked against the actual LabVIEW reference behavior.
+
+**True case confirmed correct.** Found the real hardware-configuration VI
+(not just `Experiment2.lvclass:GetGlobalExposure.vi`, which is a trivial
+pass-through getter) -- `Hamamatsu.lvclass:ConfigureSequence.vi`'s block
+diagram (`main_html/Hamamatsu_lvclass_ConfigureSequenced.png`/`d1.png`).
+Its `globalshutter` boolean input feeds a Select node choosing between
+numeric constants `0` (false) and `5` (true). `5` is an exact match for
+`DCAMPROP_TRIGGER_GLOBALEXPOSURE__GLOBALRESET` in the vendored DCAM-API v4
+header (`dcamsdk4/inc/dcamprop.h`) -- `enabled=True -> GLOBALRESET` needed
+no change.
+
+**False case: property-ID mismatch investigated, left unresolved.** The
+numeric property-ID constant visible at the same call site (`2049680` /
+`0x1F4690`, confirmed correct via pixel-level zoom, not a misread) does not
+match `DCAM_IDPROP_TRIGGER_GLOBALEXPOSURE`'s real v4 value (`2032384` /
+`0x1F0300`) or any other constant in the header. Tried to resolve this by
+finding a DCAM-API v3 header or a Hamamatsu version-compatibility document
+that might explain a numbering difference: none found locally (repo-wide
+search, plus the separate `C:\git\thermacoustics` LabVIEW project repo --
+which has real `.vi` binaries but no exposed DCAM headers) nor via web
+search (Hamamatsu's own "Compatibility Note" PDFs exist but weren't
+fetchable for this specific property; a second, independently-sourced v4
+header from SLAC's public EPICS `ADOrcaUsb` module, a different SDK
+snapshot than the one vendored here, has byte-identical constants for this
+property, weakening but not disproving a version-drift explanation). Also,
+LabVIEW's own false-case value (`0`) isn't a valid `TRIGGER_GLOBALEXPOSURE`
+enum member at all (valid range 1-5) -- plausibly a "don't touch this
+property" sentinel rather than an actual off-value, but that's inference,
+not confirmed, since the actual DCAM call node renders as an unreadable
+"?" icon in this repo's exported diagrams (an export limitation, not
+something fixable from available material).
+
+**Fix applied, matching the conservative option specified for this
+outcome:** `HamamatsuDcamBackend.configure_trigger_global_exposure()`
+([hamamatsu_dcam.py](src/thermo_acoustic/hamamatsu_dcam.py)) no longer
+calls `prop_setvalue()` at all when `enabled=False` -- it leaves
+`TRIGGER_GLOBALEXPOSURE` at its prior/default state instead of actively
+setting `DELAYED` (the previous, never-verified guess). Rationale: an
+unconfirmed guess at a specific "off" mode risked being systematically
+wrong for every future experiment's exposure timing; not touching the
+property is the safer default until this can be confirmed directly against
+the real LabVIEW application (not currently runnable in this environment).
+
+**2 new tests** in
+[tests/test_hamamatsu_dcam_lifecycle.py](tests/test_hamamatsu_dcam_lifecycle.py):
+`test_configure_trigger_global_exposure_enabled_sets_globalreset` and
+`test_configure_trigger_global_exposure_disabled_does_not_set_property`
+(added `TRIGGER_GLOBALEXPOSURE`/`DCAMPROP.TRIGGER_GLOBALEXPOSURE` to the
+shared `FakeDcamModule` fixture, matching the existing `TRIGGERSOURCE`
+pattern -- no prior dedicated backend-level test for this method existed
+at all).
+
+**Verification:** tested -- full suite green, 369/369, no regressions.
+
+**Not committed** -- pending review, per standing instruction. See
+`docs/known_open_items.md` for the residual False-case uncertainty this
+leaves open.
+
+---
+
+### Session 60 -- Documentation backfill: three findings from earlier the
+same day, written up for the first time
+
+A full-project audit (code quality, silent-failure, and documentation
+consistency passes) found that several real findings/fixes from earlier
+in the day had never been logged anywhere -- existing only in
+conversation history, the exact failure mode this project's own docs
+already warn about. Backfilling now, full detail in
+`docs/known_open_items.md`:
+
+1. **`CetoniPump.referenced`/`initialized` flag split** (fix landed
+   earlier the same day, before the GlobalExposure work in Session 59).
+   `initialize()` was unconditionally setting `referenced = True` despite
+   never performing a physical reference/homing move -- found while
+   live-testing the real pump (a `0x642` SDK timeout traced back to the
+   pump's incremental encoder never having been referenced). Fixed by no
+   longer touching `referenced` in `initialize()` (only `reference_move()`
+   sets it now, after confirming success); added a new `initialized`
+   field for `qt_ui_v2.py`'s pump connection-status row, which had been
+   reading `referenced` for that purpose -- a real second bug the fix
+   itself would have introduced if left unhandled, caught by running the
+   full suite (2 tests failed, both fixed). 2 new tests. Full suite
+   369/369 at the time. **Not committed** -- pending review.
+2. **Pump `generate_flow()` flow-stop mechanism, resolved: volume-based,
+   not time-based.** Two real-hardware data points collected earlier the
+   same day, before the CAN-driver incident (below) interrupted further
+   testing: `-50` rate stopped at 225.05s/0.187290ml; `-100` rate stopped
+   at 114.05s/0.187290ml -- identical stop volume, roughly-halved stop
+   time. That's the volume-based signature. A third rate and the
+   dispense-to-limit characterization were never run -- deprioritized,
+   since the real experiment/flush path never uses `generate_flow()` at
+   all, so the exact mechanism has no bearing on real experiment
+   correctness. Full detail and reasoning in `known_open_items.md`.
+3. **`vci4109w5.sys` (IXXAT VCI4 USB-to-CAN adapter driver) BSOD x3 in one
+   session, root-caused and resolved.** All three crashes were bugcheck
+   `0x1e` inside the same driver, confirmed via Windows Event Viewer.
+   Root cause: outdated driver `4.0.115.0` (2018); resolved by updating to
+   `4.0.131.0` (2022, HMS Industrial Networks), confirmed installed via
+   `Get-CimInstance Win32_PnPSignedDriver`, no recurrence since. Before
+   landing on the driver-version explanation, checked whether the day's
+   diagnostic scripts were hammering the CAN bus unusually fast (a
+   plausible alternative cause) -- they were not: production's own
+   `wait_for_pump()` polls at 20 Hz, the diagnostic scripts used 0.33-2
+   Hz, so the crashes were a genuine driver bug, not induced by unusually
+   dense polling.
+
+**GlobalExposure False-case status (Session 59) reconfirmed accurate**
+during this same audit -- no code touched it since, still OPEN as
+documented.
+
+**Verification:** documentation only, no code changed in this entry --
+full suite unaffected (still 369/369 from Session 59).
+
+---
+
+### Session 61 -- Centralize instrument enabled/disabled gating at the
+orchestration layer; record enabled state in data.tdms
+
+**Root design fix for the AD2Sdk silent-failure finding (Session 60/
+full-project audit).** Previously, whether a disabled-but-real instrument
+actually touched hardware was decided inconsistently, per-instrument, deep
+inside each backend method: `AD2Sdk.pc_trigger()`/`config_wfg()`/
+`config_do_clock_special()` silently no-op'd when disabled (and
+`pc_trigger()` additionally set `self.triggered = True` regardless --
+falsely reporting success); `HamamatsuCamera`/`CetoniPump`/`Valve`'s
+methods instead checked `backend is not None`, not `enabled`, so a
+disabled-but-not-simulated instance of any of those three would still
+attempt real hardware calls. Neither was correct. Moved the decision to
+where it belongs -- `Application.run_experiment2()`, the real orchestrator
+-- applied uniformly to all four instrument types.
+
+**`application.py` changes:**
+- `STEP_CONFIGURE_WFG`: `self.ad2.config_wfg()`/`config_do_clock_special()`
+  now only run `if self.ad2.enabled`; fires `"AD2Disabled -- WFG/DO
+  configuration skipped"` otherwise.
+- `STEP_CONFIGURE_CAMERA`: the entire body (exposure/sequence/global-exposure
+  configuration, timing-budget check) gated behind `if self.camera.enabled`.
+- `STEP_CAPTURE_FRAMES`: `start_capture()`/`pc_trigger()`/`image_sequence()`/
+  `read_frame_timestamps()`/`stop_capture()` each individually gated on the
+  relevant instrument's `enabled`; `ad2_triggered_at` now starts `None` and
+  the AD2-completion-wait step is skipped entirely (not just short-circuited
+  to zero wait) when AD2 was never triggered.
+- Flush: now requires `self.pump.enabled and self.valve.enabled` in addition
+  to the existing `experiment.flush_enabled` check -- flush() moves fluid via
+  the pump between two valve positions, not meaningful with either disabled.
+  Skipped (not attempted, not marked failed) with a new
+  `"FlushSkippedInstrumentDisabled"` status event; `FlushCompleted` stays at
+  its existing `""` ("not attempted") default, same value as "flush wasn't
+  requested at all" -- distinguishable from the new `PumpEnabled`/
+  `ValveEnabled` TDMS fields (below), not from `FlushCompleted` alone.
+- `STEP_SAVE_RESULTS`: camera-touching calls (`save_sequence`,
+  `get_camera_buffer_size`, `get_sub_region`, `read_readout_time`) gated the
+  same way; falls back to `{"buffer_size": 0, "sub_region": {},
+  "readout_time": 0.0}` when camera disabled, keeping the TDMS fields present
+  (not silently absent) with values distinguishable via `CameraEnabled`.
+
+**`instruments.py` changes:** new `AD2SdkError(RuntimeError)`.
+`AD2Sdk.pc_trigger()`/`config_wfg()`/`config_do_clock_special()` now raise
+`AD2SdkError` when `open_and_use_first_device()` returns `None` (which only
+happens when `enabled` is `False` -- a real device-open failure raises
+inside `WaveFormsBackend.open_device()` instead, never returns a falsy
+handle) instead of silently succeeding. Reasoning: after the orchestrator
+fix above, the real automated path never reaches these calls while disabled
+at all -- reaching them with a `None` handle now indicates a caller bug
+(e.g. a manual UI action bypassing an enabled check), not a legitimate
+disabled-state outcome to absorb silently. `wfg_configure()`/
+`wfg_start_stop_all_ch()`/`config_do_custom()` have the identical
+`if handle is not None` pattern but were deliberately **not** changed --
+out of scope for this pass (not reachable from `run_experiment2()`, and
+`config_do_custom()`'s "DO Custom" feature is separately documented as
+legacy/nonessential); flagging for a possible follow-up, not fixing now.
+
+**`workflows.py` changes:** `Experiment2` gets four new fields --
+`ad2_enabled`/`camera_enabled`/`pump_enabled`/`valve_enabled` (default
+`True`, mirroring the existing `sim_*` fields' shape) -- and
+`_settings_properties()` now writes `AD2Enabled`/`CameraEnabled`/
+`PumpEnabled`/`ValveEnabled` into `data.tdms` alongside the existing
+`SimAD2`/`SimCamera`/`SimPump`/`SimValve`. Closes the metadata gap the
+audit identified: previously a run with an instrument genuinely disabled
+and a run with it fully active were structurally identical in the saved
+record (`Sim*` only captures simulated-vs-real, not enabled-vs-disabled).
+
+**8 new tests** in
+[tests/test_application.py](tests/test_application.py): a shared
+`_PoisonBackend` (raises `AssertionError` on any attribute access) proves
+each disabled instrument's real backend is never touched at all, not just
+that the call happens to no-op safely --
+`test_run_experiment2_skips_disabled_ad2_steps_without_touching_backend`,
+`test_run_experiment2_skips_disabled_camera_steps_without_touching_backend`,
+`test_run_experiment2_skips_flush_when_pump_disabled_without_touching_backend`,
+`test_run_experiment2_skips_flush_when_valve_disabled_without_touching_backend`
+(each also asserting the matching new TDMS field), plus 3 direct unit tests
+that `AD2Sdk.pc_trigger()`/`config_wfg()`/`config_do_clock_special()` raise
+`AD2SdkError` rather than silently succeeding when disabled. Extended the
+existing `test_run_experiment2_records_simulated_vs_real_instruments_in_final_tdms`
+with assertions on the four new `*Enabled` fields.
+
+**Found and fixed while writing the new pump/valve tests:** `Application`'s
+default `ad2` field is a real, `enabled=True` `AD2Sdk()` (not simulated) --
+a pump-disabled/valve-disabled test that didn't also override `ad2=` would
+have made `STEP_CONFIGURE_WFG` genuinely try to open a real AD2 device
+(`FDwfDeviceOpen`) during a unit test. Not a product bug, a test-authoring
+trap worth noting for future tests in this file: any test constructing
+`Application(...)` with only some instruments overridden should be
+deliberate about what the *un-overridden* ones default to.
+
+**Verification:** tested -- full suite green, 376/376 (369 baseline + 7 new
+test functions; one existing test extended, not counted as new), modulo the
+same already-documented offscreen-Qt/shiboken flakiness (2 tests hit it on
+the full run, both confirmed passing in isolation, unrelated to this
+change).
+
+**Not committed** -- pending review, per standing instruction. Did not
+touch the uncommitted TEC integration branch's own files/diff.
+
+---
+
+### Session 62 -- Fix the production environment's missing-dependency gap:
+manifest + sanity-check script
+
+**Background:** Session 61's real-hardware verification found `exp_ctrl`
+(the conda environment `launch_gui.bat` actually uses for production runs)
+was missing `npTDMS`, installed as a stopgap at the time. This session
+fixes the underlying gap so it can't silently recur.
+
+**Root cause, confirmed not guessed:** `pyproject.toml` already existed and
+already correctly declared `npTDMS>=1.10` -- the gap wasn't a missing
+declaration, it was that `exp_ctrl` was hand-assembled over time and never
+actually built *from* that manifest, so its real installed packages had
+drifted from what the project declared. Re-audited every third-party import
+reachable from `launch_gui.bat`'s real path (`src/thermo_acoustic/*.py`,
+including lazily-imported ones like `clr`/`nptdms`/`serial` that a naive
+top-of-file-only import scan would miss) against `exp_ctrl`'s actual `pip
+list` output. Found two more of the same class of gap, previously
+undetected only because they happened to already be installed: `numpy`
+(top-level import in `workflows.py`/`qt_ui.py`) and `pythonnet` (imported
+as `clr` in `thorlabs_piezo.py`, needed for the real Z-stage/piezo motion
+path) were both real, always-needed dependencies never listed in
+`pyproject.toml` at all. Also confirmed `pylablib` (used by
+`thorlabs_apt.py`) is *not* part of the real production path -- that module
+has zero importers anywhere else in `src/`, only reachable from a
+standalone diagnostic script (`hardware_tests/test_thorlabs_apt_discovery.py`).
+
+**Fixes:**
+- `pyproject.toml`: added `numpy>=1.24` and `pythonnet>=3.0` to
+  `dependencies`; added a new `[project.optional-dependencies]` group
+  `thorlabs-apt-discovery = ["pylablib>=0.5"]` for the diagnostic-only
+  package, kept out of the core list.
+- New `requirements-exp_ctrl.txt` (repo root): exact pinned versions
+  currently validated in the real `exp_ctrl` environment (`PySide6==6.11.1`,
+  `Pillow==12.2.0`, `pyserial==3.5`, `npTDMS==1.11.0`, `numpy==2.4.6`,
+  `pythonnet==3.1.0`, `clr_loader==0.3.1`, plus `pylablib`/`pywin32` in a
+  clearly-separated optional section) -- deliberately separate from
+  `pyproject.toml`'s loose `>=` bounds, which serve general installability,
+  not exact reproduction of the one real machine this actually runs on.
+  Documents inline why vendor SDKs (Qmix, DCAM, Kinesis) aren't and can't be
+  covered by a pip requirements file.
+- New `tools/check_environment.py`: imports every real core dependency and
+  reports pass/fail per package (plus optional ones, non-fatally). Exit 0
+  if complete, exit 1 naming exactly what's missing. Verified against both
+  `exp_ctrl` (all green) and the unrelated `base`/pytest environment
+  (correctly reports `pythonnet` missing there) -- confirms it actually
+  discriminates a complete environment from an incomplete one, not just
+  prints green unconditionally.
+- New `README.md` "Environment Setup" section: how to recreate `exp_ctrl`
+  from `requirements-exp_ctrl.txt`, and to run
+  `tools/check_environment.py` after setup or whenever drift is suspected.
+
+**Verification:** tested -- full suite green, 376/376, no regressions
+(`pyproject.toml`'s TOML validity double-checked via `tomllib.load()`
+before running pytest, since pytest itself reads this file for
+`[tool.pytest.ini_options]`). `tools/check_environment.py` manually run
+against both `exp_ctrl` (exit 0) and `base` (exit 1, correctly identifying
+the missing package) to confirm it actually discriminates, not just a
+script that always prints success.
+
+**Not committed** -- pending review, per standing instruction. Did not
+touch the uncommitted TEC integration branch, and made no changes to the
+dev/test environment used for pytest (scope was `exp_ctrl` only, per
+instruction).
+
+---
+
+### Session 63 -- Fix the HIGH/MEDIUM findings from instruments.py's
+line-by-line review
+
+**H1 -- `CetoniPump.set_fill_level()`'s optimistic update never re-synced
+on a flush timeout, fixed.** `set_fill_level()` sets `self.fill_level` to
+the requested target immediately, before the real (asynchronous) pump move
+is confirmed -- correct once `wait_for_pump()` confirms arrival, silently
+wrong if it times out (`Application.flush()`'s existing `if not completed:
+return False` path), since nothing re-synced it from real hardware on that
+path. A later flush's own over-draw guard
+(`flush_volume_ml > self.pump.fill_level`) would then trust a fabricated
+number instead of reality. **Fixed:** new `CetoniPump.sync_fill_level()`
+([instruments.py](src/thermo_acoustic/instruments.py)) -- the single
+canonical place this project's repeated "read back the real fill level"
+pattern now lives (`initialize()`/`refill()` refactored to call it too,
+identical behavior, just de-duplicated); `Application.flush()`'s timeout
+path now calls it before returning `False`. Deliberately does **not**
+catch a failure from the re-sync read itself -- a pump that's both
+unconfirmed *and* unreadable must not be silently absorbed into an
+ordinary-looking `False` return. **1 new test**,
+`test_flush_resyncs_fill_level_from_real_hardware_when_wait_for_pump_times_out`
+([tests/test_application.py](tests/test_application.py)), using a fake
+backend reporting a real fill level distinct from the optimistic target,
+confirming the post-timeout value is the real one, not the fabricated one.
+
+**Verification:** tested -- full suite green (see final tally below).
+
+**Not committed** -- pending review, per standing instruction.
+
+**H2 -- `CetoniPump.cleanup()` didn't reset `initialized`, fixed; the
+`ZStage.cleanup()` half of this finding was a review mistake, corrected
+here, not fixed (there was nothing to fix).** `initialized` (added earlier
+today for `qt_ui_v2.py`'s pump connection-status row) was never reset back
+to `False` in `cleanup()`, unlike `Valve.cleanup()`'s existing correct
+`self.initialized = False`. **Fixed:** added the same reset to
+`CetoniPump.cleanup()`. **Correction:** the review also flagged
+`ZStage.cleanup()` as having the same gap for `status_note` -- re-reading
+the live file before touching it found `self.status_note = ""` already
+present there ([instruments.py:955-958](src/thermo_acoustic/instruments.py:955)),
+and existing tests (`tests/test_application.py:904-906`, `:1069-1071`)
+already cover it. The original review's claim about `ZStage` was simply
+wrong -- noted here rather than silently dropped, and rather than "fixing"
+something that wasn't broken. **1 new test**,
+`test_cetoni_pump_cleanup_resets_initialized`
+([tests/test_application.py](tests/test_application.py)).
+
+**Verification:** tested -- full suite green (see final tally below).
+
+**Not committed** -- pending review, per standing instruction.
+
+**M1 -- `SerialTextCommandBackend.close()` could wedge `self.port`
+permanently if `port.close()` raised, fixed.** `self.port = None` only ran
+after `port.close()` returned -- a raise left `self.port` set to the
+broken handle, so a future `_open()` would see it as "already open" and
+skip reopening, and a future `close()` would try to close the same broken
+handle again. **Fixed:** wrapped in `try/finally` so the reset happens
+regardless; the exception itself still propagates normally (`log_call()`
+logs and re-raises, unchanged). **1 new test**,
+`test_close_resets_port_to_none_even_when_port_close_raises`
+([tests/test_instruments.py](tests/test_instruments.py)), using a fake
+port whose `close()` raises -- confirms the exception still propagates,
+`self.port` is `None` afterward, and a second `close()` call doesn't
+attempt to close the same broken port again.
+
+**Verification:** tested -- full suite green (see final tally below).
+
+**Not committed** -- pending review, per standing instruction.
+
+**M2 -- `Valve.set_position()` assigned `self.position` before confirming
+the write reached the device, fixed.** Same optimistic-update shape as H1,
+on the valve: `self.position = position` ran before `backend.write()`, so
+a raised exception left `self.position` claiming a move that was never
+sent. **Fixed:** moved the assignment to after `backend.write()` returns
+without raising. Checked every real caller (`application.py`'s two
+`flush()`/`run_temperature_series()` call sites, `qt_ui.py`'s Valve Pos1/
+Pos2 buttons, the confirmed-dead `ui.py`) -- none reads `self.valve.position`
+in the same expression as the `set_position()` call, so nothing depends on
+the old ordering. **1 new test**,
+`test_valve_set_position_does_not_update_position_when_write_raises`
+([tests/test_application.py](tests/test_application.py)).
+
+**Verification:** tested -- full suite green, 380/380.
+
+**Not committed** -- pending review, per standing instruction.
+
+**M3 -- extended this morning's AD2Sdk enabled-gating fix
+(`pc_trigger()`/`config_wfg()`/`config_do_clock_special()`) to the 8
+remaining methods with the identical silent-no-op shape.** Fixed:
+`wfg_configure()`, `wfg_start_stop_all_ch()`, `config_do_custom()`,
+`do_configure()`, `do_reset()`, `start_stop_do()`, `capture_scope()`,
+`capture_scope_channels()` -- all now raise `AD2SdkError` instead of
+silently no-op'ing (or, for the two `capture_scope*` methods, silently
+returning `[]`/`{}`) when reached with AD2 disabled. **Highest-value fix
+in this set:** `capture_scope()`/`capture_scope_channels()` are live and
+manually reachable (`qt_ui.py`'s MSO tab, `_mso_capture()`) -- previously
+returned misleadingly-empty capture data with zero indication AD2 was
+disabled, indistinguishable from a real capture that genuinely returned
+zero samples. Confirmed the real UI caller already runs through
+`_run_action()`/`ActionWorker` (the same pattern already verified to
+catch and cleanly surface `AD2SdkError` for `config_wfg()`'s "Apply WFG"
+button) -- not a crash. Two standalone diagnostic scripts,
+`tools/capture_ad2_wavegen_scope.py` and
+`tools/capture_ad2_wavegen_scope_matplotlib.py`, call `capture_scope()`
+directly (not through the UI) -- if AD2 is disabled there, they'll now
+show a clear Python traceback instead of silently plotting nothing,
+which is the right failure mode for a standalone CLI tool. **8 new
+tests** in [tests/test_application.py](tests/test_application.py), same
+`_PoisonBackend`-based pattern as this morning's `pc_trigger()`/
+`config_wfg()`/`config_do_clock_special()` tests.
+
+**Verification:** tested -- full suite green, 388/388.
+
+**Not committed** -- pending review, per standing instruction.
+
+---
+
+### Session 64 -- Fix the HIGH finding from qmix_backend.py's line-by-line
+review: refill()/empty() never waited for real completion
+
+**`CetoniPump.refill()`/`empty()` issued the same asynchronous, target-based
+`set_fill_level()` SDK call `flush()` uses, but nothing ever waited for the
+real pump to arrive -- the third instance today of the optimistic-update-
+without-confirmation shape (after `CetoniPump.set_fill_level()`'s own H1 fix
+and `Valve.set_position()`'s M2 fix).** Traced through the real call chain:
+`CetoniPump.refill()`'s own internal fill-level sync ran immediately after
+issuing the move, before any wait -- reading back a premature, likely
+still-in-progress value even on what would otherwise look like a normal,
+successful call. The manual "Refill"/"Empty" buttons
+(`qt_ui.py`) called `self.app.pump.refill()`/`empty()` directly, bypassing
+`Application` (and its `wait_for_pump()` machinery) entirely.
+
+**Fix, following the existing architectural precedent rather than inventing
+a new one:** new `Application.refill()`/`Application.empty()`
+([application.py](src/thermo_acoustic/application.py)) -- issue the move via
+`self.pump.refill()`/`empty()`, call the same `wait_for_pump(timeout_s)`
+`flush()` already uses (default `timeout_s=60.0`, mirroring
+`QmixPumpBackend.reference_move_timeout_s`'s own default -- no
+`FlushSettings`-equivalent volume/flowrate-derived formula exists for these,
+since neither takes a caller-supplied settings object), then **always**
+re-sync `fill_level` from real hardware afterward -- not only on timeout
+(unlike `flush()`'s own conditional-only-on-timeout shape): because
+`CetoniPump.refill()`/`empty()`'s own internal sync already ran before the
+wait, even the success path needs a fresh post-wait read, not just the
+failure path. Return `True`/`False` matching `flush()`'s own contract; fires
+`"RefillComplete"`/`"RefillTimedOut"` (and the `Empty` equivalents) status
+events.
+
+**`qt_ui.py`'s "Refill"/"Empty" buttons updated** to call new `_refill()`/
+`_empty()` wrapper methods (which call `self.app.refill()`/`empty()` and
+convert the bool result to a status string), matching `_flush()`'s own
+already-established wrapper pattern just above it -- not the raw
+`self.app.pump.refill()`/`empty()` calls from before. `qt_ui_v2.py` needed no
+separate change -- confirmed it has no direct call site of its own, reusing
+v1's Pump&Valve panel builder as usual.
+
+**4 new tests** in [tests/test_application.py](tests/test_application.py)
+(`test_application_refill_waits_for_completion_and_ends_with_accurate_fill_level`,
+`test_application_refill_resyncs_fill_level_from_real_hardware_when_wait_for_pump_times_out`,
+and the `Empty` equivalents), reusing the same `_FakePumpBackendWithRealFillLevel`
+fixture the flush H1 test already established (extended with no-op
+`refill()`/`empty()` methods).
+
+**Verification:** tested -- full suite green, 392/392.
+
+**Not committed** -- pending review, per standing instruction. No TEC-related
+code exists in `qmix_backend.py`; not applicable here.
+
+---
+
+### Session 65 -- Fix the three MEDIUM findings from hamamatsu_dcam.py's
+line-by-line review
+
+**Finding 1 -- `configure_sequence()`'s optimistic `sequence_settings`
+update (the same shape found twice already in Sessions 63/64, this time in
+software state rather than physical motion).**
+[hamamatsu_dcam.py](src/thermo_acoustic/hamamatsu_dcam.py) previously
+assigned `self.sequence_settings = settings or {}` *before*
+`_configure_sequence_properties()` applied any of the individual DCAM
+property writes -- a mid-sequence failure (an unsupported
+`masterpulse_mode`, an out-of-range `masterpulse_interval_s`, ...) left
+`sequence_settings` reflecting the requested-but-unconfirmed configuration.
+`_sequence_buffer_frame_count()` reads `sequence_settings["frames"]` to size
+the buffer for the *next* capture, so a retry after a partial failure could
+size a buffer against a configuration the real device never actually got.
+**Fix:** `_configure_sequence_properties()` now takes `settings` as a
+parameter instead of reading `self.sequence_settings`; `configure_sequence()`
+only commits `self.sequence_settings = new_settings` after the whole method
+returns without raising, so a failure leaves it at the last *confirmed*
+configuration, not a third, distinct "partially applied" state.
+
+**Finding 2 -- `_ensure_buffer()`'s `buf_release()` failure was silently
+swallowed with a bare `except Exception: pass`,** the identical shape
+already identified and fixed as "Finding F" in `close()`
+(Session 51/52-era work) but never swept into this second call site.
+**Fix:** logs via `logger.error()` + `log_transaction(..., success=False)`,
+same pattern as `close()`'s two cleanup steps -- retry behavior (the
+subsequent `buf_alloc()` call) is unchanged, only the silence is fixed.
+
+**Finding 3 -- `read_readout_time()` could not distinguish "property
+genuinely unsupported on this camera" from "the property exists but the
+live query call failed,"** collapsing both to a plausible-looking `0.0`.
+Traced the consequences of that masking to two real call sites:
+`application.py`'s `experiment.save_camera_settings(...)` writes it straight
+through to TDMS as `ReadoutTime` (permanent experiment metadata), and
+`Application._check_camera_timing_budget()` -- a real safety check that
+raises `ValueError` if the configured Camera FPS exceeds what
+exposure+readout can sustain -- fed a masked failure in as an artificially
+low readout time, which could let an unachievable FPS silently pass the
+check. **Fix:** genuine query failures (property exists, `prop_getvalue()`
+itself returns `False`) now return `None` -- this project's existing
+"value unavailable" TDMS sentinel (`_tdms_scalar()` already maps
+`None -> ""`, distinguishable from a real `0.0` reading in the written
+file) -- logged as a failed transaction via `log_transaction`, not raised
+(this is a metadata read, not a command that leaves hardware in an
+unconfirmed state). The genuinely-unsupported-property case still returns
+`0.0` unchanged. `_check_camera_timing_budget()` (application.py) now
+explicitly checks for `None` and raises its own `ValueError` with a clear
+message instead of crashing on `max(None, 0.0)` or silently treating
+"unknown" as "0 seconds, FPS is fine." Return-type hints widened to
+`float | None` in `hamamatsu_dcam.py` and `instruments.py`'s
+`HamamatsuCamera.read_readout_time()` passthrough.
+
+**5 new tests:** `test_configure_sequence_partial_failure_does_not_update_sequence_settings`
+([tests/test_hamamatsu_dcam_lifecycle.py](tests/test_hamamatsu_dcam_lifecycle.py),
+Finding 1 -- forces a real partial hardware write via a fake `Dcam` whose
+`prop_setvalue()` fails only for the second property);
+`test_ensure_buffer_logs_swallowed_buf_release_failure_instead_of_silently_passing`,
+`test_read_readout_time_returns_none_on_genuine_query_failure_not_zero`,
+`test_read_readout_time_still_returns_real_zero_when_device_reports_it`, and
+`test_check_camera_timing_budget_raises_when_readout_time_unavailable`
+([tests/test_application.py](tests/test_application.py)).
+
+**Finding 4 (LOW, not fixed)** -- `_stop_capture_if_active()` clears
+`capture_active = False` in a `finally` block even when the real
+`cap_stop()` call raises. Left as-is per its own reasoning (the exception
+is still raised/logged, not swallowed -- a caller has to actively ignore it
+to hit the false-idle-state scenario) and backlogged in
+[known_open_items.md](known_open_items.md).
+
+**Verification:** tested -- full suite green, 397/397 (one run hit the
+already-documented pre-existing offscreen-Qt/shiboken flakiness in
+`test_qt_ui_v2.py::test_v2_every_value_widget_has_a_tooltip_and_visible_marker`,
+confirmed via isolation rerun to pass alone -- unrelated to this session's
+changes, which touch only `hamamatsu_dcam.py`/`instruments.py`/`application.py`).
+
+**Not committed** -- pending review, per standing instruction. No
+TEC-related code exists in `hamamatsu_dcam.py`; not applicable here.
+
+---
+
+### Session 66 -- Fix the two findings from waveforms.py's line-by-line
+review (1 local, 1 in instruments.py's AD2Sdk)
+
+**Finding 1 -- `configure_do()`'s `output_mode` silently fell back to
+"pushpull" for any unrecognized string, with no validation anywhere
+upstream.** Unlike `function`/`trigger_source` (real
+`WaveformFunction`/`TriggerSource` enums, pre-validated -- well, silently
+defaulted, see Finding 3 below -- by `ad2.py`'s `_coerce_enum()` before
+ever reaching this file), `DoSingleChannelConfig.output_mode` is a plain
+`str` field with zero upstream validation
+(`coerce_do_channel_config()` just casts to `str`). `waveforms.py:599`
+was the *only* point in the whole pipeline that could ever catch a typo,
+and it silently substituted push-pull drive mode instead of raising.
+**Fix:** new `_output_mode_value()` helper
+([waveforms.py](src/thermo_acoustic/waveforms.py)) raises `WaveFormsError`
+listing the valid options when `output_mode` doesn't match any known key.
+Deliberately did **not** add a second validation layer in `ad2.py`'s
+`coerce_do_channel_config()`: `_OUTPUT_MODES` is `WaveFormsBackend`-only
+mapping data, `ad2.py` cannot import `waveforms.py` (circular --
+`waveforms.py` already imports from `ad2.py`), and duplicating the
+valid-values set in two files would create two sources of truth that
+could silently drift -- a worse outcome than one well-placed check. This
+also matches the `hamamatsu_dcam.py` ROI-validation precedent: validation
+lives where the domain-specific limits/mapping data actually lives, not
+in the plain-dataclass module above it.
+
+**Finding 2 -- the 5th instance today of the optimistic-update-before-
+confirmation shape, in `instruments.py`'s `AD2Sdk`.**
+`config_wfg()`, `wfg_configure()`, `config_do_custom()`, and
+`config_do_clock_special()` all committed the new config to
+`self.wfg_config`/`self.do_config`/`self.do_custom_config`/
+`self.do_clock_settings` *before* the real `WaveFormsBackend` call was
+confirmed to succeed -- discovered while verifying (per explicit
+instruction, not assumed) whether `waveforms.py` sits under any of this
+morning's AD2Sdk disabled-state fixes with its own independent gap; it
+didn't (see the waveforms.py review's pattern-(c) verdict), but tracing
+that boundary surfaced this separate, unrelated pattern-(a) issue in the
+same four methods M3 touched this morning for a different reason.
+**Traced downstream consumers first, as instructed:** TDMS metadata for
+WFG/DO settings is built from `Experiment2.wfg_config`/
+`Experiment2.do_clock_settings` directly ([workflows.py:218-219](src/thermo_acoustic/workflows.py:218))
+-- a completely separate field from `AD2Sdk`'s, set once by the caller at
+experiment-construction time -- so this bug does **not** reach permanent
+experiment metadata. No UI display reads `AD2Sdk.get_wfg_config()`/
+`get_do_config()` either (`wfg_configure_read_back()` exists for that
+purpose per its LabVIEW-parity name but has zero call sites in
+`qt_ui.py`/`qt_ui_v2.py` today). The only other consumers are `AD2Sdk`'s
+own single-channel staging methods (`wfg_configure_carrier_single_ch()`
+etc.), which are *intentionally* pre-hardware-call, no-confirmation
+staging mutations by design (they issue no backend call at all) --
+different in kind from the four fixed methods, which do call hardware as
+part of the same call. No legitimate "show the requested-but-unconfirmed
+value" consumer was found, so no separate staging field was needed.
+**Fix:** each of the four methods now coerces the config into a local
+variable, issues the real backend call with it, and only assigns it to
+the persistent field(s) after that call returns without raising.
+
+**Not fixed, flagged for your triage:** `AD2Sdk.do_configure()`
+([instruments.py:376-381](src/thermo_acoustic/instruments.py:376)) has
+the identical shape but wasn't one of the four methods named in this
+task's scope -- left untouched.
+
+**4 new regression tests** (one per fixed method) in
+[tests/test_application.py](tests/test_application.py), using a new
+`FakeWaveFormsBackendThatRaisesOnConfigure` fixture (a `fail` flag
+toggled after an initial successful call establishes a real "last
+confirmed" config) -- each asserts the field still points to the exact
+same object after a failing second call, not a new one reflecting the
+failed request. Plus 2 new tests for Finding 1
+(`test_configure_do_rejects_unsupported_output_mode_instead_of_defaulting_to_pushpull`,
+`test_configure_do_accepts_known_output_modes_case_and_space_insensitively`).
+
+**Finding 3 (LOW, not fixed)** -- `_enum_value()`'s silent
+default-value fallback ([waveforms.py:193-198](src/thermo_acoustic/waveforms.py:193))
+is currently dead code (all four enum-to-int mappings it backs are
+exhaustive 1:1 matches of their enums, and `ad2.py`'s own `_coerce_enum()`
+already independently silently-defaults before values reach this file)
+but has no test enforcing the enum/mapping stay in lockstep. Backlogged in
+[known_open_items.md](known_open_items.md).
+
+**Verification:** tested -- full suite green, 403/403.
+
+**Not committed** -- pending review, per standing instruction. No
+TEC-related code exists in `waveforms.py`; not applicable here.
+
+---
+
+### Session 67 -- Fix Finding 1 from application.py's line-by-line review:
+dict-input WfgConfig/DoConfig clamping data loss
+
+**`run_experiment2()`'s deliberate "re-snapshot settings after
+config_wfg()/config_do_clock_special()" mechanism -- added specifically so
+`WFGOutOfRangeCh1`/`Ch2` and `DOFreqActual` in `data.tdms` reflect real
+hardware clamping, not pre-configure defaults -- silently failed to work
+whenever `Experiment2.wfg_config`/`do_clock_settings` started out as a
+dict instead of a typed `WfgConfig`/`DoConfig` object.** Root cause:
+`coerce_wfg_config()`/`coerce_do_config()` ([ad2.py](src/thermo_acoustic/ad2.py))
+return the *same* object unchanged when already typed, but build a
+brand-new, disconnected object from a dict. `AD2Sdk.config_wfg()`/
+`config_do_clock_special()` coerce `experiment.wfg_config`/
+`do_clock_settings` internally -- when that's a dict, the object
+`WaveFormsBackend.configure_wfg()`/`configure_do()` actually mutates with
+the real clamping result was never the same object the second
+`save_settings()` call reads back. `Experiment2.wfg_config`'s own type
+hint (`WfgConfig | dict[str, Any] | None`) documents dict as a supported
+input, and it's exercised by `tests/test_application.py`,
+`tests/test_full_flow_dry_run.py`, and -- notably -- 
+[hardware_tests/test_real_workflow_smoke.py](hardware_tests/test_real_workflow_smoke.py:854),
+a real-hardware test script. Not reachable through the live GUI today
+(`qt_ui.py` always constructs a real `WfgConfig`), but a live risk for any
+future dict-based caller (e.g. a preset-loading feature).
+
+**Fix location decided by checking every other caller of
+`coerce_wfg_config()`/`coerce_do_config()` first, as instructed:**
+`application.py`'s own `_ad2_completion_wait_seconds()`/
+`_configured_camera_fps()` and several `AD2Sdk` methods call these
+coercion functions purely to *read* -- making them mutate a caller-supplied
+dict in place (the alternative fix location) would be a surprising,
+undocumented side effect on every one of those read-only call sites, and
+would also require reverse-mapping the clamping results back onto
+whichever of several key-name aliases (`frequency_hz`/`frequencyHz`/
+`frequency`/`freq`, etc. -- see `_first_present()`) the original dict
+happened to use. Instead, fixed at the true point of divergence:
+`run_experiment2()` ([application.py](src/thermo_acoustic/application.py))
+now reassigns `experiment.wfg_config = self.ad2.get_wfg_config()` and
+`experiment.do_clock_settings = self.ad2.get_do_config()` immediately
+after `config_wfg()`/`config_do_clock_special()` succeed (inside the
+`if self.ad2.enabled:` branch only) -- `AD2Sdk`'s own fields are only ever
+set post-confirmation since Session 66's Fix 2, so this makes
+`experiment.wfg_config`/`do_clock_settings` point at the confirmed,
+clamped object regardless of which type they started as, with zero
+changes to `coerce_wfg_config()`/`coerce_do_config()` themselves.
+
+**1 new test:**
+`test_run_experiment2_records_real_wfg_clamping_in_final_tdms_when_wfg_config_is_a_dict`
+([tests/test_application.py](tests/test_application.py)) -- mirrors the
+existing typed-`WfgConfig` regression test for the original "Finding A"
+bug, but with a dict-shaped `wfg_config`. Verified end-to-end: manually
+disabled the fix (commented out the two reassignment lines), confirmed
+the new test fails with a clear assertion (`experiment.wfg_config` still
+a plain `dict`, not the confirmed `WfgConfig`), then restored the fix and
+confirmed it passes.
+
+**Findings 2 and 3 (LOW, not fixed)** -- both already correctly assessed
+in the review as currently-unreachable/inherited limitations, not live
+bugs: `handle_message()`'s `CETONI_REFILL`/`CETONI_EMPTY` branches still
+bypass this morning's `Application.refill()`/`empty()` H1 fix (confirmed
+unreachable -- `qt_ui.py` never drives the message-queue dispatch path),
+and `wait_for_pump()`'s single boolean return can't distinguish abort
+from timeout (pre-existing `flush()` behavior, correctly inherited by
+today's `refill()`/`empty()`, not a new bug). Backlogged in
+[known_open_items.md](known_open_items.md).
+
+**Verification:** tested -- full suite green, 404/404. The fix's
+`self.ad2.get_wfg_config()`/`get_do_config()` calls initially broke 18
+tests in `tests/test_full_flow_dry_run.py`, whose minimal `FakeAD2` test
+double didn't implement those methods (only `config_wfg()`/
+`config_do_clock_special()`) -- fixed by having `FakeAD2` track and
+return the config it was given, matching what a real `AD2Sdk` returns
+post-Session-66-Fix-2. Two separate runs each hit one already-documented
+pre-existing offscreen-Qt/shiboken flake (different test each time,
+same `SystemError: ... returned NULL without setting an exception`
+signature), both confirmed via isolation rerun to pass alone -- unrelated
+to this session's changes, nowhere near `application.py`/`ad2.py`.
+
+**Not committed** -- pending review, per standing instruction. No
+TEC-related code touched; `run_temperature_series()` calls into
+`TecController` only at the boundary (`apply_static_setpoint()`,
+`wait_until_stable()`), not reviewed or modified.
+
+---
+
+### Session 68 -- Fix Finding 1 from workflows.py's line-by-line review:
+missing WfgChannelConfig fields in data.tdms
+
+**`_wfg_properties()` only ever recorded `carrier.frequency_hz`/
+`amplitude_v`, `trigger.sec_run`/`sec_wait`/`repeat_count`, and
+`out_of_range` per WFG channel -- real, user-editable Experiment-tab
+fields (`carrier.function`, `carrier.offset_v`, `carrier.symmetry_percent`,
+`carrier.phase_deg`, `trigger.source`, and the entire `fm_mod` sub-carrier)
+were never written to `data.tdms` at all, so a saved experiment's actual
+waveform shape (or FM-modulation settings) could not be reconstructed
+after the fact.** Confirmed these are real, live GUI fields, not
+theoretical: `qt_ui.py`'s `exp_ch1_function`/`exp_ch1_offset`/
+`exp_ch1_symmetry`/`exp_ch1_phase` widgets and the FM sub-carrier group
+are all user-editable on the Experiment tab.
+
+**Fix:** `_wfg_properties()` ([workflows.py](src/thermo_acoustic/workflows.py))
+now also records `WFGFunction{Ch}`/`WFGOffset{Ch}`/`WFGSymmetry{Ch}`/
+`WFGPhase{Ch}`/`WFGTriggerSource{Ch}`, following the file's existing
+`WFG<Field><Suffix>` naming convention. New `_wfg_fm_mod_properties()`
+helper adds the `fm_mod` sub-carrier as its own `WFGFM<Field><Suffix>`
+cluster (`WFGFMEnabled`/`WFGFMFreq`/`WFGFMAmp`/`WFGFMFunction`/
+`WFGFMOffset`/`WFGFMSymmetry`/`WFGFMPhase`), mirroring
+`_fm_sweep_properties()`'s existing "gate on enabled, degrade the rest to
+`\"\"`" pattern for the top-level FM sweep feature -- `WfgChannelConfig.
+fm_mod` is never actually `None` (its dataclass default is
+`CarrierSettings(enable=False)`, not `None`), so reporting its own
+default `frequency_hz`/`amplitude_v` unconditionally would misleadingly
+look like real applied FM-mod settings when FM mod was never active;
+gating on `fm_mod.enable` avoids that. Both the channel-absent case
+(existing) and the new fm_mod-disabled case degrade to the same `""`
+sentinel convention already used throughout this file. `WaveformFunction`/
+`TriggerSource` (both `str, Enum`) are stored as the raw enum member,
+matching this file's existing convention of storing raw typed values and
+letting `_tdms_scalar()` do the final `Enum -> .value` conversion at
+write time (confirmed via `_tdms_scalar()`'s explicit `isinstance(value,
+Enum)` branch) -- not manually `str()`'d at the call site.
+
+**2 new tests**
+(`test_experiment2_writes_wfg_carrier_trigger_and_fm_mod_fields_to_tdms`,
+`test_experiment2_wfg_fm_mod_fields_default_to_sentinel_when_channel_absent`)
+in [tests/test_application.py](tests/test_application.py), using
+distinguishable non-default values for every new field (Ch1 with fm_mod
+enabled, Ch2 with fm_mod left at its disabled default) plus a
+channel-entirely-absent case, so a bug reading the wrong field,
+hardcoding a default, or conflating the two different "unavailable"
+cases (channel absent vs. fm_mod disabled) would be caught.
+
+**Findings 2, 3, and the DO-channel-selection omission (all LOW,
+not fixed)** -- backlogged in [known_open_items.md](known_open_items.md):
+the `"FlushCompleted": ""` unenforced call-order invariant,
+`_git_commit_hash()`'s process-lifetime cache, and
+`_settings_properties()`'s DO-channel selection only recording the first
+enabled DO channel (currently unreachable -- `qt_ui.py`'s
+`_experiment_do_clock_config()` only ever configures one).
+
+**Verification:** tested -- full suite green, 406/406.
+
+**Not committed** -- pending review, per standing instruction. No
+TEC-related code exists in the fixed portion of `workflows.py`;
+`TemperatureSeries` (this file's own TEC-scheduling dataclass) was
+reviewed but not touched by this fix.
+
+---
+
+### Session 69 -- Fix Finding 1 from the targeted qt_ui.py/qt_ui_v2.py UI
+audit: "GO" button bypasses fill-level confirmation
+
+**The manual "GO" button (`_start_go_level()`) had the exact same
+fire-and-forget bug refill()/empty() were fixed for the same day
+(Session 64's H1 fix) -- it just wasn't in that fix's scope, since it's a
+different button (arbitrary-level pump moves, not full/empty).** Called
+`self.app.pump.set_fill_level()` directly: no wait for the real pump to
+arrive, no re-sync afterward, so `self.pump.fill_level` was left at
+`set_fill_level()`'s own optimistic target if the move didn't actually
+complete -- the same scenario the H1 fix's comment explicitly worried
+about (a later `flush()`'s over-draw guard trusting a fabricated number).
+
+**Fix:** new `Application.go_to_level(level, flow_rate=None,
+timeout_s=60.0)` ([application.py](src/thermo_acoustic/application.py)),
+the exact `refill()`/`empty()` pattern reused verbatim (not redesigned,
+per instruction): issue the move via `self.pump.set_fill_level()`, wait
+via `wait_for_pump(timeout_s)`, then unconditionally re-sync
+`fill_level` from real hardware regardless of timeout/success. Fires
+`"GoToLevelComplete"`/`"GoToLevelTimedOut"` status events, matching the
+`Refill`/`Empty` naming convention. `qt_ui.py`'s `_start_go_level()` now
+routes through a new `_go_to_level()` wrapper (converts the bool result
+to a status string, same shape as `_refill()`/`_empty()`) instead of
+calling `self.app.pump.set_fill_level()` directly.
+
+**2 new tests**
+(`test_application_go_to_level_waits_for_completion_and_ends_with_accurate_fill_level`,
+`test_application_go_to_level_resyncs_fill_level_from_real_hardware_when_wait_for_pump_times_out`)
+in [tests/test_application.py](tests/test_application.py), mirroring the
+existing `refill()`/`empty()` tests exactly (same `_FakePumpBackendWithRealFillLevel`
+fixture, no changes needed to it).
+
+**Finding 2 (`wfg_start_stop_all_ch()`) folded into the existing
+`do_configure()` backlog entry** in
+[known_open_items.md](known_open_items.md) (same root cause, confirmed
+reachable from the manual WFG tab and the Abort path). **Finding 3**
+(no general per-channel FM-mod control on the Experiment tab) added as a
+short feature-completeness note in the same entry -- not a bug,
+independently confirmed no misleading "looks editable but ignored"
+widget exists for it.
+
+**Verification:** tested -- full suite green, 408/408, first run clean.
+
+**Not committed** -- pending review, per standing instruction. No
+TEC-related code touched.
+
+**This closes the module review queue:** `instruments.py` →
+`qmix_backend.py` → `hamamatsu_dcam.py` → `waveforms.py` →
+`application.py` → `workflows.py` → `qt_ui.py`/`qt_ui_v2.py`. Across
+the six full reviews plus this targeted UI audit: 14 real bugs found
+and fixed (5 in `instruments.py`, 1 in `qmix_backend.py`, 3 in
+`hamamatsu_dcam.py`, 2 in `waveforms.py`/its `AD2Sdk` layer, 1 in
+`application.py`, 1 in `workflows.py`, 1 in `qt_ui.py`), plus a
+documented backlog of low-priority items in `known_open_items.md`.
+
 ---
 
 ## Known remaining open items as of this writing
 
+**This section predates [docs/known_open_items.md](known_open_items.md)
+(compiled 2026-07-28) and has known staleness -- confirmed via a
+dedicated cross-reference pass (Session 58) that several bullets below
+say "open"/"not fixed" for items later sessions actually resolved (two
+specific corrections are inlined below where found). `known_open_items.md`
+is the actively-maintained, current source of truth going forward; this
+section is kept as historical narrative, not re-synced line-by-line on
+every session (that duplication is exactly what caused the staleness in
+the first place).**
+
 **Resolved since the previous version of this list** (kept out of the list below, not repeated): SeriesPath overwrite protection, syringe-volume-vs-flush-capacity mismatch, camera trigger source left undefined, Qmix fill-level unit ambiguity, valve ready-check only at init (not reused during flush), the `"BD 5ml"` inner-diameter value, the experiment-path exposure time never reaching real DCAM hardware (Session 20), TDMS write verification (Session 26), the WFG-tab live-use labeling (Session 29, proposed 3 days prior to that session, previously only done for Camera), the WFG tab's Sweep "Center Frequency" unit (Session 16's MHz choice corrected to kHz in Session 29, alongside every other Carrier/FM-Mod/Sweep frequency field on both tabs), the settings.json Hz->kHz silent-misload gap Session 29 itself flagged as unfixed (Session 30: versioned `schema_version` key + one-time auto-convert + load-time warning), Abort not stopping a running experiment series (Session 31 found it on real hardware, Session 32 fixed it, Session 33 hardware-reconfirmed the fix), `FlushSettings.timeout_s`'s missing minutes-to-seconds conversion (Session 31/32, hardware-reconfirmed Session 33 with the exact originally-failing parameters), and the real Qmix pump being unable to connect via `qt_ui.py`'s Initialize button on a clean environment because `QMIXSDK` was never set (Session 31/32, hardware-reconfirmed Session 33 with `QMIXSDK` genuinely unset beforehand).
 
-- **Valve status-query handshake (`"S"` command)** was originally protocol-derived and unverified (Session 2), but later real-hardware GUI verification reported `status_note="confirmed"` (Session 31). Remaining caution: current code still treats some non-empty but unrecognized status responses as connected-with-note rather than a hard initialization failure, so inspect `Valve._apply_status_response()` before relying on the handshake as a strict device-identity proof.
+- **Valve status-query handshake (`"S"` command)** was originally protocol-derived and unverified (Session 2), but later real-hardware GUI verification reported `status_note="confirmed"` (Session 31). Remaining caution: current code still treats some non-empty but unrecognized status responses as connected-with-note rather than a hard initialization failure, so inspect `Valve._apply_status_response()` before relying on the handshake as a strict device-identity proof. **[Stale, corrected Session 58]:** the "reject unrecognized status responses" hardening this bullet describes as still-open was investigated and left "uncommitted, pending a decision" in an earlier version of this changelog -- it has since been committed (`8149bc1`), confirmed via `git log --all -- instruments.py`; see `known_open_items.md`.
 - **DCAM frame timestamp clock domain** is unverified -- real per-frame values are now captured and used when the camera/driver reports support, but which clock (camera-internal vs. host-driver) produced them, and what epoch `sec` is measured from, has not been confirmed against real hardware or official SDK documentation. (Session 8.)
 - **Pump flow-rate sign convention** is no longer completely unknown: current UI labeling records `-=aspirate, +=dispense`, and no sign-inversion logic exists anywhere in `CetoniPump`/`Application.flush()`/the UI. Remaining caution: review the live tooltip text before using it as operator guidance, because an independent audit found at least one tooltip still carried older "unverifiable" wording after the label was corrected.
 - **`src/thermo_acoustic/ui.py`** (592 lines, a separate unused Tkinter `MainWindow`) remains in the repo, confirmed unreachable from any launcher, flagged for a removal decision but not removed. (Session 7.)
@@ -4224,7 +5437,7 @@ just verified-untouched.
 - **Camera trigger source is now deterministic but not necessarily correct**: hardcoded to `"Internal"` (Session 13) purely to remove undefined leftover-state risk. Whether the real experiment should instead use `"External"` (paced by the AD2 DIO pulse train) has not been resolved -- **Session 19 traced the real LabVIEW call path (`RunExperiment2.vi` -> `CreateExperiments.vi` -> `Experiment2_Init.vi` -> `ConfigureSequence.vi` -> `tm_inputtriggersource_40.vi`) and confirmed the actual wired value is not recoverable from the exported VI diagrams** (compiled block-diagram wiring, not text); the front-panel screenshot's "Internal" is explicitly not used as a substitute. Still needs oscilloscope verification against real hardware -- unchanged in practice, now backed by a real (negative) investigation instead of screenshot inference. **Session 31 added real supporting evidence** (not a resolution): real per-frame `dcam_clock:` timestamp deltas from an actual hardware run were ~0.0316s apart, matching the camera's own readout time, not the configured DO-clock frame period (0.2s at 5 fps) -- consistent with `"Internal"` free-running the camera at its own rate rather than being paced by the DO clock at all. Deliberately not acted on (needs oscilloscope verification, not fixable from software alone).
 - **DCAM exposure vs. readout timing validation -- fixed (Session 19).** `Application._check_camera_timing_budget()` now queries the real `read_readout_time()` and rejects (`ValueError`, before `start_capture()`) any configured Camera FPS that the current exposure+ROI readout time cannot sustain. (Originally flagged in Session 12.) The exposure value it checks against is now guaranteed to be the one actually applied to hardware -- see the next item.
 - **Experiment-path exposure time not reaching real DCAM hardware -- fixed (Session 20).** `run_experiment2()` previously called `self.camera.configure(exposure_ms=...)`, a Python-side bookkeeping setter that never wrote `DCAM_IDPROP.EXPOSURETIME` to the real camera (only the manual Camera tab's `configure_exposure_time()` did that). Now calls `configure_exposure_time()` directly, the same real hardware-writing call the manual tab already used -- same bug class, and same fix pattern, as Session 13's camera-trigger-source fix.
-- **WFG amplitude/frequency bounds checking remains absent** beyond the generic `-1e12..1e12` spin-box range -- no physically-meaningful ceiling (e.g. AD2 hardware output limits) is enforced. (Flagged in Session 9, not fixed.)
+- **WFG amplitude/frequency bounds checking remains absent** beyond the generic `-1e12..1e12` spin-box range -- no physically-meaningful ceiling (e.g. AD2 hardware output limits) is enforced. (Flagged in Session 9, not fixed.) **[Stale, corrected Session 58]:** fixed since Session 51 (commit `23e17d5`) -- `waveforms.py`'s `configure_wfg()`/`_configure_analog_node()` now reads the device's own live `AnalogOutNode*Info()` range and clamps before every `Set` call, setting `WfgChannelConfig.out_of_range` (surfaced in the UI status line and TDMS metadata), verified against a real Analog Discovery 2; see `known_open_items.md`.
 - **Custom/arbitrary syringe geometry for real hardware -- fixed (Session 44).** Was: only the three named BD presets (1/5/10 mL) existed; selecting "Custom" and clicking Configure Syringe always failed with a real `QmixPumpError`, since `_configure_syringe()` only ever sent `{"name": syringe}` and "Custom" isn't in `SYRINGE_PRESETS` (confirmed concretely, Session 38 Task 4). Now: two new fields, Custom Inner Diameter (mm) and Custom Max Piston Stroke (mm), are sent as `inner_diameter_mm`/`max_piston_stroke_mm` whenever Syringe="Custom" -- the user's real spec values, not a value derived/guessed from Custom Volume (a volume alone can't determine both diameter and stroke). Custom Volume itself is unchanged, still flush-safety-check-only.
 - **Syringe stroke length is a derived value, not an independently-sourced BD spec figure** -- computed as `volume / cross-sectional area` assuming the full nominal volume fills the entire piston travel in a cylindrical bore; no authoritative real BD stroke-length value was available to verify this assumption against. (Session 17.) The inner-diameter values themselves (1mL=4.78mm, 5mL=12.07mm, 10mL=14.5mm) are confirmed against BD's published spec.
 - **The LabVIEW port registry (`labview_ports.py`) is confirmed materially incomplete** relative to the real LabVIEW project (Session 11): the entire `AD2_MSO_SDK_class` surface (17 real VIs, 1 documented), several `AD2_SDK_class`/`AD2_WFG_SDK_class`/`AD2_DO_SDK_class` member VIs, `TDMSlogg_class`, the `REGLO Digital` peristaltic pump driver (referenced directly in `Main.vi`'s front panel, with a corresponding but entirely unwired `RegloPumpControl` dataclass already in [instruments.py:142-146](src/thermo_acoustic/instruments.py:142)), and `Application.lvclass:SaveData.vi` are all undocumented in the registry and not evaluated for a Python equivalent.

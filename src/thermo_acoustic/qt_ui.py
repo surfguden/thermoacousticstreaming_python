@@ -59,7 +59,8 @@ from .camera import SubRegion
 from .hardware_factory import HardwareRuntimeConfig, apply_hardware_bundle, build_hardware_bundle
 from .hardware_config import ZStageBackend, default_hardware_config
 from .instruments import SimulatedAD2Sdk
-from .workflows import Experiment2, ExperimentSeries2, FlushSettings
+from .tec import TEC_TARGET_MAX_C, TEC_TARGET_MIN_C
+from .workflows import Experiment2, ExperimentSeries2, FlushSettings, TemperatureSeries
 
 
 logger = logging.getLogger(__name__)
@@ -103,6 +104,17 @@ def _combo(values: list[str], value: str) -> QComboBox:
     index = widget.findText(value)
     if index >= 0:
         widget.setCurrentIndex(index)
+    return widget
+
+
+def _widen_for_content(widget: QLineEdit, padding: int = 40) -> QLineEdit:
+    """Size a QLineEdit to fit its current text instead of Qt's small
+    default sizeHint -- path values (Qmix SDK / QMIXSDK / Cetoni config)
+    can be long Windows paths that would otherwise be visually cramped.
+    Shared by qt_ui.py's own Initialization tab and qt_ui_v2.py's
+    InitializationDialog, which re-parent these same widget instances."""
+    required_width = widget.fontMetrics().horizontalAdvance(widget.text()) + padding
+    widget.setMinimumWidth(max(widget.minimumWidth(), required_width))
     return widget
 
 
@@ -401,6 +413,12 @@ class HistoryLogWidget(QListWidget):
         super().__init__(parent)
         self.setSelectionMode(QListWidget.SelectionMode.NoSelection)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        # Pending feedback item 3: a long entry (e.g. a real exception
+        # message) had no way to be read in full inside this widget's fixed
+        # width other than horizontal-scrolling one row at a time -- QListWidget
+        # items don't wrap by default. Wrapping instead keeps every entry
+        # fully visible without horizontal scrolling.
+        self.setWordWrap(True)
 
     def add_entry(self, text: str) -> None:
         if self.count() > 0 and self.item(self.count() - 1).data(Qt.ItemDataRole.UserRole) == text:
@@ -522,8 +540,12 @@ class MainWindow(QMainWindow):
         self.z_enabled.setToolTip(
             "Whether the Z stage is included at all when Initialize is clicked -- there is no "
             "matching Simulate checkbox for Z stage (only AD2/Camera/Pump/Valve have one); when On, "
-            "hardware_factory.build_hardware_bundle() always builds a real Prior-serial backend "
-            "(see prior_resource's own tooltip -- Z stage backend selection has no real effect)."
+            "hardware_factory.build_hardware_bundle() connects to the real Thorlabs piezo "
+            "(thorlabs_apt_serial, below) via the same thorlabs_piezo.PiezoStage connection the "
+            "Z-Scan tab uses -- not the legacy Prior-serial/COM7 path this used to build (that path "
+            "pointed at a port that never existed on this lab's hardware; see "
+            "docs/pending_feedback.md item 4). Z stage backend selection still has no real effect "
+            "(there is only one real backend now)."
         )
         self.camera_enabled = QCheckBox("Off/On")
         self.camera_enabled.setChecked(True)
@@ -534,6 +556,14 @@ class MainWindow(QMainWindow):
         self.valve_enabled = QCheckBox("Off/On")
         self.valve_enabled.setChecked(True)
         self.valve_enabled.setToolTip(enable_tip_template.format(name="the MX valve"))
+        self.tec_enabled = QCheckBox("Off/On")
+        self.tec_enabled.setChecked(False)
+        self.tec_enabled.setToolTip(
+            "Includes the Meerstetter TEC when Initialize is clicked. With Simulate checked it uses "
+            "the safe in-memory backend. With Simulate unchecked, the current UI intentionally fails "
+            "before any TEC connection or write because it cannot supply a reviewed MeCom client or "
+            "controller register map."
+        )
         self.sim_camera = QCheckBox("Off/On")
         self.sim_camera.setChecked(True)
         self.sim_camera.setToolTip(simulate_tip_template.format(name="Hamamatsu"))
@@ -546,20 +576,31 @@ class MainWindow(QMainWindow):
         self.sim_ad2 = QCheckBox("Off/On")
         self.sim_ad2.setChecked(True)
         self.sim_ad2.setToolTip(simulate_tip_template.format(name="Analog Discovery 3"))
+        self.sim_tec = QCheckBox("Off/On")
+        self.sim_tec.setChecked(True)
+        self.sim_tec.setToolTip(
+            "Only matters when Meerstetter TEC above is On. Checked = safe in-memory fake backend, "
+            "no real hardware touched. Unchecked selects the unresolved real adapter; the current "
+            "factory then refuses before any TEC connection or write because no reviewed client is "
+            "available through this UI."
+        )
 
         self.z_backend = _combo([item.value for item in ZStageBackend], hardware_defaults.z_stage.backend.value)
         self.prior_resource = QLineEdit(hardware_defaults.z_stage.prior_resource)
         self.prior_resource.setToolTip(
-            "The real VISA/COM resource for the Prior Z-motor controller; passed to "
-            "HardwareRuntimeConfig and genuinely used, unlike the disabled Z stage backend/"
-            "Thorlabs fields above. Traced hardware_factory.build_hardware_bundle(): checking "
-            "'Z stage' always builds a Prior-serial Z-motor when enabled, regardless of what "
-            "the (unwired) Z stage backend combo shows -- selecting 'thorlabs_apt' there has no "
-            "effect on which backend is actually built. Low current risk only because this path "
-            "is separately documented as legacy/obsolete (Session 18) -- current Z hardware is "
-            "Thorlabs/APT, which has no real backend at all yet."
+            "Not wired to a real backend: the legacy Prior Z-motor/COM7 connection path this used "
+            "to feed was retired (it pointed at a port that never existed on this lab's hardware "
+            "and was never actually the real piezo -- confirmed via real-hardware investigation, "
+            "docs/pending_feedback.md item 4). 'Z stage' now always connects to the real Thorlabs "
+            "piezo via thorlabs_apt_serial below, not this field."
         )
         self.thorlabs_apt_serial = QLineEdit(hardware_defaults.z_stage.thorlabs_apt_serial)
+        self.thorlabs_apt_serial.setToolTip(
+            "The real Thorlabs piezo's own device serial number (thorlabs_piezo.PiezoStage "
+            "connects by serial number via Kinesis, not a COM port) -- passed to "
+            "HardwareRuntimeConfig and genuinely used when 'Z stage' is enabled at Initialize, "
+            "the same connection thorlabs_piezo.PiezoStage() and the Z-Scan tab already use."
+        )
         self.thorlabs_apt_backend = QLineEdit(hardware_defaults.z_stage.thorlabs_apt_backend)
         self.thorlabs_apt_discovery_only = QCheckBox("Discovery only")
         self.thorlabs_apt_discovery_only.setChecked(hardware_defaults.z_stage.thorlabs_apt_discovery_only)
@@ -583,6 +624,12 @@ class MainWindow(QMainWindow):
         self.cetoni_config_path.setToolTip(
             "Read by CetoniPump.initialize() -- genuinely used, unlike the Qmix SDK/QMIXSDK path "
             "fields above (Session 3: confirmed never read by hardware_factory.build_hardware_bundle())."
+        )
+        self.tec_port = QLineEdit("")
+        self.tec_port.setToolTip(
+            "Recorded USB/serial resource for a future reviewed Meerstetter integration. The current "
+            "UI cannot supply the reviewed MeCom client/factory or controller register map, so this "
+            "field alone cannot enable real TEC control; leave TEC simulated."
         )
 
         self.wfg_running = QCheckBox("ON")
@@ -631,6 +678,12 @@ class MainWindow(QMainWindow):
         )
         self.mso_offset = _spin(0.0, decimals=3, minimum=-50.0, maximum=50.0)
         self.mso_stats = QLabel("No capture")
+        # Pending feedback item 3: _set_mso_stats() concatenates a
+        # per-channel summary with " | ".join() -- unbounded length (grows
+        # with capture channel count), same unwrapped-QLabel-in-a-form class
+        # already fixed elsewhere in this tab (sweep_header/hint), just
+        # missed here.
+        self.mso_stats.setWordWrap(True)
         self.mso_samples: list[float] = []
 
         self.syringe = _combo(["BD 1ml", "BD 5ml", "BD 10ml", "Custom"], "BD 1ml")
@@ -751,26 +804,27 @@ class MainWindow(QMainWindow):
         )
         self.wait_after_flush = _spin(0.0, decimals=3, minimum=0.0)
         self.wait_after_flush.setToolTip(
-            "Seconds to wait after the flush's second valve move (Closed) before considering the "
+            "Seconds to wait after the flush's second valve move (P02) before considering the "
             "flush complete -- lets the system settle after fluid movement stops."
         )
         self.flush_count = _int_spin(1, minimum=1)
 
         self.roi_h_offset = _int_spin(0, minimum=0)
-        self.roi_v_offset = _int_spin(900, minimum=0)
+        self.roi_v_offset = _int_spin(792, minimum=0)
         self.roi_v_offset.setToolTip(
-            "These startup defaults diverge from this repo's own validated-on-real-hardware "
-            "combination (vertical_offset=792, vertical_size=740, exposure=40.0ms; C15440-20UP; "
-            "see docs/current_workflow_audit.md and experiment_presets.py) -- Session 18 audit: "
-            "classified SUSPECTED-PLACEHOLDER, never wired into these live defaults. Combines with "
-            "Vertical Size below (the two together set DCAM SUBARRAYVPOS/SUBARRAYVSIZE) and with "
-            "Exposure Time to determine the real DCAM readout time _check_camera_timing_budget() "
-            "checks against Camera FPS on the Experiment tab."
+            "Startup default matches this repo's own validated-on-real-hardware combination "
+            "(vertical_offset=792, vertical_size=740, exposure=40.0ms; C15440-20UP; see "
+            "docs/current_workflow_audit.md and experiment_presets.py) -- Session 18 audit found "
+            "these diverging (classified SUSPECTED-PLACEHOLDER, never wired into these live "
+            "defaults); corrected (pending_feedback.md item 5, Part B2). Combines with Vertical "
+            "Size below (the two together set DCAM SUBARRAYVPOS/SUBARRAYVSIZE) and with Exposure "
+            "Time to determine the real DCAM readout time _check_camera_timing_budget() checks "
+            "against Camera FPS on the Experiment tab."
         )
         self.roi_h_size = _int_spin(2304, minimum=0)
-        self.roi_v_size = _int_spin(500, minimum=0)
+        self.roi_v_size = _int_spin(740, minimum=0)
         self.roi_v_size.setToolTip(self.roi_v_offset.toolTip())
-        self.exposure_ms = _spin(50.0, decimals=3, minimum=0.0)
+        self.exposure_ms = _spin(40.0, decimals=3, minimum=0.0)
         self.exposure_ms.setToolTip(
             "Applied to real DCAM hardware via Configure Camera (configure_exposure_time()). "
             "Automated Experiment runs use their own Exposure time (ms) field instead and enforce "
@@ -1093,7 +1147,7 @@ class MainWindow(QMainWindow):
         )
         self.exp_wait_after_flush = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_wait_after_flush.setToolTip(
-            "Seconds to wait after the flush's second valve move (Closed) before considering the "
+            "Seconds to wait after the flush's second valve move (P02) before considering the "
             "flush complete -- lets the system settle after fluid movement stops."
         )
         self.exp_flush_enabled = QCheckBox("Enable")
@@ -1168,6 +1222,28 @@ class MainWindow(QMainWindow):
             "0, this takes precedence: point count = round(|Stop-Start| / Step) + 1. Not part of "
             "the original LabVIEW FrequencyHelper.vi spec -- a Python-only convenience addition."
         )
+        self.exp_tec_scan_enable = QCheckBox("Enable TEC temperature scan")
+        self.exp_tec_scan_enable.setToolTip(
+            "When checked, Start exp uses one temperature target per experiment group. The current UI "
+            "supports this only with the simulated TEC: real TEC selection intentionally fails before "
+            "a device connection because this UI cannot supply a reviewed MeCom client/factory or "
+            "controller register map. No in-group ramping or per-frame temperature changes occur."
+        )
+        self.exp_tec_points = QLineEdit("25.0")
+        self.exp_tec_points.setToolTip(
+            "Comma- or semicolon-separated TEC target temperatures in Celsius. One temperature "
+            "point creates one experiment group; each group uses the existing repeat settings. "
+            f"Targets are rejected outside the local safety range [{TEC_TARGET_MIN_C:.1f}, "
+            f"{TEC_TARGET_MAX_C:.1f}] C until a reviewed real MeCom backend defines tighter hardware limits."
+        )
+        self.exp_tec_tolerance_c = _spin(0.1, decimals=3, minimum=0.0)
+        self.exp_tec_tolerance_c.setToolTip("Allowed absolute error from target temperature before the TEC is considered stable.")
+        self.exp_tec_min_settle_s = _spin(5.0, decimals=3, minimum=0.0)
+        self.exp_tec_min_settle_s.setToolTip("Minimum time the TEC must remain inside tolerance before the experiment group starts.")
+        self.exp_tec_max_wait_s = _spin(300.0, decimals=3, minimum=0.0)
+        self.exp_tec_max_wait_s.setToolTip("Maximum time to wait for a TEC setpoint before failing clearly.")
+        self.exp_tec_poll_interval_s = _spin(1.0, decimals=3, minimum=0.001)
+        self.exp_tec_poll_interval_s.setToolTip("Seconds between TEC status polls while waiting for stability.")
         self.average_fps = QLabel("0")
 
         # --- Z-scan calibration tab (Phase 4): piezo_zscan.ZScanCalibration's
@@ -1415,17 +1491,29 @@ class MainWindow(QMainWindow):
         form.addRow("Analog Discovery 3", self.ad2_enabled)
         form.addRow("Z stage", self.z_enabled)
         form.addRow("Z stage backend", self._mark_unwired_stub(self.z_backend))
-        form.addRow("Prior VISA resource name", self.prior_resource)
-        form.addRow("Thorlabs/APT serial", self._mark_unwired_stub(self.thorlabs_apt_serial))
+        # Pending feedback item 5/B1: Z-stage now connects via the real
+        # Thorlabs piezo (thorlabs_apt_serial), not the legacy PriorZMotor/
+        # COM7 path -- prior_resource is genuinely unwired now (was never a
+        # real connection for this lab's hardware to begin with; see
+        # pending_feedback.md item 4), thorlabs_apt_serial is genuinely wired.
+        form.addRow("Prior VISA resource name (legacy, unwired)", self._mark_unwired_stub(self.prior_resource))
+        form.addRow("Thorlabs/APT serial", self.thorlabs_apt_serial)
         form.addRow("Thorlabs/APT backend", self._mark_unwired_stub(self.thorlabs_apt_backend))
         form.addRow("Thorlabs/APT discovery only", self._mark_unwired_stub(self.thorlabs_apt_discovery_only))
         form.addRow("Hamamatsu", self.camera_enabled)
         form.addRow("Cetoni Pump", self.pump_enabled)
-        form.addRow("Qmix SDK Python Path", self._mark_unwired_stub(self.qmix_sdk_python_path))
-        form.addRow("Qmix QMIXSDK Path", self._mark_unwired_stub(self.qmix_qmixsdk_path))
-        form.addRow("Cetoni Device Configuration Path", self.cetoni_config_path)
+        # Pending feedback item 3: these three can hold long real Windows
+        # paths -- qt_ui_v2.py's InitializationDialog already widens these
+        # same shared widget instances for itself (_widen_for_content()), but
+        # a user running v1 alone (never opening the v2 dialog) never got
+        # that treatment. Same shared helper, applied here too.
+        form.addRow("Qmix SDK Python Path", self._mark_unwired_stub(_widen_for_content(self.qmix_sdk_python_path)))
+        form.addRow("Qmix QMIXSDK Path", self._mark_unwired_stub(_widen_for_content(self.qmix_qmixsdk_path)))
+        form.addRow("Cetoni Device Configuration Path", _widen_for_content(self.cetoni_config_path))
         form.addRow("MX Valve", self.valve_enabled)
         form.addRow("Valve VISA resource name", self.valve_resource)
+        form.addRow("Meerstetter TEC", self.tec_enabled)
+        form.addRow("TEC resource", self.tec_port)
         self._add_tooltip_icons(form)
         return group
 
@@ -1526,6 +1614,7 @@ class MainWindow(QMainWindow):
         form.addRow("Simulate Pump", self.sim_pump)
         form.addRow("Simulate Valve", self.sim_valve)
         form.addRow("Simulate AD2", self.sim_ad2)
+        form.addRow("Simulate TEC", self.sim_tec)
         self._add_tooltip_icons(form)
         return group
 
@@ -1786,7 +1875,14 @@ class MainWindow(QMainWindow):
         graph_layout.addWidget(self.mso_graph)
         self.mso_text = QPlainTextEdit()
         self.mso_text.setReadOnly(True)
-        self.mso_text.setMaximumHeight(90)
+        # Pending feedback item 3: _set_mso_stats() previews up to 6 samples
+        # per channel per capture (2 channels = 12 lines) -- 90px only shows
+        # ~4-5 without scrolling. Internally scrollable either way (no
+        # content is ever inaccessible), but 140 shows close to a full
+        # 2-channel preview at once, matching the height already established
+        # for other small scrollable panels this session (Session 58's
+        # HistoryLogWidget status/progress group).
+        self.mso_text.setMaximumHeight(140)
         graph_layout.addWidget(self.mso_text)
 
         # Without an explicit alignment, QHBoxLayout stretches each widget to
@@ -1828,19 +1924,19 @@ class MainWindow(QMainWindow):
         columns = QHBoxLayout(content)
         columns.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        # Position 1 = Open, Position 2 = Closed (confirmed physical mapping,
-        # see instruments.py's Valve class) -- safety-relevant, so spelled out
-        # explicitly rather than left for the operator to remember.
-        pos1 = QPushButton("Pos1 (Open)")
-        pos1.setToolTip("Confirmed physical mapping: position 1 = Open (Valve.set_position(1), instruments.py).")
-        pos1.clicked.connect(lambda: self._run_action(lambda progress: self.app.valve.set_position(1), "Valve Pos1 (Open)"))
-        pos2 = QPushButton("Pos2 (Closed)")
-        pos2.setToolTip("Confirmed physical mapping: position 2 = Closed (Valve.set_position(2), instruments.py).")
-        pos2.clicked.connect(lambda: self._run_action(lambda progress: self.app.valve.set_position(2), "Valve Pos2 (Closed)"))
+        # P01/P02 are protocol-confirmed position tokens. Their physical
+        # fluidic routing remains a bench-confirmation item, so the controls
+        # deliberately avoid unsupported Open/Closed labels.
+        pos1 = QPushButton("Pos1 (P01)")
+        pos1.setToolTip("Sends the protocol-confirmed valve position command P01. Physical fluidic routing remains unverified.")
+        pos1.clicked.connect(lambda: self._run_action(lambda progress: self.app.valve.set_position(1), "Valve Pos1 (P01)"))
+        pos2 = QPushButton("Pos2 (P02)")
+        pos2.setToolTip("Sends the protocol-confirmed valve position command P02. Physical fluidic routing remains unverified.")
+        pos2.clicked.connect(lambda: self._run_action(lambda progress: self.app.valve.set_position(2), "Valve Pos2 (P02)"))
         refill = QPushButton("Refill")
-        refill.clicked.connect(lambda: self._run_action(lambda progress: self.app.pump.refill(), "Refilling"))
+        refill.clicked.connect(lambda: self._run_action(lambda progress: self._refill(), "Refilling"))
         empty = QPushButton("Empty")
-        empty.clicked.connect(lambda: self._run_action(lambda progress: self.app.pump.empty(), "Emptying"))
+        empty.clicked.connect(lambda: self._run_action(lambda progress: self._empty(), "Emptying"))
         configure = QPushButton("Configure")
         configure.clicked.connect(self._start_configure_syringe)
         generate = QPushButton("Generate")
@@ -1864,8 +1960,8 @@ class MainWindow(QMainWindow):
         valve_group = QGroupBox("Valve")
         valve_form = QFormLayout(valve_group)
         valve_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        valve_form.addRow("Valve Pos1 (Open)", pos1)
-        valve_form.addRow("ValvePos2 (Closed)", pos2)
+        valve_form.addRow("Valve Pos1 (P01)", pos1)
+        valve_form.addRow("Valve Pos2 (P02)", pos2)
         self._add_tooltip_icons(valve_form)
         column1 = QVBoxLayout()
         column1.addWidget(valve_group)
@@ -1959,7 +2055,7 @@ class MainWindow(QMainWindow):
         image_continuous = self._live_image_continuous_checkbox()
         image_continuous.toggled.connect(self._set_image_continuous)
         row.addWidget(image)
-        row.addWidget(QLabel("Image Continous"))
+        row.addWidget(QLabel("Image Continuous"))
         row.addWidget(image_continuous)
         # word-wrap: this HBoxLayout row has no wrap-long-rows equivalent
         # (that's a QFormLayout-only policy) -- an offscreen truncation
@@ -2243,7 +2339,6 @@ class MainWindow(QMainWindow):
                 self._set_status(f"Z-scan error: ClosedLoop switch failed: {exc}")
                 return
 
-        self._zscan_abort_requested = False
         # ClosedLoop is a control-mode prerequisite, not permission to move.
         # Ask separately and synchronously in the GUI thread before the
         # background scan worker can configure the camera or move the PPC001.
@@ -2260,6 +2355,7 @@ class MainWindow(QMainWindow):
             self._set_status("Z-scan cancelled: PPC001 motion not authorized.")
             return
 
+        self._zscan_abort_requested = False
         self._run_action(
             lambda progress: self._run_zscan(piezo, z_start_um, z_end_um, step_size_um, exposure_ms, output_dir),
             "Running Z-scan",
@@ -2468,6 +2564,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(content)
         layout.addWidget(self._experiment_numbers_group())
         layout.addWidget(self._experiment_flush_group())
+        layout.addWidget(self._experiment_temperature_group())
         layout.addWidget(self._experiment_frequency_scan_group())
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -2496,6 +2593,18 @@ class MainWindow(QMainWindow):
         form.addRow("Flush Flowrate(uL)", self.exp_flush_flowrate)
         form.addRow("flush volume (ml)", self.exp_flush_volume)
         form.addRow("WaitAfterFlush", self.exp_wait_after_flush)
+        self._add_tooltip_icons(form)
+        return group
+
+    def _experiment_temperature_group(self) -> QGroupBox:
+        group = QGroupBox("TEC Temperature Scan")
+        form = QFormLayout(group)
+        form.addRow("Enable", self.exp_tec_scan_enable)
+        form.addRow("Temperature points (C)", self.exp_tec_points)
+        form.addRow("Tolerance (C)", self.exp_tec_tolerance_c)
+        form.addRow("Minimum settle time (s)", self.exp_tec_min_settle_s)
+        form.addRow("Maximum wait time (s)", self.exp_tec_max_wait_s)
+        form.addRow("Poll interval (s)", self.exp_tec_poll_interval_s)
         self._add_tooltip_icons(form)
         return group
 
@@ -2845,9 +2954,12 @@ class MainWindow(QMainWindow):
             valve_enabled=self.valve_enabled.isChecked(),
             sim_valve=self.sim_valve.isChecked(),
             z_enabled=self.z_enabled.isChecked(),
-            prior_resource=self.prior_resource.text(),
+            thorlabs_apt_serial=self.thorlabs_apt_serial.text(),
             valve_resource=self.valve_resource.text(),
             cetoni_config_path=self.cetoni_config_path.text(),
+            tec_enabled=self.tec_enabled.isChecked(),
+            sim_tec=self.sim_tec.isChecked(),
+            tec_port=self.tec_port.text(),
         )
         self._run_action(lambda progress: self._initialize_system(config, progress), "Initializing")
 
@@ -2966,7 +3078,15 @@ class MainWindow(QMainWindow):
     def _start_go_level(self) -> None:
         level = self.level_ml.value()
         flow_rate = self.flow_rate.value()
-        self._run_action(lambda progress: self.app.pump.set_fill_level(level, flow_rate), "Setting pump level")
+        self._run_action(lambda progress: self._go_to_level(level, flow_rate), "Setting pump level")
+
+    # Finding 1 (qt_ui.py/qt_ui_v2.py targeted UI audit): this button used to
+    # call self.app.pump.set_fill_level() directly, the same fire-and-forget
+    # shape refill()/empty() were fixed for -- now routes through
+    # Application.go_to_level() (same wait_for_pump()/resync pattern), same
+    # bool-to-status-string conversion as _refill()/_empty() below.
+    def _go_to_level(self, level: float, flow_rate: float) -> str:
+        return "GoToLevelComplete" if self.app.go_to_level(level, flow_rate) else "GoToLevelTimedOut"
 
     def _start_reference_move(self) -> None:
         answer = QMessageBox.question(
@@ -2991,6 +3111,18 @@ class MainWindow(QMainWindow):
                 progress("status", f"Flush {index + 1} of {count}")
             self.app.flush(settings)
         return "FlushComplete"
+
+    # H1 (qmix_backend.py line-by-line review): these buttons used to call
+    # self.app.pump.refill()/empty() directly, which returned as soon as the
+    # real move was issued, not when it actually completed. Now route through
+    # Application.refill()/empty() (which wait for real completion the same
+    # way flush() already does) -- converting the bool result to a status
+    # string here matches _flush()'s own established pattern just above.
+    def _refill(self) -> str:
+        return "RefillComplete" if self.app.refill() else "RefillTimedOut"
+
+    def _empty(self) -> str:
+        return "EmptyComplete" if self.app.empty() else "EmptyTimedOut"
 
     def _start_configure_camera(self) -> None:
         roi = SubRegion(
@@ -3160,6 +3292,18 @@ class MainWindow(QMainWindow):
             if answer != QMessageBox.StandardButton.Yes:
                 return
 
+        if self.exp_tec_scan_enable.isChecked():
+            temperature_series, groups, total_frames, config = self._build_temperature_experiment_groups(series_path)
+            self.queue_count.setText(str(sum(group.see_elements_left() for group in groups)))
+            self.waveform_graph.set_points(self._preview_points(config))
+            self._run_action(
+                lambda progress: self._run_temperature_experiment_series(
+                    temperature_series, groups, total_frames, config, progress
+                ),
+                "Running TEC temperature scan",
+            )
+            return
+
         series, total_frames, config = self._build_experiment_series()
         self.queue_count.setText(str(series.see_elements_left()))
         self.waveform_graph.set_points(self._preview_points(config))
@@ -3174,7 +3318,10 @@ class MainWindow(QMainWindow):
             return False
         return any(series_path.rglob("data.tdms")) or any(series_path.rglob("frame_*.tiff"))
 
-    def _build_experiment_series(self) -> tuple[ExperimentSeries2, int, WfgConfig]:
+    def _build_experiment_series(
+        self, series_root: Path | None = None, tec_target_c: float | None = None
+    ) -> tuple[ExperimentSeries2, int, WfgConfig]:
+        series_path = Path(series_root) if series_root is not None else Path(self.series_path.text())
         repeats = self.exp_repeats.value()
         frequency_scan_hz: list[float] | None = None
         if self.exp_freq_scan_enable.isChecked():
@@ -3211,7 +3358,7 @@ class MainWindow(QMainWindow):
             )
             if preview_config is None:
                 preview_config = config
-            folder = Path(self.series_path.text()) / f"repeat_{repeat + 1:03d}"
+            folder = series_path / f"repeat_{repeat + 1:03d}"
             experiments.append(
                 Experiment2(
                     repeat_id=repeat,
@@ -3243,9 +3390,44 @@ class MainWindow(QMainWindow):
                     wfg_config=config,
                     do_clock_settings=self._experiment_do_clock_config(repeat),
                     fm_sweep=fm_sweep,
+                    tec_target_c=tec_target_c,
                 )
             )
-        return ExperimentSeries2(Path(self.series_path.text()), experiments), self.exp_frames.value() * repeats, preview_config
+        return ExperimentSeries2(series_path, experiments), self.exp_frames.value() * repeats, preview_config
+
+    def _temperature_series(self) -> TemperatureSeries:
+        return TemperatureSeries.from_text(
+            self.exp_tec_points.text(),
+            tolerance_c=float(self.exp_tec_tolerance_c.value()),
+            min_settle_s=float(self.exp_tec_min_settle_s.value()),
+            max_wait_s=float(self.exp_tec_max_wait_s.value()),
+            poll_interval_s=float(self.exp_tec_poll_interval_s.value()),
+        )
+
+    @staticmethod
+    def _temperature_folder_name(index: int, temperature_c: float) -> str:
+        label = f"{temperature_c:.3f}".replace("-", "m").replace(".", "p")
+        return f"temperature_{index:03d}_{label}C"
+
+    def _build_temperature_experiment_groups(
+        self, series_path: Path
+    ) -> tuple[TemperatureSeries, list[ExperimentSeries2], int, WfgConfig]:
+        temperature_series = self._temperature_series()
+        if not temperature_series.enabled:
+            raise ValueError("Enable TEC temperature scan with at least one temperature point.")
+        groups = []
+        total_frames = 0
+        preview_config: WfgConfig | None = None
+        for index, temperature_c in enumerate(temperature_series.temperature_points_c, start=1):
+            group_path = series_path / self._temperature_folder_name(index, temperature_c)
+            group, frames, config = self._build_experiment_series(group_path, tec_target_c=temperature_c)
+            groups.append(group)
+            total_frames += frames
+            if preview_config is None:
+                preview_config = config
+        if preview_config is None:
+            raise ValueError("TEC temperature scan did not produce any experiment groups.")
+        return temperature_series, groups, total_frames, preview_config
 
     def _experiment_do_clock_config(self, repeat_index: int) -> DoConfig:
         camera_fps = float(self.exp_camera_fps.value())
@@ -3304,6 +3486,36 @@ class MainWindow(QMainWindow):
             progress("experiment_series_active", True)
         try:
             return self._run_experiment_series_body(series, total_frames, config, progress)
+        finally:
+            if progress:
+                progress("experiment_series_active", False)
+
+    def _run_temperature_experiment_series(
+        self,
+        temperature_series: TemperatureSeries,
+        groups: list[ExperimentSeries2],
+        total_frames: int,
+        config: WfgConfig,
+        progress=None,
+    ) -> str:
+        if progress:
+            progress("experiment_series_active", True)
+            progress("queue_count", sum(group.see_elements_left() for group in groups))
+            progress("waveform", self._preview_points(config))
+        started_at = time.monotonic()
+        self.app.create_stop_event()
+        try:
+            completed = self.app.run_temperature_series(temperature_series, groups)
+            if not completed:
+                message = f"TEC temperature scan stopped before completion (status={self.app.status!r})."
+                logger.error(message)
+                raise RuntimeError(message)
+            elapsed = max(time.monotonic() - started_at, 0.001)
+            if progress:
+                progress("queue_count", 0)
+                progress("status", self.app.status)
+                progress("average_fps", f"{total_frames / elapsed:.2f}")
+            return "TemperatureSeriesComplete"
         finally:
             if progress:
                 progress("experiment_series_active", False)
@@ -3676,16 +3888,19 @@ class MainWindow(QMainWindow):
             "camera_enabled": self.camera_enabled.isChecked(),
             "pump_enabled": self.pump_enabled.isChecked(),
             "valve_enabled": self.valve_enabled.isChecked(),
+            "tec_enabled": self.tec_enabled.isChecked(),
             "sim_ad2": self.sim_ad2.isChecked(),
             "sim_camera": self.sim_camera.isChecked(),
             "sim_pump": self.sim_pump.isChecked(),
             "sim_valve": self.sim_valve.isChecked(),
+            "sim_tec": self.sim_tec.isChecked(),
             "z_backend": self.z_backend.currentText(),
             "prior_resource": self.prior_resource.text(),
             "thorlabs_apt_serial": self.thorlabs_apt_serial.text(),
             "thorlabs_apt_backend": self.thorlabs_apt_backend.text(),
             "thorlabs_apt_discovery_only": self.thorlabs_apt_discovery_only.isChecked(),
             "valve_resource": self.valve_resource.text(),
+            "tec_port": self.tec_port.text(),
             "qmix_sdk_python_path": self.qmix_sdk_python_path.text(),
             "qmix_qmixsdk_path": self.qmix_qmixsdk_path.text(),
             "cetoni_config_path": self.cetoni_config_path.text(),
@@ -3762,6 +3977,12 @@ class MainWindow(QMainWindow):
                 "freq_scan_stop_khz": self.exp_freq_scan_stop_khz.value(),
                 "freq_scan_count": self.exp_freq_scan_count.value(),
                 "freq_scan_step_khz": self.exp_freq_scan_step_khz.value(),
+                "tec_scan_enable": self.exp_tec_scan_enable.isChecked(),
+                "tec_points": self.exp_tec_points.text(),
+                "tec_tolerance_c": self.exp_tec_tolerance_c.value(),
+                "tec_min_settle_s": self.exp_tec_min_settle_s.value(),
+                "tec_max_wait_s": self.exp_tec_max_wait_s.value(),
+                "tec_poll_interval_s": self.exp_tec_poll_interval_s.value(),
             },
         }
 
@@ -3793,10 +4014,12 @@ class MainWindow(QMainWindow):
             ("camera_enabled", self.camera_enabled),
             ("pump_enabled", self.pump_enabled),
             ("valve_enabled", self.valve_enabled),
+            ("tec_enabled", self.tec_enabled),
             ("sim_ad2", self.sim_ad2),
             ("sim_camera", self.sim_camera),
             ("sim_pump", self.sim_pump),
             ("sim_valve", self.sim_valve),
+            ("sim_tec", self.sim_tec),
             ("thorlabs_apt_discovery_only", self.thorlabs_apt_discovery_only),
         ):
             if name in data:
@@ -3810,6 +4033,7 @@ class MainWindow(QMainWindow):
             ("thorlabs_apt_serial", self.thorlabs_apt_serial),
             ("thorlabs_apt_backend", self.thorlabs_apt_backend),
             ("valve_resource", self.valve_resource),
+            ("tec_port", self.tec_port),
             ("qmix_sdk_python_path", self.qmix_sdk_python_path),
             ("qmix_qmixsdk_path", self.qmix_qmixsdk_path),
             ("cetoni_config_path", self.cetoni_config_path),
@@ -3879,10 +4103,16 @@ class MainWindow(QMainWindow):
                 "freq_scan_stop_khz": self.exp_freq_scan_stop_khz,
                 "freq_scan_count": self.exp_freq_scan_count,
                 "freq_scan_step_khz": self.exp_freq_scan_step_khz,
+                "tec_tolerance_c": self.exp_tec_tolerance_c,
+                "tec_min_settle_s": self.exp_tec_min_settle_s,
+                "tec_max_wait_s": self.exp_tec_max_wait_s,
+                "tec_poll_interval_s": self.exp_tec_poll_interval_s,
             }
             for key, widget in mapping.items():
                 if key in experiment:
                     widget.setValue(experiment[key])
+            if "tec_points" in experiment:
+                self.exp_tec_points.setText(str(experiment["tec_points"]))
             for key, widget in (
                 ("ch1_function", self.exp_ch1_function),
                 ("ch1_trigger_source", self.exp_ch1_trigger_source),
@@ -3897,6 +4127,7 @@ class MainWindow(QMainWindow):
                 ("ch1_repeat_trigger", self.exp_ch1_repeat_trigger),
                 ("ch2_repeat_trigger", self.exp_ch2_repeat_trigger),
                 ("freq_scan_enable", self.exp_freq_scan_enable),
+                ("tec_scan_enable", self.exp_tec_scan_enable),
             ):
                 if key in experiment:
                     widget.setChecked(bool(experiment[key]))

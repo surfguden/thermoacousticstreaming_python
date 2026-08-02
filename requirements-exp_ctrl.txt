@@ -1,0 +1,55 @@
+# Exact, pinned package versions currently validated and working in the
+# real production conda environment (`exp_ctrl`), used by launch_gui.bat to
+# run the real Thermo Acoustic Streaming Qt GUI against real hardware.
+#
+# This is deliberately separate from pyproject.toml's own `dependencies`
+# list: pyproject.toml declares the package's abstract requirements with
+# loose lower bounds (`>=`), suitable for general installability; this file
+# pins the exact versions actually confirmed working in the one real
+# production environment this project runs on, for exact reproducibility
+# if that environment is ever rebuilt (fresh machine, reinstalled conda env,
+# a colleague's setup).
+#
+# How to recreate exp_ctrl from this file:
+#   conda create -n exp_ctrl python=3.11
+#   conda activate exp_ctrl
+#   pip install -r requirements-exp_ctrl.txt
+#
+# After installing, run `python tools/check_environment.py` to confirm every
+# real production import actually works -- this is the check that would have
+# caught the original gap (npTDMS was missing from exp_ctrl until
+# 2026-07-31, undetected until a real-hardware experiment run tried to write
+# data.tdms; see docs/known_open_items.md).
+#
+# Vendor SDKs are NOT listed here -- they are not pip packages and cannot be
+# pinned this way:
+#   - CETONI Qmix SDK: vendored at qmix_sdk_for_codex/ (repo-tracked), real
+#     DLLs installed separately at the path pointed to by the QMIXSDK
+#     environment variable (see hardware_config.py's DEFAULT_QMIXSDK_PATH).
+#   - Hamamatsu DCAM SDK: vendored at dcamsdk4/ (repo-tracked), real
+#     dcamapi.dll installed separately (see hamamatsu_dcam.py's
+#     _default_sdk_python_path()).
+#   - Thorlabs Kinesis .NET assemblies: installed separately on the host,
+#     loaded via pythonnet/clr at a path configured in thorlabs_piezo.py
+#     (kinesis_dir).
+# None of these showed a gap in this audit (2026-07-31) -- only the pip-
+# installable package layer was found missing anything.
+
+PySide6==6.11.1
+Pillow==12.2.0
+pyserial==3.5
+npTDMS==1.11.0
+numpy==2.4.6
+pythonnet==3.1.0
+clr_loader==0.3.1
+
+# Optional -- only needed for hardware_tests/test_thorlabs_apt_discovery.py
+# (a standalone diagnostic script), not the real launch_gui.bat path. See
+# pyproject.toml's [project.optional-dependencies] "thorlabs-apt-discovery".
+pylablib==1.4.5
+
+# Present in exp_ctrl and very likely a real transitive runtime dependency
+# of pythonnet's CLR hosting on Windows, even though no file in
+# src/thermo_acoustic/ imports it directly -- included for reproducibility,
+# not confirmed as strictly required by a direct import search.
+pywin32==312

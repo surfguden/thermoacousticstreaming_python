@@ -1,3 +1,12 @@
+"""Legacy Tkinter UI retained only as a migration reference.
+
+The supported application entry points launch the PySide6 UI in ``qt_ui.py``;
+no launcher or production module imports this file. This module is not a
+supported control surface and must not be used for real hardware operation.
+It is intentionally kept for historical LabVIEW-to-Python traceability until a
+separate removal decision is made.
+"""
+
 from __future__ import annotations
 
 import tkinter as tk

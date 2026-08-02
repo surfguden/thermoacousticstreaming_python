@@ -37,12 +37,20 @@ class FakeDcamModule:
     class DCAM_IDPROP:
         EXPOSURETIME = "EXPOSURETIME"
         TRIGGERSOURCE = "TRIGGERSOURCE"
+        TRIGGER_GLOBALEXPOSURE = "TRIGGER_GLOBALEXPOSURE"
 
     class DCAMPROP:
         class TRIGGERSOURCE:
             INTERNAL = 1
             EXTERNAL = 2
             SOFTWARE = 3
+
+        class TRIGGER_GLOBALEXPOSURE:
+            NONE = 1
+            ALWAYS = 2
+            DELAYED = 3
+            EMULATE = 4
+            GLOBALRESET = 5
 
     class Dcam:
         def __init__(self, index):
@@ -207,6 +215,31 @@ class FakeTimeoutDcamModule(FakeDcamModule):
             return False
 
 
+class FakePartialSequenceFaultDcamModule(FakeDcamModule):
+    instances = []
+
+    class DCAM_IDPROP(FakeDcamModule.DCAM_IDPROP):
+        TRIGGERPOLARITY = "TRIGGERPOLARITY"
+
+    class DCAMPROP(FakeDcamModule.DCAMPROP):
+        class TRIGGERPOLARITY:
+            NEGATIVE = 1
+            POSITIVE = 2
+
+    class Dcam(FakeDcamModule.Dcam):
+        def __init__(self, index):
+            self.index = index
+            self.opened = False
+            self.calls = []
+            FakePartialSequenceFaultDcamModule.instances.append(self)
+
+        def prop_setvalue(self, prop, value):
+            self.calls.append(("prop_setvalue", prop, value))
+            if prop == "TRIGGERPOLARITY":
+                return False
+            return True
+
+
 def test_image_sequence_reuses_active_capture_buffer_without_reallocating():
     FakeDcamModule.instances = []
     backend = HamamatsuDcamBackend(buffer_frames=3)
@@ -227,6 +260,73 @@ def test_image_sequence_reuses_active_capture_buffer_without_reallocating():
     assert camera.calls.index(("buf_alloc", 3)) < camera.calls.index(("cap_start", True))
     assert ("wait", 1000) in camera.calls
     assert ("buf_getlastframedata",) in camera.calls
+
+
+def test_configure_trigger_global_exposure_enabled_sets_globalreset():
+    # LabVIEW-confirmed: Hamamatsu.lvclass:ConfigureSequence.vi's
+    # `globalshutter` Select node picks numeric value 5 for its true case,
+    # an exact match for DCAMPROP_TRIGGER_GLOBALEXPOSURE__GLOBALRESET.
+    FakeDcamModule.instances = []
+    backend = HamamatsuDcamBackend()
+    backend.dcam_module = FakeDcamModule
+    backend.dcamapi = FakeDcamApi
+
+    backend.configure_trigger_global_exposure(True)
+
+    camera = FakeDcamModule.instances[0]
+    assert ("prop_setvalue", "TRIGGER_GLOBALEXPOSURE", FakeDcamModule.DCAMPROP.TRIGGER_GLOBALEXPOSURE.GLOBALRESET) in camera.calls
+
+
+def test_configure_trigger_global_exposure_disabled_does_not_set_property():
+    # Deliberately does NOT call prop_setvalue() at all when disabled --
+    # LabVIEW's own false-case value (0) is not a valid
+    # TRIGGER_GLOBALEXPOSURE enum member and the property-ID constant
+    # visible at that block-diagram call site does not match this
+    # property's real value in the vendored DCAM-API v4 header, an
+    # unresolved discrepancy (docs/known_open_items.md). Actively setting
+    # a specific guessed "off" value risked being systematically wrong for
+    # every future experiment's exposure timing; leaving the property
+    # untouched is the conservative choice until this is confirmed against
+    # the real LabVIEW application directly.
+    FakeDcamModule.instances = []
+    backend = HamamatsuDcamBackend()
+    backend.dcam_module = FakeDcamModule
+    backend.dcamapi = FakeDcamApi
+
+    backend.configure_trigger_global_exposure(False)
+
+    camera = FakeDcamModule.instances[0]
+    assert not any(call[0] == "prop_setvalue" and call[1] == "TRIGGER_GLOBALEXPOSURE" for call in camera.calls)
+
+
+def test_configure_sequence_partial_failure_does_not_update_sequence_settings():
+    # Finding 1 regression test (hamamatsu_dcam.py review, Session 65):
+    # sequence_settings was previously assigned up front, before any of the
+    # individual DCAM property writes were confirmed applied. Here
+    # trigger_source really gets written to the (fake) device before
+    # trigger_polarity fails -- a genuine partial hardware application, not
+    # a pre-flight rejection -- and sequence_settings must still reflect
+    # the last configuration that was fully confirmed, not the failed one.
+    FakePartialSequenceFaultDcamModule.instances = []
+    backend = HamamatsuDcamBackend()
+    backend.dcam_module = FakePartialSequenceFaultDcamModule
+    backend.dcamapi = FakeDcamApi
+
+    backend.configure_sequence({"trigger_source": "internal", "frames": 1})
+    assert backend.sequence_settings == {"trigger_source": "internal", "frames": 1}
+
+    with pytest.raises(HamamatsuDcamError):
+        backend.configure_sequence({"trigger_source": "external", "trigger_polarity": "negative", "frames": 9})
+
+    camera = FakePartialSequenceFaultDcamModule.instances[0]
+    assert (
+        "prop_setvalue",
+        "TRIGGERSOURCE",
+        FakePartialSequenceFaultDcamModule.DCAMPROP.TRIGGERSOURCE.EXTERNAL,
+    ) in camera.calls, "trigger_source must have really been written before trigger_polarity failed"
+    assert backend.sequence_settings == {"trigger_source": "internal", "frames": 1}, (
+        "a mid-sequence failure must not leave sequence_settings reflecting the unconfirmed request"
+    )
 
 
 def test_image_sequence_still_starts_capture_when_not_already_active():

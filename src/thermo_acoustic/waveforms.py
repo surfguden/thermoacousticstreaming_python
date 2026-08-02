@@ -15,6 +15,7 @@ from .ad2 import (
     WaveformFunction,
     WfgConfig,
 )
+from .hw_logging import log_call
 
 
 class WaveFormsError(RuntimeError):
@@ -196,30 +197,62 @@ class WaveFormsBackend:
                 return mapped
         return default
 
+    def _output_mode_value(self, output_mode: object) -> int:
+        # Finding 1 (waveforms.py review, Session 66): output_mode is a
+        # free-form str field (DoSingleChannelConfig.output_mode), not an
+        # enum -- unlike function/trigger_source, nothing upstream (
+        # coerce_do_channel_config() in ad2.py just casts to str, no
+        # validation) can ever catch a typo before it reaches here. This is
+        # the only real defense point in the whole pipeline, so a silent
+        # fallback to "pushpull" would mean a bad config string silently
+        # commands the real AD2 digital output into the wrong electrical
+        # drive mode with zero error.
+        key = str(output_mode).replace(" ", "").lower()
+        if key not in self._OUTPUT_MODES:
+            raise WaveFormsError(
+                f"Unsupported digital-out output_mode: {output_mode!r} "
+                f"(expected one of {sorted(self._OUTPUT_MODES)}, case/space-insensitive)."
+            )
+        return self._OUTPUT_MODES[key]
+
     def open_first_device(self) -> int:
         return self.open_device(-1)
 
     def open_device(self, device_index: int = -1) -> int:
-        handle = c_int()
-        self._check(self._dwf.FDwfDeviceOpen(c_int(device_index), byref(handle)), "FDwfDeviceOpen")
-        if handle.value == 0:
-            raise WaveFormsError("FDwfDeviceOpen returned no device handle.")
+        with log_call("ad2", "open_device", command=device_index) as result:
+            handle = c_int()
+            self._check(self._dwf.FDwfDeviceOpen(c_int(device_index), byref(handle)), "FDwfDeviceOpen")
+            if handle.value == 0:
+                raise WaveFormsError("FDwfDeviceOpen returned no device handle.")
+            result["response"] = handle.value
         return handle.value
 
     def close(self, handle: int) -> None:
-        self._check(self._dwf.FDwfDeviceClose(c_int(handle)), "FDwfDeviceClose")
+        with log_call("ad2", "close", command=handle) as result:
+            self._check(self._dwf.FDwfDeviceClose(c_int(handle)), "FDwfDeviceClose")
+            result["response"] = "closed"
 
     def close_all(self) -> None:
-        self._check(self._dwf.FDwfDeviceCloseAll(), "FDwfDeviceCloseAll")
+        # Real reachable call site: tools/release_ad2.py (a standalone
+        # "release stuck AD2 handles" utility).
+        with log_call("ad2", "close_all") as result:
+            self._check(self._dwf.FDwfDeviceCloseAll(), "FDwfDeviceCloseAll")
+            result["response"] = "all closed"
 
     def reset_device(self, handle: int) -> None:
-        self._check(self._dwf.FDwfDeviceReset(c_int(handle)), "FDwfDeviceReset")
+        # Real reachable call site: hardware_tests/test_real_workflow_smoke.py's
+        # safe_disable_ad2_outputs() (real post-test AD2 output cleanup).
+        with log_call("ad2", "reset_device", command=handle) as result:
+            self._check(self._dwf.FDwfDeviceReset(c_int(handle)), "FDwfDeviceReset")
+            result["response"] = "reset"
 
     def set_auto_configure(self, handle: int, enabled: bool) -> None:
         self._check(self._dwf.FDwfDeviceAutoConfigureSet(c_int(handle), c_int(int(enabled))), "FDwfDeviceAutoConfigureSet")
 
     def trigger_pc(self, handle: int) -> None:
-        self._check(self._dwf.FDwfDeviceTriggerPC(c_int(handle)), "FDwfDeviceTriggerPC")
+        with log_call("ad2", "trigger_pc", command=handle) as result:
+            self._check(self._dwf.FDwfDeviceTriggerPC(c_int(handle)), "FDwfDeviceTriggerPC")
+            result["response"] = "triggered"
 
     def get_last_error_code(self) -> int:
         code = c_int()
@@ -230,24 +263,37 @@ class WaveFormsBackend:
         return self._last_error()
 
     def enum_devices(self, filter_id: int = 0) -> int:
-        count = c_int()
-        self._check(self._dwf.FDwfEnum(c_int(filter_id), byref(count)), "FDwfEnum")
+        # Real reachable call sites: tools/release_ad2.py and
+        # hardware_tests/test_real_workflow_smoke.py's read_ad2_identity()
+        # (real device-identity probes, not just dead SDK surface).
+        with log_call("ad2", "enum_devices", command=filter_id) as result:
+            count = c_int()
+            self._check(self._dwf.FDwfEnum(c_int(filter_id), byref(count)), "FDwfEnum")
+            result["response"] = count.value
         return count.value
 
     def enum_device_is_opened(self, device_index: int) -> bool:
-        opened = c_int()
-        self._check(self._dwf.FDwfEnumDeviceIsOpened(c_int(device_index), byref(opened)), "FDwfEnumDeviceIsOpened")
+        with log_call("ad2", "enum_device_is_opened", command=device_index) as result:
+            opened = c_int()
+            self._check(self._dwf.FDwfEnumDeviceIsOpened(c_int(device_index), byref(opened)), "FDwfEnumDeviceIsOpened")
+            result["response"] = bool(opened.value)
         return bool(opened.value)
 
     def enum_device_name(self, device_index: int) -> str:
-        buffer = create_string_buffer(64)
-        self._check(self._dwf.FDwfEnumDeviceName(c_int(device_index), buffer), "FDwfEnumDeviceName")
-        return buffer.value.decode(errors="replace")
+        with log_call("ad2", "enum_device_name", command=device_index) as result:
+            buffer = create_string_buffer(64)
+            self._check(self._dwf.FDwfEnumDeviceName(c_int(device_index), buffer), "FDwfEnumDeviceName")
+            name = buffer.value.decode(errors="replace")
+            result["response"] = name
+        return name
 
     def enum_device_serial_number(self, device_index: int) -> str:
-        buffer = create_string_buffer(64)
-        self._check(self._dwf.FDwfEnumSN(c_int(device_index), buffer), "FDwfEnumSN")
-        return buffer.value.decode(errors="replace")
+        with log_call("ad2", "enum_device_serial_number", command=device_index) as result:
+            buffer = create_string_buffer(64)
+            self._check(self._dwf.FDwfEnumSN(c_int(device_index), buffer), "FDwfEnumSN")
+            serial = buffer.value.decode(errors="replace")
+            result["response"] = serial
+        return serial
 
     def _analog_out_set_double(self, function_name: str, handle: int, channel_index: int, value: float) -> None:
         self._check(getattr(self._dwf, function_name)(c_int(handle), c_int(channel_index), c_double(value)), function_name)
@@ -291,7 +337,11 @@ class WaveFormsBackend:
         return value.value
 
     def analog_out_node_enable_set(self, handle: int, channel_index: int, node: int, enabled: bool) -> None:
-        self._analog_node_set_int("FDwfAnalogOutNodeEnableSet", handle, channel_index, node, int(enabled))
+        # Real reachable call site: hardware_tests/test_real_workflow_smoke.py's
+        # safe_disable_ad2_outputs() (real post-test AD2 output cleanup).
+        with log_call("ad2", "analog_out_node_enable_set", command=(channel_index, node, enabled)) as result:
+            self._analog_node_set_int("FDwfAnalogOutNodeEnableSet", handle, channel_index, node, int(enabled))
+            result["response"] = "applied"
 
     def analog_out_node_enable_get(self, handle: int, channel_index: int, node: int) -> bool:
         return bool(self._analog_node_get_int("FDwfAnalogOutNodeEnableGet", handle, channel_index, node))
@@ -384,44 +434,50 @@ class WaveFormsBackend:
         self._analog_out_set_int("FDwfAnalogOutMasterSet", handle, channel_index, master_channel_index)
 
     def analog_out_configure(self, handle: int, channel_index: int, start: bool) -> None:
-        self._analog_out_set_int("FDwfAnalogOutConfigure", handle, channel_index, int(start))
+        # Real reachable call site: hardware_tests/test_real_workflow_smoke.py's
+        # safe_disable_ad2_outputs() (real post-test AD2 output cleanup).
+        with log_call("ad2", "analog_out_configure", command=(channel_index, start)) as result:
+            self._analog_out_set_int("FDwfAnalogOutConfigure", handle, channel_index, int(start))
+            result["response"] = "applied"
 
     def configure_wfg(self, handle: int, config: WfgConfig) -> None:
-        h = c_int(handle)
-        for channel in config.channels:
-            idx = c_int(channel.channel_index)
-            carrier_out_of_range = self._configure_analog_node(h, idx, 0, channel.carrier)
-            fm_out_of_range = False
-            if channel.fm_mod.enable:
-                fm_out_of_range = self._configure_analog_node(h, idx, 1, channel.fm_mod)
-            # Session 51: never assigned True anywhere before this -- WfgConfig.
-            # check_valid()/wfg_check_config_valid() existed but had no producer,
-            # so they always reported "valid" regardless of what was actually
-            # applied. Now reflects whether *this* configure_wfg() call clamped
-            # either node's frequency/amplitude against the device's own real
-            # AnalogOutNode*Info() range.
-            channel.out_of_range = carrier_out_of_range or fm_out_of_range
+        with log_call("ad2", "configure_wfg", command=f"{len(config.channels)} channel(s), running={config.running}") as result:
+            h = c_int(handle)
+            for channel in config.channels:
+                idx = c_int(channel.channel_index)
+                carrier_out_of_range = self._configure_analog_node(h, idx, 0, channel.carrier)
+                fm_out_of_range = False
+                if channel.fm_mod.enable:
+                    fm_out_of_range = self._configure_analog_node(h, idx, 1, channel.fm_mod)
+                # Session 51: never assigned True anywhere before this -- WfgConfig.
+                # check_valid()/wfg_check_config_valid() existed but had no producer,
+                # so they always reported "valid" regardless of what was actually
+                # applied. Now reflects whether *this* configure_wfg() call clamped
+                # either node's frequency/amplitude against the device's own real
+                # AnalogOutNode*Info() range.
+                channel.out_of_range = carrier_out_of_range or fm_out_of_range
 
-            trigger = channel.trigger
-            self._check(self._dwf.FDwfAnalogOutRunSet(h, idx, c_double(trigger.sec_run)), "FDwfAnalogOutRunSet")
-            self._check(self._dwf.FDwfAnalogOutWaitSet(h, idx, c_double(trigger.sec_wait)), "FDwfAnalogOutWaitSet")
-            self._check(self._dwf.FDwfAnalogOutRepeatSet(h, idx, c_int(trigger.repeat_count)), "FDwfAnalogOutRepeatSet")
-            self._check(
-                self._dwf.FDwfAnalogOutRepeatTriggerSet(h, idx, c_int(int(trigger.repeat_trigger))),
-                "FDwfAnalogOutRepeatTriggerSet",
-            )
-            self._check(
-                self._dwf.FDwfAnalogOutTriggerSourceSet(
-                    h,
-                    idx,
-                    c_int(self._enum_value(self._TRIGGER_SOURCES, trigger.source)),
-                ),
-                "FDwfAnalogOutTriggerSourceSet",
-            )
-            self._check(
-                self._dwf.FDwfAnalogOutConfigure(h, idx, c_int(int(config.running))),
-                "FDwfAnalogOutConfigure",
-            )
+                trigger = channel.trigger
+                self._check(self._dwf.FDwfAnalogOutRunSet(h, idx, c_double(trigger.sec_run)), "FDwfAnalogOutRunSet")
+                self._check(self._dwf.FDwfAnalogOutWaitSet(h, idx, c_double(trigger.sec_wait)), "FDwfAnalogOutWaitSet")
+                self._check(self._dwf.FDwfAnalogOutRepeatSet(h, idx, c_int(trigger.repeat_count)), "FDwfAnalogOutRepeatSet")
+                self._check(
+                    self._dwf.FDwfAnalogOutRepeatTriggerSet(h, idx, c_int(int(trigger.repeat_trigger))),
+                    "FDwfAnalogOutRepeatTriggerSet",
+                )
+                self._check(
+                    self._dwf.FDwfAnalogOutTriggerSourceSet(
+                        h,
+                        idx,
+                        c_int(self._enum_value(self._TRIGGER_SOURCES, trigger.source)),
+                    ),
+                    "FDwfAnalogOutTriggerSourceSet",
+                )
+                self._check(
+                    self._dwf.FDwfAnalogOutConfigure(h, idx, c_int(int(config.running))),
+                    "FDwfAnalogOutConfigure",
+                )
+            result["response"] = f"applied, out_of_range={[c.out_of_range for c in config.channels]}"
 
     def _configure_analog_node(self, handle: c_int, channel_index: c_int, node: int, settings: object) -> bool:
         node_id = c_int(node)
@@ -486,107 +542,111 @@ class WaveFormsBackend:
         return out_of_range
 
     def configure_do(self, handle: int, config: DoConfig) -> None:
-        h = c_int(handle)
-        trigger = None
-        trigger_source = TriggerSource.NONE
-        for channel in config.channels:
-            idx = c_int(channel.channel_index)
-            trigger = channel.trigger
-            trigger_source = channel.trigger.source
-            bits = channel.custom_data.bits
-            clock_divider = channel.clock_divider
-            if channel.clock_frequency_hz is not None:
-                if channel.clock_frequency_hz <= 0:
-                    raise WaveFormsError("Digital output clock frequency must be greater than 0 Hz.")
-                internal_clock_hz = self.digital_out_internal_clock_info(handle)
-                if internal_clock_hz <= 0:
-                    raise WaveFormsError("Digital output internal clock frequency is not available.")
-                clock_divider = int((internal_clock_hz / channel.clock_frequency_hz) / 2.0)
-                # Finding E: clock_divider is an integer, so the real achieved
-                # frequency can differ from the requested clock_frequency_hz --
-                # record it so that gap is visible instead of only ever
-                # recording the requested value. clock_divider == 0 (requested
-                # frequency close to/above internal_clock_hz/2) is left
-                # unrecorded rather than guessed at -- this codebase has no
-                # confirmed real-hardware behavior for a zero divider to derive
-                # an achieved-frequency formula from.
-                channel.achieved_clock_frequency_hz = (
-                    internal_clock_hz / (2.0 * clock_divider) if clock_divider > 0 else None
-                )
+        with log_call("ad2", "configure_do", command=f"{len(config.channels)} channel(s), running={config.running}") as result:
+            h = c_int(handle)
+            trigger = None
+            trigger_source = TriggerSource.NONE
+            for channel in config.channels:
+                idx = c_int(channel.channel_index)
+                trigger = channel.trigger
+                trigger_source = channel.trigger.source
+                bits = channel.custom_data.bits
+                clock_divider = channel.clock_divider
+                if channel.clock_frequency_hz is not None:
+                    if channel.clock_frequency_hz <= 0:
+                        raise WaveFormsError("Digital output clock frequency must be greater than 0 Hz.")
+                    internal_clock_hz = self.digital_out_internal_clock_info(handle)
+                    if internal_clock_hz <= 0:
+                        raise WaveFormsError("Digital output internal clock frequency is not available.")
+                    clock_divider = int((internal_clock_hz / channel.clock_frequency_hz) / 2.0)
+                    # Finding E: clock_divider is an integer, so the real achieved
+                    # frequency can differ from the requested clock_frequency_hz --
+                    # record it so that gap is visible instead of only ever
+                    # recording the requested value. clock_divider == 0 (requested
+                    # frequency close to/above internal_clock_hz/2) is left
+                    # unrecorded rather than guessed at -- this codebase has no
+                    # confirmed real-hardware behavior for a zero divider to derive
+                    # an achieved-frequency formula from.
+                    channel.achieved_clock_frequency_hz = (
+                        internal_clock_hz / (2.0 * clock_divider) if clock_divider > 0 else None
+                    )
 
-            self._check(self._dwf.FDwfDigitalOutEnableSet(h, idx, c_int(int(channel.enable))), "FDwfDigitalOutEnableSet")
-            self._check(
-                self._dwf.FDwfDigitalOutDividerSet(h, idx, c_uint(max(clock_divider, 0))),
-                "FDwfDigitalOutDividerSet",
-            )
-            self._check(
-                self._dwf.FDwfDigitalOutCounterInitSet(
-                    h,
-                    idx,
-                    c_int(int(channel.start_high)),
-                    c_uint(max(channel.counter_initial_bits, 0)),
-                ),
-                "FDwfDigitalOutCounterInitSet",
-            )
-            self._check(
-                self._dwf.FDwfDigitalOutCounterSet(
-                    h,
-                    idx,
-                    c_uint(max(channel.counter_low_bits, 0)),
-                    c_uint(max(channel.counter_high_bits, 0)),
-                ),
-                "FDwfDigitalOutCounterSet",
-            )
-            self._check(
-                self._dwf.FDwfDigitalOutTypeSet(
-                    h,
-                    idx,
-                    c_int(self._enum_value(self._DO_TYPES, channel.output_type)),
-                ),
-                "FDwfDigitalOutTypeSet",
-            )
-            self._check(
-                self._dwf.FDwfDigitalOutIdleSet(
-                    h,
-                    idx,
-                    c_int(self._enum_value(self._DO_IDLE, channel.idle_state)),
-                ),
-                "FDwfDigitalOutIdleSet",
-            )
-            self._check(
-                self._dwf.FDwfDigitalOutOutputSet(
-                    h,
-                    idx,
-                    c_int(self._OUTPUT_MODES.get(str(channel.output_mode).replace(" ", "").lower(), 0)),
-                ),
-                "FDwfDigitalOutOutputSet",
-            )
-            if bits:
-                data = (c_ubyte * len(bits))(*[int(bool(bit)) for bit in bits])
+                self._check(self._dwf.FDwfDigitalOutEnableSet(h, idx, c_int(int(channel.enable))), "FDwfDigitalOutEnableSet")
                 self._check(
-                    self._dwf.FDwfDigitalOutDataSet(h, idx, data, c_int(len(bits))),
-                    "FDwfDigitalOutDataSet",
+                    self._dwf.FDwfDigitalOutDividerSet(h, idx, c_uint(max(clock_divider, 0))),
+                    "FDwfDigitalOutDividerSet",
                 )
+                self._check(
+                    self._dwf.FDwfDigitalOutCounterInitSet(
+                        h,
+                        idx,
+                        c_int(int(channel.start_high)),
+                        c_uint(max(channel.counter_initial_bits, 0)),
+                    ),
+                    "FDwfDigitalOutCounterInitSet",
+                )
+                self._check(
+                    self._dwf.FDwfDigitalOutCounterSet(
+                        h,
+                        idx,
+                        c_uint(max(channel.counter_low_bits, 0)),
+                        c_uint(max(channel.counter_high_bits, 0)),
+                    ),
+                    "FDwfDigitalOutCounterSet",
+                )
+                self._check(
+                    self._dwf.FDwfDigitalOutTypeSet(
+                        h,
+                        idx,
+                        c_int(self._enum_value(self._DO_TYPES, channel.output_type)),
+                    ),
+                    "FDwfDigitalOutTypeSet",
+                )
+                self._check(
+                    self._dwf.FDwfDigitalOutIdleSet(
+                        h,
+                        idx,
+                        c_int(self._enum_value(self._DO_IDLE, channel.idle_state)),
+                    ),
+                    "FDwfDigitalOutIdleSet",
+                )
+                self._check(
+                    self._dwf.FDwfDigitalOutOutputSet(
+                        h,
+                        idx,
+                        c_int(self._output_mode_value(channel.output_mode)),
+                    ),
+                    "FDwfDigitalOutOutputSet",
+                )
+                if bits:
+                    data = (c_ubyte * len(bits))(*[int(bool(bit)) for bit in bits])
+                    self._check(
+                        self._dwf.FDwfDigitalOutDataSet(h, idx, data, c_int(len(bits))),
+                        "FDwfDigitalOutDataSet",
+                    )
 
-        if trigger is not None:
-            self._check(self._dwf.FDwfDigitalOutWaitSet(h, c_double(trigger.sec_wait)), "FDwfDigitalOutWaitSet")
-            self._check(self._dwf.FDwfDigitalOutRunSet(h, c_double(trigger.sec_run)), "FDwfDigitalOutRunSet")
-            self._check(self._dwf.FDwfDigitalOutRepeatSet(h, c_int(trigger.repeat_count)), "FDwfDigitalOutRepeatSet")
+            if trigger is not None:
+                self._check(self._dwf.FDwfDigitalOutWaitSet(h, c_double(trigger.sec_wait)), "FDwfDigitalOutWaitSet")
+                self._check(self._dwf.FDwfDigitalOutRunSet(h, c_double(trigger.sec_run)), "FDwfDigitalOutRunSet")
+                self._check(self._dwf.FDwfDigitalOutRepeatSet(h, c_int(trigger.repeat_count)), "FDwfDigitalOutRepeatSet")
+                self._check(
+                    self._dwf.FDwfDigitalOutRepeatTriggerSet(h, c_int(int(trigger.repeat_trigger))),
+                    "FDwfDigitalOutRepeatTriggerSet",
+                )
             self._check(
-                self._dwf.FDwfDigitalOutRepeatTriggerSet(h, c_int(int(trigger.repeat_trigger))),
-                "FDwfDigitalOutRepeatTriggerSet",
+                self._dwf.FDwfDigitalOutTriggerSourceSet(
+                    h,
+                    c_int(self._enum_value(self._TRIGGER_SOURCES, trigger_source)),
+                ),
+                "FDwfDigitalOutTriggerSourceSet",
             )
-        self._check(
-            self._dwf.FDwfDigitalOutTriggerSourceSet(
-                h,
-                c_int(self._enum_value(self._TRIGGER_SOURCES, trigger_source)),
-            ),
-            "FDwfDigitalOutTriggerSourceSet",
-        )
-        self._check(self._dwf.FDwfDigitalOutConfigure(h, c_int(int(config.running))), "FDwfDigitalOutConfigure")
+            self._check(self._dwf.FDwfDigitalOutConfigure(h, c_int(int(config.running))), "FDwfDigitalOutConfigure")
+            result["response"] = f"applied, achieved_clock_hz={[c.achieved_clock_frequency_hz for c in config.channels]}"
 
     def reset_do(self, handle: int) -> None:
-        self._check(self._dwf.FDwfDigitalOutReset(c_int(handle)), "FDwfDigitalOutReset")
+        with log_call("ad2", "reset_do", command=handle) as result:
+            self._check(self._dwf.FDwfDigitalOutReset(c_int(handle)), "FDwfDigitalOutReset")
+            result["response"] = "reset"
 
     def digital_out_count(self, handle: int) -> int:
         count = c_int()
@@ -684,7 +744,11 @@ class WaveFormsBackend:
         self._check(self._dwf.FDwfDigitalOutTriggerSourceSet(c_int(handle), c_int(mapped)), "FDwfDigitalOutTriggerSourceSet")
 
     def digital_out_configure(self, handle: int, start: bool) -> None:
-        self._check(self._dwf.FDwfDigitalOutConfigure(c_int(handle), c_int(int(start))), "FDwfDigitalOutConfigure")
+        # Real reachable call site: hardware_tests/test_real_workflow_smoke.py's
+        # safe_disable_ad2_outputs() (real post-test AD2 output cleanup).
+        with log_call("ad2", "digital_out_configure", command=start) as result:
+            self._check(self._dwf.FDwfDigitalOutConfigure(c_int(handle), c_int(int(start))), "FDwfDigitalOutConfigure")
+            result["response"] = "applied"
 
     def capture_analog_in(
         self,
@@ -697,30 +761,40 @@ class WaveFormsBackend:
         offset_v: float = 0.0,
         timeout_s: float = 5.0,
     ) -> list[float]:
-        h = c_int(handle)
-        idx = c_int(channel_index)
-        count = max(1, int(sample_count))
+        with log_call(
+            "ad2", "capture_analog_in",
+            command=f"ch={channel_index}, fs={sample_frequency_hz}, n={sample_count}, range={range_v}",
+        ) as log_result:
+            h = c_int(handle)
+            idx = c_int(channel_index)
+            count = max(1, int(sample_count))
 
-        self._check(self._dwf.FDwfAnalogInChannelEnableSet(h, idx, c_int(1)), "FDwfAnalogInChannelEnableSet")
-        self._check(self._dwf.FDwfAnalogInChannelRangeSet(h, idx, c_double(range_v)), "FDwfAnalogInChannelRangeSet")
-        self._check(self._dwf.FDwfAnalogInChannelOffsetSet(h, idx, c_double(offset_v)), "FDwfAnalogInChannelOffsetSet")
-        self._check(self._dwf.FDwfAnalogInFrequencySet(h, c_double(sample_frequency_hz)), "FDwfAnalogInFrequencySet")
-        self._check(self._dwf.FDwfAnalogInBufferSizeSet(h, c_int(count)), "FDwfAnalogInBufferSizeSet")
-        self._check(self._dwf.FDwfAnalogInConfigure(h, c_int(1), c_int(1)), "FDwfAnalogInConfigure")
+            self._check(self._dwf.FDwfAnalogInChannelEnableSet(h, idx, c_int(1)), "FDwfAnalogInChannelEnableSet")
+            self._check(self._dwf.FDwfAnalogInChannelRangeSet(h, idx, c_double(range_v)), "FDwfAnalogInChannelRangeSet")
+            self._check(self._dwf.FDwfAnalogInChannelOffsetSet(h, idx, c_double(offset_v)), "FDwfAnalogInChannelOffsetSet")
+            self._check(self._dwf.FDwfAnalogInFrequencySet(h, c_double(sample_frequency_hz)), "FDwfAnalogInFrequencySet")
+            self._check(self._dwf.FDwfAnalogInBufferSizeSet(h, c_int(count)), "FDwfAnalogInBufferSizeSet")
+            self._check(self._dwf.FDwfAnalogInConfigure(h, c_int(1), c_int(1)), "FDwfAnalogInConfigure")
 
-        status = c_int()
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
-            self._check(self._dwf.FDwfAnalogInStatus(h, c_int(1), byref(status)), "FDwfAnalogInStatus")
-            if status.value == 2:
-                break
-            time.sleep(0.01)
-        else:
-            raise WaveFormsError("AnalogIn capture timed out before acquisition completed.")
+            # Not logging each poll iteration individually (this loop can run
+            # hundreds of times per capture) -- only the terminal outcome, via
+            # the outer log_call above, matching the "diagnostic log, not a
+            # database" instruction.
+            status = c_int()
+            deadline = time.monotonic() + timeout_s
+            while time.monotonic() < deadline:
+                self._check(self._dwf.FDwfAnalogInStatus(h, c_int(1), byref(status)), "FDwfAnalogInStatus")
+                if status.value == 2:
+                    break
+                time.sleep(0.01)
+            else:
+                raise WaveFormsError("AnalogIn capture timed out before acquisition completed.")
 
-        samples = (c_double * count)()
-        self._check(self._dwf.FDwfAnalogInStatusData(h, idx, samples, c_int(count)), "FDwfAnalogInStatusData")
-        return list(samples)
+            samples = (c_double * count)()
+            self._check(self._dwf.FDwfAnalogInStatusData(h, idx, samples, c_int(count)), "FDwfAnalogInStatusData")
+            result = list(samples)
+            log_result["response"] = f"{len(result)} samples, first={result[:3]}"
+        return result
 
     def analog_in_trigger_source_set(self, handle: int, trigger_source: int | TriggerSource) -> None:
         mapped = self._enum_value(
@@ -748,33 +822,40 @@ class WaveFormsBackend:
         if not selected:
             return {}
 
-        for index in (0, 1):
-            self._check(
-                self._dwf.FDwfAnalogInChannelEnableSet(h, c_int(index), c_int(1 if index in selected else 0)),
-                "FDwfAnalogInChannelEnableSet",
-            )
-        for index in selected:
-            idx = c_int(index)
-            self._check(self._dwf.FDwfAnalogInChannelRangeSet(h, idx, c_double(range_v)), "FDwfAnalogInChannelRangeSet")
-            self._check(self._dwf.FDwfAnalogInChannelOffsetSet(h, idx, c_double(offset_v)), "FDwfAnalogInChannelOffsetSet")
-        self._check(self._dwf.FDwfAnalogInFrequencySet(h, c_double(sample_frequency_hz)), "FDwfAnalogInFrequencySet")
-        self._check(self._dwf.FDwfAnalogInBufferSizeSet(h, c_int(count)), "FDwfAnalogInBufferSizeSet")
-        self.analog_in_trigger_source_set(handle, trigger_source)
-        self._check(self._dwf.FDwfAnalogInConfigure(h, c_int(1), c_int(1)), "FDwfAnalogInConfigure")
+        with log_call(
+            "ad2", "capture_analog_in_channels",
+            command=f"channels={selected}, fs={sample_frequency_hz}, n={sample_count}, trigger={trigger_source}",
+        ) as log_result:
+            for index in (0, 1):
+                self._check(
+                    self._dwf.FDwfAnalogInChannelEnableSet(h, c_int(index), c_int(1 if index in selected else 0)),
+                    "FDwfAnalogInChannelEnableSet",
+                )
+            for index in selected:
+                idx = c_int(index)
+                self._check(self._dwf.FDwfAnalogInChannelRangeSet(h, idx, c_double(range_v)), "FDwfAnalogInChannelRangeSet")
+                self._check(self._dwf.FDwfAnalogInChannelOffsetSet(h, idx, c_double(offset_v)), "FDwfAnalogInChannelOffsetSet")
+            self._check(self._dwf.FDwfAnalogInFrequencySet(h, c_double(sample_frequency_hz)), "FDwfAnalogInFrequencySet")
+            self._check(self._dwf.FDwfAnalogInBufferSizeSet(h, c_int(count)), "FDwfAnalogInBufferSizeSet")
+            self.analog_in_trigger_source_set(handle, trigger_source)
+            self._check(self._dwf.FDwfAnalogInConfigure(h, c_int(1), c_int(1)), "FDwfAnalogInConfigure")
 
-        status = c_int()
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
-            self._check(self._dwf.FDwfAnalogInStatus(h, c_int(1), byref(status)), "FDwfAnalogInStatus")
-            if status.value == 2:
-                break
-            time.sleep(0.01)
-        else:
-            raise WaveFormsError("AnalogIn capture timed out before acquisition completed.")
+            # Not logging each poll iteration individually -- see
+            # capture_analog_in()'s matching comment above.
+            status = c_int()
+            deadline = time.monotonic() + timeout_s
+            while time.monotonic() < deadline:
+                self._check(self._dwf.FDwfAnalogInStatus(h, c_int(1), byref(status)), "FDwfAnalogInStatus")
+                if status.value == 2:
+                    break
+                time.sleep(0.01)
+            else:
+                raise WaveFormsError("AnalogIn capture timed out before acquisition completed.")
 
-        result: dict[int, list[float]] = {}
-        for index in selected:
-            samples = (c_double * count)()
-            self._check(self._dwf.FDwfAnalogInStatusData(h, c_int(index), samples, c_int(count)), "FDwfAnalogInStatusData")
-            result[index] = list(samples)
-        return result
+            captured: dict[int, list[float]] = {}
+            for index in selected:
+                samples = (c_double * count)()
+                self._check(self._dwf.FDwfAnalogInStatusData(h, c_int(index), samples, c_int(count)), "FDwfAnalogInStatusData")
+                captured[index] = list(samples)
+            log_result["response"] = f"channels={list(captured.keys())}, {count} samples each"
+        return captured

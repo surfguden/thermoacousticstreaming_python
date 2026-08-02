@@ -10,10 +10,11 @@ import time
 from typing import Callable
 
 from .ad2 import coerce_do_config, coerce_wfg_config
-from .instruments import AD2Sdk, CetoniPump, HamamatsuCamera, PriorZMotor, SimulatedAD2Sdk, Valve
+from .instruments import AD2Sdk, CetoniPump, HamamatsuCamera, SimulatedAD2Sdk, Valve, ZStage
 from .messages import Message, MessageName, QueueResult, UiEvent
 from .queues import LabViewQueue
-from .workflows import Experiment2, ExperimentSeries2, FlushSettings
+from .tec import TecAbortedError, TecController
+from .workflows import Experiment2, ExperimentSeries2, FlushSettings, TemperatureSeries
 
 
 logger = logging.getLogger(__name__)
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 # conversational) so they carry into UI Phase 2/3 unchanged:
 #
 # 1. FLUSH GRANULARITY: Flush is ONE card/step, not decomposed into
-#    sub-steps -- valve-open/dispense/valve-close/post-wait stay
+#    sub-steps -- valve position 1/pump move/valve position 2/post-wait stay
 #    internal to flush()'s own body, not individually visualized.
 #    flush() fires exactly one step_started/step_completed/step_failed
 #    trio around its entire body, not per-internal-action events.
@@ -85,7 +86,8 @@ class Application:
     camera: HamamatsuCamera = field(default_factory=HamamatsuCamera)
     pump: CetoniPump = field(default_factory=CetoniPump)
     valve: Valve = field(default_factory=Valve)
-    z_motor: PriorZMotor = field(default_factory=PriorZMotor)
+    z_motor: ZStage = field(default_factory=ZStage)
+    tec: TecController = field(default_factory=TecController)
     experiment_series: ExperimentSeries2 = field(default_factory=ExperimentSeries2)
     status: str = "System Not Initialized"
     main_queue: LabViewQueue = field(default_factory=lambda: LabViewQueue("Main Queue"))
@@ -160,11 +162,17 @@ class Application:
     def set_cetoni_pump(self, pump: CetoniPump) -> None:
         self.pump = pump
 
-    def get_prior_zmotor(self) -> PriorZMotor:
+    def get_z_stage(self) -> ZStage:
         return self.z_motor
 
-    def set_prior_zmotor(self, z_motor: PriorZMotor) -> None:
+    def set_z_stage(self, z_motor: ZStage) -> None:
         self.z_motor = z_motor
+
+    def get_tec_controller(self) -> TecController:
+        return self.tec
+
+    def set_tec_controller(self, tec: TecController) -> None:
+        self.tec = tec
 
     def get_experiment_series_general(self) -> ExperimentSeries2:
         return self.experiment_series
@@ -191,21 +199,6 @@ class Application:
         self.fire_stop_event()
         return True
 
-    def z_stack(self, positions: list[float], exposure_ms: float | None = None) -> list[object]:
-        if exposure_ms is not None:
-            self.camera.configure_exposure_time(exposure_ms)
-
-        images: list[object] = []
-        for position in positions:
-            if self.listen_abort():
-                self.fire_status_event("ZStackAborted")
-                break
-            self.z_motor.go_to_abs_pos(position)
-            images.append(self.camera.capture_snapshot())
-        if images and self.status != "ZStackAborted":
-            self.fire_status_event("ZStackComplete")
-        return images
-
     def initialize(self) -> None:
         self.create_queues()
         self.register_events()
@@ -217,6 +210,7 @@ class Application:
             ("pump", self.pump),
             ("valve", self.valve),
             ("z_motor", self.z_motor),
+            ("tec", self.tec),
         ):
             try:
                 instrument.initialize()
@@ -235,6 +229,7 @@ class Application:
                 ("pump", self.pump),
                 ("valve", self.valve),
                 ("z_motor", self.z_motor),
+                ("tec", self.tec),
                 ("ad2", self.ad2),
             )
         )
@@ -359,7 +354,20 @@ class Application:
         # directly, so this check verifies the actual applied exposure instead of
         # trusting the experiment dict to match what was really pushed to the device.
         exposure_s = max(self.camera.exposure_ms, 0.0) / 1000.0
-        readout_s = max(self.camera.read_readout_time(), 0.0)
+        raw_readout_s = self.camera.read_readout_time()
+        if raw_readout_s is None:
+            # Finding 3 (hamamatsu_dcam.py review, Session 65): a real
+            # readout-time query failure now surfaces as None rather than a
+            # silently-substituted 0.0 -- treat "unknown" the same as any
+            # other unverifiable state this check guards against: refuse
+            # to claim the configured FPS is achievable rather than
+            # optimistically letting it through on a masked value.
+            raise ValueError(
+                "Could not read the camera's real readout time from hardware -- cannot verify "
+                "the configured Camera FPS is achievable for the current exposure/ROI. Retry, or "
+                "check the camera connection before starting this experiment."
+            )
+        readout_s = max(raw_readout_s, 0.0)
         frame_period_s = exposure_s + readout_s
         if frame_period_s <= 0:
             return
@@ -392,6 +400,68 @@ class Application:
             if time.monotonic() >= deadline:
                 return False
             time.sleep(0.05)
+        return True
+
+    # H1 (qmix_backend.py line-by-line review, 2026-07-31): CetoniPump.refill()/
+    # empty() issue the same asynchronous, target-based set_fill_level() SDK
+    # call flush() uses, but returned as soon as the command was issued --
+    # unlike flush(), nothing waited for the real pump to actually arrive, and
+    # CetoniPump.refill()/empty()'s own internal fill_level sync ran
+    # immediately after issuing the move, reading back a premature, likely
+    # still-in-progress value rather than the real final one. Manual "Refill"/
+    # "Empty" buttons (qt_ui.py) called self.app.pump.refill()/empty()
+    # directly, bypassing Application entirely -- moved here to reuse the
+    # same wait_for_pump()/timeout architecture flush() already established,
+    # rather than duplicating a wait loop inside CetoniPump/QmixPumpBackend.
+    # Default timeout_s=60.0 mirrors QmixPumpBackend.reference_move_timeout_s's
+    # own default -- both are bounded, generous-for-a-full-stroke-move
+    # timeouts with no equivalent to FlushSettings' volume/flowrate-derived
+    # formula (refill()/empty() have no caller-supplied settings object).
+    def refill(self, timeout_s: float = 60.0) -> bool:
+        self.pump.refill()
+        completed = self.wait_for_pump(timeout_s)
+        # Always re-sync after waiting, not only on timeout: CetoniPump.
+        # refill()'s own internal sync (inside the call above) already ran
+        # before this wait, so even the success path needs a fresh read to
+        # capture the value actually confirmed by wait_for_pump() -- not
+        # flush()'s exact shape (which re-issues a second set_fill_level()
+        # call to refresh its own already-correct target), but the same
+        # "don't trust a pre-confirmation snapshot" principle.
+        self.pump.sync_fill_level()
+        if not completed:
+            self.fire_status_event("RefillTimedOut")
+            return False
+        self.fire_status_event("RefillComplete")
+        return True
+
+    def empty(self, timeout_s: float = 60.0) -> bool:
+        self.pump.empty()
+        completed = self.wait_for_pump(timeout_s)
+        self.pump.sync_fill_level()
+        if not completed:
+            self.fire_status_event("EmptyTimedOut")
+            return False
+        self.fire_status_event("EmptyComplete")
+        return True
+
+    # Finding 1 (qt_ui.py/qt_ui_v2.py targeted UI audit, 2026-07-31): the
+    # manual "GO" button called self.app.pump.set_fill_level() directly --
+    # the exact same fire-and-forget shape refill()/empty() were fixed for
+    # above, just never in that fix's scope since it's a different button
+    # (arbitrary-level moves, not full/empty). Same pattern reused
+    # verbatim, not redesigned: issue the move, wait_for_pump(), then
+    # unconditionally re-sync fill_level from real hardware regardless of
+    # timeout/success, for the same reason refill()/empty() do -- without
+    # this, a later flush()'s own over-draw guard would trust a fabricated
+    # fill_level instead of reality.
+    def go_to_level(self, level: float, flow_rate: float | None = None, timeout_s: float = 60.0) -> bool:
+        self.pump.set_fill_level(level, flow_rate)
+        completed = self.wait_for_pump(timeout_s)
+        self.pump.sync_fill_level()
+        if not completed:
+            self.fire_status_event("GoToLevelTimedOut")
+            return False
+        self.fire_status_event("GoToLevelComplete")
         return True
 
     def flush(self, settings: FlushSettings, progress: Callable[[str, object], None] | None = None) -> bool:
@@ -429,7 +499,12 @@ class Application:
                 )
             self.fire_status_event("Flushing")
             self.valve.set_position(1)
-            self.valve.wait_until_ready(timeout_s=1.0)
+            if not self.valve.wait_until_ready(timeout_s=1.0):
+                # A bounded busy response is not confirmation that the valve
+                # reached the requested route. Do not begin the pump move
+                # until the first position is confirmed.
+                self.fire_status_event("FlushValvePosition1NotReady")
+                return False
 
             # fill_level and flush_volume_ml are both absolute mL -- see
             # QmixPumpBackend.set_fill_level(), which no longer auto-detects units.
@@ -438,10 +513,29 @@ class Application:
 
             completed = self.wait_for_pump(settings.timeout_s)
             if not completed:
+                # H1 (instruments.py line-by-line review): set_fill_level()
+                # above updates self.pump.fill_level optimistically, to the
+                # target, before the real pump confirms it got there --
+                # correct on the success path (wait_for_pump() confirmed
+                # arrival), but left silently wrong here otherwise, with
+                # nothing else re-syncing it. A later flush's own
+                # over-draw guard (`flush_volume_ml > self.pump.fill_level`,
+                # above) would then trust a fabricated number instead of
+                # reality. Re-sync from real hardware before returning --
+                # deliberately not caught: if the real read itself fails, a
+                # pump we already know is unconfirmed AND now unreadable is
+                # worse than the timeout alone, and must not be swallowed
+                # into a quiet False return the caller could mistake for an
+                # ordinary "flush failed, state is otherwise known" outcome.
+                self.pump.sync_fill_level()
                 return False
 
             self.valve.set_position(2)
-            self.valve.wait_until_ready(timeout_s=1.0)
+            if not self.valve.wait_until_ready(timeout_s=1.0):
+                # The final fill-level update can command the real pump too;
+                # leave it untouched when the return position is unconfirmed.
+                self.fire_status_event("FlushValvePosition2NotReady")
+                return False
             self.wait(settings.wait_after_flush_s)
             self.pump.set_fill_level(new_fill_level)
             self.fire_status_event("FlushComplete")
@@ -466,13 +560,53 @@ class Application:
             experiment.sim_pump = self.pump.simulate
             experiment.sim_valve = self.valve.simulate
 
+            # Full-project audit finding (2026-07-31): a real (non-simulated)
+            # instrument left disabled for this run previously had its
+            # per-step hardware calls silently skipped (AD2) or attempted
+            # anyway despite being marked disabled (Camera/Pump/Valve), with
+            # no record either way -- SimAD2 alone can't distinguish "AD2 was
+            # active" from "AD2 was disabled and skipped." Recorded here,
+            # read from live instrument state like the sim_* flags above, so
+            # every step below can gate on it and data.tdms can record what
+            # actually happened.
+            experiment.ad2_enabled = self.ad2.enabled
+            experiment.camera_enabled = self.camera.enabled
+            experiment.pump_enabled = self.pump.enabled
+            experiment.valve_enabled = self.valve.enabled
+
             self.fire_status_event("Initializing Experiment")
             experiment_folder = experiment.create_folder_and_tdms()
             experiment.save_settings()
 
         with _report_step(progress, STEP_CONFIGURE_WFG):
-            self.ad2.config_wfg(experiment.wfg_config)
-            self.ad2.config_do_clock_special(experiment.do_clock_settings)
+            if self.ad2.enabled:
+                self.ad2.config_wfg(experiment.wfg_config)
+                self.ad2.config_do_clock_special(experiment.do_clock_settings)
+                # Finding 1 (application.py review, Session 67): point
+                # experiment.wfg_config/do_clock_settings at the confirmed,
+                # post-clamping objects AD2Sdk now holds (only assigned there
+                # after the real hardware call succeeds, since Session 66's
+                # Fix 2) rather than leaving them at whatever was originally
+                # passed in. coerce_wfg_config()/coerce_do_config() return the
+                # SAME object unchanged when given an already-typed WfgConfig/
+                # DoConfig, but build a brand-new, disconnected object when
+                # given a dict -- so when experiment.wfg_config/do_clock_settings
+                # started out as a dict (a documented, type-hinted input shape,
+                # used by hardware_tests/test_real_workflow_smoke.py), the
+                # object WaveFormsBackend.configure_wfg()/configure_do() just
+                # mutated with the real clamping result was never the same
+                # object as experiment.wfg_config -- the re-snapshot below
+                # would silently keep reading the untouched original dict's
+                # pre-configure defaults. Reassigning here makes the fix work
+                # for both input shapes without changing coerce_wfg_config()/
+                # coerce_do_config() themselves (which have other read-only
+                # callers, e.g. _ad2_completion_wait_seconds() below, that
+                # must not start mutating a caller-supplied dict as a side
+                # effect).
+                experiment.wfg_config = self.ad2.get_wfg_config()
+                experiment.do_clock_settings = self.ad2.get_do_config()
+            else:
+                self.fire_status_event("AD2Disabled -- WFG/DO configuration skipped")
 
             # Re-snapshot settings now that config_wfg() has run. The first
             # save_settings() call above is deliberately kept (not replaced) so a
@@ -481,107 +615,187 @@ class Application:
             # second call only refreshes fields that hardware configuration can
             # change after the fact, currently WfgChannelConfig.out_of_range
             # (set by WaveFormsBackend.configure_wfg()'s live-range clamping,
-            # Session 51 / commit 23e17d5). Without this, WFGOutOfRangeCh1/Ch2 in
-            # data.tdms always reflected the pre-configure default (False),
-            # because config_wfg() -- the only place that ever sets it True --
-            # ran after the metadata snapshot that recorded it.
+            # Session 51 / commit 23e17d5) and DOFreqActual (achieved DO-clock
+            # frequency after integer-divider rounding). Without this,
+            # WFGOutOfRangeCh1/Ch2 and DOFreqActual in data.tdms always
+            # reflected the pre-configure default, because config_wfg()/
+            # config_do_clock_special() -- the only places that ever set them
+            # -- ran after the metadata snapshot that recorded them.
             experiment.save_settings()
 
         with _report_step(progress, STEP_CONFIGURE_CAMERA):
-            # configure_exposure_time() (not the plain configure() bookkeeping
-            # setter) is what actually writes DCAM_IDPROP.EXPOSURETIME to real
-            # hardware -- matches the manual Camera tab's _configure_camera(),
-            # which already calls it. Previously this path only updated
-            # self.camera.exposure_ms without ever pushing it to the device.
-            applied_exposure_ms = self.camera.configure_exposure_time(experiment.global_exposure_ms)
-            # Finding E (silent-failure/data-integrity sweep): configure_exposure_time()
-            # now returns the real applied exposure (DCAM's own internal
-            # quantization can differ slightly from the request); record that
-            # real value into data.tdms's ExposureTime, not the raw requested
-            # one, so the saved record matches what was actually pushed to
-            # hardware. Third save_settings() call this run -- cheap (same write
-            # path used twice already above) and keeps the "record what actually
-            # happened, not just what was requested" guarantee Finding A already
-            # established for WFGOutOfRange consistent for this field too.
-            experiment.global_exposure_ms = applied_exposure_ms
-            experiment.save_settings()
+            if self.camera.enabled:
+                # configure_exposure_time() (not the plain configure() bookkeeping
+                # setter) is what actually writes DCAM_IDPROP.EXPOSURETIME to real
+                # hardware -- matches the manual Camera tab's _configure_camera(),
+                # which already calls it. Previously this path only updated
+                # self.camera.exposure_ms without ever pushing it to the device.
+                applied_exposure_ms = self.camera.configure_exposure_time(experiment.global_exposure_ms)
+                # Finding E (silent-failure/data-integrity sweep): configure_exposure_time()
+                # now returns the real applied exposure (DCAM's own internal
+                # quantization can differ slightly from the request); record that
+                # real value into data.tdms's ExposureTime, not the raw requested
+                # one, so the saved record matches what was actually pushed to
+                # hardware. Third save_settings() call this run -- cheap (same write
+                # path used twice already above) and keeps the "record what actually
+                # happened, not just what was requested" guarantee Finding A already
+                # established for WFGOutOfRange consistent for this field too.
+                experiment.global_exposure_ms = applied_exposure_ms
+                experiment.save_settings()
 
-            self.camera.configure_sequence(experiment.sequence_settings)
-            self.fire_status_event(
-                "Configuring camera trigger global exposure; this may only take effect with compatible trigger source settings"
-            )
-            self.camera.configure_trigger_global_exposure(experiment.trigger_global_exposure)
-            self._check_camera_timing_budget(experiment)
+                self.camera.configure_sequence(experiment.sequence_settings)
+                self.fire_status_event(
+                    "Configuring camera trigger global exposure; this may only take effect with compatible trigger source settings"
+                )
+                self.camera.configure_trigger_global_exposure(experiment.trigger_global_exposure)
+                self._check_camera_timing_budget(experiment)
+            else:
+                self.fire_status_event("CameraDisabled -- camera configuration skipped")
 
-        image_data = []
+        image_data: list = []
+        frame_timestamps: list[str] = []
         aborted = False
+        ad2_triggered_at: float | None = None
         with _report_step(progress, STEP_CAPTURE_FRAMES):
-            self.camera.start_capture()
+            if self.camera.enabled:
+                self.camera.start_capture()
             try:
-                self.ad2.pc_trigger()
-                ad2_triggered_at = time.monotonic()
+                if self.ad2.enabled:
+                    self.ad2.pc_trigger()
+                    ad2_triggered_at = time.monotonic()
+                else:
+                    self.fire_status_event("AD2Disabled -- PC trigger skipped")
 
                 self.fire_status_event("Running Experiment Frame")
-                frame_count = 0
-                if experiment.sequence_settings:
-                    frame_count = int(experiment.sequence_settings.get("frames", 0) or 0)
-                image_data = self.camera.image_sequence(frame_count=frame_count, partial_capture_folder=experiment_folder)
-                frame_timestamps = self.camera.read_frame_timestamps()
+                if self.camera.enabled:
+                    frame_count = 0
+                    if experiment.sequence_settings:
+                        frame_count = int(experiment.sequence_settings.get("frames", 0) or 0)
+                    image_data = self.camera.image_sequence(
+                        frame_count=frame_count, partial_capture_folder=experiment_folder
+                    )
+                    frame_timestamps = self.camera.read_frame_timestamps()
+                else:
+                    self.fire_status_event("CameraDisabled -- frame capture skipped")
 
                 aborted = self.listen_abort()
             finally:
-                self.camera.stop_capture()
+                if self.camera.enabled:
+                    self.camera.stop_capture()
 
         if aborted:
             self.fire_status_event("ExperimentAborted")
             experiment.cleanup()
             return False
 
-        remaining_ad2_wait_s = max(ad2_wait_seconds - (time.monotonic() - ad2_triggered_at), 0.0)
-        if remaining_ad2_wait_s > 0:
-            with _report_step(progress, STEP_WAIT_FOR_AD2_COMPLETION):
-                self.fire_status_event("Waiting for AD2 completion")
-                ad2_wait_message = self.wait(remaining_ad2_wait_s)
-            if self._is_abort_exit_or_error(ad2_wait_message):
-                self.fire_status_event("ExperimentAborted")
-                experiment.cleanup()
-                return False
+        if ad2_triggered_at is not None:
+            remaining_ad2_wait_s = max(ad2_wait_seconds - (time.monotonic() - ad2_triggered_at), 0.0)
+            if remaining_ad2_wait_s > 0:
+                with _report_step(progress, STEP_WAIT_FOR_AD2_COMPLETION):
+                    self.fire_status_event("Waiting for AD2 completion")
+                    ad2_wait_message = self.wait(remaining_ad2_wait_s)
+                if self._is_abort_exit_or_error(ad2_wait_message):
+                    self.fire_status_event("ExperimentAborted")
+                    experiment.cleanup()
+                    return False
 
         if experiment.flush_enabled:
-            flush_completed = self.flush(experiment.flush_settings, progress=progress)
-            # Finding D (silent-failure/data-integrity sweep): record the
-            # flush result into this repeat's own data.tdms, on both the
-            # success and failure paths -- Session 7 already made a failed
-            # flush surface loudly (status event, log, Application.errors),
-            # but only at the process level, not into the saved record
-            # itself.
-            experiment.save_flush_result(flush_completed)
-            if not flush_completed:
-                message = (
-                    f"Flush failed for experiment repeat {experiment.repeat_id}: "
-                    f"flush_flowrate={experiment.flush_settings.flush_flowrate}, "
-                    f"flush_volume_ml={experiment.flush_settings.flush_volume_ml}, "
-                    f"wait_after_flush_s={experiment.flush_settings.wait_after_flush_s}"
-                )
-                logger.error(message)
-                self.check_loop_error(message)
-                self.fire_status_event("ExperimentFlushFailed")
-                experiment.cleanup()
-                return False
+            if self.pump.enabled and self.valve.enabled:
+                flush_completed = self.flush(experiment.flush_settings, progress=progress)
+                # Finding D (silent-failure/data-integrity sweep): record the
+                # flush result into this repeat's own data.tdms, on both the
+                # success and failure paths -- Session 7 already made a failed
+                # flush surface loudly (status event, log, Application.errors),
+                # but only at the process level, not into the saved record
+                # itself.
+                experiment.save_flush_result(flush_completed)
+                if not flush_completed:
+                    message = (
+                        f"Flush failed for experiment repeat {experiment.repeat_id}: "
+                        f"flush_flowrate={experiment.flush_settings.flush_flowrate}, "
+                        f"flush_volume_ml={experiment.flush_settings.flush_volume_ml}, "
+                        f"wait_after_flush_s={experiment.flush_settings.wait_after_flush_s}"
+                    )
+                    logger.error(message)
+                    self.check_loop_error(message)
+                    self.fire_status_event("ExperimentFlushFailed")
+                    experiment.cleanup()
+                    return False
+            else:
+                # Flush requires both the pump and the valve -- flush() moves
+                # fluid via the pump between two valve positions, it isn't
+                # meaningful with either one disabled. Skipped, not attempted,
+                # not marked failed -- PumpEnabled/ValveEnabled in data.tdms
+                # (alongside FlushFlowrate/FlushVolume still recording what
+                # was requested) is what distinguishes this from either "flush
+                # wasn't requested" or "flush was requested and failed."
+                self.fire_status_event("FlushSkippedInstrumentDisabled")
 
         with _report_step(progress, STEP_SAVE_RESULTS):
-            self.camera.save_sequence(image_data, experiment_folder)
-            experiment.save_image_data(image_data, frame_timestamps=frame_timestamps)
-            experiment.save_camera_settings(
-                {
-                    "buffer_size": self.camera.get_camera_buffer_size(),
-                    "sub_region": self.camera.get_sub_region(),
-                    "readout_time": self.camera.read_readout_time(),
-                }
-            )
+            if self.camera.enabled:
+                self.camera.save_sequence(image_data, experiment_folder)
+                experiment.save_image_data(image_data, frame_timestamps=frame_timestamps)
+                experiment.save_camera_settings(
+                    {
+                        "buffer_size": self.camera.get_camera_buffer_size(),
+                        "sub_region": self.camera.get_sub_region(),
+                        "readout_time": self.camera.read_readout_time(),
+                    }
+                )
+            else:
+                experiment.save_image_data(image_data, frame_timestamps=frame_timestamps)
+                experiment.save_camera_settings({"buffer_size": 0, "sub_region": {}, "readout_time": 0.0})
             experiment.cleanup()
 
         self.fire_status_event("ExperimentComplete")
+        return True
+
+    def run_temperature_series(
+        self,
+        temperature_series: TemperatureSeries,
+        experiment_groups: list[ExperimentSeries2],
+        progress: Callable[[str, object], None] | None = None,
+    ) -> bool:
+        if not temperature_series.enabled:
+            raise ValueError("Temperature series requires at least one temperature point.")
+        if len(experiment_groups) != len(temperature_series.temperature_points_c):
+            raise ValueError(
+                "Temperature series group count must match the number of temperature points "
+                f"({len(experiment_groups)} groups, {len(temperature_series.temperature_points_c)} points)."
+            )
+        for group_index, (target_c, group) in enumerate(
+            zip(temperature_series.temperature_points_c, experiment_groups, strict=True),
+            start=1,
+        ):
+            if self.listen_abort():
+                self.fire_status_event("TemperatureSeriesAborted")
+                return False
+            self.fire_status_event(f"Setting TEC {target_c:.3f} C")
+            with _report_step(progress, STEP_SET_TEC_TARGET):
+                self.tec.apply_static_setpoint(target_c)
+            self.fire_status_event(f"Waiting for TEC {target_c:.3f} C")
+            try:
+                with _report_step(progress, STEP_WAIT_TEC_STABLE):
+                    self.tec.wait_until_stable(
+                        target_c,
+                        tolerance_c=temperature_series.tolerance_c,
+                        min_settle_s=temperature_series.min_settle_s,
+                        max_wait_s=temperature_series.max_wait_s,
+                        poll_interval_s=temperature_series.poll_interval_s,
+                        should_abort=self.listen_abort,
+                    )
+            except TecAbortedError:
+                self.fire_status_event("TemperatureSeriesAborted")
+                return False
+            self.fire_status_event(f"Running temperature group {group_index}/{len(experiment_groups)}")
+            self.set_experiment_series_general(group)
+            while self.experiment_series.see_elements_left():
+                if self.listen_abort():
+                    self.fire_status_event("TemperatureSeriesAborted")
+                    return False
+                if not self.run_experiment2(progress=progress):
+                    return False
+        self.fire_status_event("TemperatureSeriesComplete")
         return True
 
     def handle_message(self, message: Message) -> None:

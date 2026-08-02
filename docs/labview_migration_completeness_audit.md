@@ -14,7 +14,8 @@ strings, and a combined fill-level/flow-rate pump call in `flush()`. Treat
 the tables below as an audit trail plus remaining-gap list, not as a live-state
 substitute for current source inspection and `docs/claude_code_change_log.md`.
 The live conservative holding list for unresolved or legacy items is
-`docs/legacy_unresolved_items.md`.
+`docs/known_open_items.md`; `docs/legacy_unresolved_items.md` is the focused
+high-risk safety summary.
 
 ## Executive Summary
 
@@ -73,7 +74,9 @@ Most likely original flow:
 4. Hamamatsu camera is initialized/opened.
 5. Qmix/Cetoni pump is initialized if enabled.
 6. Valve serial resource is initialized if enabled.
-7. Prior Z motor serial resource is initialized if enabled.
+7. The original LabVIEW flow initialized a Prior Z motor serial resource when
+   enabled. This is historical reference only; it is not the current Python
+   factory path for the PPC001 hardware.
 8. Experiment series is created/enqueued.
 9. `RunExperiment2` dequeues one experiment.
 10. Experiment folder/TDMS/settings are created or saved.
@@ -125,18 +128,19 @@ The table classifies status in the current Python program, not just the raw
 | AD2 MSO | `capture_scope*()` and Qt MSO tab | Migrated, outside canonical experiment path |
 | Cetoni/Qmix pump init | `CetoniPump`, `QmixPumpBackend.initialize()` | Migrated but unsafe with current main workflow |
 | Pump flow/fill/refill/empty/reference/status | `CetoniPump` and `QmixPumpBackend` methods | Migrated but gated/unsafe until validated |
-| Valve init/position/cleanup | `Valve`, `SerialTextCommandBackend` | Migrated with `P01`/`P02` commands; status-query confidence still limited |
+| Valve init/position/cleanup | `Valve`, `SerialTextCommandBackend` | Migrated with `P01`/`P02`; COM5 status-query handshake is confirmed, fluidic position meaning remains unresolved |
 | Application flush | `Application.flush()` | Migrated but gated; unsafe with real pump/valve |
 | Prior Z motor | `PriorZMotor` | Migrated but obsolete for current hardware |
 | Z-stack | `Application.z_stack()` | Migrated but unsafe/obsolete with current Z hardware |
 | Thorlabs/APT Z discovery | `thorlabs_apt.py` | New Python discovery-only support, not LabVIEW equivalent |
-
 | PPC001 manual Z-scan calibration | `thorlabs_piezo.py`, `piezo_zscan.py`, Qt Z-Scan tab | New Python manual PPC001/Kinesis calibration-motion feature. It requires a dedicated motion authorization, is outside LabVIEW `RunExperiment2` equivalence, and is distinct from passive APT discovery. |
+| TEC temperature-series scaffold | `tec.py`, `TemperatureSeries`, Qt TEC controls | New Python scaffold; not proven LabVIEW-equivalent and real MeCom mapping remains unresolved |
+
 ## C. Semantic Equivalence Assessment
 
 | Area | Equivalence assessment |
 | --- | --- |
-| Initialization order | Broadly equivalent. Python initializes AD2, camera, pump, valve, and Z motor. Risk: if real pump is enabled, Qmix initialization is active and enabling, not passive. |
+| Initialization order | Broadly equivalent for AD2, camera, pump, and valve. Current Python uses a `ZStage`/PPC001 adapter rather than the historical Prior serial path. Risk: if real pump is enabled, Qmix initialization is active and enabling, not passive. |
 | Hardware construction | Moved to `hardware_factory.py` with same prior semantics. Equivalent to current Python behavior, but not proof of LabVIEW equivalence. |
 | Camera exposure/ROI | Strongly equivalent for validated LabVIEW preset values: exposure `40 ms`, ROI `0,792,2304,740`, up to `1000` frames passed. |
 | Camera sequence lifecycle | Current Python order is configure sequence, allocate DCAM buffer before capture, start capture, read frames, stop capture. Validated after DCAM lifecycle fix. |
@@ -148,8 +152,9 @@ The table classifies status in the current Python program, not just the raw
 | Pump/Qmix init | Python backend opens bus, starts communication, clears faults, enables pump, and configures units. This is active behavior and may differ from the exact LabVIEW operational state. It is not safe as passive main-workflow init. |
 | Pump flow | Python has refill/empty/generate flow/set fill level/reference. Not validated for current one-pump hardware beyond discovery/readback. |
 | Flush order | Python now uses the LabVIEW-style combined `set_fill_level(level, flow_rate)` call for the first pump move, then waits, switches valve, waits, and updates the final fill level. Real semantics remain hardware-sensitive. |
-| Valve commands | Python opens COM resource and writes `P01`/`P02` with CR termination through `SerialTextCommandBackend`. The status query is protocol-derived and should still be treated cautiously until hardware-confirmed. |
+| Valve commands | Python opens COM5 and writes `P01`/`P02` with CR termination through `SerialTextCommandBackend`. The `S` status-query handshake is hardware-confirmed; the physical fluidic meaning of positions 1/2 remains unresolved. |
 | Z-stage | Prior COM7 implementation maps LabVIEW Prior VIs, but current hardware is a Thorlabs/PPC001 piezo controller using Kinesis. The migrated Prior path is not equivalent to current hardware. A separate manually authorized PPC001 Z-Scan calibration path exists in Python, but it is not part of the canonical `RunExperiment2` workflow or the passive APT discovery path. |
+| TEC | New Python scaffold only: one target per experiment group, disabled/simulated by default. There is no confirmed LabVIEW-equivalence claim and no reviewed real MeCom register mapping in this repo. |
 | Save/metadata | Python saves TIFF frames and writes `data.tdms` with experiment/camera/image metadata. Exact field-by-field LabVIEW parity still requires review against real LabVIEW output files. |
 | Cleanup order | Python cleanup order is camera, pump, valve, Z motor, AD2. LabVIEW cleanup included these classes. Equivalence is broad, but pump cleanup calls stop and Qmix bus stop/close if real. |
 
@@ -163,8 +168,8 @@ The table classifies status in the current Python program, not just the raw
 | AD2 open | `AD2Sdk.initialize()` | Yes if enabled | AD2 open-close passed | Low/medium | Safe only in open-close or gated paths. |
 | Camera open | `HamamatsuCamera.initialize()` | Yes if enabled | Passed | Low | Real camera validated. |
 | Pump init | `CetoniPump.initialize()` | Yes if enabled | Discovery only outside main workflow | High | Qmix backend starts bus and enables pump. |
-| Valve init | `Valve.initialize()` | Yes if enabled | COM open-close only | High | Command mapping unresolved. |
-| Prior Z init | `PriorZMotor.initialize()` | Yes if enabled | Not valid current hardware | High | COM7 absent. |
+| Valve init | `Valve.initialize()` | Yes if enabled | COM5 status-query handshake passed | High | Position 1/2 fluidic mapping unresolved. |
+| PPC001 Z init | `ZStage.initialize()` -> `PiezoStage.connect()` | Yes if enabled | Manual/Z-scan path only | High | Kinesis connection only; ClosedLoop is not motion authorization, and this is not canonical experiment motion. |
 | Dequeue experiment | `ExperimentSeries2.dequeue_experiment()` | Yes | Unit/fake tested | Low | Structural match. |
 | Create folder/TDMS | `create_folder_and_tdms()` | Yes | Unit/fake tested | Medium | Creates `data.tdms`; exact LabVIEW parity still needs review. |
 | Save settings | `save_settings()` | Yes | Unit/fake tested | Medium | Writes `data.tdms`; exact LabVIEW parity still needs review. |
@@ -235,6 +240,9 @@ Priority items:
    - Manual PPC001 Z-scan calibration exists in Python as a separate Kinesis
      GUI/CLI path. It requires explicit motion authorization even when already
      ClosedLoop, and is not a LabVIEW `RunExperiment2` replacement or passive
+     discovery helper.
+   - Future canonical experiment motion work still needs a deliberate design
+     decision; do not route it through obsolete Prior COM7.
 
 8. Save/metadata equivalence.
    - TIFF frame saving works.
@@ -269,7 +277,7 @@ Priority items:
      original `60 s`, candidate-only until timing is proven.
    - AD2 low-risk smoke preset: CH0, `1000 Hz`, `0.1 V`, `0 V`, `0.5 s`.
    - Current one-pump Qmix config path.
-   - Current Thorlabs/APT discovery identity: serial `44533854`.
+   - Current Thorlabs/PPC001 discovery identity: serial `44533854`.
 
 5. Safety-gate workflow steps.
    - AD2 LabVIEW acoustic short: require hardware confirmation and timing
@@ -278,7 +286,9 @@ Priority items:
    - Pump/Qmix real initialization: separate gate, one-pump config only.
    - Pump flow and flush: separate gate with low-volume/low-flow limits.
    - Valve switching: separate gate after COM and position mapping.
-   - Thorlabs/APT motion: separate gate after API and movement-size review.
+   - PPC001 motion in the canonical experiment workflow: separate gate after
+     API, movement-size, and scientific-sequence review. The existing Z-Scan tab
+     is a manual calibration feature, not automatic experiment Z motion.
 
 ## Bottom Line
 

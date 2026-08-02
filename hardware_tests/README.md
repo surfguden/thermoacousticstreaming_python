@@ -1,7 +1,8 @@
 # Hardware Debugging Plan
 
-This folder is reserved for hardware debugging code that is isolated from the
-main experiment program. No scripts have been created yet.
+This folder contains hardware debugging scripts isolated from the main
+experiment program. They are manual tools, not normal pytest coverage:
+`pyproject.toml` collects only `tests/`.
 
 ## Safety Rules
 
@@ -28,7 +29,8 @@ main experiment program. No scripts have been created yet.
 - MX Valve 2 through serial text commands over a COM/VISA-style resource.
 - Current Z hardware through a Thorlabs PPC001/PFM450(E) precision-piezo path.
   It uses the Kinesis USB API, not a generic serial-device backend. The old
-  Prior COM7 implementation is retained only as migration history.
+  Prior COM7 implementation is retained only as migration history and is not
+  the current hardware path.
 - A Reglo pump control data class and LabVIEW port references exist, but there
   is no real Reglo backend comparable to the Qmix backend in the current Python
   source.
@@ -37,13 +39,13 @@ No direct Python control path was found for a laser, high-voltage amplifier,
 heater, or NI-DAQmx device. The PPC001 precision-piezo path is a separate
 manual Z-Scan/calibration feature, not a canonical experiment actuator path.
 Acoustic drive appears to be represented indirectly through the AD2
-paths.
+wavegen/digital-output paths.
 
 ## Hardware-Related Files
 
 - `src/thermo_acoustic/instruments.py`: instrument facades, simulators, serial
-  backend, AD2 facade, camera facade, Qmix pump facade, valve, and Prior
-  Z-stage.
+  backend, AD2 facade, camera facade, Qmix pump facade, valve, and the current
+  PPC001 `ZStage` adapter.
 - `src/thermo_acoustic/waveforms.py`: Digilent WaveForms `ctypes` backend using
   `dwf.dll`.
 - `src/thermo_acoustic/hamamatsu_dcam.py`: Hamamatsu DCAM backend.
@@ -57,8 +59,9 @@ paths.
   settings.
 - `src/thermo_acoustic/ad2.py`: AD2 configuration data classes for WFG, DO,
   trigger, carrier, and MSO settings.
-- `src/thermo_acoustic/camera.py` and `src/thermo_acoustic/imaq.py`: camera ROI,
-  image display, and image helper structures.
+- `src/thermo_acoustic/camera.py`: camera ROI data structures.
+- `src/thermo_acoustic/imaq.py`: retained LabVIEW-parity image helper reference;
+  it is not the production DCAM/PIL camera path.
 - `tools/release_ad2.py`: WaveForms device enumeration and close-all utility.
 - `tools/capture_ad2_wavegen_scope.py` and
   `tools/capture_ad2_wavegen_scope_matplotlib.py`: existing AD2 output/capture
@@ -67,8 +70,10 @@ paths.
 - `tools/test_hamamatsu_camera.py`: existing camera open/snapshot test.
 - `tools/test_qmix_pump.py`: existing Qmix pump initialization test, with an
   optional flow command.
-- `README.md`, `docs/HANDOVER.md`, and `docs/PORTING_TBD.md`: current hardware
-  status and validation notes.
+- `README.md`, `docs/current_workflow_audit.md`, and
+  `docs/known_open_items.md`: current operator-facing status and safety notes.
+  `docs/HANDOVER.md` and `docs/PORTING_TBD.md` are historical/reference
+  material, not current validation status.
 - `labview_manifest.json`, `port_status.json`, and `main_html/`: LabVIEW export
   registry and hardware-related VI references.
 - `.thermo_acoustic_ui.json`: local persisted UI state. This may contain useful
@@ -89,11 +94,13 @@ paths.
   `labbCAN_Bus_API.dll` and `labbCAN_Pump_API.dll`. The loader uses the
   `QMIXSDK` environment variable if set, otherwise derives a local path.
 - Qmix configuration path default:
-  `C:\Users\Public\Documents\QmixElements\Projects`.
+  `C:\Users\Lab user\Desktop\Franzi\video paper 2\Paper 2 slow flow\Configurations\Cetoni_1pump_config_FM`.
 - Serial resources: valve default `COM5` (real-hardware-confirmed; `COM6` was
-  a standing documentation error), Prior Z-stage default `COM7`.
-- Serial defaults: 9600 baud, 8 data bits, no parity, 1 stop bit, no flow
-  control, 10 s config timeout, and `\r\n` line ending in the serial backend.
+  a standing documentation error). Prior `COM7` is legacy only and is not used
+  for the current PPC001 piezo.
+- Serial defaults for the current valve backend: 19200 baud, 8 data bits, no
+  parity, 1 stop bit, no flow control, 1 s read timeout, 5 s write timeout,
+  and bare carriage-return (`\r`) command termination.
 - DCAM camera device index default: `0`.
 - AD2 MSO defaults include CH1/CH2 enabled, trigger source `trigsrcNone`,
   10 kS/s, 4096 samples, 1 V range, and 0 V offset.
@@ -113,29 +120,27 @@ checks with all outputs disabled. Pump, valve, and Z-stage should come later
 because they can move fluid or hardware and need verified bench setup, command
 semantics, and operator confirmation.
 
-## Proposed Files To Create Later
+## Current Script Inventory and Quarantine
 
-- `hardware_tests/common.py`: shared confirmation prompts, logging, timeout,
-  cleanup helpers, and safe defaults.
-- `hardware_tests/inventory.py`: import/package/SDK availability checks and
-  non-actuating hardware discovery.
-- `hardware_tests/test_hamamatsu_discovery.py`: DCAM import, init, camera
-  count/open-close, model/property readback; no capture by default.
-- `hardware_tests/test_ad2_discovery.py`: WaveForms DLL resolution, device
-  enumeration, serial/name/opened state, optional open-close with outputs
-  disabled.
-- `hardware_tests/test_qmix_discovery.py`: Qmix DLL loading, bus open/close,
-  pump count/name/status readback; no enable, reference move, flow, or fill
-  command by default.
-- `hardware_tests/test_serial_ports.py`: list/validate configured COM resources
-  and optional query-only checks; no valve switching or stage movement by
-  default.
-- `hardware_tests/test_valve_confirmed.py`: later confirmed valve position test
-  with explicit operator acknowledgement.
-- `hardware_tests/test_prior_z_readonly.py`: later Z-stage read-position/status
-  check, with movement tests separated and explicitly confirmed.
-- `hardware_tests/test_ad2_low_output_confirmed.py`: later low-amplitude AD2
-  loopback test requiring confirmation and guaranteed output shutdown.
+- Passive/discovery-oriented scripts include `test_ad2_discovery.py`,
+  `test_hamamatsu_discovery.py`, `test_qmix_discovery.py`,
+  `test_serial_discovery.py`, `test_thorlabs_apt_discovery.py`, and
+  `test_dcam_property_discovery.py`. Read each script's command-line safety
+  gate before running it; some optional modes open a device.
+- `test_real_workflow_smoke.py` is an operator-run staged smoke tool. Its
+  default is plan-only; every real hardware action requires its documented
+  command-line confirmation.
+- `test_valve_command_probe.py` and `test_valve_command_probe_v2.py` are
+  manual, action-capable valve probes despite their historical names. They are
+  excluded from normal pytest collection (`testpaths = ["tests"]` and a
+  module-level `__test__ = False`) and require `--confirm SEND`. Their
+  historical candidate lists are not protocol documentation; record raw bench
+  responses rather than treating a successful serial write as physical-routing
+  confirmation.
+- `manual_ppc001_piezo_probe.py` is a manual Kinesis/pythonnet probe. It may
+  move the piezo only behind its explicit confirmation gate and must never be
+  represented as automated coverage. It is intentionally ignored and named
+  `manual_*.py`; no historical BPC-named probe is an active project tool.
 
 ## Z-Stage Discovery Result
 

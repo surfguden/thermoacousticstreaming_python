@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import threading
+import time
+
 import pytest
 
 from thermo_acoustic.thorlabs_piezo import CLOSED_LOOP_MODE_NAME, PiezoStage, PiezoStageError
@@ -170,6 +173,39 @@ def test_disconnect_stops_polling_and_shuts_down():
     assert not stage.connected
     assert ("StopPolling",) in channel.calls
     assert ("ShutDown",) in FakeDevice.instances[0].calls
+
+
+def test_disconnect_times_out_and_reports_instead_of_hanging_on_a_stuck_kinesis_call():
+    # Task 2 (pending_feedback.md item 6): disconnect() previously used
+    # plain try/except with no timeout guard -- a hung Kinesis .NET call
+    # (StopPolling/ShutDown) would have blocked disconnect() forever.
+    # Retrofitted to match QmixPumpBackend.close()'s timeout-guarded-thread
+    # shape (the documented standard-cleanup template). Confirms the fix
+    # empirically, not just by code inspection: StopPolling() genuinely
+    # never returns on its own (same threading.Event().wait() pattern
+    # test_application.py's own matching cleanup-timeout test uses), so the
+    # only way this test can pass is if disconnect() itself times out
+    # rather than waiting on the stuck call.
+    class HangingChannel(FakeChannel):
+        def StopPolling(self):
+            threading.Event().wait()
+
+    channel = HangingChannel()
+    stage = make_stage(channel=channel)
+    stage.connect()
+    stage.disconnect_timeout_s = 0.1
+
+    started_at = time.monotonic()
+    with pytest.raises(PiezoStageError, match="timed out after 0.1s"):
+        stage.disconnect()
+    elapsed_s = time.monotonic() - started_at
+
+    assert elapsed_s < 1.0, f"disconnect() must return once its timeout elapses, not block for the full hang ({elapsed_s:.2f}s)"
+    # State is still cleaned up even though a step timed out -- matches
+    # QmixPumpBackend.close()'s same "null out state regardless" behavior.
+    assert not stage.connected
+    assert stage.channel is None
+    assert stage.device is None
 
 
 def test_methods_require_connection_first():

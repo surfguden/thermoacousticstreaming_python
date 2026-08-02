@@ -1,5 +1,11 @@
 # Porting TBD
 
+> Generated LabVIEW VI coverage registry and historical porting checklist. It is
+> not a current hardware-validation or operational-status document; entries below
+> may have been implemented, superseded, or deliberately retained as legacy.
+> Use current source, `docs/current_workflow_audit.md`, and
+> `docs/known_open_items.md` for live status.
+
 This file is generated from `labview_manifest.json` and records the current
 semantic porting status for every documented VI in `main_html/main`.
 Runtime and hardware validation items are maintained here as post-port tasks.

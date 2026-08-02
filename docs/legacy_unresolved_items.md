@@ -1,19 +1,24 @@
 # Legacy and Unresolved Items
 
-This document is the conservative holding area for issues that are still not
-confidently decidable from the current code alone. It is not an authorization to
+This is a focused high-risk safety summary, not the canonical complete holding
+list. For the consolidated live register of unresolved, deferred, legacy, and
+manual-only items, see `docs/known_open_items.md`. It is not an authorization to
 run hardware. Treat the current source and targeted tests as the source of truth
-for implemented behavior; treat this file as the explicit list of items that
-should stay out of the active workflow until a human decision, hardware
-confirmation, or a focused implementation task resolves them.
+for implemented behavior; keep the items below out of the active workflow until
+a human decision, hardware confirmation, or focused implementation resolves them.
 
 ## Hardware Integration
 
-- **Thorlabs/APT Z-stage motion is not integrated.** Passive discovery found an
-  APT piezo controller, serial `44533854`, but the current experiment workflow
-  does not enable, poll, home, jog, move, or configure it. The legacy Prior COM7
-  path remains present for compatibility but is not valid for the currently
-  connected Z-stage.
+- **Real TEC MeCom mapping remains unresolved.** TEC Service Software/MeCom/
+  pyMeCom are the expected vendor stack, but this repository still does not
+  contain a reviewed Meerstetter client or register map. The current TEC path is
+  a conservative scaffold: disabled by default, simulated by default, locally
+  range-limited, and refusing real connection before I/O because the shipped
+  UI/factory cannot supply a reviewed client/factory. A UI resource field alone
+  does not enable real TEC control. The installed controller model/firmware,
+  selected channel instance, communication address, and persistence mapping are
+  also unrecorded. See `docs/tec_verification_matrix.md` for the official-source
+  inventory and step-by-step verification matrix.
 - **Manual PPC001 Z-scan is integrated only as a manual calibration feature.**
   The Qt Z-Scan tab can connect to the PPC001/PFM450(E), query live travel
   range, optionally switch to ClosedLoop after explicit confirmation, and then
@@ -25,6 +30,12 @@ confirmation, or a focused implementation task resolves them.
   `hardware_tests/manual_ppc001_piezo_probe.py` is a local manual hardware probe
   with real action paths, including polling and a gated move/voltage-change
   command. It is intentionally ignored by `.gitignore`, deliberately not named
+  `test_*.py`, and must not become part of automated pytest collection without a
+  separate review.
+- **Passive Thorlabs/APT discovery remains separate from PPC001 motion.**
+  `thorlabs_apt.py` and `hardware_tests/test_thorlabs_apt_discovery.py` are
+  discovery-only helpers. Do not use their "discovery-only" status to describe
+  the separate manual PPC001 Z-Scan motion path.
 - **Qmix/pump real-motion semantics still need hardware confirmation.** The
   one-pump Qmix configuration is the current validated setup, and the UI now
   labels the flow-rate sign convention. Real pump flow, reference move,

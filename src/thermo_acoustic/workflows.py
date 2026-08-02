@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 
 from .ad2 import DoConfig, FmSweepSettings, WfgConfig, coerce_do_config, coerce_wfg_config
+from .tec import validate_tec_target_temperature
 
 # Cheap sanity floor for _verify_tdms_write() -- not a rigorous size model,
 # just enough to catch a silently-empty/header-only write. A real TDMS file
@@ -71,6 +72,53 @@ class FlushSettings:
 
 
 @dataclass(slots=True)
+class TemperatureSeries:
+    temperature_points_c: list[float] = field(default_factory=list)
+    tolerance_c: float = 0.1
+    min_settle_s: float = 5.0
+    max_wait_s: float = 300.0
+    poll_interval_s: float = 1.0
+
+    def __post_init__(self) -> None:
+        self.temperature_points_c = [validate_tec_target_temperature(point) for point in self.temperature_points_c]
+        if self.tolerance_c < 0:
+            raise ValueError("TEC tolerance_c must be >= 0.")
+        if self.min_settle_s < 0:
+            raise ValueError("TEC min_settle_s must be >= 0.")
+        if self.max_wait_s < 0:
+            raise ValueError("TEC max_wait_s must be >= 0.")
+        if self.poll_interval_s <= 0:
+            raise ValueError("TEC poll_interval_s must be > 0.")
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.temperature_points_c)
+
+    @classmethod
+    def from_text(
+        cls,
+        text: str,
+        *,
+        tolerance_c: float = 0.1,
+        min_settle_s: float = 5.0,
+        max_wait_s: float = 300.0,
+        poll_interval_s: float = 1.0,
+    ) -> "TemperatureSeries":
+        points = []
+        for item in text.replace(";", ",").split(","):
+            item = item.strip()
+            if item:
+                points.append(float(item))
+        return cls(
+            temperature_points_c=points,
+            tolerance_c=tolerance_c,
+            min_settle_s=min_settle_s,
+            max_wait_s=max_wait_s,
+            poll_interval_s=poll_interval_s,
+        )
+
+
+@dataclass(slots=True)
 class Experiment2:
     repeat_id: int = 0
     experiment_folder: Path = Path()
@@ -82,6 +130,7 @@ class Experiment2:
     wfg_config: WfgConfig | dict[str, Any] | None = None
     do_clock_settings: DoConfig | dict[str, Any] | None = None
     fm_sweep: FmSweepSettings | None = None
+    tec_target_c: float | None = None
     # Whether each instrument was a Simulated*/simulate=True backend for this
     # run, not requested/enabled state -- set by Application.run_experiment2()
     # from the live instrument instances right before the settings snapshot,
@@ -93,6 +142,18 @@ class Experiment2:
     sim_camera: bool = False
     sim_pump: bool = False
     sim_valve: bool = False
+    # Real requested enabled/disabled state for this run, set alongside the
+    # sim_* flags above from the same live instrument instances. A distinct
+    # concept from sim_*: an instrument can be real (not simulated) and still
+    # disabled for this run -- previously that combination was invisible in
+    # data.tdms, so a run where e.g. AD2 was genuinely disabled (its
+    # per-step hardware calls skipped entirely by run_experiment2(), not
+    # attempted) looked structurally identical to a run where AD2 was fully
+    # active. See known_open_items.md.
+    ad2_enabled: bool = True
+    camera_enabled: bool = True
+    pump_enabled: bool = True
+    valve_enabled: bool = True
     _tdms_properties: dict[str, Any] = field(default_factory=dict, init=False)
     _tdms_image_names: list[str] = field(default_factory=list, init=False)
     _tdms_timestamps: list[str] = field(default_factory=list, init=False)
@@ -175,6 +236,7 @@ class Experiment2:
             # it with the real True/False once flush() actually completes.
             "FlushCompleted": "",
             "GitCommitHash": _git_commit_hash(),
+            "TECTarget": "" if self.tec_target_c is None else self.tec_target_c,
         }
         properties.update(self._wfg_properties("Ch1", ch1))
         properties.update(self._wfg_properties("Ch2", ch2))
@@ -204,6 +266,10 @@ class Experiment2:
                 "SimCamera": self.sim_camera,
                 "SimPump": self.sim_pump,
                 "SimValve": self.sim_valve,
+                "AD2Enabled": self.ad2_enabled,
+                "CameraEnabled": self.camera_enabled,
+                "PumpEnabled": self.pump_enabled,
+                "ValveEnabled": self.valve_enabled,
             }
         )
         return properties
@@ -249,15 +315,22 @@ class Experiment2:
 
     def _wfg_properties(self, suffix: str, channel: Any | None) -> dict[str, Any]:
         if channel is None:
-            return {
+            properties = {
                 f"WFGFreq{suffix}": "",
                 f"WFGAmp{suffix}": "",
                 f"WFGRun{suffix}": "",
                 f"WFGWait{suffix}": "",
                 f"Repeat{suffix}": "",
                 f"WFGOutOfRange{suffix}": "",
+                f"WFGFunction{suffix}": "",
+                f"WFGOffset{suffix}": "",
+                f"WFGSymmetry{suffix}": "",
+                f"WFGPhase{suffix}": "",
+                f"WFGTriggerSource{suffix}": "",
             }
-        return {
+            properties.update(self._wfg_fm_mod_properties(suffix, None))
+            return properties
+        properties = {
             f"WFGFreq{suffix}": channel.carrier.frequency_hz,
             f"WFGAmp{suffix}": channel.carrier.amplitude_v,
             f"WFGRun{suffix}": channel.trigger.sec_run,
@@ -269,6 +342,50 @@ class Experiment2:
             # silently-substituted drive value is recorded in the data itself,
             # not just surfaced transiently in the UI status line.
             f"WFGOutOfRange{suffix}": channel.out_of_range,
+            # Finding 1 (workflows.py review, Session 68): these were never
+            # recorded at all -- carrier.function/offset_v/symmetry_percent/
+            # phase_deg and trigger.source are real, user-editable
+            # Experiment-tab fields (qt_ui.py's exp_ch1_function/
+            # exp_ch1_offset/exp_ch1_symmetry/exp_ch1_phase), so a saved
+            # data.tdms previously could not confirm which waveform shape (or
+            # trigger source) an experiment actually used.
+            f"WFGFunction{suffix}": channel.carrier.function,
+            f"WFGOffset{suffix}": channel.carrier.offset_v,
+            f"WFGSymmetry{suffix}": channel.carrier.symmetry_percent,
+            f"WFGPhase{suffix}": channel.carrier.phase_deg,
+            f"WFGTriggerSource{suffix}": channel.trigger.source,
+        }
+        properties.update(self._wfg_fm_mod_properties(suffix, channel.fm_mod))
+        return properties
+
+    def _wfg_fm_mod_properties(self, suffix: str, fm_mod: Any | None) -> dict[str, Any]:
+        # fm_mod is never actually None on a real WfgChannelConfig (its field
+        # defaults to CarrierSettings(enable=False), not None) -- the None
+        # guard here is defensive for duck-typed callers/tests. "Disabled" is
+        # fm_mod.enable is False, not fm_mod is None; either way, reporting
+        # the disabled CarrierSettings' own default frequency_hz/amplitude_v
+        # would misleadingly look like real applied FM-mod settings, so this
+        # degrades to the same "" unavailable-sentinel convention
+        # _fm_sweep_properties() already uses for its own disabled case,
+        # rather than a bare crash or a stale default.
+        if fm_mod is None or not fm_mod.enable:
+            return {
+                f"WFGFMEnabled{suffix}": False,
+                f"WFGFMFreq{suffix}": "",
+                f"WFGFMAmp{suffix}": "",
+                f"WFGFMFunction{suffix}": "",
+                f"WFGFMOffset{suffix}": "",
+                f"WFGFMSymmetry{suffix}": "",
+                f"WFGFMPhase{suffix}": "",
+            }
+        return {
+            f"WFGFMEnabled{suffix}": True,
+            f"WFGFMFreq{suffix}": fm_mod.frequency_hz,
+            f"WFGFMAmp{suffix}": fm_mod.amplitude_v,
+            f"WFGFMFunction{suffix}": fm_mod.function,
+            f"WFGFMOffset{suffix}": fm_mod.offset_v,
+            f"WFGFMSymmetry{suffix}": fm_mod.symmetry_percent,
+            f"WFGFMPhase{suffix}": fm_mod.phase_deg,
         }
 
     def _camera_properties(self, settings: dict[str, Any]) -> dict[str, Any]:

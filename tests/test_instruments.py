@@ -85,6 +85,38 @@ def test_query_returns_as_soon_as_carriage_return_terminator_arrives():
     )
 
 
+class _FakePortThatRaisesOnClose:
+    def __init__(self) -> None:
+        self.close_attempts = 0
+
+    def close(self) -> None:
+        self.close_attempts += 1
+        raise RuntimeError("simulated OS-level close failure")
+
+
+def test_close_resets_port_to_none_even_when_port_close_raises():
+    # M1 (instruments.py line-by-line review): previously self.port = None
+    # only ran after port.close() returned -- if close() raised, self.port
+    # stayed set to the broken handle, so a future _open() would see
+    # self.port is not None and skip reopening entirely (permanently
+    # reusing a broken handle), and a future close() would try to close
+    # the same broken handle again.
+    port = _FakePortThatRaisesOnClose()
+    backend = SerialTextCommandBackend(port=port)
+
+    try:
+        backend.close()
+        raise AssertionError("close() must still propagate the real exception")
+    except RuntimeError as exc:
+        assert "simulated OS-level close failure" in str(exc)
+
+    assert backend.port is None, "port must be reset even though close() raised"
+
+    # A subsequent close() must not try to close the same broken port again.
+    backend.close()
+    assert port.close_attempts == 1
+
+
 def test_readline_based_read_would_have_blocked_for_the_full_timeout():
     """Proves the bug the fix above closes: the exact call the old
     query() implementation made (self.port.readline()) reproduces the

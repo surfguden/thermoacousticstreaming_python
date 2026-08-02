@@ -1,5 +1,10 @@
 # Codex Handover
 
+> Historical handover snapshot only. The paths, branch, commit, test count, and
+> operational claims below describe the handover-time repository, not the current
+> runtime state. Use current source, `docs/current_workflow_audit.md`, and
+> `docs/known_open_items.md` for live operational boundaries.
+
 This project is a Python port of a LabVIEW thermo-acoustic streaming application.
 The current repo is pushed to:
 

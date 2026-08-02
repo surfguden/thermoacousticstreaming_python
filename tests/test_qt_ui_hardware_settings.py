@@ -4,6 +4,7 @@ import json
 import os
 import threading
 import time
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -285,10 +286,16 @@ def test_representative_fields_have_grounded_tooltips(monkeypatch, tmp_path):
 
     # Initialization: stub fields disabled + tooltipped, matching v2's
     # existing InitializationDialog._mark_unwired_stub() convention.
+    # thorlabs_apt_serial is no longer one of them -- it's the real piezo's
+    # own device serial, genuinely used since the Z-stage repoint (pending
+    # feedback item 5, Part B1); prior_resource is the now-unwired one
+    # (the legacy PriorZMotor/COM7 path was retired).
     assert not window.z_backend.isEnabled()
     assert "Not wired to a real backend" in window.z_backend.toolTip()
-    assert not window.thorlabs_apt_serial.isEnabled()
-    assert "Session 3" in window.thorlabs_apt_serial.toolTip()
+    assert window.thorlabs_apt_serial.isEnabled()
+    assert "PiezoStage" in window.thorlabs_apt_serial.toolTip()
+    assert not window.prior_resource.isEnabled()
+    assert "Not wired to a real backend" in window.prior_resource.toolTip()
 
     # WFG tab: Symmetry/secWait/Trigger source. sec_run/repeat tooltips were
     # removed in the Session 41 re-narrowing -- their row labels already
@@ -305,11 +312,18 @@ def test_representative_fields_have_grounded_tooltips(monkeypatch, tmp_path):
     assert "100 MS/s" in window.mso_sample_frequency.toolTip() or "UNCONFIRMED" in window.mso_sample_frequency.toolTip()
     assert "clipping" in window.mso_range.toolTip()
 
-    # PumpValve tab: valve Open/Closed, Custom Volume, flow-rate sign convention.
+    # PumpValve tab: valve position controls, Custom Volume, flow-rate sign convention.
     assert "Custom" in window.custom_syringe_volume_ml.toolTip()
     assert "negative values aspirate/withdraw" in window.flow_rate.toolTip()
     assert "positive values dispense/infuse" in window.flow_rate.toolTip()
     assert "unverifiable" not in window.flow_rate.toolTip()
+
+    # TEC: simulation is the only operational path in the shipped UI. Its
+    # controls must say that unchecked Simulate refuses before real I/O rather
+    # than reusing the generic real-backend tooltip used by other devices.
+    assert "fails before any TEC connection or write" in window.tec_enabled.toolTip()
+    assert "refuses before any TEC connection or write" in window.sim_tec.toolTip()
+    assert "field alone cannot enable real TEC control" in window.tec_port.toolTip()
 
     # Camera tab: DCAM Trigger Source unresolved status.
     assert "oscilloscope" in window.dcam_source.toolTip()
@@ -398,11 +412,9 @@ def test_configure_syringe_sends_real_geometry_for_custom_not_presets(monkeypatc
         window.close()
 
 
-def test_pump_tab_valve_position_buttons_show_open_closed_semantics(monkeypatch, tmp_path):
-    # Position 1 = Open, Position 2 = Closed is a confirmed, safety-relevant
-    # physical mapping (instruments.py's Valve class) -- must be visible on
-    # both the row label and the button text, not left for the operator to
-    # remember.
+def test_pump_tab_valve_position_controls_show_protocol_tokens_not_unverified_routing(monkeypatch, tmp_path):
+    # P01/P02 are protocol-confirmed. Physical fluidic routing remains a
+    # hardware-confirmation item and must not be presented as Open/Closed.
     window = make_window(monkeypatch, tmp_path)
     pump_tab = None
     for index in range(window.tabs.count()):
@@ -413,10 +425,11 @@ def test_pump_tab_valve_position_buttons_show_open_closed_semantics(monkeypatch,
 
     label_texts = {lbl.text() for lbl in pump_tab.findChildren(QLabel)}
     button_texts = {btn.text() for btn in pump_tab.findChildren(QPushButton)}
-    assert "Valve Pos1 (Open)" in label_texts
-    assert "ValvePos2 (Closed)" in label_texts
-    assert "Pos1 (Open)" in button_texts
-    assert "Pos2 (Closed)" in button_texts
+    assert "Valve Pos1 (P01)" in label_texts
+    assert "Valve Pos2 (P02)" in label_texts
+    assert "Pos1 (P01)" in button_texts
+    assert "Pos2 (P02)" in button_texts
+    assert not any("Open" in text or "Closed" in text for text in label_texts | button_texts)
 
 
 def test_init_tab_hardware_group_uses_clean_mx_valve_label(monkeypatch, tmp_path):
@@ -570,6 +583,22 @@ def test_qt_ui_uses_passive_hardware_config_defaults(monkeypatch, tmp_path):
     assert window.qmix_qmixsdk_path.text() == str(defaults.qmix.qmixsdk_path)
 
 
+def test_initialization_tab_path_fields_are_widened_to_fit_their_real_content(monkeypatch, tmp_path):
+    # Pending feedback item 3: qt_ui_v2.py's InitializationDialog already
+    # widens these same shared widget instances for itself
+    # (_widen_for_content()) -- confirm v1's own Initialization tab (which
+    # renders the same three fields in _instrument_group(), never opening
+    # v2's dialog) gets that same treatment, not left at Qt's small default
+    # sizeHint for a real, often-long Windows path.
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        for widget in (window.qmix_sdk_python_path, window.qmix_qmixsdk_path, window.cetoni_config_path):
+            required_width = widget.fontMetrics().horizontalAdvance(widget.text()) + 40
+            assert widget.minimumWidth() >= required_width
+    finally:
+        window.close()
+
+
 def test_category_6_grounded_tooltips_added_this_session(monkeypatch, tmp_path):
     # Category 6 (Session 39): fields found genuinely non-self-evident and
     # previously untooltipped, each grounded in a fact traced from real code
@@ -577,12 +606,11 @@ def test_category_6_grounded_tooltips_added_this_session(monkeypatch, tmp_path):
     # the full trace of each.
     window = make_window(monkeypatch, tmp_path)
 
-    # prior_resource: mirrors valve_resource's "genuinely used" pattern, plus
-    # the newly-traced fact that Z stage backend selection has zero effect on
-    # which backend is actually built (hardware_factory.build_hardware_bundle()
-    # never reads it).
-    assert "genuinely used" in window.prior_resource.toolTip()
-    assert "has no effect on which backend is actually built" in window.prior_resource.toolTip()
+    # prior_resource: was "genuinely used" (Session 39) -- since retired
+    # (pending feedback item 5, Part B1): the legacy PriorZMotor/COM7 path
+    # it fed was replaced with a real connection to the Thorlabs piezo via
+    # thorlabs_apt_serial, so prior_resource is now itself an unwired stub.
+    assert "Not wired to a real backend" in window.prior_resource.toolTip()
 
     # flush_flowrate (manual tab): grounded in the same uL/min fact Session
     # 31/32 established for FlushSettings.timeout_s; label also brought in
@@ -690,6 +718,9 @@ def test_qt_ui_save_and_restore_passive_hardware_fields(monkeypatch, tmp_path):
     first_window.qmix_sdk_python_path.setText(r"C:\sdk\python")
     first_window.qmix_qmixsdk_path.setText(r"C:\sdk\dll")
     first_window.cetoni_config_path.setText(r"C:\configs\one-pump")
+    first_window.tec_enabled.setChecked(True)
+    first_window.sim_tec.setChecked(False)
+    first_window.tec_port.setText("COM9")
 
     first_window._save_settings()
     saved = json.loads(qt_ui.SETTINGS_PATH.read_text(encoding="utf-8"))
@@ -697,6 +728,9 @@ def test_qt_ui_save_and_restore_passive_hardware_fields(monkeypatch, tmp_path):
     assert saved["z_backend"] == ZStageBackend.THORLABS_APT.value
     assert saved["thorlabs_apt_discovery_only"] is False
     assert saved["qmix_sdk_python_path"] == r"C:\sdk\python"
+    assert saved["tec_enabled"] is True
+    assert saved["sim_tec"] is False
+    assert saved["tec_port"] == "COM9"
 
     second_window = build_with_retry(qt_ui.MainWindow)
 
@@ -707,6 +741,62 @@ def test_qt_ui_save_and_restore_passive_hardware_fields(monkeypatch, tmp_path):
     assert second_window.qmix_sdk_python_path.text() == r"C:\sdk\python"
     assert second_window.qmix_qmixsdk_path.text() == r"C:\sdk\dll"
     assert second_window.cetoni_config_path.text() == r"C:\configs\one-pump"
+    assert second_window.tec_enabled.isChecked() is True
+    assert second_window.sim_tec.isChecked() is False
+    assert second_window.tec_port.text() == "COM9"
+
+
+def test_qt_ui_save_and_restore_tec_temperature_scan_settings(monkeypatch, tmp_path):
+    first_window = make_window(monkeypatch, tmp_path)
+    first_window.exp_tec_scan_enable.setChecked(True)
+    first_window.exp_tec_points.setText("20.0, 25.5")
+    first_window.exp_tec_tolerance_c.setValue(0.25)
+    first_window.exp_tec_min_settle_s.setValue(3.0)
+    first_window.exp_tec_max_wait_s.setValue(120.0)
+    first_window.exp_tec_poll_interval_s.setValue(0.5)
+
+    first_window._save_settings()
+    saved = json.loads(qt_ui.SETTINGS_PATH.read_text(encoding="utf-8"))
+
+    assert saved["experiment"]["tec_scan_enable"] is True
+    assert saved["experiment"]["tec_points"] == "20.0, 25.5"
+    assert saved["experiment"]["tec_tolerance_c"] == pytest.approx(0.25)
+
+    second_window = build_with_retry(qt_ui.MainWindow)
+
+    assert second_window.exp_tec_scan_enable.isChecked() is True
+    assert second_window.exp_tec_points.text() == "20.0, 25.5"
+    assert second_window.exp_tec_tolerance_c.value() == pytest.approx(0.25)
+    assert second_window.exp_tec_min_settle_s.value() == pytest.approx(3.0)
+    assert second_window.exp_tec_max_wait_s.value() == pytest.approx(120.0)
+    assert second_window.exp_tec_poll_interval_s.value() == pytest.approx(0.5)
+
+
+def test_qt_ui_builds_one_experiment_group_per_tec_temperature(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        window.series_path.setText(str(tmp_path / "series"))
+        window.exp_camera_fps.setValue(100.0)
+        window.exp_repeats.setValue(2)
+        window.exp_frames.setValue(3)
+        window.exp_tec_points.setText("20.0;25.5")
+        window.exp_tec_min_settle_s.setValue(0.0)
+
+        temperature_series, groups, total_frames, config = window._build_temperature_experiment_groups(
+            Path(window.series_path.text())
+        )
+
+        assert temperature_series.temperature_points_c == [20.0, 25.5]
+        assert len(groups) == 2
+        assert [group.see_elements_left() for group in groups] == [2, 2]
+        assert total_frames == 12
+        assert groups[0].series_path == tmp_path / "series" / "temperature_001_20p000C"
+        assert groups[1].series_path == tmp_path / "series" / "temperature_002_25p500C"
+        assert [experiment.tec_target_c for experiment in groups[0].experiments] == [20.0, 20.0]
+        assert [experiment.tec_target_c for experiment in groups[1].experiments] == [25.5, 25.5]
+        assert config is not None
+    finally:
+        window.close()
 
 
 def test_qt_ui_save_and_restore_frequency_scanning_settings(monkeypatch, tmp_path):
@@ -1564,7 +1654,57 @@ def test_history_log_widget_auto_scrolls_unless_user_scrolled_up():
     log.add_entry("final entry after returning to bottom")
     QApplication.processEvents()
 
-    assert bar.value() == bar.maximum()
+
+def test_mso_stats_label_wraps_instead_of_growing_unbounded(monkeypatch, tmp_path):
+    # Pending feedback item 3: _set_mso_stats() concatenates a per-channel
+    # summary with " | ".join() -- length grows with the number of captured
+    # channels, unbounded. Without wordWrap, an unwrapped QLabel inside a
+    # QFormLayout grows to fit its full text instead of wrapping, the same
+    # bug class already fixed elsewhere in this tab (sweep_header/hint).
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        assert window.mso_stats.wordWrap() is True
+
+        window._set_mso_stats(
+            {0: [0.1, 0.2, 0.3, 0.4], 1: [-0.1, -0.2, -0.3, -0.4]},
+            sample_frequency_hz=1000.0,
+            trigger_source="External",
+        )
+        assert "CH1" in window.mso_stats.text()
+        assert "CH2" in window.mso_stats.text()
+    finally:
+        window.close()
+
+
+def test_mso_text_preview_box_shows_close_to_a_full_two_channel_preview(monkeypatch, tmp_path):
+    # Pending feedback item 3: up to 6 lines/channel x 2 channels = 12
+    # preview lines from _set_mso_stats(); 90px only showed ~4-5 without
+    # scrolling (still reachable via QPlainTextEdit's own scrollbar, but
+    # cramped) -- bumped to 140, matching the height already established for
+    # other small scrollable panels (Session 58's HistoryLogWidget group).
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        assert window.mso_text.maximumHeight() == 140
+
+        window._set_mso_stats(
+            {0: [0.1] * 6, 1: [0.2] * 6},
+            sample_frequency_hz=1000.0,
+            trigger_source="Internal",
+        )
+        preview_lines = window.mso_text.toPlainText().splitlines()
+        assert len(preview_lines) == 12
+    finally:
+        window.close()
+
+
+def test_history_log_widget_wraps_long_entries_instead_of_requiring_horizontal_scroll():
+    # Pending feedback item 3: QListWidget items don't wrap by default, so a
+    # long entry (e.g. a real exception message) was only reachable by
+    # horizontally scrolling one row at a time inside this widget's fixed
+    # panel width. wordWrap(True) keeps every entry fully visible instead.
+    QApplication.instance() or QApplication([])
+    log = qt_ui.HistoryLogWidget()
+    assert log.wordWrap() is True
 
 
 def test_status_history_accumulates_across_multiple_status_changes(monkeypatch, tmp_path):
@@ -2216,19 +2356,14 @@ def test_every_value_widget_has_a_tooltip_and_visible_marker(monkeypatch, tmp_pa
         # custom_syringe_inner_diameter_mm/custom_syringe_stroke_mm) + 5
         # piezo Z-scan calibration tab fields (Phase 4:
         # z_start/z_end/step_size/exposure_ms/output_dir, landed in commit
-        # 23e17d5) = 134, then -1 for the Status/Error Out history-log work:
+        # 23e17d5) + 9 TEC integration fields (enabled/sim/resource + 6 scan
+        # controls) = 143, then -1 for the Status/Error Out history-log work:
         # error_status/error_code/error_source were three separate QLabel/
         # QLineEdit rows, one of which (error_code) carried a tooltip counted
         # here; replaced with a single HistoryLogWidget (a QListWidget
         # subclass, not in _TOOLTIP_COVERAGE_WIDGET_TYPES above, so its own
-        # tooltip is real but genuinely out of this sweep's scope) = 133.
-        # This value is correct for THIS commit in isolation -- a separate,
-        # still-uncommitted TEC integration effort (enabled/sim/resource + 6
-        # scan controls, 9 fields) is expected to bump this same assertion
-        # from 133 to 142 as part of its own future commit; verified
-        # empirically against this exact reconstruction before staging, not
-        # just computed by hand -- do not preempt that number here.
-        assert kept == 133, f"expected 133 fields with a tooltip after the Status/Error Out history-log change, found {kept}"
+        # tooltip is real but genuinely out of this sweep's scope) = 142.
+        assert kept == 142, f"expected 142 fields with a tooltip after the Status/Error Out history-log change, found {kept}"
 
         # Spot-check a representative sample from both sides of the Session
         # 41 classification (full list and rationale in the changelog).

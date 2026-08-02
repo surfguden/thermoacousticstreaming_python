@@ -3,7 +3,28 @@ name = "thermo-acoustic-streaming"
 version = "0.1.0"
 description = "Python conversion scaffold for the LabVIEW thermo-acoustic streaming application"
 requires-python = ">=3.11"
-dependencies = ["PySide6>=6.11", "Pillow>=10.0", "pyserial>=3.5", "npTDMS>=1.10"]
+# This list previously omitted numpy and pythonnet even though both are real,
+# always-needed imports on the production code path (numpy: workflows.py/
+# qt_ui.py top-level imports; pythonnet, imported as `clr`: thorlabs_piezo.py,
+# needed for the real Z-stage/piezo motion path) -- undetected because the
+# production `exp_ctrl` conda environment was hand-assembled over time and
+# happened to already have both installed, not because anything ever verified
+# it against this file. Found via a full audit cross-referencing every
+# third-party import reachable from launch_gui.bat against exp_ctrl's actual
+# installed packages (2026-07-31) -- see requirements-exp_ctrl.txt for the
+# exact pinned versions currently validated in that environment, and
+# tools/check_environment.py for a script that re-verifies this list against
+# whatever environment it's run in.
+dependencies = ["PySide6>=6.11", "Pillow>=10.0", "pyserial>=3.5", "npTDMS>=1.10", "numpy>=1.24", "pythonnet>=3.0"]
+
+[project.optional-dependencies]
+# pylablib is used by thorlabs_apt.py (a standalone Thorlabs-APT discovery
+# utility) but that module is never imported by launch_gui.bat's real
+# production path (qt_ui.py/application.py/workflows.py/hardware_factory.py
+# all use thorlabs_piezo.py's pythonnet/Kinesis path for the real Z-stage
+# instead) -- confirmed via a repo-wide search for importers before
+# classifying it as optional rather than core.
+thorlabs-apt-discovery = ["pylablib>=0.5"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

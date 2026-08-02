@@ -6,6 +6,29 @@ import pytest
 from PySide6.QtCore import QEvent
 from PySide6.QtWidgets import QApplication
 
+from thermo_acoustic import hw_logging
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _hw_logging_isolated(tmp_path_factory):
+    """Redirect hw_logging to one throwaway file for the whole test session,
+    completely outside every individual test's own tmp_path -- without
+    this, any test exercising a real backend's log_call()/log_transaction()
+    call sites (piezo/ad2/camera/pump/valve) would fall back to hw_logging's
+    lazy default and pollute the real logs/hardware_transactions.log with
+    synthetic test data, indistinguishable from genuine real-hardware
+    evidence (found happening in practice: a handful of test-only piezo
+    entries leaked into the real log before this fixture existed). Session
+    ("app has one shared log," not "log per test") deliberately mirrors
+    hw_logging's own real design and avoids polluting any individual test's
+    tmp_path -- several tests use tmp_path itself as the exact directory
+    under test and assert on its precise contents (a per-test-tmp_path
+    version of this fixture broke those in practice, since even a nested
+    subdirectory still shows up as an extra tmp_path.iterdir() entry)."""
+    log_dir = tmp_path_factory.mktemp("hw_logging")
+    hw_logging.configure(log_dir / "test_hardware_transactions.log")
+    yield
+
 
 def build_with_retry(factory, attempts: int = 8):
     """Call `factory()`, retrying on SystemError from Qt widget construction.

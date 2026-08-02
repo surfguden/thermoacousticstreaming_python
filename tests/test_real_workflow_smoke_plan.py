@@ -1331,6 +1331,114 @@ def test_real_camera_only_main_passes_apply_roi_only_when_requested(monkeypatch,
     assert calls == [(tmp_path, None, None, "labview-screenshot", True)]
 
 
+# -- Session 58 disk-cleanup follow-up: hardware_tests/output/ silently
+# accumulated to 4.89 GB / 1,443 files across every real-hardware session,
+# nothing ever pruned it. prune_old_run_dirs() + --keep-last close that gap.
+
+
+def test_prune_old_run_dirs_keeps_only_the_newest_keep_last_minus_one(tmp_path):
+    module = load_smoke_module()
+    prefix = "real_camera_only"
+    # Oldest to newest by name (the embedded YYYYMMDD_HHMMSS timestamp
+    # sorts correctly as a plain string).
+    names = [f"{prefix}_2026070{i}_120000" for i in range(1, 6)]  # 5 dirs
+    for name in names:
+        (tmp_path / name).mkdir()
+
+    # Called with keep_last=3, exactly as main() calls it right before
+    # creating a new run dir -- prunes down to keep_last - 1 = 2 existing,
+    # leaving room for the caller's own new one to bring the total to 3.
+    module.prune_old_run_dirs(tmp_path, prefix, keep_last=3)
+
+    remaining = sorted(p.name for p in tmp_path.iterdir())
+    assert remaining == names[-2:]
+
+
+def test_prune_old_run_dirs_ignores_directories_with_a_different_prefix(tmp_path):
+    module = load_smoke_module()
+    # Five old "real_camera_only" runs (should be pruned down to 1) plus
+    # one unrelated "camera_ad2_lowrisk" run in the SAME output_dir
+    # (should survive untouched) -- confirms pointing --output-dir at a
+    # folder shared across modes only prunes that mode's own history.
+    for i in range(1, 6):
+        (tmp_path / f"real_camera_only_2026070{i}_120000").mkdir()
+    (tmp_path / "camera_ad2_lowrisk_20260701_090000").mkdir()
+
+    module.prune_old_run_dirs(tmp_path, "real_camera_only", keep_last=2)
+
+    remaining = sorted(p.name for p in tmp_path.iterdir())
+    assert remaining == ["camera_ad2_lowrisk_20260701_090000", "real_camera_only_20260705_120000"]
+
+
+def test_prune_old_run_dirs_disabled_when_keep_last_is_zero(tmp_path):
+    module = load_smoke_module()
+    for i in range(1, 4):
+        (tmp_path / f"real_camera_only_2026070{i}_120000").mkdir()
+
+    module.prune_old_run_dirs(tmp_path, "real_camera_only", keep_last=0)
+
+    assert len(list(tmp_path.iterdir())) == 3
+
+
+def test_prune_old_run_dirs_is_a_no_op_when_output_dir_does_not_exist_yet(tmp_path):
+    module = load_smoke_module()
+    missing = tmp_path / "does-not-exist-yet"
+
+    module.prune_old_run_dirs(missing, "real_camera_only", keep_last=4)  # must not raise
+
+
+def test_real_camera_only_main_prunes_old_run_dirs_before_creating_the_new_one(monkeypatch, tmp_path):
+    # End-to-end, through main() -- not just the helper in isolation.
+    # Matches the exact scenario requested: N+2 fake timestamped folders
+    # exist, run once, only the newest N remain (N-1 old + the new run).
+    module = load_smoke_module()
+    prefix = "real_camera_only"
+
+    def fake_runner(output_dir, frames, exposure_ms, preset_name=None, apply_roi=False):
+        new_dir = output_dir / f"{prefix}_20260799_999999"  # sorts after every pre-existing name below
+        new_dir.mkdir()
+        return new_dir
+
+    monkeypatch.setattr(module, "run_real_camera_only", fake_runner)
+
+    keep_last = 3
+    existing_names = [f"{prefix}_2026070{i}_120000" for i in range(1, 6)]  # N+2 = 5
+    for name in existing_names:
+        (tmp_path / name).mkdir()
+
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "test_real_workflow_smoke.py",
+            "--real-camera-only",
+            "--output-dir",
+            str(tmp_path),
+            "--keep-last",
+            str(keep_last),
+        ],
+    )
+
+    assert module.main() == 0
+
+    remaining = sorted(p.name for p in tmp_path.iterdir() if p.name.startswith(f"{prefix}_"))
+    assert len(remaining) == keep_last
+    assert remaining == existing_names[-(keep_last - 1):] + [f"{prefix}_20260799_999999"]
+
+
+def test_real_camera_only_main_keep_last_defaults_to_four(monkeypatch, tmp_path):
+    module = load_smoke_module()
+    monkeypatch.setattr(module, "run_real_camera_only", lambda *a, **k: tmp_path / "fake-run")
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        ["test_real_workflow_smoke.py", "--real-camera-only", "--output-dir", str(tmp_path)],
+    )
+
+    args = module.parse_args()
+    assert args.keep_last == 4
+
+
 def test_smoke_plan_tests_do_not_import_real_hardware_sdks():
     before = {name for name in HARDWARE_SDK_MODULE_NAMES if name in sys.modules}
 

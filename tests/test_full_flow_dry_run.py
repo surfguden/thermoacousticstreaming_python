@@ -20,15 +20,26 @@ REAL_HARDWARE_MODULES = (
 class FakeAD2:
     def __init__(self, calls):
         self.calls = calls
+        self.enabled = True
+        self._wfg_config = None
+        self._do_config = None
 
     def initialize(self):
         self.calls.append(("ad2", "initialize"))
 
     def config_wfg(self, config):
         self.calls.append(("ad2", "config_wfg", config))
+        self._wfg_config = config
 
     def config_do_clock_special(self, settings):
         self.calls.append(("ad2", "config_do_clock_special", settings))
+        self._do_config = settings
+
+    def get_wfg_config(self):
+        return self._wfg_config
+
+    def get_do_config(self):
+        return self._do_config
 
     def pc_trigger(self):
         self.calls.append(("ad2", "pc_trigger"))
@@ -44,6 +55,7 @@ class FakeCamera:
         self.exposure_ms = None
         self.capturing = False
         self.simulate = True
+        self.enabled = True
 
     def initialize(self):
         self.calls.append(("camera", "initialize"))
@@ -106,6 +118,7 @@ class FakePump:
         self.fill_level = 1.0
         self.dosing = False
         self.simulate = True
+        self.enabled = True
 
     def initialize(self):
         self.calls.append(("pump", "initialize"))
@@ -134,6 +147,7 @@ class FakeValve:
         self.calls = calls
         self.position = None
         self.simulate = True
+        self.enabled = True
 
     def initialize(self):
         self.calls.append(("valve", "initialize"))

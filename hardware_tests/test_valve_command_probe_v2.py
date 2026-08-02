@@ -1,8 +1,13 @@
 """
-Standalone valve command probe v2 (hardware_tests/test_valve_command_probe_v2.py)
+Manual-only valve command probe v2 (hardware_tests/test_valve_command_probe_v2.py)
 
 Adds explicit DTR/RTS control on top of v1, to test whether the valve
 requires these handshake lines asserted before it will respond to commands.
+
+This is not an automated pytest test despite the historical ``test_`` file
+name. ``pyproject.toml`` collects only ``tests/`` and ``__test__ = False``
+below is a second guard if collection configuration changes. Run it only by an
+explicit operator command after reading this header.
 
 Usage:
   python hardware_tests\\test_valve_command_probe_v2.py --list
@@ -13,11 +18,14 @@ import argparse
 import sys
 import time
 
+
+# Prevent accidental collection if a future pytest invocation names this file.
+__test__ = False
+
 try:
     import serial
 except ImportError:
-    print("pyserial not installed in this environment. Run: pip install pyserial")
-    sys.exit(1)
+    serial = None
 
 
 CANDIDATES = {
@@ -26,15 +34,14 @@ CANDIDATES = {
     "crlf_1":      (b"1\r\n",      "Bare '1' + CRLF"),
     "p01_cr":      (b"P01\r",      "'P01' + CR (confirmed LabVIEW format for position 1)"),
     "p02_cr":      (b"P02\r",      "'P02' + CR (candidate for position 2)"),
-    "status_query": (b"S\r",       "'S' + CR -- status/position query per IDEX MX Series II "
-                                    "driver docs (linnarsson-lab/MXII-valve reference driver). "
-                                    "Expect: port digit+CR = current port, lone CR = ready, "
-                                    "'*'/'**' = busy, no bytes back = not connected. Use "
-                                    "--read-response to see it."),
+    "status_query": (b"S\r",       "'S' + CR -- status/position query used by the current "
+                                    "application. Record the raw response; its exact device "
+                                    "semantics require bench confirmation. Use --read-response "
+                                    "to see it."),
 }
-# NOTE: the earlier "star_query" ('*\r') candidate was speculative and is
-# superseded by "status_query" ('S\r'), which is a verified command from the
-# IDEX MX Series II driver documentation, not a guess.
+# NOTE: the earlier "star_query" ('*\r') candidate was speculative. The
+# application uses ``S\r`` as its status query, but this script does not treat
+# its response semantics as independent vendor-documentation proof.
 
 
 def parse_tristate(value):
@@ -68,6 +75,10 @@ def main():
         for name, (raw, desc) in CANDIDATES.items():
             print(f"  {name:14s} bytes={raw!r:16s} - {desc}")
         return
+
+    if serial is None:
+        print("pyserial not installed in this environment. Run: pip install pyserial")
+        sys.exit(1)
 
     if not args.port or not args.command_name:
         print("ERROR: --port and --command-name are required (or use --list).")

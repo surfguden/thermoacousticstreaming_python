@@ -31,13 +31,54 @@ front panel tabs that are still in scope:
 - Camera
 - Experiment
 
-The DOCustom, DOClock, and Zstack tabs are intentionally omitted.
+The direct DOCustom, DOClock, and Zstack tabs are intentionally omitted.
+DO Clock Special remains structurally active in the experiment path for the
+DIO1 LED timing configuration; it is not a standalone UI tab.
 `src/thermo_acoustic/qt_ui_v2.py` (`MainWindowV2`) is an in-development
 preview UI that reuses `qt_ui.py`'s widget-building and manual-test-panel
 code (WFG/MSO/Pump&Valve/Camera open as dialogs from a sidebar). It is not
 yet hardware-verified and is **not the default launch target** until
 approved -- it must be launched explicitly (see "Launchers" below), never by
 running `tools/run_ui.py`/`launch_gui.bat` alone.
+
+## Environment Setup
+
+Production (real hardware) runs use a dedicated Conda environment named
+`exp_ctrl` -- both `launch_gui.bat`/`launch_gui_v2.bat` and this project's
+own real-hardware verification scripts (`hardware_tests/`) point at it. It
+is hand-assembled, not created fresh from a manifest each time, so it can
+drift from what the code actually needs -- this happened once already
+(`npTDMS` was missing until 2026-07-31, undetected until a real experiment
+run tried to write `data.tdms`; see `docs/known_open_items.md`).
+
+**To (re)create `exp_ctrl` from scratch:**
+
+```powershell
+conda create -n exp_ctrl python=3.11
+conda activate exp_ctrl
+pip install -r requirements-exp_ctrl.txt
+```
+
+**To confirm an environment (new or existing) actually has everything the
+real app needs**, run this after setup and any time you suspect drift:
+
+```powershell
+python tools\check_environment.py
+```
+
+It imports every real, third-party dependency the production code path
+uses and reports pass/fail per package -- exit code 0 means the environment
+is complete, non-zero means something is missing (and names exactly what).
+This is the check that would have caught the original `npTDMS` gap
+immediately instead of on a real-hardware run.
+
+`requirements-exp_ctrl.txt` pins the exact versions currently validated in
+the real `exp_ctrl` environment; `pyproject.toml`'s own `dependencies` list
+states the same packages with looser lower bounds, for general
+installability. Vendor SDKs (CETONI Qmix, Hamamatsu DCAM, Thorlabs Kinesis)
+are not pip packages and are not covered by either file -- see the comments
+at the top of `requirements-exp_ctrl.txt` for how each of those is actually
+installed/located.
 
 ## Launchers
 

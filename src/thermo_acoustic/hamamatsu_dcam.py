@@ -9,6 +9,7 @@ import time
 from typing import Any
 
 from .camera import MinMaxInc, SubRegion, SubRegionLimits
+from .hw_logging import log_call, log_transaction
 
 
 class HamamatsuDcamError(RuntimeError):
@@ -66,14 +67,16 @@ class HamamatsuDcamBackend:
             raise HamamatsuDcamError(f"{operation} failed: {err}")
 
     def open_camera(self) -> object:
-        self._load_sdk()
-        if not self.initialized:
-            self._check(self.dcamapi.init(), "Dcamapi.init")
-            self.initialized = True
-        if self.dcam is None:
-            self.dcam = self.dcam_module.Dcam(self.device_index)
-        if not self.dcam.is_opened():
-            self._check(self.dcam.dev_open(), "Dcam.dev_open")
+        with log_call("camera", "open_camera", command=self.device_index) as result:
+            self._load_sdk()
+            if not self.initialized:
+                self._check(self.dcamapi.init(), "Dcamapi.init")
+                self.initialized = True
+            if self.dcam is None:
+                self.dcam = self.dcam_module.Dcam(self.device_index)
+            if not self.dcam.is_opened():
+                self._check(self.dcam.dev_open(), "Dcam.dev_open")
+            result["response"] = "opened"
         return self.dcam
 
     def configure_exposure_time(self, exposure_ms: float) -> float:
@@ -85,9 +88,12 @@ class HamamatsuDcamBackend:
         # ever had the requested value to work with, never confirmation of
         # what was really applied.
         self.open_camera()
-        result = self.dcam.prop_setgetvalue(self.dcam_module.DCAM_IDPROP.EXPOSURETIME, max(exposure_ms, 0.0) / 1000.0)
-        self._check(result, "set EXPOSURETIME")
-        return result * 1000.0
+        with log_call("camera", "configure_exposure_time", command=exposure_ms) as log_result:
+            result = self.dcam.prop_setgetvalue(self.dcam_module.DCAM_IDPROP.EXPOSURETIME, max(exposure_ms, 0.0) / 1000.0)
+            self._check(result, "set EXPOSURETIME")
+            applied_ms = result * 1000.0
+            log_result["response"] = applied_ms
+        return applied_ms
 
     def configure_roi(self, roi: SubRegion | dict | None) -> None:
         if roi is None:
@@ -110,16 +116,18 @@ class HamamatsuDcamBackend:
         # only after the SDK round-trip.
         limits, current_roi = self.read_subregion_limits_and_value()
         self._validate_roi_against_limits(roi, limits, current_roi)
-        props = self.dcam_module.DCAM_IDPROP
-        mode = self.dcam_module.DCAMPROP.MODE
-        self._check(self.dcam.prop_setvalue(props.SUBARRAYMODE, mode.OFF), "set SUBARRAYMODE off")
-        if roi.horizontal_size > 0:
-            self._check(self.dcam.prop_setgetvalue(props.SUBARRAYHSIZE, roi.horizontal_size), "set SUBARRAYHSIZE")
-        if roi.vertical_size > 0:
-            self._check(self.dcam.prop_setgetvalue(props.SUBARRAYVSIZE, roi.vertical_size), "set SUBARRAYVSIZE")
-        self._check(self.dcam.prop_setgetvalue(props.SUBARRAYHPOS, max(roi.horizontal_offset, 0)), "set SUBARRAYHPOS")
-        self._check(self.dcam.prop_setgetvalue(props.SUBARRAYVPOS, max(roi.vertical_offset, 0)), "set SUBARRAYVPOS")
-        self._check(self.dcam.prop_setvalue(props.SUBARRAYMODE, mode.ON), "set SUBARRAYMODE on")
+        with log_call("camera", "configure_roi", command=roi) as log_result:
+            props = self.dcam_module.DCAM_IDPROP
+            mode = self.dcam_module.DCAMPROP.MODE
+            self._check(self.dcam.prop_setvalue(props.SUBARRAYMODE, mode.OFF), "set SUBARRAYMODE off")
+            if roi.horizontal_size > 0:
+                self._check(self.dcam.prop_setgetvalue(props.SUBARRAYHSIZE, roi.horizontal_size), "set SUBARRAYHSIZE")
+            if roi.vertical_size > 0:
+                self._check(self.dcam.prop_setgetvalue(props.SUBARRAYVSIZE, roi.vertical_size), "set SUBARRAYVSIZE")
+            self._check(self.dcam.prop_setgetvalue(props.SUBARRAYHPOS, max(roi.horizontal_offset, 0)), "set SUBARRAYHPOS")
+            self._check(self.dcam.prop_setgetvalue(props.SUBARRAYVPOS, max(roi.vertical_offset, 0)), "set SUBARRAYVPOS")
+            self._check(self.dcam.prop_setvalue(props.SUBARRAYMODE, mode.ON), "set SUBARRAYMODE on")
+            log_result["response"] = "applied"
 
     def _validate_roi_against_limits(self, roi: SubRegion, limits: SubRegionLimits, current_roi: SubRegion) -> None:
         if roi.horizontal_size > 0 and not (limits.horizontal_size.minimum <= roi.horizontal_size <= limits.horizontal_size.maximum):
@@ -176,15 +184,29 @@ class HamamatsuDcamBackend:
             self.open_camera()
 
     def configure_sequence(self, settings: dict | None) -> None:
+        # Session 65 (Finding 1, hamamatsu_dcam.py review): sequence_settings
+        # is only committed to self after every property write below is
+        # confirmed applied. Previously it was assigned up front, so a
+        # mid-sequence failure (e.g. an out-of-range masterpulse_interval_s)
+        # left sequence_settings reflecting the requested-but-never-applied
+        # configuration -- read later by _sequence_buffer_frame_count() to
+        # size the next capture's buffer. On failure here, sequence_settings
+        # now stays at whatever configuration was last confirmed applied.
         self.open_camera()
-        self.sequence_settings = settings or {}
-        if "exposure_ms" in self.sequence_settings:
-            self.configure_exposure_time(float(self.sequence_settings["exposure_ms"]))
+        new_settings = settings or {}
+        if "exposure_ms" in new_settings:
+            self.configure_exposure_time(float(new_settings["exposure_ms"]))
+        with log_call("camera", "configure_sequence", command=new_settings) as log_result:
+            self._configure_sequence_properties(new_settings)
+            log_result["response"] = "applied"
+        self.sequence_settings = new_settings
+
+    def _configure_sequence_properties(self, settings: dict[str, Any]) -> None:
         props = self.dcam_module.DCAM_IDPROP
         values = self.dcam_module.DCAMPROP
-        if "masterpulse_mode" in self.sequence_settings:
+        if "masterpulse_mode" in settings:
             mode = self._mapped_value(
-                self.sequence_settings["masterpulse_mode"],
+                settings["masterpulse_mode"],
                 {
                     "continuous": values.MASTERPULSE_MODE.CONTINUOUS,
                     "start": values.MASTERPULSE_MODE.START,
@@ -194,9 +216,9 @@ class HamamatsuDcamBackend:
                 "MASTERPULSE_MODE",
             )
             self._check(self.dcam.prop_setvalue(props.MASTERPULSE_MODE, mode), "set MASTERPULSE_MODE")
-        if "masterpulse_source" in self.sequence_settings:
+        if "masterpulse_source" in settings:
             source = self._mapped_value(
-                self.sequence_settings["masterpulse_source"],
+                settings["masterpulse_source"],
                 {
                     "external": values.MASTERPULSE_TRIGGERSOURCE.EXTERNAL,
                     "software": values.MASTERPULSE_TRIGGERSOURCE.SOFTWARE,
@@ -204,13 +226,13 @@ class HamamatsuDcamBackend:
                 "MASTERPULSE_TRIGGERSOURCE",
             )
             self._check(self.dcam.prop_setvalue(props.MASTERPULSE_TRIGGERSOURCE, source), "set MASTERPULSE_TRIGGERSOURCE")
-        if "masterpulse_interval_s" in self.sequence_settings:
-            interval_s = self._bounded_float(self.sequence_settings["masterpulse_interval_s"], 0.000005, 10.0, "MASTERPULSE_INTERVAL")
+        if "masterpulse_interval_s" in settings:
+            interval_s = self._bounded_float(settings["masterpulse_interval_s"], 0.000005, 10.0, "MASTERPULSE_INTERVAL")
             self._check(self.dcam.prop_setgetvalue(props.MASTERPULSE_INTERVAL, interval_s), "set MASTERPULSE_INTERVAL")
-        if "masterpulse_burst_times" in self.sequence_settings:
-            burst_times = self._bounded_int(self.sequence_settings["masterpulse_burst_times"], 1, 65535, "MASTERPULSE_BURSTTIMES")
+        if "masterpulse_burst_times" in settings:
+            burst_times = self._bounded_int(settings["masterpulse_burst_times"], 1, 65535, "MASTERPULSE_BURSTTIMES")
             self._check(self.dcam.prop_setgetvalue(props.MASTERPULSE_BURSTTIMES, burst_times), "set MASTERPULSE_BURSTTIMES")
-        if "trigger_source" in self.sequence_settings:
+        if "trigger_source" in settings:
             trigger_source_map = {
                 "internal": values.TRIGGERSOURCE.INTERNAL,
                 "external": values.TRIGGERSOURCE.EXTERNAL,
@@ -221,14 +243,14 @@ class HamamatsuDcamBackend:
                 trigger_source_map["masterpulse"] = masterpulse
                 trigger_source_map["master pulse"] = masterpulse
             trigger_source = self._mapped_value(
-                self.sequence_settings["trigger_source"],
+                settings["trigger_source"],
                 trigger_source_map,
                 "TRIGGERSOURCE",
             )
             self._check(self.dcam.prop_setvalue(props.TRIGGERSOURCE, trigger_source), "set TRIGGERSOURCE")
-        if "trigger_polarity" in self.sequence_settings:
+        if "trigger_polarity" in settings:
             polarity = self._mapped_value(
-                self.sequence_settings["trigger_polarity"],
+                settings["trigger_polarity"],
                 {
                     "negative": values.TRIGGERPOLARITY.NEGATIVE,
                     "positive": values.TRIGGERPOLARITY.POSITIVE,
@@ -236,72 +258,109 @@ class HamamatsuDcamBackend:
                 "TRIGGERPOLARITY",
             )
             self._check(self.dcam.prop_setvalue(props.TRIGGERPOLARITY, polarity), "set TRIGGERPOLARITY")
-        if "trigger_delay_s" in self.sequence_settings:
-            delay_s = self._bounded_float(self.sequence_settings["trigger_delay_s"], 0.0, 10.000002, "TRIGGERDELAY")
+        if "trigger_delay_s" in settings:
+            delay_s = self._bounded_float(settings["trigger_delay_s"], 0.0, 10.000002, "TRIGGERDELAY")
             self._check(self.dcam.prop_setgetvalue(props.TRIGGERDELAY, delay_s), "set TRIGGERDELAY")
 
     def configure_trigger_global_exposure(self, enabled: bool) -> None:
         self.open_camera()
         props = self.dcam_module.DCAM_IDPROP
         values = self.dcam_module.DCAMPROP.TRIGGER_GLOBALEXPOSURE
-        value = values.GLOBALRESET if enabled else values.DELAYED
-        # This property is writable on the C15440-20UP but may only be effective
-        # for trigger-source configurations that use global exposure/global reset.
+        # enabled=True -> GLOBALRESET: confirmed against the real LabVIEW
+        # reference (Hamamatsu.lvclass:ConfigureSequence.vi's `globalshutter`
+        # Select node picks numeric value 5 for its true case, an exact match
+        # for DCAMPROP_TRIGGER_GLOBALEXPOSURE__GLOBALRESET=5 in the vendored
+        # DCAM-API v4 header, dcamsdk4/inc/dcamprop.h).
+        #
+        # enabled=False -> deliberately does NOT call prop_setvalue() at all
+        # (leaves the property at its prior/default state), rather than
+        # picking a specific "off" mode. LabVIEW's own false-case value (0)
+        # is not a valid TRIGGER_GLOBALEXPOSURE enum member (valid range is
+        # 1-5) and the property-ID constant visible at that block-diagram
+        # call site (2049680 / 0x1F4690) does not match
+        # DCAM_IDPROP_TRIGGER_GLOBALEXPOSURE's real v4 value (2032384 /
+        # 0x1F0300) or any other constant in the vendored header -- an
+        # unresolved discrepancy (no DCAM-API v3 header or Hamamatsu
+        # compatibility-note documentation could be found locally or via web
+        # search to explain it; a second, independently-sourced v4 header
+        # -- SLAC's EPICS ADOrcaUsb module -- has byte-identical constants
+        # for this property, weakening but not disproving a version-drift
+        # explanation). Actively setting a specific guessed "off" value
+        # (the previous code used DELAYED) risked being systematically wrong
+        # for every future experiment's exposure timing; not touching the
+        # property when disabled is the safer choice until this can be
+        # confirmed against the real LabVIEW application directly. See
+        # docs/known_open_items.md.
+        if not enabled:
+            with log_call("camera", "configure_trigger_global_exposure", command="skip (disabled)") as result:
+                result["response"] = "not applied -- disabled, property left untouched"
+            return
+        value = values.GLOBALRESET
         value_name = getattr(value, "name", str(value))
-        self._check(
-            self.dcam.prop_setvalue(props.TRIGGER_GLOBALEXPOSURE, value),
-            f"set TRIGGER_GLOBALEXPOSURE to {value_name}",
-        )
+        with log_call("camera", "configure_trigger_global_exposure", command=value_name) as result:
+            self._check(
+                self.dcam.prop_setvalue(props.TRIGGER_GLOBALEXPOSURE, value),
+                f"set TRIGGER_GLOBALEXPOSURE to {value_name}",
+            )
+            result["response"] = "applied"
 
     def start_capture(self) -> None:
         self.open_camera()
-        self._ensure_buffer(self._sequence_buffer_frame_count())
-        self._check(self.dcam.cap_start(True), "Dcam.cap_start")
-        self.capture_active = True
+        with log_call("camera", "start_capture") as result:
+            self._ensure_buffer(self._sequence_buffer_frame_count())
+            self._check(self.dcam.cap_start(True), "Dcam.cap_start")
+            self.capture_active = True
+            result["response"] = "started"
 
     def stop_capture(self) -> None:
-        self._stop_capture_if_active()
+        with log_call("camera", "stop_capture") as result:
+            self._stop_capture_if_active()
+            result["response"] = "stopped"
 
     def capture_snapshot(self) -> object:
         self.open_camera()
-        self._ensure_buffer(1)
-        self._check(self.dcam.cap_snapshot(), "Dcam.cap_snapshot")
-        self.capture_active = True
-        try:
-            self._wait_frame("capture_snapshot")
-            pixel_copy, _timestamp = self._last_frame_copy()
-            return pixel_copy
-        finally:
-            self._stop_capture_if_active()
+        with log_call("camera", "capture_snapshot") as result:
+            self._ensure_buffer(1)
+            self._check(self.dcam.cap_snapshot(), "Dcam.cap_snapshot")
+            self.capture_active = True
+            try:
+                self._wait_frame("capture_snapshot")
+                pixel_copy, _timestamp = self._last_frame_copy()
+                result["response"] = "1 frame captured"
+                return pixel_copy
+            finally:
+                self._stop_capture_if_active()
 
     def image_sequence(self, frame_count: int = 0, partial_capture_folder: Path | None = None) -> list[object]:
         self.open_camera()
         count = max(int(frame_count), 1)
-        frames: list[object] = []
-        timestamps: list[str | None] = []
-        started_here = False
-        if not self.capture_active:
-            self._ensure_buffer(max(count, self.buffer_frames))
-            self._check(self.dcam.cap_start(True), "Dcam.cap_start sequence")
-            self.capture_active = True
-            started_here = True
-        try:
-            for index in range(count):
-                self._wait_frame(f"image_sequence frame {index + 1}/{count}")
-                pixel_copy, timestamp = self._last_frame_copy()
-                frames.append(pixel_copy)
-                timestamps.append(timestamp)
-        except Exception:
-            if frames and partial_capture_folder is not None:
-                self._save_partial_capture(frames, len(frames), count, partial_capture_folder)
-            raise
-        finally:
-            if started_here:
-                self._stop_capture_if_active()
-        # All-or-nothing: only trust the batch if every frame reported a real
-        # hardware timestamp. save_image_data() falls back to write-time
-        # metadata for the whole experiment otherwise (see workflows.py).
-        self.last_frame_timestamps = timestamps if timestamps and all(ts is not None for ts in timestamps) else []
+        with log_call("camera", "image_sequence", command=count) as log_result:
+            frames: list[object] = []
+            timestamps: list[str | None] = []
+            started_here = False
+            if not self.capture_active:
+                self._ensure_buffer(max(count, self.buffer_frames))
+                self._check(self.dcam.cap_start(True), "Dcam.cap_start sequence")
+                self.capture_active = True
+                started_here = True
+            try:
+                for index in range(count):
+                    self._wait_frame(f"image_sequence frame {index + 1}/{count}")
+                    pixel_copy, timestamp = self._last_frame_copy()
+                    frames.append(pixel_copy)
+                    timestamps.append(timestamp)
+            except Exception:
+                if frames and partial_capture_folder is not None:
+                    self._save_partial_capture(frames, len(frames), count, partial_capture_folder)
+                raise
+            finally:
+                if started_here:
+                    self._stop_capture_if_active()
+            # All-or-nothing: only trust the batch if every frame reported a real
+            # hardware timestamp. save_image_data() falls back to write-time
+            # metadata for the whole experiment otherwise (see workflows.py).
+            self.last_frame_timestamps = timestamps if timestamps and all(ts is not None for ts in timestamps) else []
+            log_result["response"] = f"{len(frames)}/{count} frames, timestamped={bool(self.last_frame_timestamps)}"
         return frames
 
     def _save_partial_capture(self, frames: list[object], captured: int, total: int, folder: Path) -> None:
@@ -344,19 +403,21 @@ class HamamatsuDcamBackend:
 
     def read_subregion_limits_and_value(self) -> tuple[SubRegionLimits, SubRegion | dict]:
         self.open_camera()
-        props = self.dcam_module.DCAM_IDPROP
-        limits = SubRegionLimits(
-            horizontal_offset=self._minmaxinc(props.SUBARRAYHPOS),
-            vertical_offset=self._minmaxinc(props.SUBARRAYVPOS),
-            horizontal_size=self._minmaxinc(props.SUBARRAYHSIZE),
-            vertical_size=self._minmaxinc(props.SUBARRAYVSIZE),
-        )
-        roi = SubRegion(
-            horizontal_offset=int(self.dcam.prop_getvalue(props.SUBARRAYHPOS) or 0),
-            vertical_offset=int(self.dcam.prop_getvalue(props.SUBARRAYVPOS) or 0),
-            horizontal_size=int(self.dcam.prop_getvalue(props.SUBARRAYHSIZE) or self.dcam.prop_getvalue(props.IMAGE_WIDTH) or 0),
-            vertical_size=int(self.dcam.prop_getvalue(props.SUBARRAYVSIZE) or self.dcam.prop_getvalue(props.IMAGE_HEIGHT) or 0),
-        )
+        with log_call("camera", "read_subregion_limits_and_value") as log_result:
+            props = self.dcam_module.DCAM_IDPROP
+            limits = SubRegionLimits(
+                horizontal_offset=self._minmaxinc(props.SUBARRAYHPOS),
+                vertical_offset=self._minmaxinc(props.SUBARRAYVPOS),
+                horizontal_size=self._minmaxinc(props.SUBARRAYHSIZE),
+                vertical_size=self._minmaxinc(props.SUBARRAYVSIZE),
+            )
+            roi = SubRegion(
+                horizontal_offset=int(self.dcam.prop_getvalue(props.SUBARRAYHPOS) or 0),
+                vertical_offset=int(self.dcam.prop_getvalue(props.SUBARRAYVPOS) or 0),
+                horizontal_size=int(self.dcam.prop_getvalue(props.SUBARRAYHSIZE) or self.dcam.prop_getvalue(props.IMAGE_WIDTH) or 0),
+                vertical_size=int(self.dcam.prop_getvalue(props.SUBARRAYVSIZE) or self.dcam.prop_getvalue(props.IMAGE_HEIGHT) or 0),
+            )
+            log_result["response"] = roi
         return limits, roi
 
     def update_roi_limits(self, limits: SubRegionLimits | None = None) -> SubRegionLimits:
@@ -364,17 +425,50 @@ class HamamatsuDcamBackend:
             return limits
         return self.read_subregion_limits_and_value()[0]
 
-    def read_readout_time(self) -> float:
+    def read_readout_time(self) -> float | None:
         self.open_camera()
         props = self.dcam_module.DCAM_IDPROP
-        value = self.dcam.prop_getvalue(props.TIMING_READOUTTIME) if hasattr(props, "TIMING_READOUTTIME") else False
-        return float(value or 0.0)
+        if not hasattr(props, "TIMING_READOUTTIME"):
+            with log_call("camera", "read_readout_time", command="unsupported") as result:
+                result["response"] = 0.0
+            return 0.0
+        value = self.dcam.prop_getvalue(props.TIMING_READOUTTIME)
+        if value is False:
+            # Finding 3 (hamamatsu_dcam.py review, Session 65): a genuine
+            # query failure (property exists but the live read failed) is
+            # not the same as "unsupported on this camera" -- previously
+            # both fell back to a plausible-looking 0.0, silently
+            # corrupting permanent TDMS metadata (workflows.py writes this
+            # straight through as ReadoutTime) and feeding
+            # Application._check_camera_timing_budget()'s safety check an
+            # artificially low readout time. None is this project's
+            # existing "value unavailable" sentinel (_tdms_scalar() maps
+            # None -> "", distinguishable in the written TDMS file from a
+            # real 0.0 reading) -- logged as a failed transaction, not
+            # silently swallowed, but not raised here since this is a
+            # metadata read, not a command that leaves hardware in an
+            # unconfirmed state; callers that need this value to be
+            # trustworthy (the timing-budget safety check) must handle
+            # None explicitly.
+            err = self.dcam.lasterr()
+            log_transaction("camera", "read_readout_time", success=False, error=str(err))
+            return None
+        with log_call("camera", "read_readout_time") as result:
+            readout_s = float(value)
+            result["response"] = readout_s
+        return readout_s
 
     def sw_trigger(self) -> None:
         self.open_camera()
-        self._check(self.dcam.cap_firetrigger(), "Dcam.cap_firetrigger")
+        with log_call("camera", "sw_trigger") as result:
+            self._check(self.dcam.cap_firetrigger(), "Dcam.cap_firetrigger")
+            result["response"] = "triggered"
 
     def close(self) -> None:
+        # Deliberately not wrapped in log_call() (which re-raises) -- this is
+        # an intentionally best-effort cleanup path (Finding F, see below);
+        # log_transaction() records the outcome without changing that
+        # swallow-and-continue control flow.
         if self.dcam is not None:
             # Finding F (silent-failure/data-integrity sweep): these two
             # cleanup steps were silently swallowed with a bare `pass` --
@@ -392,13 +486,16 @@ class HamamatsuDcamBackend:
                 self._stop_capture_if_active()
             except Exception as exc:
                 logger.error("Hamamatsu close(): failed to stop capture during cleanup: %s", exc)
+                log_transaction("camera", "close.stop_capture", success=False, error=str(exc))
             try:
                 self.dcam.buf_release()
             except Exception as exc:
                 logger.error("Hamamatsu close(): failed to release buffer during cleanup: %s", exc)
+                log_transaction("camera", "close.buf_release", success=False, error=str(exc))
             self.allocated_buffer_frames = 0
             self.dcam.dev_close()
             self.dcam = None
+            log_transaction("camera", "close", success=True, response="closed")
         if self.initialized and self.dcamapi is not None:
             self.dcamapi.uninit()
             self.initialized = False
@@ -414,8 +511,14 @@ class HamamatsuDcamBackend:
             )
         try:
             self.dcam.buf_release()
-        except Exception:
-            pass
+        except Exception as exc:
+            # Finding 2 (hamamatsu_dcam.py review, Session 65): same
+            # silent-failure shape as close()'s Finding F -- logged (not
+            # raised) because the buf_alloc() retry below is still the
+            # right move regardless of whether this release actually
+            # freed anything; only the silence was the bug.
+            logger.error("Hamamatsu _ensure_buffer(): failed to release existing buffer before realloc: %s", exc)
+            log_transaction("camera", "ensure_buffer.buf_release", success=False, error=str(exc))
         self.allocated_buffer_frames = 0
         self._check(self.dcam.buf_alloc(requested), f"Dcam.buf_alloc({requested})")
         self.allocated_buffer_frames = requested

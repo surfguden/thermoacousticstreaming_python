@@ -12,9 +12,10 @@ history and `docs/labview_migration_completeness_audit.md` for LabVIEW
 migration-parity questions. Later sessions migrated the AD2 DO-clock/LED
 timing path into the experiment workflow, so older "DO clock is
 legacy/nonessential" wording in this document has been refreshed below.
-For the single consolidated list of items that should remain outside the
-active workflow until explicitly resolved, see
-`docs/legacy_unresolved_items.md`.
+For the consolidated live list of items that should remain outside the active
+workflow until explicitly resolved, see `docs/known_open_items.md`.
+`docs/legacy_unresolved_items.md` is the focused high-risk safety summary. For the TEC-specific validation matrix and
+official-source boundary, see `docs/tec_verification_matrix.md`.
 
 ## Canonical Python Flow
 
@@ -30,6 +31,7 @@ flowchart TD
     F --> I["pump.initialize()"]
     F --> J["valve.initialize()"]
     F --> K["z_motor.initialize()"]
+    F --> K2["tec.initialize() if enabled"]
 
     L["UI: Run Experiment2"] --> M["Application.run_experiment2()"]
     M --> N["Experiment folder/settings"]
@@ -46,6 +48,10 @@ flowchart TD
     W -- true --> Y["Application.flush(): valve + pump actions"]
     Y --> X
     X --> Z["experiment.cleanup()"]
+
+    L2["UI: TEC temperature scan"] --> M2["One TEC target per experiment group"]
+    M2 --> N2["Set target and wait stable"]
+    N2 --> O2["Run normal Experiment2 group"]
 
     AA["Cleanup"] --> AB["Application.cleanup()"]
     AB --> AC["camera.cleanup()"]
@@ -77,6 +83,7 @@ unchanged and can still move pump and valve when real backends are connected.
 | Legacy Prior Z-stage | Retained migration reference only; no active factory path | Obsolete for current PPC001 hardware |
 | Thorlabs/APT discovery | `thorlabs_apt.py` passive discovery | Discovery-only; no motion |
 | PPC001 manual Z-scan | `qt_ui.py` Z-Scan tab + `thorlabs_piezo.py`/`piezo_zscan.py` | Manual, separately authorized calibration-motion feature; outside the canonical experiment sequence and passive APT discovery |
+| TEC temperature scan | `TecController` + `TemperatureSeries` | Conservative scaffold; disabled/simulated by default, one target per experiment group; shipped UI real selection refuses before I/O |
 
 ## Active vs Legacy Classification
 
@@ -95,6 +102,7 @@ unchanged and can still move pump and valve when real backends are connected.
 | Prior COM7 Z-stage | Legacy/obsolete | COM7 absent and current hardware is APT USB |
 | Thorlabs/APT passive discovery | Discovery-only | APT Piezo Controller serial `44533854` found by passive enumeration |
 | PPC001 Z-scan calibration | Manual, separately authorized motion | GUI Z-Scan tab can connect to the PPC001 and, after a dedicated motion confirmation, move it for calibration; it is not part of `Application.run_experiment2()` or the passive APT discovery helper |
+| TEC temperature scan | Scaffold, simulated by default | One target per group; real MeCom client/register map and reviewed UI/factory injection remain unresolved |
 
 ## Risk Table
 
@@ -112,6 +120,7 @@ unchanged and can still move pump and valve when real backends are connected.
 | Prior Z | High/invalid | COM7 is not present; do not use for current Z-stage |
 | Thorlabs/APT passive discovery | Medium | Discovery-only helper still does not enable/home/move/jog/poll/settings |
 | PPC001 manual Z-scan | High | Manual GUI feature can poll, switch to ClosedLoop after confirmation, then requires a second explicit motion confirmation before moving the piezo; keep outside canonical experiment workflow |
+| TEC temperature control | Medium/high if a future real backend is supplied | Disabled/simulated by default; the shipped UI's real selection fails before I/O, and the MeCom mapping/client injection remain unresolved |
 
 ## Validated Hardware Milestones
 
@@ -129,6 +138,15 @@ unchanged and can still move pump and valve when real backends are connected.
   configuration path.
 - Thorlabs/APT passive discovery found an `APT Piezo Controller`, serial
   `44533854`.
+- PPC001/PFM450(E) manual Z-scan support exists as a separate, explicitly
+  motion-authorized calibration path in the GUI. It is not part of the canonical
+  experiment sequence and must not be confused with the passive
+  `thorlabs_apt.py` discovery helper; ClosedLoop mode alone is not permission to
+  move the stage.
+- TEC temperature-series scaffolding exists as an opt-in path: one target is set
+  and stabilized before each experiment group. It remains disabled and simulated
+  by default. The shipped UI cannot supply a reviewed Meerstetter/MeCom client,
+  so selecting real TEC intentionally fails before a device connection.
 
 ## Do Not Run Yet
 
@@ -138,8 +156,15 @@ unchanged and can still move pump and valve when real backends are connected.
 - Valve switching on real hardware.
 - `Application.flush()` with real pump and valve.
 - Prior COM7 Z-stage path.
-- Thorlabs/APT motion, enable, home, jog, polling, identify, or settings changes.
-- AD2 DO Custom / DO Clock output.
+- PPC001/Z-scan motion as part of the canonical experiment workflow.
+- Any Thorlabs/APT or PPC001 motion outside the dedicated manual Z-Scan path,
+  its explicit ClosedLoop-switch confirmation when needed, and its separate
+  explicit PPC001 motion confirmation.
+- Real TEC operation without a reviewed Meerstetter/MeCom client, register
+  mapping, and separately reviewed UI/factory injection path.
+- Independent AD2 DO Custom output. DO Clock Special is structurally wired for
+  DIO1 LED timing, but its physical timing remains unverified and must not be
+  treated as proven synchronization.
 - Combined camera + full LabVIEW acoustic output.
 
 **DO Clock caveat (do not conflate these two facts, Session 43):** DO

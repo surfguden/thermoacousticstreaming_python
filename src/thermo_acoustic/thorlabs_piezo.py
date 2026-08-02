@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import queue
+import threading
 from dataclasses import dataclass
 from typing import Any
+
+from .hw_logging import log_call
 
 
 class PiezoStageError(RuntimeError):
@@ -51,6 +55,9 @@ class PiezoStage:
     kinesis_dir: str = DEFAULT_KINESIS_DIR
     polling_interval_ms: int = 250
     settings_timeout_ms: int = 10000
+    # Matches QmixPumpBackend.close_timeout_s's default -- the documented
+    # standard-hardware-cleanup-shape template (docs/hardware_safety_patterns.md).
+    disconnect_timeout_s: float = 5.0
 
     # Injectable for tests -- see module docstring. Left None in normal use;
     # _load_kinesis() lazily imports the real ones via pythonnet on first
@@ -112,55 +119,90 @@ class PiezoStage:
         pattern agreed in Session 45)."""
         if self.connected:
             return
-        self._load_kinesis()
+        with log_call("piezo", "connect", command=self.serial_number) as result:
+            self._load_kinesis()
 
-        self.device_manager_cli.BuildDeviceList()
-        device = self.benchtop_precision_piezo_cls.CreateBenchtopPiezo(self.serial_number)
-        try:
-            device.Connect(self.serial_number)
-        except Exception as exc:
-            raise PiezoStageError(f"Failed to connect to piezo stage {self.serial_number!r}: {exc}") from exc
+            self.device_manager_cli.BuildDeviceList()
+            device = self.benchtop_precision_piezo_cls.CreateBenchtopPiezo(self.serial_number)
+            try:
+                device.Connect(self.serial_number)
+            except Exception as exc:
+                raise PiezoStageError(f"Failed to connect to piezo stage {self.serial_number!r}: {exc}") from exc
 
-        try:
-            channel = device.GetChannel(self.channel_index)
-            channel.WaitForSettingsInitialized(self.settings_timeout_ms)
-            channel.StartPolling(self.polling_interval_ms)
+            try:
+                channel = device.GetChannel(self.channel_index)
+                channel.WaitForSettingsInitialized(self.settings_timeout_ms)
+                channel.StartPolling(self.polling_interval_ms)
 
-            self.device = device
-            self.channel = channel
-            self.connected = True
+                self.device = device
+                self.channel = channel
+                self.connected = True
 
-            self.max_travel_um = _decimal_to_float(channel.GetMaxTravel())
-            self.max_output_voltage_v = _decimal_to_float(channel.GetMaxOutputVoltage())
-            self.min_output_voltage_v = _decimal_to_float(channel.GetMinOutputVoltage())
-            self.position_control_mode = str(channel.GetPositionControlMode())
-        except Exception as exc:
+                self.max_travel_um = _decimal_to_float(channel.GetMaxTravel())
+                self.max_output_voltage_v = _decimal_to_float(channel.GetMaxOutputVoltage())
+                self.min_output_voltage_v = _decimal_to_float(channel.GetMinOutputVoltage())
+                self.position_control_mode = str(channel.GetPositionControlMode())
+            except Exception as exc:
+                self.device = None
+                self.channel = None
+                self.connected = False
+                try:
+                    device.ShutDown()
+                except Exception:
+                    pass
+                raise PiezoStageError(f"Failed to initialize piezo stage channel {self.channel_index}: {exc}") from exc
+
+            result["response"] = (
+                f"max_travel_um={self.max_travel_um}, "
+                f"output_range_v=[{self.min_output_voltage_v}, {self.max_output_voltage_v}], "
+                f"mode={self.position_control_mode}"
+            )
+
+    def disconnect(self) -> None:
+        # Timeout-guarded per step, collect-then-raise-once -- matches
+        # QmixPumpBackend.close()'s shape, the documented standard
+        # hardware-cleanup template (docs/hardware_safety_patterns.md).
+        # Previously plain try/except with no timeout guard: a hung Kinesis
+        # .NET call here could block indefinitely instead of being reported.
+        # Drop-in behavioral superset of the old shape -- the success path
+        # (both steps return normally) is unchanged; only a hang now times
+        # out and is reported instead of blocking forever.
+        with log_call("piezo", "disconnect", command=self.serial_number) as result:
+            errors: list[str] = []
+            if self.channel is not None:
+                errors.extend(self._run_disconnect_step("StopPolling", self.channel.StopPolling))
+            if self.device is not None:
+                errors.extend(self._run_disconnect_step("ShutDown", self.device.ShutDown))
             self.device = None
             self.channel = None
             self.connected = False
-            try:
-                device.ShutDown()
-            except Exception:
-                pass
-            raise PiezoStageError(f"Failed to initialize piezo stage channel {self.channel_index}: {exc}") from exc
+            if errors:
+                raise PiezoStageError("; ".join(errors))
+            result["response"] = "disconnected"
 
-    def disconnect(self) -> None:
-        errors: list[str] = []
-        if self.channel is not None:
+    def _run_disconnect_step(self, name: str, action) -> list[str]:
+        result_queue: queue.Queue[BaseException | None] = queue.Queue(maxsize=1)
+
+        def run() -> None:
             try:
-                self.channel.StopPolling()
-            except Exception as exc:  # pragma: no cover - defensive SDK cleanup path
-                errors.append(f"StopPolling: {exc}")
-        if self.device is not None:
-            try:
-                self.device.ShutDown()
-            except Exception as exc:  # pragma: no cover - defensive SDK cleanup path
-                errors.append(f"ShutDown: {exc}")
-        self.device = None
-        self.channel = None
-        self.connected = False
-        if errors:
-            raise PiezoStageError("; ".join(errors))
+                action()
+            except BaseException as exc:  # pragma: no cover - defensive SDK cleanup path
+                result_queue.put(exc)
+            else:
+                result_queue.put(None)
+
+        worker = threading.Thread(target=run, name=f"piezo-disconnect-{name}", daemon=True)
+        worker.start()
+        worker.join(max(self.disconnect_timeout_s, 0.0))
+        if worker.is_alive():
+            return [f"Piezo {name} timed out after {self.disconnect_timeout_s:.1f}s."]
+        try:
+            error = result_queue.get_nowait()
+        except queue.Empty:  # pragma: no cover - thread completed without reporting
+            return [f"Piezo {name} finished without reporting a result."]
+        if error is not None:
+            return [f"Piezo {name} failed: {error}"]
+        return []
 
     def _require_connected(self) -> Any:
         if not self.connected or self.channel is None:
@@ -181,11 +223,13 @@ class PiezoStage:
         """Only call this after the caller has obtained explicit user
         confirmation -- PiezoStage itself never decides to switch modes."""
         channel = self._require_connected()
-        try:
-            channel.SetPositionControlMode(self.closed_loop_mode)
-        except Exception as exc:
-            raise PiezoStageError(f"Failed to switch piezo stage to ClosedLoop: {exc}") from exc
-        self.position_control_mode = str(channel.GetPositionControlMode())
+        with log_call("piezo", "switch_to_closed_loop", command=CLOSED_LOOP_MODE_NAME) as result:
+            try:
+                channel.SetPositionControlMode(self.closed_loop_mode)
+            except Exception as exc:
+                raise PiezoStageError(f"Failed to switch piezo stage to ClosedLoop: {exc}") from exc
+            self.position_control_mode = str(channel.GetPositionControlMode())
+            result["response"] = self.position_control_mode
 
     def get_position(self) -> float:
         """Position in um. Only meaningful in ClosedLoop mode."""
@@ -195,7 +239,10 @@ class PiezoStage:
                 f"PiezoStage is in {self.position_control_mode!r}, not ClosedLoop -- "
                 "position readback is not meaningful until switch_to_closed_loop() is confirmed."
             )
-        return _decimal_to_float(channel.GetPosition())
+        with log_call("piezo", "get_position") as result:
+            position_um = _decimal_to_float(channel.GetPosition())
+            result["response"] = position_um
+        return position_um
 
     def set_position(self, target_um: float) -> float:
         """Move to target_um, clamped to [0, max_travel_um] (soft limit
@@ -211,5 +258,7 @@ class PiezoStage:
         if self.max_travel_um is None:
             raise PiezoStageError("MaxTravel was never read from the device -- cannot soft-limit a move.")
         clamped_um = max(0.0, min(float(target_um), self.max_travel_um))
-        channel.SetPosition(self.decimal_type(clamped_um))
+        with log_call("piezo", "set_position", command=clamped_um) as result:
+            channel.SetPosition(self.decimal_type(clamped_um))
+            result["response"] = clamped_um
         return clamped_um

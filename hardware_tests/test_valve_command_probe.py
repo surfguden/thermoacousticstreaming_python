@@ -1,5 +1,5 @@
 """
-Standalone valve command probe (hardware_tests/test_valve_command_probe.py)
+Manual-only valve command probe (hardware_tests/test_valve_command_probe.py)
 
 Purpose:
   Test a SINGLE candidate command string against the real Rheodyne MX valve
@@ -7,6 +7,11 @@ Purpose:
   switches. This is intentionally isolated from src/ and from the main
   application code -- it does not import Valve, SerialTextCommandBackend,
   or anything from src/thermo_acoustic.
+
+This is not an automated pytest test despite the historical ``test_`` file
+name. ``pyproject.toml`` collects only ``tests/`` and ``__test__ = False``
+below is a second guard if collection configuration changes. Run it only by an
+explicit operator command after reading this header.
 
 Safety:
   - Sends exactly ONE command per run, then exits.
@@ -24,11 +29,14 @@ import argparse
 import sys
 import time
 
+
+# Prevent accidental collection if a future pytest invocation names this file.
+__test__ = False
+
 try:
     import serial
 except ImportError:
-    print("pyserial not installed in this environment. Run: pip install pyserial")
-    sys.exit(1)
+    serial = None
 
 
 # Candidate command formats to test ONE AT A TIME.
@@ -45,19 +53,19 @@ CANDIDATES = {
     "cp1_cr":      (b"CP1\r",      "'CP1' + CR (change position style)"),
     "cp2_cr":      (b"CP2\r",      "'CP2' + CR"),
     "addr0_p01":   (b"/1P01\r",    "Address-prefixed '/1P01' + CR (multi-drop protocol style)"),
-    "status_query": (b"S\r",       "'S' + CR (diagnostic only, no motion expected) -- verified "
-                                    "status/position query per IDEX MX Series II driver docs "
-                                    "(linnarsson-lab/MXII-valve reference driver)"),
+    "status_query": (b"S\r",       "'S' + CR (diagnostic only, no motion expected) -- status "
+                                    "query used by the current application; response semantics "
+                                    "require bench confirmation"),
 }
-# NOTE: the earlier "star_query" ('*\r') candidate was speculative and is
-# superseded by "status_query" ('S\r'), which is a verified command from the
-# IDEX MX Series II driver documentation, not a guess.
+# NOTE: the earlier "star_query" ('*\r') candidate was speculative. The
+# application uses ``S\r`` as its status query, but this script does not treat
+# its response semantics as independent vendor-documentation proof.
 
 
 def main():
     parser = argparse.ArgumentParser(description="Rheodyne MX valve command probe (single-shot)")
     parser.add_argument("--port", help="Serial port, e.g. COM5")
-    parser.add_argument("--baud", type=int, default=9600, help="Baud rate (default 9600, matches app)")
+    parser.add_argument("--baud", type=int, default=19200, help="Baud rate (default 19200, current app default)")
     parser.add_argument("--timeout", type=float, default=1.0, help="Serial timeout seconds")
     parser.add_argument("--command-name", choices=list(CANDIDATES.keys()),
                          help="Which candidate command to send (see --list)")
@@ -72,6 +80,10 @@ def main():
         for name, (raw, desc) in CANDIDATES.items():
             print(f"  {name:14s} bytes={raw!r:16s} - {desc}")
         return
+
+    if serial is None:
+        print("pyserial not installed in this environment. Run: pip install pyserial")
+        sys.exit(1)
 
     if not args.port or not args.command_name:
         print("ERROR: --port and --command-name are required (or use --list).")

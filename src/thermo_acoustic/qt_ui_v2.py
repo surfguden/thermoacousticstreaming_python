@@ -12,23 +12,31 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
-from .application import Application
+from .application import (
+    Application,
+    STEP_CAPTURE_FRAMES,
+    STEP_CONFIGURE_CAMERA,
+    STEP_CONFIGURE_WFG,
+    STEP_FLUSH,
+    STEP_INITIALIZE_EXPERIMENT,
+    STEP_SAVE_RESULTS,
+    STEP_WAIT_FOR_AD2_COMPLETION,
+)
 from .hardware_factory import HardwareRuntimeConfig, apply_hardware_bundle, build_hardware_bundle
 from .instruments import SimulatedAD2Sdk
-from .qt_ui import HistoryLogWidget, MainWindow, install_focus_wheel_guard
+from .qt_ui import HistoryLogWidget, MainWindow, _widen_for_content, install_focus_wheel_guard
 
 
 class InitializationDialog(QDialog):
     """Preview initialization dialog with per-device progress rows."""
 
-    DEVICE_NAMES = ("AD2", "Camera", "Pump", "Valve", "Z-stage")
+    DEVICE_NAMES = ("AD2", "Camera", "Pump", "Valve", "Z-stage", "TEC")
 
     def __init__(self, parent: QWidget, start_callback) -> None:
         super().__init__(parent)
@@ -56,9 +64,13 @@ class InitializationDialog(QDialog):
     def _device_selection_group(self, window: QWidget) -> QGroupBox:
         group = QGroupBox("Devices")
         grid = QGridLayout(group)
-        grid.addWidget(QLabel("Enable"), 0, 0)
+        # Device | Simulate | Enable (device identity first, then whether
+        # it's simulated, then whether it's enabled at all -- a top-down
+        # decision order for an operator reading left to right; was
+        # Enable | Simulate | Device before this reorder).
+        grid.addWidget(QLabel("Device"), 0, 0)
         grid.addWidget(QLabel("Simulate"), 0, 1)
-        grid.addWidget(QLabel("Device"), 0, 2)
+        grid.addWidget(QLabel("Enable"), 0, 2)
         grid.addWidget(QLabel("Progress"), 0, 3)
 
         rows = (
@@ -67,6 +79,7 @@ class InitializationDialog(QDialog):
             ("Pump", window.pump_enabled, window.sim_pump),
             ("Valve", window.valve_enabled, window.sim_valve),
             ("Z-stage", window.z_enabled, self._z_stage_simulate_placeholder()),
+            ("TEC", window.tec_enabled, window.sim_tec),
         )
         for row, (name, enable, simulate) in enumerate(rows, start=1):
             label = QLabel("Waiting")
@@ -75,11 +88,11 @@ class InitializationDialog(QDialog):
             # (window._build_state()) -- wrapped directly (their own "Off/On"
             # text is the row's only label) since there's no separate
             # row-label widget in this grid layout to place an icon beside.
-            grid.addWidget(window._wrap_with_tooltip_icon(enable), row, 0)
+            grid.addWidget(QLabel(name), row, 0)
             grid.addWidget(window._wrap_with_tooltip_icon(simulate), row, 1)
-            grid.addWidget(QLabel(name), row, 2)
+            grid.addWidget(window._wrap_with_tooltip_icon(enable), row, 2)
             grid.addWidget(label, row, 3)
-        grid.setColumnStretch(2, 1)
+        grid.setColumnStretch(0, 1)
         return group
 
     def _z_stage_simulate_placeholder(self) -> QCheckBox:
@@ -87,8 +100,8 @@ class InitializationDialog(QDialog):
         checkbox.setEnabled(False)
         checkbox.setToolTip(
             "Z stage has no Simulate checkbox on the Initialization tab either -- when enabled, "
-            "hardware_factory.build_hardware_bundle() always builds a real Prior-serial backend, "
-            "with no simulated variant."
+            "hardware_factory.build_hardware_bundle() always connects to the real Thorlabs piezo "
+            "(thorlabs_piezo.PiezoStage), with no simulated variant."
         )
         return checkbox
 
@@ -96,14 +109,15 @@ class InitializationDialog(QDialog):
         group = QGroupBox("Hardware Details")
         form = QFormLayout(group)
         form.addRow("Z stage backend", self._mark_unwired_stub(window.z_backend))
-        form.addRow("Prior VISA resource name", window.prior_resource)
-        form.addRow("Thorlabs/APT serial", self._mark_unwired_stub(window.thorlabs_apt_serial))
+        form.addRow("Prior VISA resource name (legacy, unwired)", self._mark_unwired_stub(window.prior_resource))
+        form.addRow("Thorlabs/APT serial", window.thorlabs_apt_serial)
         form.addRow("Thorlabs/APT backend", self._mark_unwired_stub(window.thorlabs_apt_backend))
         form.addRow("Thorlabs/APT discovery only", self._mark_unwired_stub(window.thorlabs_apt_discovery_only))
         form.addRow("Valve resource", window.valve_resource)
-        form.addRow("Qmix SDK Python Path", self._mark_unwired_stub(self._widen_for_content(window.qmix_sdk_python_path)))
-        form.addRow("Qmix QMIXSDK Path", self._mark_unwired_stub(self._widen_for_content(window.qmix_qmixsdk_path)))
-        form.addRow("Cetoni config path", self._widen_for_content(window.cetoni_config_path))
+        form.addRow("TEC resource", window.tec_port)
+        form.addRow("Qmix SDK Python Path", self._mark_unwired_stub(_widen_for_content(window.qmix_sdk_python_path)))
+        form.addRow("Qmix QMIXSDK Path", self._mark_unwired_stub(_widen_for_content(window.qmix_qmixsdk_path)))
+        form.addRow("Cetoni config path", _widen_for_content(window.cetoni_config_path))
         window._add_tooltip_icons(form)
         return group
 
@@ -111,15 +125,6 @@ class InitializationDialog(QDialog):
     def _mark_unwired_stub(widget: QWidget) -> QWidget:
         widget.setEnabled(False)
         widget.setToolTip("Not wired to a real backend")
-        return widget
-
-    @staticmethod
-    def _widen_for_content(widget: QLineEdit, padding: int = 40) -> QLineEdit:
-        # Path values (Qmix SDK / QMIXSDK / Cetoni config) can be long
-        # Windows paths; size the field to the current value instead of
-        # a guessed constant so it isn't visually truncated.
-        required_width = widget.fontMetrics().horizontalAdvance(widget.text()) + padding
-        widget.setMinimumWidth(max(widget.minimumWidth(), required_width))
         return widget
 
     def reset(self) -> None:
@@ -131,6 +136,65 @@ class InitializationDialog(QDialog):
         if label is None:
             return
         label.setText(status)
+
+
+class ExperimentSequenceView(QWidget):
+    """v2-only, Configuration Mode step-card container for the real
+    per-repeat sequence run_experiment2() executes (application.py's
+    STEP_* constants, grounded in that method's own traced order -- see
+    the v2 sequence-visualization design note recorded there). Each
+    card embeds the *existing*, already-validated group-box widgets v2
+    already builds for that step's fields, re-parented here rather than
+    rebuilt -- matching this project's established "v2 reuses
+    validated panel builders instead of a second implementation"
+    convention (legacy_unresolved_items.md). Phase 2 (this class) is
+    Configuration Mode only: a static list of cards, no live wiring.
+    Phase 3 will add live highlighting of the in-flight card and
+    per-card failure attribution via the same progress("step_started"/
+    "step_completed"/"step_failed", ...) events _report_step() already
+    fires -- not implemented here.
+
+    TEC-scan design decision (recorded in application.py alongside the
+    STEP_* constants): SetTecTarget/WaitTecStable wrap the per-repeat
+    step list from outside, once per temperature point -- they are
+    deliberately NOT cards in this view. The TEC-scan configuration
+    group is added as its own separate section by the caller, outside
+    this view entirely, matching that same "wraps from outside"
+    relationship even in Configuration Mode.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._step_cards: dict[str, QGroupBox] = {}
+
+    def add_step_card(self, step_name: str, title: str, content: QWidget | None = None) -> QGroupBox:
+        card = QGroupBox(title)
+        card_layout = QVBoxLayout(card)
+        if content is not None:
+            card_layout.addWidget(content)
+        else:
+            # Honest placeholder, not a guess at content that doesn't exist
+            # yet -- several named steps (CaptureFrames, WaitForAd2Completion,
+            # SaveResults) currently have no Experiment-tab-specific
+            # configuration of their own; their real behavior is entirely
+            # derived from other steps' settings (frame count from
+            # Acquisition Parameters, AD2 wait from the WFG timing fields,
+            # etc.), not a separate input.
+            placeholder = QLabel("No Experiment-tab configuration specific to this step.")
+            placeholder.setWordWrap(True)
+            placeholder.setStyleSheet("color: gray; font-style: italic;")
+            card_layout.addWidget(placeholder)
+        self._layout.addWidget(card)
+        self._step_cards[step_name] = card
+        return card
+
+    def step_card(self, step_name: str) -> QGroupBox | None:
+        return self._step_cards.get(step_name)
+
+    def step_names(self) -> list[str]:
+        return list(self._step_cards.keys())
 
 
 class MainWindowV2(MainWindow):
@@ -210,33 +274,72 @@ class MainWindowV2(MainWindow):
         area.setWidgetResizable(True)
 
         content = QWidget()
-        grid = QGridLayout(content)
-        grid.setAlignment(Qt.AlignmentFlag.AlignTop)
-        grid.setColumnStretch(0, 1)
-        grid.setColumnStretch(1, 1)
+        layout = QVBoxLayout(content)
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        grid.addWidget(self._v2_status_progress_group(), 0, 0, 1, 2)
-        grid.addWidget(self._v2_sequence_control_group(), 1, 0, 1, 2)
-        grid.addWidget(self._v2_ad2_output_group(), 2, 0, 1, 2)
-        grid.addWidget(self._v2_acquisition_group(), 3, 0)
-        grid.addWidget(self._experiment_flush_group(), 3, 1)
-        # Category 7 (Session 39): FM Sweep and Frequency Scanning are both
-        # real, fully-wired Experiment-tab features in qt_ui.py -- neither
-        # had any reachable control anywhere in this window before (FM Sweep
-        # flagged as a known gap since Session 25, never fixed; Frequency
-        # Scanning's v2 gap was never even flagged, added in Session 34 after
-        # this table was last touched). Both bind the exact same
-        # self.exp_sweep_*/self.exp_freq_scan_* widgets qt_ui.py's Experiment
-        # tab uses -- _experiment_frequency_scan_group() is reused directly
-        # (same pattern as _experiment_flush_group() above); FM Sweep needed
-        # a new standalone builder since its qt_ui.py equivalent is embedded
-        # inline in a method v2 never calls (see _experiment_fm_sweep_group()).
-        grid.addWidget(self._experiment_fm_sweep_group(), 4, 0)
-        grid.addWidget(self._experiment_frequency_scan_group(), 4, 1)
-        grid.addWidget(self._v2_waveform_group(), 5, 0, 1, 2)
+        layout.addWidget(self._v2_status_progress_group())
+        # TEC-scan wraps the per-repeat step sequence from *outside*, once
+        # per temperature point (see application.py's STEP_* design note) --
+        # rendered here as its own section, not one of the sequence view's
+        # per-repeat cards below, matching that relationship even in
+        # Configuration Mode (no live point-in-sequence indicator yet --
+        # that is Phase 3).
+        layout.addWidget(self._experiment_temperature_group())
+        layout.addWidget(self._experiment_sequence_view())
+        layout.addWidget(self._v2_waveform_group())
 
         area.setWidget(content)
         return area
+
+    def _experiment_sequence_view(self) -> ExperimentSequenceView:
+        # The v2 layout deliberately reuses v1's widget instances rather than
+        # cloning their state. Rebuilding this view would reparent those live
+        # widgets a second time and can delete the first wrapper hierarchy
+        # under Qt, leaving stale Python wrappers behind. This is one logical
+        # view per MainWindowV2, so return the original instance on later
+        # calls (including UI tests that inspect it directly).
+        cached = getattr(self, "_experiment_sequence_view_cache", None)
+        if cached is not None:
+            return cached
+
+        # Card-to-group mapping (Phase 2, Configuration Mode): each existing
+        # group-box builder is re-parented whole into the step it most
+        # directly configures -- not split field-by-field, so a group whose
+        # fields genuinely span two steps (e.g. Acquisition Parameters mixes
+        # camera exposure/FPS with Repeats/Frames) stays with the step its
+        # name most directly matches (ConfigureCamera), rather than being
+        # rebuilt as several smaller groups. CaptureFrames/
+        # WaitForAd2Completion/SaveResults currently have no
+        # Experiment-tab-specific configuration of their own (their real
+        # behavior is entirely derived from other steps' settings), so those
+        # cards get add_step_card()'s honest placeholder instead of invented
+        # content. This mapping is a judgment call, not a settled design --
+        # a future finer-grained regroup (splitting Acquisition Parameters,
+        # for instance) is a separate decision, not made here.
+        view = ExperimentSequenceView()
+        view.add_step_card(STEP_INITIALIZE_EXPERIMENT, "1. Initialize Experiment", self._v2_sequence_control_group())
+
+        wfg_content = QWidget()
+        wfg_layout = QVBoxLayout(wfg_content)
+        wfg_layout.setContentsMargins(0, 0, 0, 0)
+        wfg_layout.addWidget(self._v2_ad2_output_group())
+        # Category 7 (Session 39): FM Sweep and Frequency Scanning are both
+        # real, fully-wired Experiment-tab features in qt_ui.py -- both bind
+        # the exact same self.exp_sweep_*/self.exp_freq_scan_* widgets
+        # qt_ui.py's Experiment tab uses.
+        fm_freq_row = QHBoxLayout()
+        fm_freq_row.addWidget(self._experiment_fm_sweep_group())
+        fm_freq_row.addWidget(self._experiment_frequency_scan_group())
+        wfg_layout.addLayout(fm_freq_row)
+        view.add_step_card(STEP_CONFIGURE_WFG, "2. Configure WFG", wfg_content)
+
+        view.add_step_card(STEP_CONFIGURE_CAMERA, "3. Configure Camera", self._v2_acquisition_group())
+        view.add_step_card(STEP_CAPTURE_FRAMES, "4. Capture Frames")
+        view.add_step_card(STEP_WAIT_FOR_AD2_COMPLETION, "5. Wait For AD2 Completion")
+        view.add_step_card(STEP_FLUSH, "6. Flush", self._experiment_flush_group())
+        view.add_step_card(STEP_SAVE_RESULTS, "7. Save Results")
+        self._experiment_sequence_view_cache = view
+        return view
 
     def _v2_status_progress_group(self) -> QGroupBox:
         group = QGroupBox("Status / Progress")
@@ -533,9 +636,12 @@ class MainWindowV2(MainWindow):
             valve_enabled=self.valve_enabled.isChecked(),
             sim_valve=self.sim_valve.isChecked(),
             z_enabled=self.z_enabled.isChecked(),
-            prior_resource=self.prior_resource.text(),
+            thorlabs_apt_serial=self.thorlabs_apt_serial.text(),
             valve_resource=self.valve_resource.text(),
             cetoni_config_path=self.cetoni_config_path.text(),
+            tec_enabled=self.tec_enabled.isChecked(),
+            sim_tec=self.sim_tec.isChecked(),
+            tec_port=self.tec_port.text(),
         )
         self._run_action(lambda progress: self._initialize_system(config, progress), "Initializing")
 
@@ -559,6 +665,7 @@ class MainWindowV2(MainWindow):
             ("Pump", self.app.pump),
             ("Valve", self.app.valve),
             ("Z-stage", self.app.z_motor),
+            ("TEC", self.app.tec),
         ):
             if progress:
                 progress("init_device", (name, "In Progress"))
@@ -573,7 +680,13 @@ class MainWindowV2(MainWindow):
                 raise RuntimeError("; ".join(details)) from exc
             initialized.append((name, instrument))
             if progress:
-                progress("init_device", (name, "Complete"))
+                # Z-stage: report the real connection detail (serial, travel
+                # range, loop mode) ZStage.initialize() just read from the
+                # device, not a bare "Complete" -- consistent with every
+                # other row showing a real outcome, not a status word alone.
+                status_note = getattr(instrument, "status_note", "")
+                complete_text = f"Complete ({status_note})" if status_note else "Complete"
+                progress("init_device", (name, complete_text))
 
         self.app.fire_status_event("System Initialized")
         return "System Initialized"
@@ -596,7 +709,13 @@ class MainWindowV2(MainWindow):
 
         self.ad2_connection_status.setText(self._connected_text(getattr(self.app.ad2, "enabled", True), getattr(self.app.ad2, "device_handle", None)))
         self.camera_connection_status.setText(self._connected_text(getattr(self.app.camera, "enabled", True), getattr(self.app.camera, "handle", None)))
-        self.pump_connection_status.setText("Disabled" if not getattr(self.app.pump, "enabled", True) else ("Connected" if getattr(self.app.pump, "referenced", False) else "Not connected"))
+        # Uses `initialized` (did initialize() succeed), not `referenced`
+        # (did a physical reference move complete) -- matches the Valve
+        # row's own `initialized`-based pattern just below. `referenced`
+        # tracks a real hardware calibration prerequisite for absolute-
+        # position dosing commands (set_fill_level() etc.), a separate
+        # concept from basic connectivity.
+        self.pump_connection_status.setText("Disabled" if not getattr(self.app.pump, "enabled", True) else ("Connected" if getattr(self.app.pump, "initialized", False) else "Not connected"))
         self.valve_connection_status.setText(self._valve_connection_text())
 
         wfg_config = getattr(self.app.ad2, "wfg_config", None)
@@ -634,15 +753,14 @@ class MainWindowV2(MainWindow):
         return "Connected"
 
     def _valve_position_text(self) -> str:
-        # Position 1 = Open, Position 2 = Closed (confirmed physical mapping,
-        # see instruments.py's Valve class) -- surfaced explicitly here too,
-        # not just on the Pump&Valve tab's own Pos1/Pos2 buttons, since this
-        # is the only live readout of the valve's current position in v2.
+        # The status response confirms a numeric protocol position, not the
+        # physical routing. Keep v2's only live readout aligned with the v1
+        # Pump&Valve controls by showing P01/P02 rather than Open/Closed.
         position = getattr(self.app.valve, "position", None)
         if position == 1:
-            return "1 (Open)"
+            return "1 (P01)"
         if position == 2:
-            return "2 (Closed)"
+            return "2 (P02)"
         return "Unknown"
 
 

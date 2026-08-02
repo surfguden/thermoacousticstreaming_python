@@ -8,9 +8,21 @@ import threading
 import time
 from typing import Any
 
+from .hw_logging import log_call, log_transaction
+
 
 class QmixPumpError(RuntimeError):
     pass
+
+
+def _normalize_flow_unit(unit: str | None) -> str:
+    """Normalize supported microlitre spellings without changing unit semantics.
+
+    The second replacement preserves compatibility with an older settings/text
+    encoding that decoded the UTF-8 micro sign as two Latin-1 characters.
+    """
+    text = (unit or "ul/min").strip().lower()
+    return text.replace(chr(0x00C2) + chr(0x00B5), "u").replace(chr(0x00B5), "u")
 
 
 def _default_sdk_python_path() -> Path:
@@ -112,28 +124,30 @@ class QmixPumpBackend:
     def initialize(self, configuration_path: Path) -> None:
         self._load_sdk()
         self.bus = self.qmixbus.Bus()
-        try:
-            self.bus.open(str(configuration_path), 0)
-            self.pump = self.qmixpump.Pump()
-            if self.pump_name:
-                self.pump.lookup_by_name(self.pump_name)
-            else:
-                self.pump.lookup_by_device_index(self.pump_index)
-            self.bus.start()
-            self._enable_pump()
-            self.configure_flow_unit("ul/min")
-            self.pump.set_volume_unit(self.qmixpump.UnitPrefix.milli, self.qmixpump.VolumeUnit.litres)
-            self.max_flow_rate_ul_min = float(self.pump.get_flow_rate_max())
-            self.max_volume_ml = float(self.pump.get_volume_max())
-            self.initialized = True
-        except Exception as exc:
+        with log_call("pump", "initialize", command=str(configuration_path)) as result:
             try:
-                self.close()
-            except Exception as rollback_exc:
-                raise QmixPumpError(
-                    f"Qmix initialization failed: {exc}; rollback close failed: {rollback_exc}"
-                ) from exc
-            raise
+                self.bus.open(str(configuration_path), 0)
+                self.pump = self.qmixpump.Pump()
+                if self.pump_name:
+                    self.pump.lookup_by_name(self.pump_name)
+                else:
+                    self.pump.lookup_by_device_index(self.pump_index)
+                self.bus.start()
+                self._enable_pump()
+                self.configure_flow_unit("ul/min")
+                self.pump.set_volume_unit(self.qmixpump.UnitPrefix.milli, self.qmixpump.VolumeUnit.litres)
+                self.max_flow_rate_ul_min = float(self.pump.get_flow_rate_max())
+                self.max_volume_ml = float(self.pump.get_volume_max())
+                self.initialized = True
+            except Exception as exc:
+                try:
+                    self.close()
+                except Exception as rollback_exc:
+                    raise QmixPumpError(
+                        f"Qmix initialization failed: {exc}; rollback close failed: {rollback_exc}"
+                    ) from exc
+                raise
+            result["response"] = f"max_flow_rate_ul_min={self.max_flow_rate_ul_min}, max_volume_ml={self.max_volume_ml}"
 
     def _require_pump(self) -> Any:
         if self.pump is None:
@@ -158,16 +172,22 @@ class QmixPumpBackend:
 
     def refill(self) -> None:
         pump = self._require_pump()
-        max_volume = self.max_volume_ml if self.max_volume_ml is not None else float(pump.get_volume_max())
-        self.max_volume_ml = max_volume
-        pump.set_fill_level(max_volume, self._fill_flow_rate())
+        with log_call("pump", "refill") as result:
+            max_volume = self.max_volume_ml if self.max_volume_ml is not None else float(pump.get_volume_max())
+            self.max_volume_ml = max_volume
+            pump.set_fill_level(max_volume, self._fill_flow_rate())
+            result["response"] = max_volume
 
     def empty(self) -> None:
-        self._require_pump().set_fill_level(0.0, self._fill_flow_rate())
+        with log_call("pump", "empty") as result:
+            self._require_pump().set_fill_level(0.0, self._fill_flow_rate())
+            result["response"] = 0.0
 
     def stop(self) -> None:
         if self.pump is not None:
-            self.pump.stop_pumping()
+            with log_call("pump", "stop") as result:
+                self.pump.stop_pumping()
+                result["response"] = "stopped"
 
     def generate_flow(self, flow_rate: float) -> None:
         pump = self._require_pump()
@@ -184,14 +204,21 @@ class QmixPumpBackend:
         # ceiling yet (e.g. configure_syringe() never called) -- nothing to
         # validate against, so pass through unchanged, same as before.
         if self.max_flow_rate_ul_min is not None and abs(flow_rate) > self.max_flow_rate_ul_min:
-            raise QmixPumpError(
+            error = (
                 f"Requested flow_rate={flow_rate!r} exceeds the pump's own reported "
                 f"max_flow_rate_ul_min={self.max_flow_rate_ul_min!r} -- rejected before reaching the pump SDK."
             )
-        pump.generate_flow(flow_rate)
+            log_transaction("pump", "generate_flow", command=flow_rate, success=False, error=error)
+            raise QmixPumpError(error)
+        with log_call("pump", "generate_flow", command=flow_rate) as result:
+            pump.generate_flow(flow_rate)
+            result["response"] = "applied"
 
     def read_fill_level(self) -> float:
-        return float(self._require_pump().get_fill_level())
+        with log_call("pump", "read_fill_level") as result:
+            fill_level = float(self._require_pump().get_fill_level())
+            result["response"] = fill_level
+        return fill_level
 
     def set_fill_level(self, fill_level: float, flow_rate: float | None = None) -> None:
         # fill_level is always an absolute mL value -- no auto-detection against
@@ -199,10 +226,12 @@ class QmixPumpBackend:
         # absolute values (e.g. 0.5 mL on a 5 mL syringe) as "50% of capacity".
         pump = self._require_pump()
         self._enable_pump()
-        pump.set_fill_level(
-            float(fill_level),
-            self._fill_flow_rate() if flow_rate is None else float(flow_rate),
-        )
+        with log_call("pump", "set_fill_level", command=fill_level) as result:
+            pump.set_fill_level(
+                float(fill_level),
+                self._fill_flow_rate() if flow_rate is None else float(flow_rate),
+            )
+            result["response"] = "applied"
 
     def configure_syringe(self, config: dict | None) -> None:
         if not config:
@@ -245,13 +274,15 @@ class QmixPumpBackend:
                 "CETONI Low Pressure Hardware Manual Section 5.1, NEM-B101-02 E) -- "
                 "rejected before reaching the pump SDK."
             )
-        pump.set_syringe_param(inner_diameter, stroke)
-        self.max_flow_rate_ul_min = float(pump.get_flow_rate_max())
-        self.max_volume_ml = float(pump.get_volume_max())
+        with log_call("pump", "configure_syringe", command=(inner_diameter, stroke)) as result:
+            pump.set_syringe_param(inner_diameter, stroke)
+            self.max_flow_rate_ul_min = float(pump.get_flow_rate_max())
+            self.max_volume_ml = float(pump.get_volume_max())
+            result["response"] = f"max_flow_rate_ul_min={self.max_flow_rate_ul_min}, max_volume_ml={self.max_volume_ml}"
 
     def configure_flow_unit(self, unit: str | None) -> None:
         pump = self._require_pump()
-        text = (unit or "ul/min").strip().lower().replace("µ", "u")
+        text = _normalize_flow_unit(unit)
         prefix = self.qmixpump.UnitPrefix.micro
         time_unit = self.qmixpump.TimeUnit.per_minute
         if text in {"ml/min", "millilitre/min", "milliliter/min"}:
@@ -261,26 +292,38 @@ class QmixPumpBackend:
         elif text in {"ml/s", "millilitre/s", "milliliter/s"}:
             prefix = self.qmixpump.UnitPrefix.milli
             time_unit = self.qmixpump.TimeUnit.per_second
-        pump.set_flow_unit(prefix, self.qmixpump.VolumeUnit.litres, time_unit)
-        self.max_flow_rate_ul_min = float(pump.get_flow_rate_max())
+        with log_call("pump", "configure_flow_unit", command=text) as result:
+            pump.set_flow_unit(prefix, self.qmixpump.VolumeUnit.litres, time_unit)
+            self.max_flow_rate_ul_min = float(pump.get_flow_rate_max())
+            result["response"] = f"max_flow_rate_ul_min={self.max_flow_rate_ul_min}"
 
     def reference_move(self) -> None:
         pump = self._require_pump()
         self._enable_pump()
-        pump.calibrate()
-        deadline = time.monotonic() + max(self.reference_move_timeout_s, 0.0)
-        while time.monotonic() < deadline:
-            if pump.is_calibration_finished():
-                return
-            time.sleep(0.1)
-        raise QmixPumpError("Qmix pump reference move timed out.")
+        with log_call("pump", "reference_move") as result:
+            pump.calibrate()
+            deadline = time.monotonic() + max(self.reference_move_timeout_s, 0.0)
+            while time.monotonic() < deadline:
+                if pump.is_calibration_finished():
+                    result["response"] = "calibration finished"
+                    return
+                time.sleep(0.1)
+            raise QmixPumpError("Qmix pump reference move timed out.")
 
     def read_status(self) -> bool:
         if self.pump is None:
             return False
-        return bool(self.pump.is_pumping())
+        with log_call("pump", "read_status") as result:
+            is_pumping = bool(self.pump.is_pumping())
+            result["response"] = is_pumping
+        return is_pumping
 
     def close(self) -> None:
+        # Deliberately not wrapped in log_call() -- close() already collects
+        # errors from each step (via _run_close_step's own timeout-wrapped
+        # thread) and raises once at the end, the standard hardware-cleanup
+        # shape documented in docs/hardware_safety_patterns.md; log the
+        # overall outcome without altering that collect-then-raise control flow.
         errors: list[str] = []
         errors.extend(self._run_close_step("pump stop", self.stop))
         if self.bus is not None:
@@ -290,7 +333,9 @@ class QmixPumpBackend:
         self.pump = None
         self.initialized = False
         if errors:
+            log_transaction("pump", "close", success=False, error="; ".join(errors))
             raise QmixPumpError("; ".join(errors))
+        log_transaction("pump", "close", success=True, response="closed")
 
     def _run_close_step(self, name: str, action) -> list[str]:
         result_queue: queue.Queue[BaseException | None] = queue.Queue(maxsize=1)
