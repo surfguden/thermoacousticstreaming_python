@@ -234,7 +234,10 @@ def _coerce_enum(enum_type: type[Enum], value: Any, default: Any) -> Any:
     for item in enum_type:
         if text == item.value or text.lower() == item.name.lower() or text.lower() == item.value.lower():
             return item
-    return default
+    # A missing field may use its documented compatibility default. An
+    # explicitly supplied, unrecognised value must fail closed instead of
+    # silently selecting a potentially active hardware mode.
+    raise ValueError(f"Unsupported {enum_type.__name__}: {value!r}")
 
 
 def coerce_trigger_settings(config: TriggerSettings | dict[str, Any] | None) -> TriggerSettings:
@@ -319,7 +322,30 @@ def coerce_wfg_config(config: WfgConfig | dict[str, Any] | None) -> WfgConfig:
                 channels.append(coerce_wfg_channel_config(config[key], index))
         if channels:
             wfg.channels = channels
-        elif any(key in config for key in ("frequency_hz", "frequencyHz", "frequency", "freq", "amplitude_v", "amplitude")):
+        elif any(
+            key in config
+            for key in (
+                "frequency_hz",
+                "frequencyHz",
+                "frequency",
+                "freq",
+                "amplitude_v",
+                "amplitude",
+                "offset_v",
+                "offset",
+                "symmetry_percent",
+                "symmetry",
+                "phase_deg",
+                "phase",
+                "function",
+                "waveform",
+                "waveform_function",
+                "enable",
+                "enabled",
+                "trigger",
+                "trigger_settings",
+            )
+        ):
             wfg.channels = [coerce_wfg_channel_config(config, 0), WfgChannelConfig(1, carrier=CarrierSettings(enable=False))]
     return wfg
 
@@ -385,6 +411,32 @@ def coerce_do_config(config: DoConfig | dict[str, Any] | None) -> DoConfig:
     raw_channels = _first_present(config, "channels", "channel_configs", default=None)
     if isinstance(raw_channels, list):
         do_config.channels = [coerce_do_channel_config(channel, index) for index, channel in enumerate(raw_channels)]
-    elif any(key in config for key in ("pattern", "bits", "clock_divider", "clockDivider", "divider", "enable", "enabled")):
+    elif any(
+        key in config
+        for key in (
+            "pattern",
+            "bits",
+            "clock_divider",
+            "clockDivider",
+            "divider",
+            "clock_frequency_hz",
+            "clockFrequencyHz",
+            "frequency_hz",
+            "frequencyHz",
+            "frequency",
+            "enable",
+            "enabled",
+            "output_type",
+            "outputType",
+            "type",
+            "output_mode",
+            "outputMode",
+            "idle_state",
+            "idleState",
+            "idle",
+            "trigger",
+            "trigger_settings",
+        )
+    ):
         do_config.channels = [coerce_do_channel_config(config, 0)]
     return do_config

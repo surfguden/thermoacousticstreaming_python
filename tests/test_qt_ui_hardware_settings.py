@@ -292,6 +292,7 @@ def test_representative_fields_have_grounded_tooltips(monkeypatch, tmp_path):
     # (the legacy PriorZMotor/COM7 path was retired).
     assert not window.z_backend.isEnabled()
     assert "Not wired to a real backend" in window.z_backend.toolTip()
+    assert "does not authorize or perform piezo motion" in window.z_enabled.toolTip()
     assert window.thorlabs_apt_serial.isEnabled()
     assert "PiezoStage" in window.thorlabs_apt_serial.toolTip()
     assert not window.prior_resource.isEnabled()
@@ -306,7 +307,8 @@ def test_representative_fields_have_grounded_tooltips(monkeypatch, tmp_path):
     assert "Duty-cycle" in ch1_state["symmetry"].toolTip()
     assert not ch1_state["sec_run"].toolTip()
     assert not ch1_state["repeat"].toolTip()
-    assert "AD2 PC trigger" in ch1_state["sec_wait"].toolTip()
+    assert "sec_wait" in ch1_state["sec_wait"].toolTip()
+    assert "bench-unverified" in ch1_state["sec_wait"].toolTip()
 
     # MSO tab: Sample Frequency's 100 MS/s AD2 limit, Range's clipping risk.
     assert "100 MS/s" in window.mso_sample_frequency.toolTip() or "UNCONFIRMED" in window.mso_sample_frequency.toolTip()
@@ -318,12 +320,11 @@ def test_representative_fields_have_grounded_tooltips(monkeypatch, tmp_path):
     assert "positive values dispense/infuse" in window.flow_rate.toolTip()
     assert "unverifiable" not in window.flow_rate.toolTip()
 
-    # TEC: simulation is the only operational path in the shipped UI. Its
-    # controls must say that unchecked Simulate refuses before real I/O rather
-    # than reusing the generic real-backend tooltip used by other devices.
-    assert "fails before any TEC connection or write" in window.tec_enabled.toolTip()
-    assert "refuses before any TEC connection or write" in window.sim_tec.toolTip()
-    assert "field alone cannot enable real TEC control" in window.tec_port.toolTip()
+    # TEC: the current uncommitted adapter can attempt real I/O, so the UI
+    # must not incorrectly promise that unchecked Simulate always refuses.
+    assert "may attempt real I/O" in window.tec_enabled.toolTip()
+    assert "may attempt real I/O" in window.sim_tec.toolTip()
+    assert "not independently approved" in window.tec_port.toolTip()
 
     # Camera tab: DCAM Trigger Source unresolved status.
     assert "oscilloscope" in window.dcam_source.toolTip()
@@ -331,6 +332,10 @@ def test_representative_fields_have_grounded_tooltips(monkeypatch, tmp_path):
     # Experiment tab: Step Size convention, Frequency Scanning spacing caveat.
     assert "0 = not used" in window.exp_freq_scan_step_khz.toolTip()
     assert "not confirmed" in window.exp_freq_scan_enable.toolTip()
+    assert "trigsrcNone" in window.exp_camera_start.toolTip()
+    assert "bench-unverified" in window.exp_camera_start.toolTip()
+    assert "DCAM Internal trigger" in window.exp_frames.toolTip()
+    assert "does not prove" in window.exp_frames.toolTip()
 
 
 def test_custom_syringe_volume_disabled_unless_syringe_is_custom(monkeypatch, tmp_path):
@@ -430,6 +435,57 @@ def test_pump_tab_valve_position_controls_show_protocol_tokens_not_unverified_ro
     assert "Pos1 (P01)" in button_texts
     assert "Pos2 (P02)" in button_texts
     assert not any("Open" in text or "Closed" in text for text in label_texts | button_texts)
+
+
+def test_pump_tab_reference_move_is_promoted_to_a_leading_setup_group(monkeypatch, tmp_path):
+    # UI layout audit Part 3 design (agreed, then confirmed never actually
+    # implemented, 2026-08-03): Reference move used to sit as the LAST row
+    # of "Flow Control", mixed in with that group's own experiment-adjacent
+    # flow-rate controls, even though it's a one-time-per-mount calibration
+    # step that must happen BEFORE Refill/Empty in the real physical
+    # sequence. Confirms it now has its own leading "Setup" group and is no
+    # longer inside Flow Control.
+    window = make_window(monkeypatch, tmp_path)
+    pump_tab = None
+    for index in range(window.tabs.count()):
+        if window.tabs.tabText(index) == "Pump&Valve":
+            pump_tab = window.tabs.widget(index)
+            break
+    assert pump_tab is not None
+
+    groups = {g.title(): g for g in pump_tab.findChildren(QGroupBox)}
+    assert "Setup" in groups
+    setup_labels = {lbl.text() for lbl in groups["Setup"].findChildren(QLabel)}
+    assert "Reference move" in setup_labels
+
+    assert "Flow Control" in groups
+    flow_control_labels = {lbl.text() for lbl in groups["Flow Control"].findChildren(QLabel)}
+    assert "Reference move" not in flow_control_labels
+
+    # "Setup" must actually be the FIRST group column-wise (read first,
+    # left-to-right) -- not just present anywhere in the tab.
+    all_groups_in_order = [g for g in pump_tab.findChildren(QGroupBox)]
+    assert all_groups_in_order[0].title() == "Setup"
+
+
+def test_refill_and_empty_pass_the_fill_flow_rate_field_value_through(monkeypatch, tmp_path):
+    # Regression test (2026-08-03): the "Refill/Empty Flow Rate" field lets
+    # an operator set the actual target instead of a buried constant --
+    # confirms _refill()/_empty() read this field's current value and pass
+    # it through to Application.refill()/empty(), rather than calling them
+    # with no argument (which would silently fall back to
+    # QmixPumpBackend's own default instead of what's shown on screen).
+    window = make_window(monkeypatch, tmp_path)
+    captured = []
+    monkeypatch.setattr(qt_ui.Application, "refill", lambda self, flow_rate=None, timeout_s=60.0: captured.append(("refill", flow_rate)) or True)
+    monkeypatch.setattr(qt_ui.Application, "empty", lambda self, flow_rate=None, timeout_s=60.0: captured.append(("empty", flow_rate)) or True)
+
+    window.fill_flow_rate.setValue(9500.0)
+    assert window._refill() == "RefillComplete"
+    assert window._empty() == "EmptyComplete"
+
+    assert ("refill", 9500.0) in captured
+    assert ("empty", 9500.0) in captured
 
 
 def test_init_tab_hardware_group_uses_clean_mx_valve_label(monkeypatch, tmp_path):
@@ -754,6 +810,7 @@ def test_qt_ui_save_and_restore_tec_temperature_scan_settings(monkeypatch, tmp_p
     first_window.exp_tec_min_settle_s.setValue(3.0)
     first_window.exp_tec_max_wait_s.setValue(120.0)
     first_window.exp_tec_poll_interval_s.setValue(0.5)
+    first_window.exp_tec_post_stable_hold_s.setValue(12.5)
 
     first_window._save_settings()
     saved = json.loads(qt_ui.SETTINGS_PATH.read_text(encoding="utf-8"))
@@ -761,6 +818,7 @@ def test_qt_ui_save_and_restore_tec_temperature_scan_settings(monkeypatch, tmp_p
     assert saved["experiment"]["tec_scan_enable"] is True
     assert saved["experiment"]["tec_points"] == "20.0, 25.5"
     assert saved["experiment"]["tec_tolerance_c"] == pytest.approx(0.25)
+    assert saved["experiment"]["tec_post_stable_hold_s"] == pytest.approx(12.5)
 
     second_window = build_with_retry(qt_ui.MainWindow)
 
@@ -770,6 +828,536 @@ def test_qt_ui_save_and_restore_tec_temperature_scan_settings(monkeypatch, tmp_p
     assert second_window.exp_tec_min_settle_s.value() == pytest.approx(3.0)
     assert second_window.exp_tec_max_wait_s.value() == pytest.approx(120.0)
     assert second_window.exp_tec_poll_interval_s.value() == pytest.approx(0.5)
+    assert second_window.exp_tec_post_stable_hold_s.value() == pytest.approx(12.5)
+    # Default: locked, matching "default to locked for any config that
+    # doesn't specify it" -- this save didn't touch the lock toggle at all.
+    assert second_window.exp_tec_lock_channels.isChecked() is True
+
+
+def test_qt_ui_save_and_restore_pump_valve_manual_tab_fields(monkeypatch, tmp_path):
+    # Save/Load Settings gap-closure, batch 1 (2026-08-04): the Pump&Valve
+    # manual tab was previously entirely unpersisted, including
+    # fill_flow_rate specifically -- confirmed via a dedicated audit to be
+    # the subject of an earlier instruction that was never actually
+    # implemented, not a lost completion. Own "pump_valve" sub-dict,
+    # mirroring "mso"'s own existing sub-dict.
+    first_window = make_window(monkeypatch, tmp_path)
+    first_window.syringe.setCurrentText("BD 5ml")
+    first_window.custom_syringe_volume_ml.setValue(2.5)
+    first_window.custom_syringe_inner_diameter_mm.setValue(9.0)
+    first_window.custom_syringe_stroke_mm.setValue(40.0)
+    first_window.flow_rate.setValue(-1234.5)
+    first_window.fill_flow_rate.setValue(8000.0)
+    first_window.level_ml.setValue(0.75)
+    first_window.flush_flowrate.setValue(300.0)
+    first_window.flush_volume.setValue(0.05)
+    first_window.wait_after_flush.setValue(2.5)
+    first_window.flush_count.setValue(3)
+
+    first_window._save_settings()
+    saved = json.loads(qt_ui.SETTINGS_PATH.read_text(encoding="utf-8"))
+
+    assert saved["pump_valve"]["syringe"] == "BD 5ml"
+    assert saved["pump_valve"]["custom_syringe_volume_ml"] == pytest.approx(2.5)
+    assert saved["pump_valve"]["custom_syringe_inner_diameter_mm"] == pytest.approx(9.0)
+    assert saved["pump_valve"]["custom_syringe_stroke_mm"] == pytest.approx(40.0)
+    assert saved["pump_valve"]["flow_rate"] == pytest.approx(-1234.5)
+    assert saved["pump_valve"]["fill_flow_rate"] == pytest.approx(8000.0)
+    assert saved["pump_valve"]["level_ml"] == pytest.approx(0.75)
+    assert saved["pump_valve"]["flush_flowrate"] == pytest.approx(300.0)
+    assert saved["pump_valve"]["flush_volume"] == pytest.approx(0.05)
+    assert saved["pump_valve"]["wait_after_flush"] == pytest.approx(2.5)
+    assert saved["pump_valve"]["flush_count"] == 3
+
+    second_window = build_with_retry(qt_ui.MainWindow)
+
+    assert second_window.syringe.currentText() == "BD 5ml"
+    assert second_window.custom_syringe_volume_ml.value() == pytest.approx(2.5)
+    assert second_window.custom_syringe_inner_diameter_mm.value() == pytest.approx(9.0)
+    assert second_window.custom_syringe_stroke_mm.value() == pytest.approx(40.0)
+    assert second_window.flow_rate.value() == pytest.approx(-1234.5)
+    assert second_window.fill_flow_rate.value() == pytest.approx(8000.0)
+    assert second_window.level_ml.value() == pytest.approx(0.75)
+    assert second_window.flush_flowrate.value() == pytest.approx(300.0)
+    assert second_window.flush_volume.value() == pytest.approx(0.05)
+    assert second_window.wait_after_flush.value() == pytest.approx(2.5)
+    assert second_window.flush_count.value() == 3
+
+
+def test_qt_ui_load_settings_without_pump_valve_key_loads_without_error(monkeypatch, tmp_path):
+    # A settings.json saved before this batch has no "pump_valve" key at
+    # all -- the tolerant `if key in data` pattern (same one every other
+    # field in this dict already uses) means these fields simply stay at
+    # their _build_state() construction defaults rather than raising.
+    legacy_settings = {
+        "schema_version": 2,
+        "experiment": {"repeats": 3, "frames": 5},
+    }
+    window = make_window(monkeypatch, tmp_path, legacy_settings)
+
+    assert window.exp_repeats.value() == 3
+    assert window.syringe.currentText() == "BD 1ml"
+    assert window.custom_syringe_volume_ml.value() == pytest.approx(1.0)
+    assert window.custom_syringe_inner_diameter_mm.value() == pytest.approx(4.78)
+    assert window.custom_syringe_stroke_mm.value() == pytest.approx(55.75)
+    assert window.flow_rate.value() == pytest.approx(-5000.0)
+    assert window.fill_flow_rate.value() == pytest.approx(12000.0)
+    assert window.level_ml.value() == pytest.approx(0.0)
+    assert window.flush_flowrate.value() == pytest.approx(0.0)
+    assert window.flush_volume.value() == pytest.approx(0.0)
+    assert window.wait_after_flush.value() == pytest.approx(0.0)
+    assert window.flush_count.value() == 1
+
+
+def test_qt_ui_pump_valve_manual_flush_fields_round_trip_independently_of_experiment_flush_fields(monkeypatch, tmp_path):
+    # Confirms the manual Pump&Valve tab's own flush_flowrate/flush_volume/
+    # wait_after_flush/flush_count (self.flush_flowrate etc., under the new
+    # "pump_valve" key) are genuinely distinct from the Experiment tab's own
+    # flush_flowrate/flush_volume/wait_after_flush (self.exp_flush_flowrate
+    # etc., under the existing "experiment" key) -- different values on
+    # each, saved and reloaded, must not collide or overwrite one another.
+    first_window = make_window(monkeypatch, tmp_path)
+    first_window.flush_flowrate.setValue(111.0)
+    first_window.flush_volume.setValue(0.11)
+    first_window.wait_after_flush.setValue(1.1)
+    first_window.flush_count.setValue(11)
+    first_window.exp_flush_flowrate.setValue(222.0)
+    first_window.exp_flush_volume.setValue(0.22)
+    first_window.exp_wait_after_flush.setValue(2.2)
+
+    first_window._save_settings()
+    saved = json.loads(qt_ui.SETTINGS_PATH.read_text(encoding="utf-8"))
+
+    assert saved["pump_valve"]["flush_flowrate"] == pytest.approx(111.0)
+    assert saved["pump_valve"]["flush_volume"] == pytest.approx(0.11)
+    assert saved["pump_valve"]["wait_after_flush"] == pytest.approx(1.1)
+    assert saved["pump_valve"]["flush_count"] == 11
+    assert saved["experiment"]["flush_flowrate"] == pytest.approx(222.0)
+    assert saved["experiment"]["flush_volume"] == pytest.approx(0.22)
+    assert saved["experiment"]["wait_after_flush"] == pytest.approx(2.2)
+
+    second_window = build_with_retry(qt_ui.MainWindow)
+
+    assert second_window.flush_flowrate.value() == pytest.approx(111.0)
+    assert second_window.flush_volume.value() == pytest.approx(0.11)
+    assert second_window.wait_after_flush.value() == pytest.approx(1.1)
+    assert second_window.flush_count.value() == 11
+    assert second_window.exp_flush_flowrate.value() == pytest.approx(222.0)
+    assert second_window.exp_flush_volume.value() == pytest.approx(0.22)
+    assert second_window.exp_wait_after_flush.value() == pytest.approx(2.2)
+
+
+def test_qt_ui_save_and_restore_camera_manual_tab_fields(monkeypatch, tmp_path):
+    # Save/Load Settings gap-closure, batch 2 (2026-08-04): the Camera
+    # manual tab was previously entirely unpersisted, same disposition as
+    # batch 1's Pump&Valve tab. Own "camera" sub-dict, same shape.
+    # conversion_min/conversion_max deliberately excluded -- confirmed
+    # always setReadOnly(True), only ever written from a live capture's
+    # computed display range, not a user-set config value.
+    first_window = make_window(monkeypatch, tmp_path)
+    first_window.roi_h_offset.setValue(100)
+    first_window.roi_v_offset.setValue(200)
+    first_window.roi_h_size.setValue(1024)
+    first_window.roi_v_size.setValue(512)
+    first_window.center_roi.setChecked(False)
+    first_window.exposure_ms.setValue(55.5)
+    first_window.conversion_method.setCurrentText("Downshift")
+    first_window.conversion_shifts.setValue(3)
+    first_window.sequence_mode.setCurrentText("Burst")
+    first_window.sequence_source.setCurrentText("Software")
+    first_window.sequence_interval.setValue(0.25)
+    first_window.sequence_burst.setValue(5)
+    first_window.sequence_frames.setValue(10)
+    first_window.capture_mode.setCurrentText("Sequence")
+    first_window.dcam_source.setCurrentText("External")
+    first_window.external_polarity.setCurrentText("Positive")
+    first_window.external_delay.setValue(0.002)
+    first_window.sequence_exposure_ms.setValue(33.3)
+
+    first_window._save_settings()
+    saved = json.loads(qt_ui.SETTINGS_PATH.read_text(encoding="utf-8"))
+
+    assert saved["camera"]["roi_h_offset"] == 100
+    assert saved["camera"]["roi_v_offset"] == 200
+    assert saved["camera"]["roi_h_size"] == 1024
+    assert saved["camera"]["roi_v_size"] == 512
+    assert saved["camera"]["center_roi"] is False
+    assert saved["camera"]["exposure_ms"] == pytest.approx(55.5)
+    assert saved["camera"]["conversion_method"] == "Downshift"
+    assert saved["camera"]["conversion_shifts"] == 3
+    assert saved["camera"]["sequence_mode"] == "Burst"
+    assert saved["camera"]["sequence_source"] == "Software"
+    assert saved["camera"]["sequence_interval"] == pytest.approx(0.25)
+    assert saved["camera"]["sequence_burst"] == 5
+    assert saved["camera"]["sequence_frames"] == 10
+    assert saved["camera"]["capture_mode"] == "Sequence"
+    assert saved["camera"]["dcam_source"] == "External"
+    assert saved["camera"]["external_polarity"] == "Positive"
+    assert saved["camera"]["external_delay"] == pytest.approx(0.002)
+    assert saved["camera"]["sequence_exposure_ms"] == pytest.approx(33.3)
+    # conversion_min/conversion_max/image_continuous deliberately excluded,
+    # not missed -- see the matching comments in _settings_dict() and
+    # _load_settings() (qt_ui.py). conversion_min/max are always-read-only,
+    # live-capture-derived display values, never a user-set config value.
+    # image_continuous is a live action trigger (opens a real camera
+    # preview window, starts a repeating capture timer) rather than
+    # passive configuration -- restoring it via _load_settings() would
+    # auto-start continuous capture the instant settings load, before
+    # hardware is even connected.
+    assert "conversion_min" not in saved["camera"]
+    assert "conversion_max" not in saved["camera"]
+    assert "image_continuous" not in saved["camera"]
+
+    second_window = build_with_retry(qt_ui.MainWindow)
+
+    assert second_window.roi_h_offset.value() == 100
+    assert second_window.roi_v_offset.value() == 200
+    assert second_window.roi_h_size.value() == 1024
+    assert second_window.roi_v_size.value() == 512
+    assert second_window.center_roi.isChecked() is False
+    assert second_window.exposure_ms.value() == pytest.approx(55.5)
+    assert second_window.conversion_method.currentText() == "Downshift"
+    assert second_window.conversion_shifts.value() == 3
+    assert second_window.sequence_mode.currentText() == "Burst"
+    assert second_window.sequence_source.currentText() == "Software"
+    assert second_window.sequence_interval.value() == pytest.approx(0.25)
+    assert second_window.sequence_burst.value() == 5
+    assert second_window.sequence_frames.value() == 10
+    assert second_window.capture_mode.currentText() == "Sequence"
+    assert second_window.dcam_source.currentText() == "External"
+    assert second_window.external_polarity.currentText() == "Positive"
+    assert second_window.external_delay.value() == pytest.approx(0.002)
+    assert second_window.sequence_exposure_ms.value() == pytest.approx(33.3)
+
+    # Explicit cleanup: this test constructs two full MainWindow instances
+    # (one more than most round-trip tests in this file already do) and
+    # touches an unusually large number of widgets, including several tied
+    # together by connected signals (conversion_method -> conversion_shifts
+    # via _update_conversion_controls()) -- closing both here avoids adding
+    # to the cumulative live-widget count that the documented PySide6/
+    # shiboken offscreen flakiness (known_open_items.md) is triggered by.
+    first_window.close()
+    second_window.close()
+
+
+def test_qt_ui_load_settings_without_camera_key_loads_without_error(monkeypatch, tmp_path):
+    # A settings.json saved before this batch has no "camera" key at all --
+    # the tolerant `if key in data` pattern means these fields simply stay
+    # at their _build_state() construction defaults rather than raising.
+    legacy_settings = {
+        "schema_version": 2,
+        "experiment": {"repeats": 3, "frames": 5},
+    }
+    window = make_window(monkeypatch, tmp_path, legacy_settings)
+
+    assert window.exp_repeats.value() == 3
+    assert window.roi_h_offset.value() == 0
+    assert window.roi_v_offset.value() == 792
+    assert window.roi_h_size.value() == 2304
+    assert window.roi_v_size.value() == 740
+    assert window.center_roi.isChecked() is True
+    assert window.exposure_ms.value() == pytest.approx(40.0)
+    assert window.conversion_method.currentText() == "Full Dynamic"
+    assert window.conversion_shifts.value() == 0
+    assert window.sequence_mode.currentText() == "Continuous"
+    assert window.sequence_source.currentText() == "External"
+    assert window.sequence_interval.value() == pytest.approx(1.0)
+    assert window.sequence_burst.value() == 1
+    assert window.sequence_frames.value() == 0
+    assert window.capture_mode.currentText() == "Snap"
+    assert window.dcam_source.currentText() == "Internal"
+    assert window.external_polarity.currentText() == "Negative"
+    assert window.external_delay.value() == pytest.approx(0.0)
+    assert window.sequence_exposure_ms.value() == pytest.approx(0.0)
+    window.close()
+
+
+def test_qt_ui_camera_manual_exposure_field_round_trips_independently_of_experiment_exposure_field(monkeypatch, tmp_path):
+    # Confirms the manual Camera tab's own exposure_ms (self.exposure_ms,
+    # ROI group, under the new "camera" key) is genuinely distinct from the
+    # Experiment tab's own exposure_ms (self.exp_exposure_ms, under the
+    # existing "experiment" key) -- different values on each, saved and
+    # reloaded, must not collide or overwrite one another. Same independence
+    # check as batch 1's manual-vs-Experiment flush-field test.
+    first_window = make_window(monkeypatch, tmp_path)
+    first_window.exposure_ms.setValue(77.0)
+    first_window.exp_exposure_ms.setValue(88.0)
+
+    first_window._save_settings()
+    saved = json.loads(qt_ui.SETTINGS_PATH.read_text(encoding="utf-8"))
+
+    assert saved["camera"]["exposure_ms"] == pytest.approx(77.0)
+    assert saved["experiment"]["exposure_ms"] == pytest.approx(88.0)
+
+    second_window = build_with_retry(qt_ui.MainWindow)
+
+    assert second_window.exposure_ms.value() == pytest.approx(77.0)
+    assert second_window.exp_exposure_ms.value() == pytest.approx(88.0)
+    first_window.close()
+    second_window.close()
+
+
+def test_qt_ui_save_and_restore_zscan_tab_fields(monkeypatch, tmp_path):
+    # Save/Load Settings gap-closure, batch 3 (2026-08-05): the Z-Scan tab
+    # was previously entirely unpersisted, same disposition as batches 1-2.
+    # Own "zscan" sub-dict, same shape. Confirmed (grep) none of the 5
+    # fields fire a connected signal on setValue/setChecked/setText, so
+    # none is a live action trigger the way image_continuous (batch 2) was.
+    # zscan_z_start_um/zscan_z_end_um start disabled with range [0.0, 0.0]
+    # until a real "Query Piezo Range" call widens it -- this test uses
+    # values that exceed that default range specifically to prove the
+    # load-time range-widening fix actually works, not just a value that
+    # happens to already fit in [0.0, 0.0].
+    first_window = make_window(monkeypatch, tmp_path)
+    first_window.zscan_output_dir.setText(str(tmp_path / "zscan_out"))
+    first_window.zscan_z_start_um.setMaximum(500.0)  # simulates a real query having happened
+    first_window.zscan_z_end_um.setMaximum(500.0)
+    first_window.zscan_z_start_um.setValue(12.5)
+    first_window.zscan_z_end_um.setValue(487.5)
+    first_window.zscan_step_size_um.setValue(2.5)
+    first_window.zscan_exposure_ms.setValue(66.0)
+
+    first_window._save_settings()
+    saved = json.loads(qt_ui.SETTINGS_PATH.read_text(encoding="utf-8"))
+
+    assert saved["zscan"]["zscan_output_dir"] == str(tmp_path / "zscan_out")
+    assert saved["zscan"]["zscan_z_start_um"] == pytest.approx(12.5)
+    assert saved["zscan"]["zscan_z_end_um"] == pytest.approx(487.5)
+    assert saved["zscan"]["zscan_step_size_um"] == pytest.approx(2.5)
+    assert saved["zscan"]["zscan_exposure_ms"] == pytest.approx(66.0)
+
+    second_window = build_with_retry(qt_ui.MainWindow)
+
+    # second_window is freshly constructed -- its zscan_z_start_um/
+    # zscan_z_end_um start disabled at the real default range [0.0, 0.0],
+    # never queried. Confirms the load-time range-widening fix: these
+    # loaded values (12.5/487.5) must survive, not get silently clamped to
+    # 0.0, while the field stays disabled exactly as it does by default
+    # (the widening only touches the numeric range, not the safety gate
+    # that only a real "Query Piezo Range" call is meant to lift).
+    assert second_window.zscan_z_start_um.isEnabled() is False
+    assert second_window.zscan_z_end_um.isEnabled() is False
+    assert second_window.zscan_output_dir.text() == str(tmp_path / "zscan_out")
+    assert second_window.zscan_z_start_um.value() == pytest.approx(12.5)
+    assert second_window.zscan_z_end_um.value() == pytest.approx(487.5)
+    assert second_window.zscan_step_size_um.value() == pytest.approx(2.5)
+    assert second_window.zscan_exposure_ms.value() == pytest.approx(66.0)
+    first_window.close()
+    second_window.close()
+
+
+def test_qt_ui_load_settings_without_zscan_key_loads_without_error(monkeypatch, tmp_path):
+    # A settings.json saved before this batch has no "zscan" key at all --
+    # the tolerant `if key in data` pattern means these fields simply stay
+    # at their _build_state() construction defaults rather than raising.
+    legacy_settings = {
+        "schema_version": 2,
+        "experiment": {"repeats": 3, "frames": 5},
+    }
+    window = make_window(monkeypatch, tmp_path, legacy_settings)
+
+    assert window.exp_repeats.value() == 3
+    assert window.zscan_output_dir.text() == r"C:\test\zscan_calibration"
+    assert window.zscan_z_start_um.value() == pytest.approx(0.0)
+    assert window.zscan_z_start_um.isEnabled() is False
+    assert window.zscan_z_end_um.value() == pytest.approx(0.0)
+    assert window.zscan_z_end_um.isEnabled() is False
+    assert window.zscan_step_size_um.value() == pytest.approx(1.0)
+    assert window.zscan_exposure_ms.value() == pytest.approx(40.0)
+    window.close()
+
+
+def test_qt_ui_save_and_restore_wfg_running_and_fm_sweep_and_camera_acquisition_fields(monkeypatch, tmp_path):
+    # Save/Load Settings gap-closure, batch 4 (2026-08-05, final batch): WFG
+    # tab's master running toggle, Experiment tab's FM Sweep group, and
+    # Experiment tab's camera-acquisition fields -- all previously
+    # unpersisted. wfg_running is a new plain top-level key (not nested
+    # under "wfg" -- that name is already the per-channel list); FM
+    # Sweep/camera-acquisition are purely additive keys under the existing
+    # "experiment" dict, same convention as Frequency Scanning/TEC. Grepped
+    # all fields for connected signals first (batch 2's lesson) and for
+    # disabled/range-gated state (batch 3's lesson) -- neither hazard found
+    # for any field in this batch.
+    first_window = make_window(monkeypatch, tmp_path)
+    first_window.wfg_running.setChecked(False)
+    first_window.exp_sweep_enable.setChecked(True)
+    first_window.exp_sweep_start_khz.setValue(1000.0)
+    first_window.exp_sweep_stop_khz.setValue(1100.0)
+    # Reading center/width back after setting start/stop deliberately --
+    # _connect_sweep_dual_mode_refresh() recomputes them live, so their
+    # saved values should already be internally consistent with start/stop.
+    expected_center = first_window.exp_sweep_center_khz.value()
+    expected_width = first_window.exp_sweep_width_khz.value()
+    first_window.exp_sweep_time_ms.setValue(2.5)
+    first_window.exp_sweep_type.setCurrentText("RampUp")
+    first_window.exp_camera_fps.setValue(25.0)
+    first_window.exp_camera_start.setValue(0.5)
+    first_window.dynamic_camera_start.setChecked(True)
+    first_window.camera_start_array[0].setValue(1.1)
+    first_window.camera_start_array[9].setValue(9.9)
+    first_window.global_exposure.setChecked(True)
+
+    first_window._save_settings()
+    saved = json.loads(qt_ui.SETTINGS_PATH.read_text(encoding="utf-8"))
+
+    assert saved["wfg_running"] is False
+    assert saved["experiment"]["sweep_enable"] is True
+    assert saved["experiment"]["sweep_start_khz"] == pytest.approx(1000.0)
+    assert saved["experiment"]["sweep_stop_khz"] == pytest.approx(1100.0)
+    assert saved["experiment"]["sweep_center_khz"] == pytest.approx(expected_center)
+    assert saved["experiment"]["sweep_width_khz"] == pytest.approx(expected_width)
+    assert saved["experiment"]["sweep_time_ms"] == pytest.approx(2.5)
+    assert saved["experiment"]["sweep_type"] == "RampUp"
+    assert saved["experiment"]["camera_fps"] == pytest.approx(25.0)
+    assert saved["experiment"]["camera_start"] == pytest.approx(0.5)
+    assert saved["experiment"]["dynamic_camera_start"] is True
+    assert saved["experiment"]["camera_start_array"][0] == pytest.approx(1.1)
+    assert saved["experiment"]["camera_start_array"][9] == pytest.approx(9.9)
+    assert len(saved["experiment"]["camera_start_array"]) == 10
+    assert saved["experiment"]["global_exposure"] is True
+
+    second_window = build_with_retry(qt_ui.MainWindow)
+
+    assert second_window.wfg_running.isChecked() is False
+    assert second_window.exp_sweep_enable.isChecked() is True
+    assert second_window.exp_sweep_start_khz.value() == pytest.approx(1000.0)
+    assert second_window.exp_sweep_stop_khz.value() == pytest.approx(1100.0)
+    assert second_window.exp_sweep_center_khz.value() == pytest.approx(expected_center)
+    assert second_window.exp_sweep_width_khz.value() == pytest.approx(expected_width)
+    assert second_window.exp_sweep_time_ms.value() == pytest.approx(2.5)
+    assert second_window.exp_sweep_type.currentText() == "RampUp"
+    assert second_window.exp_camera_fps.value() == pytest.approx(25.0)
+    assert second_window.exp_camera_start.value() == pytest.approx(0.5)
+    assert second_window.dynamic_camera_start.isChecked() is True
+    assert second_window.camera_start_array[0].value() == pytest.approx(1.1)
+    assert second_window.camera_start_array[9].value() == pytest.approx(9.9)
+    assert second_window.global_exposure.isChecked() is True
+    first_window.close()
+    second_window.close()
+
+
+def test_qt_ui_load_settings_without_wfg_running_or_fm_sweep_or_camera_acquisition_keys_loads_without_error(monkeypatch, tmp_path):
+    # A settings.json saved before this batch has none of these keys at
+    # all -- the tolerant `if key in data` pattern means these fields
+    # simply stay at their _build_state() construction defaults.
+    legacy_settings = {
+        "schema_version": 2,
+        "experiment": {"repeats": 3, "frames": 5},
+    }
+    window = make_window(monkeypatch, tmp_path, legacy_settings)
+
+    assert window.exp_repeats.value() == 3
+    assert window.wfg_running.isChecked() is True
+    assert window.exp_sweep_enable.isChecked() is False
+    assert window.exp_sweep_start_khz.value() == pytest.approx(1909.0)
+    assert window.exp_sweep_stop_khz.value() == pytest.approx(1959.0)
+    assert window.exp_sweep_center_khz.value() == pytest.approx(1934.0)
+    assert window.exp_sweep_width_khz.value() == pytest.approx(50.0)
+    assert window.exp_sweep_time_ms.value() == pytest.approx(1.0)
+    assert window.exp_sweep_type.currentText() == "Symmetric"
+    assert window.exp_camera_fps.value() == pytest.approx(0.0)
+    assert window.exp_camera_start.value() == pytest.approx(0.0)
+    assert window.dynamic_camera_start.isChecked() is False
+    assert all(widget.value() == pytest.approx(0.0) for widget in window.camera_start_array)
+    assert window.global_exposure.isChecked() is False
+    window.close()
+
+
+def test_qt_ui_tec_post_stable_hold_defaults_to_zero_and_feeds_temperature_series(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        assert window.exp_tec_post_stable_hold_s.value() == pytest.approx(0.0)
+        assert window._temperature_series().post_stable_hold_s == pytest.approx(0.0)
+
+        window.exp_tec_post_stable_hold_s.setValue(7.25)
+
+        assert window._temperature_series().post_stable_hold_s == pytest.approx(7.25)
+    finally:
+        window.close()
+
+
+def test_qt_ui_tec_lock_mirrors_ch1_into_ch2_while_locked(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        assert window.exp_tec_lock_channels.isChecked() is True
+        assert window.exp_tec_points_ch2.isEnabled() is False
+
+        window.exp_tec_points.setText("20.0, 25.5")
+
+        assert window.exp_tec_points_ch2.text() == "20.0, 25.5"
+        series = window._temperature_series()
+        assert series.unlocked is False
+        assert series.temperature_points_ch2_c is None
+    finally:
+        window.close()
+
+
+def test_qt_ui_tec_unlock_starts_ch2_from_the_previously_shared_value(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        window.exp_tec_points.setText("20.0, 25.5")
+        assert window.exp_tec_points_ch2.text() == "20.0, 25.5"
+
+        window.exp_tec_lock_channels.setChecked(False)
+
+        # Unlocking does NOT reset CH2 to a default -- it keeps the value it
+        # was already mirroring, now independently editable.
+        assert window.exp_tec_points_ch2.text() == "20.0, 25.5"
+        assert window.exp_tec_points_ch2.isEnabled() is True
+
+        window.exp_tec_points_ch2.setText("18.0, 22.0")
+        window.exp_tec_points.setText("21.0, 26.5")  # CH1 edits no longer mirror while unlocked
+        assert window.exp_tec_points_ch2.text() == "18.0, 22.0"
+
+        series = window._temperature_series()
+        assert series.unlocked is True
+        assert series.temperature_points_c == [21.0, 26.5]
+        assert series.temperature_points_ch2_c == [18.0, 22.0]
+    finally:
+        window.close()
+
+
+def test_qt_ui_tec_relock_copies_ch1_into_ch2(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        window.exp_tec_points.setText("20.0, 25.5")
+        window.exp_tec_lock_channels.setChecked(False)
+        window.exp_tec_points_ch2.setText("18.0, 22.0")  # diverge
+
+        window.exp_tec_lock_channels.setChecked(True)
+
+        # Relocking: channel 1's current value becomes the new shared
+        # value -- the less surprising choice for a reversible text-field
+        # toggle (no confirmation dialog, no silent data loss since CH1's
+        # value is what's kept and stays visible).
+        assert window.exp_tec_points_ch2.text() == "20.0, 25.5"
+        assert window.exp_tec_points_ch2.isEnabled() is False
+        series = window._temperature_series()
+        assert series.unlocked is False
+    finally:
+        window.close()
+
+
+def test_qt_ui_save_and_restore_tec_unlocked_dual_channel_settings(monkeypatch, tmp_path):
+    first_window = make_window(monkeypatch, tmp_path)
+    first_window.exp_tec_points.setText("20.0, 25.5")
+    first_window.exp_tec_lock_channels.setChecked(False)
+    first_window.exp_tec_points_ch2.setText("18.0, 22.0")
+
+    first_window._save_settings()
+    saved = json.loads(qt_ui.SETTINGS_PATH.read_text(encoding="utf-8"))
+
+    assert saved["experiment"]["tec_lock_channels"] is False
+    assert saved["experiment"]["tec_points_ch2"] == "18.0, 22.0"
+
+    second_window = build_with_retry(qt_ui.MainWindow)
+
+    assert second_window.exp_tec_lock_channels.isChecked() is False
+    assert second_window.exp_tec_points_ch2.isEnabled() is True
+    assert second_window.exp_tec_points_ch2.text() == "18.0, 22.0"
+    series = second_window._temperature_series()
+    assert series.unlocked is True
+    assert series.temperature_points_ch2_c == [18.0, 22.0]
 
 
 def test_qt_ui_builds_one_experiment_group_per_tec_temperature(monkeypatch, tmp_path):
@@ -1815,32 +2403,36 @@ def test_closing_camera_preview_stops_continuous_and_late_callback_does_not_reop
     assert not window._camera_preview_timer.isActive()
 
 
-def test_abort_hardware_worker_starts_while_another_action_is_blocked(monkeypatch, tmp_path):
+def test_abort_does_not_touch_hardware_even_while_another_action_is_blocked(monkeypatch, tmp_path):
+    # Safety-behavior change (2026-08-04): Abort used to concurrently force
+    # pump.stop()/camera.stop_capture()/ad2.wfg_start_stop_all_ch(False) on
+    # its own QThread regardless of what the running experiment was doing
+    # (the removed _abort_hardware(), previously exercised by this test's
+    # own predecessor). Abort now only ever sets the stop flag -- it must
+    # never call any hardware primitive directly, even while another
+    # action is genuinely blocked/in-flight.
     window = make_window(monkeypatch, tmp_path)
     blocked_started = threading.Event()
     release_blocked = threading.Event()
-    abort_stop_started = threading.Event()
-    call_times: dict[str, float] = {}
+    hardware_calls: list[str] = []
 
-    class AbortProbePump:
+    class RecordingPump:
         def stop(self):
-            call_times["pump_stop"] = time.perf_counter()
-            abort_stop_started.set()
+            hardware_calls.append("pump_stop")
 
         def cleanup(self):
             pass
 
-    class AbortProbeCamera:
+    class RecordingCamera:
         def stop_capture(self):
-            call_times["camera_stop_capture"] = time.perf_counter()
+            hardware_calls.append("camera_stop_capture")
 
         def cleanup(self):
             pass
 
-    class AbortProbeAd2:
+    class RecordingAd2:
         def wfg_start_stop_all_ch(self, running):
-            call_times["ad2_stop"] = time.perf_counter()
-            assert running is False
+            hardware_calls.append("ad2_stop")
 
         def cleanup(self):
             pass
@@ -1852,24 +2444,24 @@ def test_abort_hardware_worker_starts_while_another_action_is_blocked(monkeypatc
         return "Blocked action released"
 
     try:
-        window.app.pump = AbortProbePump()
-        window.app.camera = AbortProbeCamera()
-        window.app.ad2 = AbortProbeAd2()
+        window.app.pump = RecordingPump()
+        window.app.camera = RecordingCamera()
+        window.app.ad2 = RecordingAd2()
 
         window._run_action(blocked_action, "Blocking action")
         assert blocked_started.wait(1.0)
         assert window._busy_count == 1
 
-        clicked_at = time.perf_counter()
         window._abort()
 
-        assert abort_stop_started.wait(0.5)
-        assert call_times["pump_stop"] - clicked_at < 0.5
-        assert "camera_stop_capture" in call_times
-        assert "ad2_stop" in call_times
+        assert window.app.stop_fired is True
+        assert hardware_calls == [], f"Abort must never call hardware primitives directly, called: {hardware_calls}"
 
         release_blocked.set()
         assert process_events_until(lambda: window._busy_count == 0 and not window._threads, 2.0)
+        # Still nothing called after the blocked action finished naturally --
+        # Abort itself never touches hardware, only the stop flag does.
+        assert hardware_calls == []
     finally:
         release_blocked.set()
         process_events_until(lambda: not window._threads, 2.0)
@@ -1877,145 +2469,165 @@ def test_abort_hardware_worker_starts_while_another_action_is_blocked(monkeypatc
         window.close()
 
 
-def test_abort_stops_dcam_wait_and_releases_buffer_with_measured_elapsed_time(monkeypatch, tmp_path):
-    from thermo_acoustic.hamamatsu_dcam import HamamatsuDcamBackend, HamamatsuDcamError
-
+def test_abort_sets_stop_flag_synchronously_without_a_background_thread(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
-    release_completed = threading.Event()
-    capture_finished = threading.Event()
-    capture_started = threading.Event()
-    call_times: dict[str, float] = {}
-    captured_errors: list[str] = []
-
-    class TimeoutError:
-        def is_timeout(self):
-            return True
-
-        def __str__(self):
-            return "timeout"
-
-    class BlockingDcamModule:
-        class DCAM_IDPROP:
-            pass
-
-        class DCAMPROP:
-            pass
-
-        class Dcam:
-            def __init__(self, index):
-                _ = index
-                self.opened = False
-
-            def is_opened(self):
-                return self.opened
-
-            def dev_open(self):
-                self.opened = True
-                return True
-
-            def dev_close(self):
-                self.opened = False
-                return True
-
-            def lasterr(self):
-                return TimeoutError()
-
-            def buf_release(self):
-                if call_times.get("abort_clicked") is not None and "buf_release_after_abort" not in call_times:
-                    call_times["buf_release_after_abort"] = time.perf_counter()
-                    release_completed.set()
-                return True
-
-            def buf_alloc(self, frames):
-                _ = frames
-                return True
-
-            def cap_snapshot(self):
-                capture_started.set()
-                return True
-
-            def cap_stop(self):
-                call_times.setdefault("cap_stop", time.perf_counter())
-                return True
-
-            def wait_capevent_frameready(self, timeout):
-                threading.Event().wait(timeout / 1000.0)
-                return False
-
-    class BlockingDcamApi:
-        @classmethod
-        def init(cls):
-            return True
-
-        @classmethod
-        def uninit(cls):
-            return True
-
-        @classmethod
-        def lasterr(cls):
-            return "ok"
-
-    backend = HamamatsuDcamBackend(timeout_ms=25, frame_total_timeout_s=1.0)
-    backend.dcam_module = BlockingDcamModule
-    backend.dcamapi = BlockingDcamApi
-
-    class AbortCamera:
-        def stop_capture(self):
-            backend.stop_capture()
-
-        def cleanup(self):
-            backend.close()
-
-    class NoopPump:
-        def stop(self):
-            pass
-
-        def cleanup(self):
-            pass
-
-    class NoopAd2:
-        def wfg_start_stop_all_ch(self, running):
-            assert running is False
-
-        def cleanup(self):
-            pass
-
-    def capture_action(progress):
-        _ = progress
-        try:
-            backend.capture_snapshot()
-        except HamamatsuDcamError as exc:
-            captured_errors.append(str(exc))
-        finally:
-            call_times["capture_finished"] = time.perf_counter()
-            capture_finished.set()
-        return "Capture worker exited"
-
     try:
-        window.app.camera = AbortCamera()
-        window.app.pump = NoopPump()
-        window.app.ad2 = NoopAd2()
+        assert window.app.stop_fired is False
+        assert not window._threads
 
-        window._run_action(capture_action, "Blocking DCAM capture")
-        assert capture_started.wait(1.0)
-
-        call_times["abort_clicked"] = time.perf_counter()
         window._abort()
 
-        assert release_completed.wait(0.5)
-        assert capture_finished.wait(0.5)
-        elapsed_s = max(call_times["buf_release_after_abort"], call_times["capture_finished"]) - call_times["abort_clicked"]
-        print(f"ABORT_TO_DCAM_STOPPED_AND_RELEASED_S={elapsed_s:.6f}")
-
-        assert elapsed_s < 0.5
-        assert any("Capture stopped while waiting for Hamamatsu frame" in error for error in captured_errors)
-        assert call_times["cap_stop"] >= call_times["abort_clicked"]
-        assert call_times["buf_release_after_abort"] >= call_times["cap_stop"]
-
-        assert process_events_until(lambda: window._busy_count == 0 and not window._threads, 2.0)
+        # Synchronous: no QThread spun up for Abort itself (there is
+        # nothing left for it to do in the background -- it only flips a
+        # flag), unlike the removed _abort_hardware() path.
+        assert window.app.stop_fired is True
+        assert not window._threads
+        # Not a temperature scan (_temperature_scan_active is False, since
+        # no series is running at all here) -- wording defaults to "this
+        # repeat".
+        assert "Stopping after this repeat" in window.app.status
     finally:
-        process_events_until(lambda: not window._threads, 2.0)
-        window._cleanup_complete_for_close = True
+        window.close()
+
+
+def test_abort_control_explains_its_graceful_not_mid_operation_behavior(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        assert window.stop_series_button.text() == "Abort"
+        tooltip = window.stop_series_button.toolTip()
+        assert "current repeat" in tooltip
+        assert "does not stop hardware" in tooltip
+    finally:
+        window.close()
+
+
+def test_hardware_action_buttons_disclose_missing_global_confirmation_gate(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        buttons = window.findChildren(QPushButton)
+        apply_wfg = next(button for button in buttons if button.text() == "Apply WFG")
+        start_exp = next(button for button in buttons if button.text() == "Start exp")
+        assert "without an additional confirmation" in apply_wfg.toolTip()
+        assert "not protected" in start_exp.toolTip()
+        assert "Abort stops only after" in start_exp.toolTip()
+    finally:
+        window.close()
+
+
+def test_abort_while_idle_does_not_touch_queue_count(monkeypatch, tmp_path):
+    # Abort is reachable (menu action) even when no series is running --
+    # in that case there is no repeat counter to replace, so queue_count
+    # must be left alone.
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        window.queue_count.setText("0")
+        assert window._experiment_series_active is False
+
+        window._abort()
+
+        assert window._stopping_after_current_repeat is False
+        assert window.queue_count.text() == "0"
+    finally:
+        window.close()
+
+
+def test_abort_during_active_series_shows_stopping_indicator_in_repeat_counter(monkeypatch, tmp_path):
+    # Part C follow-up (2026-08-04): once Abort is triggered while a series
+    # is genuinely running, the repeat-counter area (queue_count) switches
+    # to a distinct "Stopping after this repeat..." state instead of the
+    # raw remaining count, until the series actually halts.
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        window._handle_worker_progress("experiment_series_active", True)
+        window._handle_worker_progress("queue_count", 5)
+        assert window.queue_count.text() == "5"
+
+        window._abort()
+
+        assert window._stopping_after_current_repeat is True
+        assert window.queue_count.text() == "Stopping after this repeat..."
+
+        # A queue_count update that arrives while still stopping (e.g. the
+        # between-repeats check firing progress("queue_count", remaining)
+        # right before returning "ExperimentSeriesAborted") must not
+        # clobber the indicator.
+        window._handle_worker_progress("queue_count", 3)
+        assert window.queue_count.text() == "Stopping after this repeat..."
+
+        # The series actually halting clears the indicator and restores a
+        # real count immediately -- not left stuck reading "Stopping..."
+        # forever past the point the series has genuinely already stopped.
+        window._handle_worker_progress("experiment_series_active", False)
+
+        assert window._stopping_after_current_repeat is False
+        assert window.queue_count.text() == str(window.app.experiment_series.see_elements_left())
+    finally:
+        window.close()
+
+
+def test_abort_stopping_indicator_does_not_leak_into_the_next_series(monkeypatch, tmp_path):
+    # The specific TestStand stale-highlight mistake this was designed to
+    # avoid: a leftover "Stopping..." from a previous Abort must not still
+    # be showing once a fresh series starts.
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        window._handle_worker_progress("experiment_series_active", True)
+        window._abort()
+        assert window._stopping_after_current_repeat is True
+        window._handle_worker_progress("experiment_series_active", False)
+        assert window._stopping_after_current_repeat is False
+
+        # A fresh series starting afterward must display real counts again,
+        # not be silently gated by a stale flag.
+        window._handle_worker_progress("experiment_series_active", True)
+        window._handle_worker_progress("queue_count", 7)
+
+        assert window.queue_count.text() == "7"
+    finally:
+        window.close()
+
+
+def test_abort_during_tec_scan_shows_temperature_point_wording(monkeypatch, tmp_path):
+    # TEC-scan abort fix follow-up (2026-08-04): the unit that finishes
+    # before stopping differs for a TEC temperature scan (a full
+    # temperature point -- target + wait + hold + all its own repeats,
+    # not just "this repeat") -- the graceful-stop wording must say so.
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        window._handle_worker_progress("experiment_series_active", True)
+        window._handle_worker_progress("temperature_scan_active", True)
+        window._handle_worker_progress("queue_count", 5)
+
+        window._abort()
+
+        assert window._stopping_after_current_repeat is True
+        assert window.queue_count.text() == "Stopping after this temperature point..."
+        assert "Stopping after this temperature point" in window.app.status
+
+        window._handle_worker_progress("experiment_series_active", False)
+        window._handle_worker_progress("temperature_scan_active", False)
+
+        assert window._stopping_after_current_repeat is False
+        assert window.queue_count.text() == str(window.app.experiment_series.see_elements_left())
+    finally:
+        window.close()
+
+
+def test_abort_during_plain_series_still_shows_repeat_wording_not_temperature_point(monkeypatch, tmp_path):
+    # Sanity check for the other side of the same branch: a plain
+    # (non-TEC) experiment series must not pick up TEC-scan wording just
+    # because _temperature_scan_active happens to be stale-False from a
+    # prior run -- confirmed explicitly false here, not just omitted.
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        window._handle_worker_progress("experiment_series_active", True)
+        window._handle_worker_progress("temperature_scan_active", False)
+
+        window._abort()
+
+        assert window.queue_count.text() == "Stopping after this repeat..."
+        assert "Stopping after this repeat" in window.app.status
+    finally:
         window.close()
 
 
@@ -2076,7 +2688,7 @@ def test_run_experiment_series_stops_after_failed_repeat(monkeypatch, tmp_path, 
     call_count = {"n": 0}
 
     class FailingRunApplication(qt_ui.Application):
-        def run_experiment2(self) -> bool:
+        def run_experiment2(self, progress=None) -> bool:
             call_count["n"] += 1
             self.status = "ExperimentFlushFailed"
             return False
@@ -2111,7 +2723,7 @@ def test_run_experiment_series_stops_queuing_further_repeats_after_abort(monkeyp
     call_count = {"n": 0}
 
     class AbortingRunApplication(qt_ui.Application):
-        def run_experiment2(self) -> bool:
+        def run_experiment2(self, progress=None) -> bool:
             self.experiment_series.dequeue_experiment()
             call_count["n"] += 1
             self.status = "ExperimentComplete"
@@ -2170,7 +2782,7 @@ def test_run_experiment_series_brackets_experiment_series_active_progress(monkey
         window.close()
 
     class FailingRunApplication(qt_ui.Application):
-        def run_experiment2(self) -> bool:
+        def run_experiment2(self, progress=None) -> bool:
             self.status = "ExperimentFlushFailed"
             return False
 
@@ -2190,6 +2802,131 @@ def test_run_experiment_series_brackets_experiment_series_active_progress(monkey
 
         active_events = [value for kind, value in events if kind == "experiment_series_active"]
         assert active_events == [True, False], "flag must be cleared even when a repeat raises"
+    finally:
+        window.close()
+
+
+def test_run_experiment_series_fires_real_step_events_for_all_seven_steps(monkeypatch, tmp_path):
+    # Phase 3 step-progress breadcrumb (2026-08-04) prerequisite fix: this
+    # call site (_run_experiment_series_body()) previously did not pass
+    # `progress` into Application.run_experiment2() at all, so
+    # step_started/step_completed (fired by application.py's _report_step())
+    # never reached the UI -- confirmed here through the REAL call chain
+    # (qt_ui.py's _run_experiment_series() -> run_experiment2()), not a
+    # mocked or hand-simulated progress feed.
+    from test_application import install_fake_nptdms
+    from thermo_acoustic.application import (
+        STEP_CAPTURE_FRAMES,
+        STEP_CONFIGURE_CAMERA,
+        STEP_CONFIGURE_WFG,
+        STEP_FLUSH,
+        STEP_INITIALIZE_EXPERIMENT,
+        STEP_ORDER,
+        STEP_SAVE_RESULTS,
+        STEP_WAIT_FOR_AD2_COMPLETION,
+    )
+    from thermo_acoustic.workflows import Experiment2, ExperimentSeries2
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(qt_ui, "SETTINGS_PATH", settings_path)
+    QApplication.instance() or QApplication([])
+    install_fake_nptdms(monkeypatch)
+
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        series = ExperimentSeries2(series_path=tmp_path)
+        series.enqueue_experiments([Experiment2()])
+        config = window._experiment_wfg_config()
+
+        events: list[tuple[str, object]] = []
+        window._run_experiment_series(series, total_frames=1, config=config, progress=lambda kind, value: events.append((kind, value)))
+
+        started = [value for kind, value in events if kind == "step_started"]
+        completed = [value for kind, value in events if kind == "step_completed"]
+        # WaitForAd2Completion/Flush are genuinely conditional in real
+        # run_experiment2() (only entered if AD2 has remaining wait time /
+        # flush is enabled for this experiment) -- not asserted unconditional
+        # here, since a default Experiment2()/Application() doesn't exercise
+        # either. The steps that DO always run must still fire, in the real
+        # traced order, each started immediately followed eventually by its
+        # own completed -- proving the real wiring, not just that SOME events
+        # arrived.
+        always_run = [
+            STEP_INITIALIZE_EXPERIMENT, STEP_CONFIGURE_WFG, STEP_CONFIGURE_CAMERA,
+            STEP_CAPTURE_FRAMES, STEP_SAVE_RESULTS,
+        ]
+        assert started == always_run, started
+        assert completed == always_run, completed
+        assert set(STEP_ORDER) - set(started) <= {STEP_WAIT_FOR_AD2_COMPLETION, STEP_FLUSH}
+        assert events.index(("step_reset", None)) < events.index(("step_started", STEP_ORDER[0]))
+    finally:
+        window.close()
+
+
+def test_run_temperature_experiment_series_fires_real_step_reset_per_temperature_point(monkeypatch, tmp_path):
+    # Same prerequisite fix as the non-TEC test above, for the TEC path:
+    # _run_temperature_experiment_series() previously called
+    # Application.run_temperature_series() without `progress` at all, so
+    # SetTecTarget/WaitTecStable/step_reset never reached the UI during a
+    # real TEC scan. run_experiment2() is overridden to a trivial dequeue
+    # here (matching test_tec.py's own TemperatureRunApplication pattern) so
+    # this test isolates the TEC-path wiring specifically, through the REAL
+    # qt_ui.py -> application.py call chain.
+    from test_tec import RecordingTecBackend
+    from thermo_acoustic.application import STEP_SET_TEC_TARGET, STEP_WAIT_TEC_STABLE
+    from thermo_acoustic.tec import TecController
+    from thermo_acoustic.workflows import Experiment2, ExperimentSeries2, TemperatureSeries
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(qt_ui, "SETTINGS_PATH", settings_path)
+    QApplication.instance() or QApplication([])
+
+    class TemperatureRunApplication(qt_ui.Application):
+        def __init__(self) -> None:
+            super().__init__(tec=TecController(enabled=True, simulate=True, backend=RecordingTecBackend()))
+
+        def run_experiment2(self, progress=None) -> bool:
+            self.experiment_series.dequeue_experiment()
+            return True
+
+    window = build_with_retry(lambda: qt_ui.MainWindow(app=TemperatureRunApplication()))
+    try:
+        temperature_series = TemperatureSeries(
+            temperature_points_c=[20.0, 25.0],
+            tolerance_c=0.1,
+            min_settle_s=0.0,
+            max_wait_s=0.1,
+            poll_interval_s=0.001,
+        )
+        groups = [
+            ExperimentSeries2(tmp_path / "t1", [Experiment2(repeat_id=0)]),
+            ExperimentSeries2(tmp_path / "t2", [Experiment2(repeat_id=0)]),
+        ]
+        config = window._experiment_wfg_config()
+
+        events: list[tuple[str, object]] = []
+        window._run_temperature_experiment_series(
+            temperature_series, groups, total_frames=2, config=config,
+            progress=lambda kind, value: events.append((kind, value)),
+        )
+
+        reset_indices = [index for index, (kind, _value) in enumerate(events) if kind == "step_reset"]
+        target_started_indices = [
+            index for index, (kind, value) in enumerate(events)
+            if kind == "step_started" and value == STEP_SET_TEC_TARGET
+        ]
+        stable_started_indices = [
+            index for index, (kind, value) in enumerate(events)
+            if kind == "step_started" and value == STEP_WAIT_TEC_STABLE
+        ]
+        # One reset + one SetTecTarget + one WaitTecStable per temperature
+        # point (2 points), and each point's reset strictly precedes that
+        # point's own target/stability steps.
+        assert len(reset_indices) == 2
+        assert len(target_started_indices) == 2
+        assert len(stable_started_indices) == 2
+        assert reset_indices[0] < target_started_indices[0] < stable_started_indices[0] < reset_indices[1]
+        assert reset_indices[1] < target_started_indices[1] < stable_started_indices[1]
     finally:
         window.close()
 
@@ -2362,8 +3099,17 @@ def test_every_value_widget_has_a_tooltip_and_visible_marker(monkeypatch, tmp_pa
         # QLineEdit rows, one of which (error_code) carried a tooltip counted
         # here; replaced with a single HistoryLogWidget (a QListWidget
         # subclass, not in _TOOLTIP_COVERAGE_WIDGET_TYPES above, so its own
-        # tooltip is real but genuinely out of this sweep's scope) = 142.
-        assert kept == 142, f"expected 142 fields with a tooltip after the Status/Error Out history-log change, found {kept}"
+        # tooltip is real but genuinely out of this sweep's scope) = 142,
+        # then +1 for the new "Refill/Empty Flow Rate" field
+        # (self.fill_flow_rate, 2026-08-03) = 143, then +1 for the new
+        # "Temperature points CH2 (C)" QLineEdit (self.exp_tec_points_ch2,
+        # 2026-08-04, dual-channel lock/unlock feature) = 144. The lock
+        # toggle itself (self.exp_tec_lock_channels) is a QPushButton, not
+        # in _TOOLTIP_COVERAGE_WIDGET_TYPES above, so it's out of this
+        # sweep's scope even though it does carry a real tooltip. Then +1
+        # for the new "Post-stabilization hold (s)" field
+        # (self.exp_tec_post_stable_hold_s, 2026-08-04) = 145.
+        assert kept == 145, f"expected 145 fields with a tooltip after adding the TEC post-stable-hold field, found {kept}"
 
         # Spot-check a representative sample from both sides of the Session
         # 41 classification (full list and rationale in the changelog).

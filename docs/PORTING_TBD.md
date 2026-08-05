@@ -6,23 +6,27 @@
 > Use current source, `docs/current_workflow_audit.md`, and
 > `docs/known_open_items.md` for live status.
 
-This file is generated from `labview_manifest.json` and records the current
-semantic porting status for every documented VI in `main_html/main`.
-Runtime and hardware validation items are maintained here as post-port tasks.
+This file is generated from `labview_manifest.json` and records a historical
+semantic-porting snapshot for every documented VI in `main_html/main`. The
+generator's counts are coverage labels, not evidence of live runtime behavior,
+hardware validation, or exact LabVIEW equivalence. The checklist below is
+historical and may contain work superseded by current code; do not use it as a
+live backlog.
 
 ## Summary
 
 - Documented VI sections: 305
-- Implemented in Python: 305
-- Partially represented: 0
-- Stub only: 0
+- Generator-labelled implementations: 305
+- Generator-labelled partially represented: 0
+- Generator-labelled stub only: 0
 
-## Remaining Work By Module
+## Historical Remaining Work By Module
 
 ## Runtime / Hardware Validation
 
-The VI registry is semantically complete, but these items still need real-device
-validation or operator-facing polish before calling the Python app finished.
+These are retained historical follow-ups. Some are superseded (for example, a
+Camera preview now exists); unresolved current work belongs only in
+`docs/known_open_items.md`.
 
 - **Hamamatsu real camera validation**: Run `tools/test_hamamatsu_camera.py` against the connected camera and verify open, exposure, ROI/subarray, snapshot, sequence capture, software trigger, and cleanup behavior.
 - **Camera image handling**: Verify that the Python TIFF output matches the LabVIEW image output needs, including bit depth, frame naming, metadata, and any TDMS sidecar data expected by downstream analysis.

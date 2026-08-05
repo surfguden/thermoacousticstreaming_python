@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import math
 import sys
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .ad2 import WaveformFunction
 from .application import (
     Application,
     STEP_CAPTURE_FRAMES,
@@ -25,12 +27,60 @@ from .application import (
     STEP_CONFIGURE_WFG,
     STEP_FLUSH,
     STEP_INITIALIZE_EXPERIMENT,
+    STEP_ORDER,
     STEP_SAVE_RESULTS,
     STEP_WAIT_FOR_AD2_COMPLETION,
 )
 from .hardware_factory import HardwareRuntimeConfig, apply_hardware_bundle, build_hardware_bundle
 from .instruments import SimulatedAD2Sdk
-from .qt_ui import HistoryLogWidget, MainWindow, _widen_for_content, install_focus_wheel_guard
+from .qt_ui import HistoryLogWidget, MainWindow, WaveformGraph, _widen_for_content, install_focus_wheel_guard
+
+
+def _synthesize_wfg_wave(
+    function: WaveformFunction,
+    frequency_hz: float,
+    amplitude_v: float,
+    offset_v: float,
+    symmetry_percent: float,
+    phase_deg: float,
+    num_points: int,
+    duration_s: float,
+) -> list[float]:
+    """Computed (not hardware-read) preview of one AD2 carrier waveform,
+    reusing qt_ui.py's own _preview_points()'s per-function shapes
+    (Sine/Square/Triangle/DC), extended to add Symmetry -- not present in
+    _preview_points(), which only ever previews channel 0 with symmetry
+    ignored. Symmetry here matches the real AD2/WaveForms SDK's own
+    definition: a time-axis warp, where the first `symmetry_percent` of
+    each period maps to the first half of the underlying shape and the
+    remainder maps to the second half (FDwfAnalogOutNodeSymmetrySet),
+    rather than a duty-cycle-only interpretation limited to Square."""
+    phase = math.radians(phase_deg)
+    # Clamped away from the exact 0/100 edges to avoid a zero-width half
+    # (division by zero) while a field is mid-edit.
+    symmetry = min(max(symmetry_percent / 100.0, 0.001), 0.999)
+    points: list[float] = []
+    for index in range(num_points):
+        t = index / max(num_points - 1, 1) * duration_s
+        cycle = math.fmod(frequency_hz * t, 1.0)
+        if cycle < 0:
+            cycle += 1.0
+        if cycle < symmetry:
+            x = cycle / symmetry * 0.5
+        else:
+            x = 0.5 + (cycle - symmetry) / (1.0 - symmetry) * 0.5
+        angle = math.tau * x + phase
+        if function == WaveformFunction.SQUARE:
+            raw = 1.0 if math.sin(angle) >= 0 else -1.0
+        elif function == WaveformFunction.TRIANGLE:
+            tri_x = (angle / math.tau) % 1.0
+            raw = 2.0 * abs(2.0 * (tri_x - math.floor(tri_x + 0.5))) - 1.0
+        elif function == WaveformFunction.DC:
+            raw = 0.0
+        else:
+            raw = math.sin(angle)
+        points.append(offset_v + amplitude_v * raw)
+    return points
 
 
 class InitializationDialog(QDialog):
@@ -92,7 +142,21 @@ class InitializationDialog(QDialog):
             grid.addWidget(window._wrap_with_tooltip_icon(simulate), row, 1)
             grid.addWidget(window._wrap_with_tooltip_icon(enable), row, 2)
             grid.addWidget(label, row, 3)
-        grid.setColumnStretch(0, 1)
+        # Was setColumnStretch(0, 1) -- gave ALL extra horizontal space to
+        # the Device column specifically, whose own content ("AD2"/
+        # "Camera"/etc.) is short and never needed it, which visually
+        # shoved Simulate/Enable/Progress far to the right of the device
+        # names they belong to. The real driver of the surplus width isn't
+        # this grid's own content -- it's the sibling "Hardware Details"
+        # QFormLayout below, whose Qmix SDK path fields are
+        # _widen_for_content()'d to fit real, long Windows paths (~800px)
+        # and force the whole dialog wide; QVBoxLayout then stretches this
+        # grid to match. Moving the stretch to the Progress column (whose
+        # variable-length status text -- "Waiting"/"Rolled back (...)" --
+        # can actually use the room) keeps Device/Simulate/Enable snug
+        # against each other regardless of how wide a sibling group makes
+        # the dialog, instead of spreading all four columns out evenly.
+        grid.setColumnStretch(3, 1)
         return group
 
     def _z_stage_simulate_placeholder(self) -> QCheckBox:
@@ -138,15 +202,124 @@ class InitializationDialog(QDialog):
         label.setText(status)
 
 
+class _CompactPlaceholderRow(QWidget):
+    """Single-line stand-in for a step-card with no real configuration
+    content (restructure proposal 1) -- a bullet + numbered step title,
+    an em dash, and a grayed/italic "no configuration" note, all on one
+    row. Carries its own .title() (mirrors QGroupBox.title()) so callers
+    that ask a step card for its title don't need to know which of the
+    two card types they got."""
+
+    def __init__(self, title: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._title = title
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(6, 2, 6, 2)
+        heading = QLabel(f"● {title}")
+        layout.addWidget(heading)
+        reason = QLabel("— no configuration for this step")
+        reason.setStyleSheet("color: gray; font-style: italic;")
+        layout.addWidget(reason)
+        layout.addStretch(1)
+
+    def title(self) -> str:
+        return self._title
+
+
+# Short tooltip labels for _StepBreadcrumb's markers -- same steps/order as
+# ExperimentSequenceView's own numbered card titles just below, without the
+# "N. " prefix (the marker's own position already encodes the number).
+_STEP_BREADCRUMB_TITLES: dict[str, str] = {
+    STEP_INITIALIZE_EXPERIMENT: "Initialize Experiment",
+    STEP_CONFIGURE_WFG: "Configure WFG",
+    STEP_CONFIGURE_CAMERA: "Configure Camera",
+    STEP_CAPTURE_FRAMES: "Capture Frames",
+    STEP_WAIT_FOR_AD2_COMPLETION: "Wait For AD2 Completion",
+    STEP_FLUSH: "Flush",
+    STEP_SAVE_RESULTS: "Save Results",
+}
+
+
+class _StepBreadcrumb(QWidget):
+    """Phase 3 (2026-08-04): a horizontal at-a-glance marker row for
+    run_experiment2()'s 7-step sequence -- the live counterpart to
+    ExperimentSequenceView's static Configuration Mode cards below, driven
+    by the exact same progress("step_started"/"step_completed"/
+    "step_failed"/"step_reset", ...) events _report_step() and the explicit
+    reset calls in application.py already fire (see MainWindow._step_states/
+    _handle_worker_progress() in qt_ui.py -- this widget is a renderer for
+    that shared state, not a second independent listener).
+
+    TEC-scan design decision (recorded alongside application.py's STEP_*
+    constants, same as ExperimentSequenceView above): SetTecTarget/
+    WaitTecStable wrap this same 7-step sequence from outside, once per
+    temperature point -- deliberately not markers here. The current
+    temperature point/target is a separate indicator, out of scope for this
+    widget (flagged as a follow-up candidate, not built here -- see the
+    Phase 3 investigation notes).
+
+    Deliberately does NOT show a distinct "stopping" visual during a
+    graceful-stop (Session 78/80's "Stopping after this repeat/temperature
+    point..." indicator, shown elsewhere): the in-flight unit still runs to
+    real completion during a graceful stop, so this breadcrumb keeps
+    reporting that real in-progress state unchanged -- inventing a second,
+    competing "stopping" visual here would duplicate a message that already
+    has one home.
+    """
+
+    _STATE_STYLE: dict[str, tuple[str, str]] = {
+        # (symbol, color). Colors match already-established conventions
+        # elsewhere in this window: gray = not yet reached (matches
+        # _make_status_dot's "disabled"/"not connected" gray), dodgerblue =
+        # actively running (matches _set_status_dot's "running" blue, the
+        # only existing "in progress" color in this codebase), green =
+        # completed/calm-confirmation (matches connection_button's/
+        # _set_status_dot's "connected" green), red = failed (matches
+        # connection_button's "* Not Connected" abnormal-state red -- this
+        # codebase has no separate step-level failure color to reuse, so
+        # this is the established abnormal-state color generally).
+        "pending": ("○", "gray"),
+        "active": ("●", "dodgerblue"),
+        "completed": ("●", "green"),
+        "failed": ("●", "red"),
+    }
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        self._markers: dict[str, QLabel] = {}
+        self._states: dict[str, str] = {}
+        for step_name in STEP_ORDER:
+            marker = QLabel()
+            marker.setToolTip(_STEP_BREADCRUMB_TITLES[step_name])
+            layout.addWidget(marker)
+            self._markers[step_name] = marker
+        layout.addStretch(1)
+        self.set_states(dict.fromkeys(STEP_ORDER, "pending"))
+
+    def set_states(self, states: dict[str, str]) -> None:
+        for index, (step_name, marker) in enumerate(self._markers.items(), start=1):
+            state = states.get(step_name, "pending")
+            self._states[step_name] = state
+            symbol, color = self._STATE_STYLE[state]
+            marker.setText(f"{symbol}{index}")
+            marker.setStyleSheet(f"color: {color}; font-weight: bold;")
+
+    def state_of(self, step_name: str) -> str:
+        return self._states.get(step_name, "pending")
+
+
 class ExperimentSequenceView(QWidget):
     """v2-only, Configuration Mode step-card container for the real
     per-repeat sequence run_experiment2() executes (application.py's
     STEP_* constants, grounded in that method's own traced order -- see
     the v2 sequence-visualization design note recorded there). Each
-    card embeds the *existing*, already-validated group-box widgets v2
+    card embeds the existing shared group-box widgets v2
     already builds for that step's fields, re-parented here rather than
     rebuilt -- matching this project's established "v2 reuses
-    validated panel builders instead of a second implementation"
+    shared panel builders instead of a second implementation"
     convention (legacy_unresolved_items.md). Phase 2 (this class) is
     Configuration Mode only: a static list of cards, no live wiring.
     Phase 3 will add live highlighting of the in-flight card and
@@ -167,30 +340,36 @@ class ExperimentSequenceView(QWidget):
         super().__init__(parent)
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
-        self._step_cards: dict[str, QGroupBox] = {}
+        self._step_cards: dict[str, QWidget] = {}
 
-    def add_step_card(self, step_name: str, title: str, content: QWidget | None = None) -> QGroupBox:
-        card = QGroupBox(title)
-        card_layout = QVBoxLayout(card)
-        if content is not None:
-            card_layout.addWidget(content)
+    def add_step_card(
+        self, step_name: str, title: str, content: QWidget | None = None, *, tooltip: str | None = None
+    ) -> QWidget:
+        if content is None:
+            # Redesign (2026-08-03, restructure proposal 1): a step with no
+            # Experiment-tab-specific configuration used to get the SAME
+            # full-width QGroupBox card as a real config step, with nothing
+            # inside but one italic sentence -- three of the seven steps
+            # (CaptureFrames/WaitForAd2Completion/SaveResults) always render
+            # this way and always will, unless/until backing functionality
+            # exists, so that full card treatment was pure dead weight: same
+            # visual weight as "2. Configure WFG"'s 535px of real fields for
+            # a single line of "nothing here." Collapsed to one compact row
+            # instead -- still honest (states plainly there's no
+            # configuration, invents nothing), but no longer competes for
+            # screen space with the steps that actually have content.
+            card = _CompactPlaceholderRow(title)
         else:
-            # Honest placeholder, not a guess at content that doesn't exist
-            # yet -- several named steps (CaptureFrames, WaitForAd2Completion,
-            # SaveResults) currently have no Experiment-tab-specific
-            # configuration of their own; their real behavior is entirely
-            # derived from other steps' settings (frame count from
-            # Acquisition Parameters, AD2 wait from the WFG timing fields,
-            # etc.), not a separate input.
-            placeholder = QLabel("No Experiment-tab configuration specific to this step.")
-            placeholder.setWordWrap(True)
-            placeholder.setStyleSheet("color: gray; font-style: italic;")
-            card_layout.addWidget(placeholder)
+            card = QGroupBox(title)
+            card_layout = QVBoxLayout(card)
+            card_layout.addWidget(content)
+        if tooltip:
+            card.setToolTip(tooltip)
         self._layout.addWidget(card)
         self._step_cards[step_name] = card
         return card
 
-    def step_card(self, step_name: str) -> QGroupBox | None:
+    def step_card(self, step_name: str) -> QWidget | None:
         return self._step_cards.get(step_name)
 
     def step_names(self) -> list[str]:
@@ -198,10 +377,18 @@ class ExperimentSequenceView(QWidget):
 
 
 class MainWindowV2(MainWindow):
-    """Opt-in preview UI skeleton that reuses the existing experiment logic."""
+    """Opt-in transitional UI that reuses the existing shared hardware runtime."""
 
     _MANUAL_PANEL_BUILDERS: dict[str, str] = {
-        "WFG": "_wfg_tab",
+        # WFG maps to a v2-only wrapper (_wfg_manual_panel_content), not
+        # directly to qt_ui.py's own _wfg_tab() -- Phase 2 Part A adds a
+        # live computed-waveform preview beside the WFG (Manual Test)
+        # window specifically (matching Digilent WaveForms' own config +
+        # live-preview convention), without touching qt_ui.py: the wrapper
+        # re-parents _wfg_tab()'s existing, unmodified content whole and
+        # places the new preview panel beside it, the same
+        # reuse-not-rebuild approach already used throughout this class.
+        "WFG": "_wfg_manual_panel_content",
         "MSO": "_mso_tab",
         "PumpValve": "_pump_tab",
         "Camera": "_camera_tab",
@@ -228,7 +415,7 @@ class MainWindowV2(MainWindow):
         self._initialization_dialog: InitializationDialog | None = None
         self._manual_panels: dict[str, QDialog] = {}
         super().__init__(app=app)
-        self.setWindowTitle("Thermo Acoustic Streaming - New UI Preview")
+        self.setWindowTitle("Thermo Acoustic Streaming - Transitional UI (shared hardware runtime)")
         self.resize(1440, 860)
         self._seed_experiment_ad2_from_wfg_once()
         self._refresh_status()
@@ -241,13 +428,18 @@ class MainWindowV2(MainWindow):
         layout = QHBoxLayout(root)
 
         layout.addWidget(self._left_navigation(), 0)
-        layout.addWidget(self._center_experiment_area(), 1)
-        layout.addWidget(self._global_status_panel(), 0)
+        layout.addWidget(self._configuration_column(), 1)
+        layout.addWidget(self._live_monitoring_column(), 0)
 
     def _build_menu_bar(self) -> None:
         menu = self.menuBar()
         menu.addAction("Exit", self._exit_app)
-        menu.addAction("Abort", self._abort)
+        stop_action = menu.addAction("Abort", self._abort)
+        stop_action.setToolTip(
+            "Stops after the current repeat, or after the current temperature point during a TEC scan. "
+            "It does not stop hardware in the middle of an operation."
+        )
+        stop_action.setStatusTip(stop_action.toolTip())
         menu.addAction("Save Settings", self._save_settings)
         menu.addAction("Load Settings", self._load_settings)
 
@@ -261,15 +453,88 @@ class MainWindowV2(MainWindow):
         self.connection_button.clicked.connect(self._open_initialization_dialog)
         layout.addWidget(self.connection_button)
 
+        # Phase 2 Part B: sidebar connection/status dots, reusing Global
+        # Status's own underlying state (updated alongside it in
+        # _refresh_status(), not independently). WFG/MSO both reflect the
+        # same physical AD2 device; PumpValve gets two independent dots
+        # since Pump and Valve are two separate devices that can genuinely
+        # differ (confirmed, not assumed). ZScan gets none: its camera
+        # usage shares self.app.camera (same state Camera's own dot
+        # already shows), but its piezo operations use a fresh,
+        # disconnect-after-use PiezoStage instance per call, never
+        # self.app.z_motor -- there is no persistent state anywhere that
+        # actually reflects Z-Scan's own operational readiness, and a dot
+        # showing only half the picture (camera only) would misleadingly
+        # imply more than it means. Left unindicated rather than
+        # fabricated; see the Phase 2 Part B investigation notes.
+        self._sidebar_status_dots: dict[str, QLabel] = {}
         for name in ("WFG", "MSO", "PumpValve", "Camera", "ZScan"):
             button = QPushButton(self._panel_display_name(name))
             button.clicked.connect(lambda checked=False, panel_name=name: self._open_manual_panel(panel_name))
-            layout.addWidget(button)
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(4)
+            row.addWidget(button, 1)
+            if name == "PumpValve":
+                pump_dot = self._make_status_dot("Pump")
+                valve_dot = self._make_status_dot("Valve")
+                self._sidebar_status_dots["Pump"] = pump_dot
+                self._sidebar_status_dots["Valve"] = valve_dot
+                row.addWidget(pump_dot)
+                row.addWidget(valve_dot)
+            elif name in ("WFG", "MSO", "Camera"):
+                dot = self._make_status_dot({"WFG": "AD2", "MSO": "AD2", "Camera": "Camera"}[name])
+                self._sidebar_status_dots[name] = dot
+                row.addWidget(dot)
+            layout.addLayout(row)
 
         layout.addStretch(1)
         return panel
 
-    def _center_experiment_area(self) -> QScrollArea:
+    @staticmethod
+    def _make_status_dot(device_label: str) -> QLabel:
+        dot = QLabel("●")
+        dot.setFixedWidth(14)
+        dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        dot.setStyleSheet("color: gray;")
+        dot.setToolTip(f"{device_label}: disabled")
+        return dot
+
+    @staticmethod
+    def _set_status_dot(dot: QLabel, device_label: str, *, enabled: bool, connected: bool, running: bool) -> None:
+        # Same three-state convention as elsewhere in this window: green
+        # matches connection_button's own existing "connected" color
+        # (_refresh_status()); grey covers both "disabled" and "not yet
+        # connected" (Global Status's own text rows already collapse
+        # those two into a single "Not connected"/"Disabled" read, so a
+        # dot distinguishing them further would say more than the rest of
+        # the window does); blue is new -- there was no existing
+        # "actively running" color to reuse anywhere in this app.
+        if not enabled:
+            color, state_text = "gray", "disabled"
+        elif running:
+            color, state_text = "dodgerblue", "running"
+        elif connected:
+            color, state_text = "green", "connected"
+        else:
+            color, state_text = "gray", "not connected"
+        dot.setStyleSheet(f"color: {color};")
+        dot.setToolTip(f"{device_label}: {state_text}")
+
+    def _configuration_column(self) -> QScrollArea:
+        # Restructure (2026-08-03, proposal 2): configuration content (set
+        # before a run) separated from live-monitoring content (watched
+        # during/after a run) -- matching Digilent WaveForms' own
+        # config-panel + live-preview convention and the SCADA principle
+        # that live status stays visible without scrolling past
+        # configuration. This column keeps its own independent scroll --
+        # it's still long on its own (the WFG step alone is ~535px) -- and
+        # no longer shares one scroll with the live-monitoring column
+        # (_live_monitoring_column()), so growing configuration content
+        # can't push live status out of view, and the AD2 Output
+        # Parameters table's own inner horizontal scroll no longer forces
+        # this column (or the live one) to also scroll horizontally with
+        # it (v2 audit finding 1d, 2026-08-02).
         area = QScrollArea()
         area.setWidgetResizable(True)
 
@@ -277,7 +542,6 @@ class MainWindowV2(MainWindow):
         layout = QVBoxLayout(content)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        layout.addWidget(self._v2_status_progress_group())
         # TEC-scan wraps the per-repeat step sequence from *outside*, once
         # per temperature point (see application.py's STEP_* design note) --
         # rendered here as its own section, not one of the sequence view's
@@ -286,7 +550,44 @@ class MainWindowV2(MainWindow):
         # that is Phase 3).
         layout.addWidget(self._experiment_temperature_group())
         layout.addWidget(self._experiment_sequence_view())
+
+        area.setWidget(content)
+        return area
+
+    def _live_monitoring_column(self) -> QScrollArea:
+        # Persistent live-monitoring panel (restructure proposal 2): status/
+        # progress, waveform preview, and connection/error state together in
+        # one column, separate from configuration, so they stay visible
+        # without needing to scroll past configuration content -- at the
+        # 1440x860 reference size this column fits well within the window's
+        # own height. Deliberately NOT wrapped in a QScrollArea (unlike the
+        # configuration column): "Global Status" uses QFormLayout's
+        # WrapLongRows with dynamically-changing wordWrap()'d labels (e.g.
+        # the valve's status_note passthrough). The root cause of that
+        # symptom (confirmed by direct experiment, 2026-08-03) was NOT the
+        # scroll area itself -- it was error_log's/self.status's own
+        # vertical QSizePolicy having been set to Maximum (an earlier,
+        # since-reverted attempt at fixing HistoryLogWidget's row-growth
+        # risk; see _v2_status_progress_group()/_global_status_panel()),
+        # which broke QFormLayout's heightForWidth recompute for its OTHER
+        # WrapLongRows rows once inside a setWidgetResizable(True) scroll
+        # area. With that reverted in favor of capping each tooltip-icon
+        # wrapper's height instead, wrapping this column in its own scroll
+        # area is safe again and restores a safety net for smaller windows
+        # (matching every other panel in this codebase) instead of letting
+        # "Global Status" get squeezed below its own minimumSizeHint, as it
+        # did at 980x680 without one.
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        area.setMaximumWidth(320)
+
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        layout.addWidget(self._v2_status_progress_group())
         layout.addWidget(self._v2_waveform_group())
+        layout.addWidget(self._global_status_panel())
 
         area.setWidget(content)
         return area
@@ -336,23 +637,49 @@ class MainWindowV2(MainWindow):
         view.add_step_card(STEP_CONFIGURE_CAMERA, "3. Configure Camera", self._v2_acquisition_group())
         view.add_step_card(STEP_CAPTURE_FRAMES, "4. Capture Frames")
         view.add_step_card(STEP_WAIT_FOR_AD2_COMPLETION, "5. Wait For AD2 Completion")
-        view.add_step_card(STEP_FLUSH, "6. Flush", self._experiment_flush_group())
+        view.add_step_card(
+            STEP_FLUSH,
+            "6. Flush",
+            self._experiment_flush_group(),
+            tooltip=(
+                "Sequential, not concurrent (confirmed against the real LabVIEW source and the "
+                "current Python implementation): valve switches to position 1, THEN the pump "
+                "moves, THEN the valve switches to position 2 -- the pump is idle during each "
+                "switch, not flowing through it."
+            ),
+        )
         view.add_step_card(STEP_SAVE_RESULTS, "7. Save Results")
         self._experiment_sequence_view_cache = view
         return view
 
     def _v2_status_progress_group(self) -> QGroupBox:
         group = QGroupBox("Status / Progress")
-        # 140, not the old 120 -- self.status became a HistoryLogWidget
-        # (scrollable, multi-row) instead of a single-line QLineEdit, which
-        # raised this group's own real minimumSizeHint above the old hardcoded
-        # value (test_v2_no_group_box_is_squeezed_below_its_minimum_size_hint
-        # caught this: needed >=127 at 1440x860, measured empirically).
-        group.setMinimumHeight(140)
-        grid = QGridLayout(group)
+        # 187, not the old 175 -- Phase 3 step-progress breadcrumb
+        # (2026-08-04) added its own row above Elapsed Time/Time Left/# queue,
+        # which added another row's worth of height this group's own
+        # minimumSizeHint now requires
+        # (test_v2_no_group_box_is_squeezed_below_its_minimum_size_hint
+        # caught this: needed >=187 at 1440x860, measured empirically -- same
+        # pattern as the 140->175 bump restructure proposal 2 needed).
+        group.setMinimumHeight(187)
+        outer = QVBoxLayout(group)
+
+        # Phase 3 step-progress breadcrumb (2026-08-04): placed first, above
+        # Elapsed Time/Time Left/queue count, since "which step is running
+        # right now" is the most immediately relevant at-a-glance answer this
+        # group gives -- and this group is the one built to stay visible
+        # without scrolling (see _live_monitoring_column()).
+        self.step_breadcrumb = _StepBreadcrumb()
+        self.step_breadcrumb.setToolTip(
+            "Live progress through the current repeat's 7-step sequence "
+            "(hover a marker for its step name). During a TEC temperature "
+            "scan, this same sequence is reused/reset once per temperature "
+            "point -- SetTecTarget/WaitTecStable/the post-stable hold run "
+            "before it, not shown here."
+        )
+        outer.addWidget(self.step_breadcrumb)
 
         self.status = HistoryLogWidget()
-        self.status.setMinimumWidth(320)
         self.status.setMaximumHeight(90)
         self.status.setToolTip(
             "Full session history of every status change, newest at the bottom -- "
@@ -362,19 +689,53 @@ class MainWindowV2(MainWindow):
         )
         self.queue_count = QLabel("0")
 
+        # Elapsed Time / Time Left / queue count sit in their own narrow
+        # top row; Status gets a full-width row below (restructure
+        # proposal 2, 2026-08-03) -- previously all four were side-by-side
+        # grid columns, sized for the old wide center column. Squeezed into
+        # the new ~320px-wide live-monitoring side column, that 4-column
+        # layout's own natural width (measured: 870px, driven mostly by
+        # self.status's old setMinimumWidth(320) competing for space
+        # alongside 3 sibling columns) forced this one group into its own
+        # horizontal scroll. Stacking Status on its own row removes that
+        # competition entirely -- it can use the group's full width instead
+        # of a quarter of it.
+        top_row = QGridLayout()
         # Elapsed Time / Time Left: confirmed dead (Session 39, Category 4) --
         # a static "00:00:00" placeholder never updated by any code path in
         # either UI, same underlying stub helper qt_ui.py's own Experiment
         # tab now uses.
-        grid.addWidget(QLabel("Elapsed Time"), 0, 0)
-        grid.addWidget(self._wrap_with_tooltip_icon(self._elapsed_time_label()), 1, 0)
-        grid.addWidget(QLabel("Time Left"), 0, 1)
-        grid.addWidget(self._wrap_with_tooltip_icon(self._time_left_label()), 1, 1)
-        grid.addWidget(QLabel("# elements in queue"), 0, 2)
-        grid.addWidget(self.queue_count, 1, 2)
-        grid.addWidget(QLabel("Status"), 0, 3)
-        grid.addWidget(self.status, 1, 3)
-        grid.setColumnStretch(3, 1)
+        top_row.addWidget(QLabel("Elapsed Time"), 0, 0)
+        top_row.addWidget(self._wrap_with_tooltip_icon(self._elapsed_time_label()), 1, 0)
+        top_row.addWidget(QLabel("Time Left"), 0, 1)
+        top_row.addWidget(self._wrap_with_tooltip_icon(self._time_left_label()), 1, 1)
+        top_row.addWidget(QLabel("# elements in queue"), 0, 2)
+        top_row.addWidget(self.queue_count, 1, 2)
+        outer.addLayout(top_row)
+
+        outer.addWidget(QLabel("Status"))
+        # v2 audit Step 1f fix (2026-08-03): was a bare grid.addWidget(self.status,
+        # ...) -- unlike its own sibling widgets above (Elapsed Time/Time
+        # Left, both wrapped), a widget placed directly in a QGridLayout
+        # never passes through _add_tooltip_icons() (QFormLayout-only), so
+        # this one's long tooltip was left un-HTML-wrapped and without its
+        # own click-triggered "i" icon -- same gap qt_ui.py's own
+        # self.status had.
+        status_wrapper = self._wrap_with_tooltip_icon(self.status)
+        # Cap the WRAPPER's height too, not just self.status's own
+        # maximumHeight(90) above -- _TooltipIconWrapper is a bare QWidget
+        # whose own maximumHeight defaults to unbounded, and self.status's
+        # inherited Expanding vertical QSizePolicy can still pull the
+        # wrapper (and this row) taller than intended. Deliberately NOT
+        # changing self.status's own QSizePolicy to do this (tried first):
+        # confirmed by direct experiment that setting a HistoryLogWidget's
+        # own vertical policy to Maximum, when it shares a QFormLayout with
+        # OTHER WrapLongRows rows (see _global_status_panel()'s error_log
+        # below), breaks THOSE OTHER rows' heightForWidth recompute on a
+        # later text change -- capping the wrapper's height instead avoids
+        # that side effect entirely while still fixing the same growth risk.
+        status_wrapper.setMaximumHeight(90)
+        outer.addWidget(status_wrapper)
         return group
 
     def _v2_sequence_control_group(self) -> QGroupBox:
@@ -382,6 +743,11 @@ class MainWindowV2(MainWindow):
         group.setMinimumHeight(140)
         grid = QGridLayout(group)
         start = QPushButton("Start exp")
+        start.setToolTip(
+            "Starts the experiment with the currently initialized backends. Real hardware actions are not "
+            "protected by the staged smoke scripts' command-line confirmations. Abort stops only after the "
+            "current repeat or temperature point finishes."
+        )
         start.clicked.connect(self._start_experiment)
         browse = QPushButton("...")
         browse.clicked.connect(lambda: self._browse_folder(self.series_path))
@@ -428,13 +794,17 @@ class MainWindowV2(MainWindow):
         self._add_experiment_ad2_row(grid, 3, "CH1", self.exp_ad2_channels[1])
         self._size_ad2_output_columns(grid, headers)
 
-        # The outer experiment area shrinks this group's content to fit the
-        # window (QScrollArea.setWidgetResizable(True) in
-        # _center_experiment_area), which otherwise compresses/truncates
+        # The outer configuration column shrinks this group's content to fit
+        # the window (QScrollArea.setWidgetResizable(True) in
+        # _configuration_column), which otherwise compresses/truncates
         # these 10 columns at moderate widths. Give the table its own
         # non-resizable scroll area so it keeps its natural width and
         # scrolls horizontally instead of compressing when the window is
-        # narrower than that.
+        # narrower than that -- and, since restructure proposal 2
+        # (2026-08-03) split configuration from live-monitoring into
+        # separate columns, this horizontal scroll now stays local to this
+        # table/column instead of also forcing the live-monitoring column
+        # to scroll horizontally with it.
         scroll = QScrollArea()
         scroll.setWidgetResizable(False)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -520,9 +890,96 @@ class MainWindowV2(MainWindow):
         layout.addWidget(self.waveform_graph)
         return group
 
-    def _make_waveform_graph(self):
-        from .qt_ui import WaveformGraph
+    # --- Phase 2 Part A: WFG (Manual Test) live computed waveform preview ---
 
+    def _wfg_manual_panel_content(self) -> QWidget:
+        # Wraps qt_ui.py's own _wfg_tab() unchanged (config left) with a
+        # new, v2-only computed preview panel (right) -- matches Digilent
+        # WaveForms' own config-panel + live-preview convention, and the
+        # same layout MSO's tab already uses within qt_ui.py itself
+        # (_mso_tab()'s "MSO Configuration" + "Waveform" groups side by
+        # side). Unlike MSO's preview (real captured samples, refreshed on
+        # a Capture button click), this one is a SYNTHESIZED waveform
+        # computed from the current Ch1/Ch2 field values -- there is no
+        # real hardware read involved, and it updates live as fields
+        # change, not on a button click.
+        content = QWidget()
+        layout = QHBoxLayout(content)
+        layout.addWidget(self._wfg_tab(), 0, Qt.AlignmentFlag.AlignTop)
+        layout.addWidget(self._wfg_preview_group(), 1, Qt.AlignmentFlag.AlignTop)
+        self._update_wfg_preview()
+        return content
+
+    def _wfg_preview_group(self) -> QGroupBox:
+        group = QGroupBox("Waveform Preview (computed)")
+        layout = QVBoxLayout(group)
+        note = QLabel(
+            "Synthesized from the current Ch1/Ch2 field values, not read from "
+            "hardware -- recalculates as you edit Function/Frequency/Amplitude/"
+            "Offset/Symmetry/Phase/Enable below. Disabled channels are omitted."
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        self.wfg_preview_graph = WaveformGraph()
+        layout.addWidget(self.wfg_preview_graph)
+
+        # Debounced live recompute (Part A Step 1 finding: no per-keystroke
+        # live-recompute precedent exists elsewhere in this app to reuse --
+        # MSO's own graph only updates on its Capture button click -- so a
+        # short singleShot debounce, restarted on every relevant field
+        # change, is used here instead of recomputing synchronously on
+        # every keystroke).
+        self._wfg_preview_timer = QTimer(self)
+        self._wfg_preview_timer.setSingleShot(True)
+        self._wfg_preview_timer.setInterval(150)
+        self._wfg_preview_timer.timeout.connect(self._update_wfg_preview)
+        for state in self.wfg_channels:
+            state["function"].currentTextChanged.connect(self._schedule_wfg_preview_update)
+            state["enable"].stateChanged.connect(self._schedule_wfg_preview_update)
+            for key in ("frequency", "amplitude", "offset", "symmetry", "phase"):
+                state[key].valueChanged.connect(self._schedule_wfg_preview_update)
+
+        return group
+
+    def _schedule_wfg_preview_update(self) -> None:
+        self._wfg_preview_timer.start()
+
+    def _update_wfg_preview(self) -> None:
+        enabled_channels = [
+            (label, state)
+            for label, state in (("Ch1", self.wfg_channels[0]), ("Ch2", self.wfg_channels[1]))
+            if state["enable"].isChecked()
+        ]
+        if not enabled_channels:
+            self.wfg_preview_graph.set_series({}, 1.0)
+            return
+
+        # Show enough of the time axis to see multiple periods of the
+        # slowest enabled channel -- a channel with 0 Hz (an edge case
+        # while a field is mid-edit) is skipped from the duration
+        # calculation, not treated as "very slow."
+        frequencies_hz = [state["frequency"].value() * 1000.0 for _, state in enabled_channels]
+        positive_frequencies_hz = [f for f in frequencies_hz if f > 0]
+        slowest_hz = min(positive_frequencies_hz) if positive_frequencies_hz else 1.0
+        duration_s = 3.0 / slowest_hz
+        num_points = 400
+
+        series = {}
+        for label, state in enabled_channels:
+            frequency_hz = state["frequency"].value() * 1000.0
+            series[label] = _synthesize_wfg_wave(
+                function=WaveformFunction(state["function"].currentText()),
+                frequency_hz=frequency_hz,
+                amplitude_v=state["amplitude"].value(),
+                offset_v=state["offset"].value(),
+                symmetry_percent=state["symmetry"].value(),
+                phase_deg=state["phase"].value(),
+                num_points=num_points,
+                duration_s=duration_s,
+            )
+        self.wfg_preview_graph.set_series(series, num_points / duration_s)
+
+    def _make_waveform_graph(self) -> WaveformGraph:
         return WaveformGraph()
 
     def _global_status_panel(self) -> QGroupBox:
@@ -549,6 +1006,29 @@ class MainWindowV2(MainWindow):
 
         self.error_log = HistoryLogWidget()
         self.error_log.setMaximumHeight(90)
+        # Real-platform rendering bug (2026-08-03): HistoryLogWidget inherits
+        # QListWidget's default Expanding vertical QSizePolicy. Combined with
+        # this form's WrapLongRows, the row's wrap-vs-side-by-side decision
+        # is width-timing-sensitive on the real platform (offscreen always
+        # wrapped cleanly; the real platform sometimes didn't) -- when it
+        # doesn't wrap, QFormLayout gives this row's field CELL a height
+        # driven by the Expanding policy (measured: 575px, vs. the widget's
+        # own 90px maximumHeight-capped size), then vertically CENTERS the
+        # small widget inside that oversized cell. The widget itself still
+        # renders correctly -- the ~485px of empty cell above/below it is
+        # what a screenshot reads as "a solid black rectangle" swallowing
+        # the actual log content. Fixed below (after _add_tooltip_icons()
+        # wraps this row) by capping the WRAPPER's own height -- NOT by
+        # changing self.error_log's own vertical QSizePolicy, which was
+        # tried first and reverted: this form has multiple WrapLongRows
+        # rows (AD2/Camera/Pump/Valve below all use wordWrap() for runtime
+        # text like the valve's status_note passthrough), and setting
+        # error_log's own policy to Maximum was confirmed by direct
+        # experiment to break THOSE OTHER rows' heightForWidth recompute on
+        # a later text change (e.g. valve_connection_status getting stuck
+        # at an 8px single-line height instead of re-wrapping to its real
+        # ~40px). Capping the wrapper's height instead fixes the same
+        # growth risk without that side effect.
         self.error_log.setToolTip(
             "Full session history of every status/code/source event, newest at the "
             "bottom -- not just the most recent one. code is always '0' when "
@@ -586,6 +1066,11 @@ class MainWindowV2(MainWindow):
         form.addRow("Valve position", self.valve_position_status)
         form.addRow("Pump state / fill level", self.pump_state_status)
         self._add_tooltip_icons(form)
+        # See the comment above self.error_log.setToolTip() -- cap the
+        # tooltip-icon wrapper's own height (unbounded by default) instead
+        # of error_log's vertical QSizePolicy, which has already been
+        # created by _add_tooltip_icons() above at this point.
+        self.error_log.parentWidget().setMaximumHeight(90)
         return group
 
     def _open_initialization_dialog(self) -> None:
@@ -597,9 +1082,6 @@ class MainWindowV2(MainWindow):
         if self._initialization_dialog is None:
             self._initialization_dialog = InitializationDialog(self, self._start_initialize)
         return self._initialization_dialog
-
-    def _show_placeholder(self, panel_name: str) -> None:
-        self._set_status(f"{self._panel_display_name(panel_name)} panel is not yet implemented in the new UI preview")
 
     def _open_manual_panel(self, panel_name: str) -> None:
         dialog = self._ensure_manual_panel(panel_name)
@@ -654,41 +1136,7 @@ class MainWindowV2(MainWindow):
             self.app.check_loop_error(exc)
 
         apply_hardware_bundle(self.app, build_hardware_bundle(config))
-        self.app.create_queues()
-        self.app.register_events()
-        self.app.fire_status_event("Initializing")
-
-        initialized: list[tuple[str, object]] = []
-        for name, instrument in (
-            ("AD2", self.app.ad2),
-            ("Camera", self.app.camera),
-            ("Pump", self.app.pump),
-            ("Valve", self.app.valve),
-            ("Z-stage", self.app.z_motor),
-            ("TEC", self.app.tec),
-        ):
-            if progress:
-                progress("init_device", (name, "In Progress"))
-            try:
-                instrument.initialize()
-            except Exception as exc:
-                if progress:
-                    progress("init_device", (name, "Failed"))
-                rollback_errors = self.app._cleanup_instruments(initialized)
-                details = [f"{name} initialize failed: {exc}"]
-                details.extend(rollback_errors)
-                raise RuntimeError("; ".join(details)) from exc
-            initialized.append((name, instrument))
-            if progress:
-                # Z-stage: report the real connection detail (serial, travel
-                # range, loop mode) ZStage.initialize() just read from the
-                # device, not a bare "Complete" -- consistent with every
-                # other row showing a real outcome, not a status word alone.
-                status_note = getattr(instrument, "status_note", "")
-                complete_text = f"Complete ({status_note})" if status_note else "Complete"
-                progress("init_device", (name, complete_text))
-
-        self.app.fire_status_event("System Initialized")
+        self.app.initialize(progress=progress)
         return "System Initialized"
 
     def _handle_worker_progress(self, kind: str, value) -> None:
@@ -697,6 +1145,16 @@ class MainWindowV2(MainWindow):
             self._ensure_initialization_dialog().set_device_status(str(device_name), str(status))
             return
         super()._handle_worker_progress(kind, value)
+
+    def _refresh_step_breadcrumb(self) -> None:
+        # Overrides the base (v1) no-op: base MainWindow._step_states is the
+        # shared source of truth (updated by _handle_worker_progress() just
+        # before this is called); this only renders it. hasattr-guarded the
+        # same way _refresh_status() below guards its own v2-only widgets,
+        # since step_breadcrumb only exists once _v2_status_progress_group()
+        # has actually built it, not for every MainWindow subclass.
+        if hasattr(self, "step_breadcrumb"):
+            self.step_breadcrumb.set_states(self._step_states)
 
     def _refresh_status(self) -> None:
         super()._refresh_status()
@@ -726,14 +1184,102 @@ class MainWindowV2(MainWindow):
         # qt_ui.py's _build_state()/_handle_worker_progress()) -- not a
         # status-text substring match. The prior "experiment" in
         # self.app.status.lower() heuristic went stale the instant Abort was
-        # clicked: Abort's own "Aborting..." status overwrites self.app.status
-        # while the series' current repeat may still genuinely be executing,
+        # clicked: Abort's own "Stopping after {unit}..." status overwrites
+        # self.app.status while the series' current repeat may still
+        # genuinely be executing,
         # which would have made this indicator misleadingly report "No"
         # while hardware was still active.
         self.experiment_running_status.setText("Yes" if getattr(self, "_experiment_series_active", False) else "No")
         self.valve_position_status.setText(self._valve_position_text())
         dosing = "dosing" if getattr(self.app.pump, "dosing", False) else "idle"
         self.pump_state_status.setText(f"{dosing}, fill {getattr(self.app.pump, 'fill_level', 0.0):.3f} ml")
+
+        # Phase 2 Part B: sidebar dots reuse the exact same state reads as
+        # Global Status's own rows just above, so the two never disagree.
+        if hasattr(self, "_sidebar_status_dots"):
+            ad2_enabled = getattr(self.app.ad2, "enabled", True)
+            ad2_connected = getattr(self.app.ad2, "device_handle", None) is not None
+            ad2_running = getattr(wfg_config, "running", False)
+            for dot_name in ("WFG", "MSO"):
+                dot = self._sidebar_status_dots.get(dot_name)
+                if dot is not None:
+                    self._set_status_dot(dot, "AD2", enabled=ad2_enabled, connected=ad2_connected, running=ad2_running)
+
+            camera_dot = self._sidebar_status_dots.get("Camera")
+            if camera_dot is not None:
+                self._set_status_dot(
+                    camera_dot,
+                    "Camera",
+                    enabled=getattr(self.app.camera, "enabled", True),
+                    connected=getattr(self.app.camera, "handle", None) is not None,
+                    running=getattr(self.app.camera, "capturing", False),
+                )
+
+            pump_dot = self._sidebar_status_dots.get("Pump")
+            if pump_dot is not None:
+                self._set_status_dot(
+                    pump_dot,
+                    "Pump",
+                    enabled=getattr(self.app.pump, "enabled", True),
+                    connected=getattr(self.app.pump, "initialized", False),
+                    running=getattr(self.app.pump, "dosing", False),
+                )
+
+            valve_dot = self._sidebar_status_dots.get("Valve")
+            if valve_dot is not None:
+                self._set_status_dot(
+                    valve_dot,
+                    "Valve",
+                    enabled=getattr(self.app.valve, "enabled", True),
+                    connected=getattr(self.app.valve, "initialized", False),
+                    running=False,
+                )
+
+        # Force an explicit height correction on the wrapped connection-
+        # status labels (restructure proposal 2, 2026-08-03): QFormLayout's
+        # WrapLongRows heightForWidth recompute on a later setText() was
+        # confirmed unreliable now that "Global Status" lives inside the
+        # live-monitoring column's setWidgetResizable(True) scroll area --
+        # heightForWidth() itself always reports the correct height, but
+        # the row's actual allocated geometry doesn't reliably pick it up
+        # automatically (order/timing-sensitive on sibling widget
+        # construction elsewhere in the same scroll content, not just this
+        # group's own state -- confirmed layout().invalidate()+activate()
+        # on both the group's own QFormLayout and the scroll area's content
+        # layout do NOT reliably fix it either). A same-call resize() also
+        # doesn't help: label.width() itself hasn't settled to its final
+        # value yet at this exact point in the call stack (still reads the
+        # pre-refresh width), so heightForWidth(label.width()) computes
+        # against a stale width and produces another wrong answer.
+        # Deferring one event-loop turn via QTimer.singleShot(0, ...) lets
+        # Qt's own pending layout pass settle each label's width first,
+        # THEN corrects its height against that now-final width -- a
+        # workaround for what appears to be a real PySide6 layout quirk in
+        # this specific nesting, not a proper long-term pattern, but
+        # confirmed to reproduce correctly and consistently where every
+        # synchronous alternative did not.
+        def _fix_wrapped_label_heights() -> None:
+            # Guards against the window (and these labels) having been
+            # deleted before this deferred callback fires -- a real
+            # scenario, not defensive-for-its-own-sake: the test suite's
+            # own cleanup fixture closes and deleteLater()s every window
+            # between tests, and a still-pending 0ms timer from THIS
+            # refresh can outlive that if a later test's processEvents()
+            # call is what finally lets it fire (confirmed: raised
+            # "Internal C++ object already deleted" during conftest.py's
+            # own cleanup fixture without this guard).
+            try:
+                for label in (
+                    self.ad2_connection_status,
+                    self.camera_connection_status,
+                    self.pump_connection_status,
+                    self.valve_connection_status,
+                ):
+                    label.resize(label.width(), label.heightForWidth(label.width()))
+            except RuntimeError:
+                pass
+
+        QTimer.singleShot(0, _fix_wrapped_label_heights)
 
     @staticmethod
     def _connected_text(enabled: bool, handle: object | None) -> str:

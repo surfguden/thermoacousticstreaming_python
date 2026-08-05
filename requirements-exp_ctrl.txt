@@ -43,6 +43,12 @@ numpy==2.4.6
 pythonnet==3.1.0
 clr_loader==0.3.1
 
+# Real Meerstetter TEC controller client (tec.py's _PyMeComTecClient),
+# genuinely pip-installable (unlike the vendor SDKs listed above) but not
+# published on PyPI under "mecom" or "pyMeCom" (checked directly, 2026-08-03)
+# -- pip supports installing straight from a pinned git tag.
+mecom @ git+https://github.com/meerstetter/pyMeCom.git@v1.1
+
 # Optional -- only needed for hardware_tests/test_thorlabs_apt_discovery.py
 # (a standalone diagnostic script), not the real launch_gui.bat path. See
 # pyproject.toml's [project.optional-dependencies] "thorlabs-apt-discovery".

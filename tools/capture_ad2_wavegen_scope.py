@@ -1,4 +1,12 @@
+"""Legacy manual AD2 output/capture diagnostic, not automated pytest coverage.
+
+Running this script configures a real AD2 waveform output. It is retained for
+historical diagnostics and is not a gated first-contact hardware tool.
+"""
+
 from __future__ import annotations
+
+__test__ = False
 
 import csv
 import math

@@ -15,7 +15,14 @@ requires-python = ">=3.11"
 # exact pinned versions currently validated in that environment, and
 # tools/check_environment.py for a script that re-verifies this list against
 # whatever environment it's run in.
-dependencies = ["PySide6>=6.11", "Pillow>=10.0", "pyserial>=3.5", "npTDMS>=1.10", "numpy>=1.24", "pythonnet>=3.0"]
+# pyMeCom (real Meerstetter TEC controller client, tec.py's
+# _PyMeComTecClient) is not published on PyPI under "mecom" or "pyMeCom" --
+# confirmed via a direct PyPI JSON API check (2026-08-03) -- so it's
+# declared as a direct git reference (PEP 508), pinned to the v1.1 tag for
+# reproducibility, matching this project's pinning philosophy elsewhere.
+# Its own setup.py requires pySerial>=3.4, already satisfied by this
+# project's own pyserial>=3.5 below.
+dependencies = ["PySide6>=6.11", "Pillow>=10.0", "pyserial>=3.5", "npTDMS>=1.10", "numpy>=1.24", "pythonnet>=3.0", "mecom @ git+https://github.com/meerstetter/pyMeCom.git@v1.1"]
 
 [project.optional-dependencies]
 # pylablib is used by thorlabs_apt.py (a standalone Thorlabs-APT discovery

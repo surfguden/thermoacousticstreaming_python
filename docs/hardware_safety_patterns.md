@@ -284,6 +284,65 @@ parameter has a live read and which doesn't before choosing a pattern.
 
 ---
 
+## Pattern (e) -- Commit configuration state only after the real hardware call confirms
+
+**Not one of the four out-of-range enforcement patterns above** (those
+answer "is this value safe to send"; this answers "when is it safe to
+*record* that a value was sent") -- grouped here as a named pattern
+because it's the single most repeated mistake found across this
+project's line-by-line review series: the identical shape, independently
+found and fixed **six times** across five files in one day
+(`CetoniPump.set_fill_level()`, `Valve.set_position()`,
+`CetoniPump.refill()`/`empty()`, `hamamatsu_dcam.py`'s
+`configure_sequence()`, and `AD2Sdk`'s six WFG/DO config methods).
+
+**When it applies:** a method that both (1) issues one or more real
+hardware writes and (2) also updates an in-memory field meant to
+represent "the configuration currently confirmed on the device" (read
+later for UI display, a subsequent safety check, or permanent experiment
+metadata). If the in-memory field is assigned *before* the hardware
+call(s) actually succeed, a failure partway through (a raised exception
+on write #2 of 3, say) leaves that field claiming a configuration the
+real device never fully received -- indistinguishable, to any later
+reader, from a genuinely confirmed one.
+
+**The fix is always the same shape, regardless of whether the underlying
+hardware call is synchronous (one SDK call that either raises or doesn't
+-- `hamamatsu_dcam.py`/`AD2Sdk`'s case) or asynchronous (issue a move,
+then separately poll for real completion -- Pattern (e) as applied to
+pump moves specifically also needs Pattern (e)-plus-a-wait; see
+`Application._move_pump_and_confirm()`):
+
+1. Coerce/build the new configuration into a **local** variable -- never
+   write it to `self.X` yet.
+2. Issue the real hardware call(s) using the local variable.
+3. Only after every call returns without raising, assign the local
+   variable to `self.X`.
+
+**Skeleton (synchronous case):**
+```python
+def configure(self, settings: dict | None) -> None:
+    new_config = coerce_config(settings)   # local, not self.config yet
+    self._apply_to_hardware(new_config)    # raises on any failure
+    self.config = new_config                # only reached on full success
+```
+
+**Worked examples:** `HamamatsuDcamBackend.configure_sequence()`
+(`hamamatsu_dcam.py:186`) and `AD2Sdk`'s `config_wfg()`/`wfg_configure()`/
+`wfg_start_stop_all_ch()`/`config_do_custom()`/`config_do_clock_special()`/
+`do_configure()` (`instruments.py:266`/`311`/`326`/`344`/`358`/`400`).
+Each differs in what's being coerced and which backend call confirms
+success, which is exactly why these were **not** consolidated into one
+shared code abstraction the way Pattern (e)'s pump-move cousins were
+(`Application._move_pump_and_confirm()`, see the cross-module
+architecture review, 2026-08-02) -- the shared part here is this
+principle, not a reusable procedure. Do not force a new instance of this
+pattern into a shared helper just because this note names it; check
+whether the specific hardware call shape actually matches an existing
+implementation closely enough first.
+
+---
+
 ## Standard hardware-cleanup shape (for new hardware modules going forward)
 
 **Not one of the four out-of-range enforcement patterns above** -- a
@@ -291,35 +350,41 @@ separate, additional convention for a different problem: how a new
 hardware module's `close()`/`cleanup()`/`disconnect()` should handle
 failures during its own multi-step teardown.
 
-**Context:** a code-health audit (Session 57) found this codebase
-currently has four different, independently-evolved shapes for this --
+**Context:** a code-health audit (Session 57) originally found this
+codebase had four different, independently-evolved shapes for this --
 `HamamatsuDcamBackend.close()` logs individual failures and swallows
-them (best-effort, never raises); `QmixPumpBackend.close()` collects
-error strings from each step, thread-timeout-wraps each one, and
-raises a single combined error at the end; `PiezoStage.disconnect()`
-collects error strings (no timeout) and raises combined;
-`Application._cleanup_instruments()` has its own independently
-implemented thread-timeout wrapper and raises combined too, logging as
-it goes. **None of the four were changed to match this note or each
-other** -- this section does not retroactively unify them; it only
-sets the expectation for what comes next.
+them (best-effort, never raises); `QmixPumpBackend.close()`,
+`PiezoStage.disconnect()`, and `Application._cleanup_instruments()`
+each collected error strings from each step, thread-timeout-wrapped
+each one, and raised a single combined error at the end -- each its
+own hand-copied implementation of the same shape. **Updated
+(cross-module architecture review, 2026-08-02): those three are no
+longer independent implementations.** They now share one utility,
+`hw_logging.run_with_timeout(action, name, timeout_s) -> str | None`
+-- direct evidence the "just document a copyable template" approach
+below wasn't enough on its own: a fourth hardware module
+(`TecController.cleanup()`, `tec.py`) was added since the original
+audit and did **not** pick up the pattern at all (no timeout guard of
+any kind) despite this note's own explicit instruction to use it for
+new modules -- flagged in `docs/known_open_items.md`, not fixed here
+(that file is part of the still-uncommitted TEC integration, out of
+scope for this pass). `HamamatsuDcamBackend.close()` remains
+deliberately different by design (best-effort swallow, not raise --
+see Finding F's own reasoning), not an inconsistency to unify.
 
-**For any NEW hardware module added to this project, use
-`QmixPumpBackend.close()`'s collect-errors + timeout-wrap +
-combined-raise shape as the template**, with one addition the cited
-worked example itself doesn't currently do (`qmix_backend.py` has no
-logger at all -- see the code-health audit's logging-consistency
-finding): log each individual failure as it's discovered, not only at
-the very end, so a partial teardown leaves a trace even if the final
-combined exception is somehow lost by the caller.
+**For any NEW hardware module added to this project (or `TecController.
+cleanup()` once it needs one), call `hw_logging.run_with_timeout()`
+directly -- do not hand-copy the thread/queue implementation.** It
+already logs nothing on its own (fire-and-forget style, matching
+`log_transaction()`'s own contract), so pair it with your own
+`logger.error()` call per failure if you want a trace left even if the
+caller loses the final combined exception, matching the shape below.
 
 - Collect error strings from each teardown step rather than raising
   immediately on the first failure -- so one device/resource's failure
   doesn't prevent attempting cleanup on the others.
-- Wrap each step in the existing timeout-protection pattern (thread +
-  `queue.Queue`, same shape as `QmixPumpBackend._run_close_step()`/
-  `Application._run_cleanup_call_with_timeout()`) so a hung SDK call
-  during cleanup can't block the whole teardown indefinitely.
+- Call `run_with_timeout()` for each step so a hung SDK call during
+  cleanup can't block the whole teardown indefinitely.
 - Log each failure as it's found.
 - Raise a single combined error at the end summarizing everything that
   failed, rather than either swallowing everything silently or
@@ -328,8 +393,8 @@ combined exception is somehow lost by the caller.
 **Skeleton:**
 ```python
 import logging
-import queue
-import threading
+
+from .hw_logging import run_with_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -347,48 +412,20 @@ class NewDeviceBackend:
             raise NewDeviceError("; ".join(errors))
 
     def _run_close_step(self, name: str, action) -> list[str]:
-        result_queue: queue.Queue[BaseException | None] = queue.Queue(maxsize=1)
-
-        def run() -> None:
-            try:
-                action()
-            except BaseException as exc:  # pragma: no cover - defensive SDK cleanup path
-                result_queue.put(exc)
-            else:
-                result_queue.put(None)
-
-        worker = threading.Thread(target=run, name=f"newdevice-close-{name}", daemon=True)
-        worker.start()
-        worker.join(max(self.close_timeout_s, 0.0))
-        if worker.is_alive():
-            message = f"NewDevice {name} timed out after {self.close_timeout_s:.1f}s."
-            logger.error(message)
-            return [message]
-        try:
-            error = result_queue.get_nowait()
-        except queue.Empty:  # pragma: no cover - thread completed without reporting
-            message = f"NewDevice {name} finished without reporting a result."
-            logger.error(message)
-            return [message]
-        if error is not None:
-            message = f"NewDevice {name} failed: {error}"
-            logger.error(message)
-            return [message]
-        return []
+        error = run_with_timeout(action, f"NewDevice {name}", self.close_timeout_s)
+        if error is None:
+            return []
+        logger.error(error)
+        return [error]
 ```
 
-**Worked example (existing, not retroactively changed to add
-logging):** `src/thermo_acoustic/qmix_backend.py`'s
-`QmixPumpBackend.close()` (`qmix_backend.py:283-293`) and
-`_run_close_step()` (`qmix_backend.py:295-316`) -- read these for the
-collect-errors + timeout-wrap + combined-raise shape itself; the
-logging addition above is this note's own recommendation for new code,
-not something the cited example currently does.
-
-**This does not retroactively apply to the four existing
-implementations named above.** `HamamatsuDcamBackend.close()`,
-`PiezoStage.disconnect()`, and `Application._cleanup_instruments()`
-are left exactly as they are. Whether to eventually unify all four (or
-which of the four shapes is actually the right one to standardize on)
-is a separate design decision this note does not make on its own --
-see `docs/known_open_items.md`'s cross-reference to this section.
+**Worked examples:** `src/thermo_acoustic/hw_logging.py`'s
+`run_with_timeout()` for the shared timeout-guard itself; any of
+`QmixPumpBackend.close()`/`_run_close_step()` (`qmix_backend.py:319`/
+`338`), `PiezoStage.disconnect()`/`_run_disconnect_step()`
+(`thorlabs_piezo.py:159`/`181`), or
+`Application._cleanup_instruments()`/`_run_cleanup_call_with_timeout()`
+(`application.py:240`/`259`) for the collect-errors + timeout-wrap +
+combined-raise shape built on top of it -- these three now differ only
+in their own error-message prefix and where the collected errors get
+logged/raised, not in the underlying timeout mechanism.

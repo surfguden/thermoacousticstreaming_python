@@ -461,18 +461,22 @@ class _FakePumpBackendWithRealFillLevel:
 
     def __init__(self, real_fill_level: float):
         self.real_fill_level = real_fill_level
+        self.stop_calls = 0
 
     def set_fill_level(self, fill_level, flow_rate=None):
         pass
 
-    def refill(self):
+    def refill(self, flow_rate=None):
         pass
 
-    def empty(self):
+    def empty(self, flow_rate=None):
         pass
 
     def read_fill_level(self) -> float:
         return self.real_fill_level
+
+    def stop(self) -> None:
+        self.stop_calls += 1
 
 
 def test_flush_resyncs_fill_level_from_real_hardware_when_wait_for_pump_times_out(monkeypatch):
@@ -494,6 +498,7 @@ def test_flush_resyncs_fill_level_from_real_hardware_when_wait_for_pump_times_ou
         "must be re-synced from the real backend, not left at the optimistic "
         "target (54.0) set_fill_level() assigned before the timeout"
     )
+    assert app.pump.backend.stop_calls == 1
 
 
 # H1 (qmix_backend.py line-by-line review): Application.refill()/empty()
@@ -532,6 +537,7 @@ def test_application_refill_resyncs_fill_level_from_real_hardware_when_wait_for_
         "optimistic max_volume_ml target refill() is aiming for"
     )
     assert app.status == "RefillTimedOut"
+    assert app.pump.backend.stop_calls == 1
 
 
 def test_application_empty_waits_for_completion_and_ends_with_accurate_fill_level(monkeypatch):
@@ -561,6 +567,7 @@ def test_application_empty_resyncs_fill_level_from_real_hardware_when_wait_for_p
         "optimistic 0.0 target empty() is aiming for"
     )
     assert app.status == "EmptyTimedOut"
+    assert app.pump.backend.stop_calls == 1
 
 
 # Finding 1 (qt_ui.py/qt_ui_v2.py targeted UI audit, 2026-07-31):
@@ -597,6 +604,7 @@ def test_application_go_to_level_resyncs_fill_level_from_real_hardware_when_wait
         "optimistic 0.55 target go_to_level() is aiming for"
     )
     assert app.status == "GoToLevelTimedOut"
+    assert app.pump.backend.stop_calls == 1
 
 
 def test_flush_settings_timeout_converts_ul_per_minute_to_seconds():
@@ -1060,6 +1068,64 @@ def test_run_experiment2_records_flush_success_in_final_tdms(tmp_path, monkeypat
     assert experiment_group.properties["FlushCompleted"] is True
 
 
+def test_run_experiment2_completes_fully_even_after_abort_is_fired_mid_run(tmp_path, monkeypatch):
+    # Safety-behavior change (2026-08-04): Abort no longer interrupts an
+    # in-progress repeat -- once started, it always runs to full
+    # completion (capture, AD2 wait, flush, save) regardless of abort
+    # state. fire_stop_event() (what qt_ui.py's _abort() now calls) is
+    # simulated here at any point before/during the repeat; the only
+    # thing it may affect is whether a FUTURE repeat starts, never this
+    # one. This directly guards against the previous behavior: a mid-repeat
+    # bail that skipped flush/save and left the valve stuck at position 1.
+    writes = install_fake_nptdms(monkeypatch)
+    app = Application(ad2=SimulatedAD2Sdk())
+    app.pump.fill_level = 60.0  # comfortably >= flush_volume_ml, so flush itself succeeds
+    experiment = Experiment2(
+        experiment_folder=tmp_path / "experiment-abort-mid-run",
+        flush_enabled=True,
+        flush_settings=FlushSettings(flush_flowrate=10.0, flush_volume_ml=6.0, wait_after_flush_s=0.0),
+        global_exposure_ms=12.5,
+        sequence_settings={"frames": 3},
+        wfg_config={"frequency_hz": 1000},
+        do_clock_settings={"secWait": 1},
+    )
+    app.experiment_series.enqueue_experiments([experiment])
+    app.fire_stop_event()  # simulates Abort having been clicked mid-repeat
+
+    ok = app.run_experiment2()
+
+    assert ok is True
+    assert app.status == "ExperimentComplete", "must not bail early into ExperimentAborted"
+    assert app.valve.position == 2, "flush must reach its final valve switch, not be left stuck at position 1"
+    tdms_path = tmp_path / "experiment-abort-mid-run" / "data.tdms"
+    objects = writes[str(tdms_path)]
+    experiment_group = next(item for item in objects if getattr(item, "kind", "") == "group" and item.name == "Experiment")
+    assert experiment_group.properties["FlushCompleted"] is True, "flush must genuinely complete, not be skipped"
+    assert app.experiment_series.see_elements_left() == 0, "this repeat's own dequeue must complete normally"
+
+
+def test_wait_for_pump_no_longer_checks_abort_state(monkeypatch):
+    # Direct unit-level regression test for wait_for_pump() itself
+    # (Step 2.3 of the 2026-08-04 Abort fix): stop_fired being True must
+    # not cause an early return while the pump is genuinely still moving.
+    app = Application()
+    app.fire_stop_event()
+    poll_count = {"n": 0}
+
+    def fake_read_status(self):
+        _ = self
+        poll_count["n"] += 1
+        return poll_count["n"] < 3  # pump reports "still moving" twice, then done
+
+    monkeypatch.setattr(CetoniPump, "read_status", fake_read_status)
+    monkeypatch.setattr("thermo_acoustic.application.time.sleep", lambda _seconds: None)
+
+    completed = app.wait_for_pump(timeout_s=5.0)
+
+    assert completed is True
+    assert poll_count["n"] == 3, "must have kept polling to genuine completion, not bailed on the first check"
+
+
 def test_experiment2_flush_completed_defaults_to_empty_string_when_flush_never_runs(tmp_path, monkeypatch):
     writes = install_fake_nptdms(monkeypatch)
     experiment = Experiment2(experiment_folder=tmp_path / "no-flush")
@@ -1190,6 +1256,19 @@ def test_valve_set_position_does_not_update_position_when_write_raises():
         valve.set_position(2)
 
     assert valve.position == 1, "must not claim position 2 -- the write that would have sent it failed"
+
+
+def test_valve_set_position_requires_fresh_readback_before_new_position_is_confirmed():
+    backend = FakeTextBackend({"S": "P02\r"})
+    valve = Valve(backend=backend, position=1, status_note="confirmed")
+
+    valve.set_position(2)
+
+    assert valve.position == 2
+    assert valve.status_note == "requested P02; confirmation pending"
+    assert valve.wait_until_ready(timeout_s=0.1, poll_interval_s=0.01) is True
+    assert valve.position == 2
+    assert valve.status_note == "confirmed"
 
 
 def test_valve_initialize_raises_on_empty_status_response():
@@ -1339,11 +1418,17 @@ class FakePumpBackend:
         self.calls.append(("read_fill_level",))
         return self.fill_level
 
-    def refill(self):
-        self.calls.append(("refill",))
+    def refill(self, flow_rate=None):
+        if flow_rate is None:
+            self.calls.append(("refill",))
+        else:
+            self.calls.append(("refill", flow_rate))
 
-    def empty(self):
-        self.calls.append(("empty",))
+    def empty(self, flow_rate=None):
+        if flow_rate is None:
+            self.calls.append(("empty",))
+        else:
+            self.calls.append(("empty", flow_rate))
 
     def stop(self):
         self.calls.append(("stop",))
@@ -1678,10 +1763,154 @@ def test_qmix_pump_backend_initializes_and_dispatches(tmp_path):
     assert ("set_volume_unit", FakeQmixPumpModule.UnitPrefix.milli, FakeQmixPumpModule.VolumeUnit.litres) in pump.calls
     assert ("set_syringe_param", diameter, stroke) in pump.calls
     assert ("generate_flow", -5000.0) in pump.calls
+    # 200 uL/s = 12000 uL/min target (2026-08-03): default_fill_flow_rate_ul_min
+    # is 12000.0, but _fill_flow_rate() clamps to this fake pump's own live
+    # max_flow_rate_ul_min (5000.0, below the target) -- so the actual SDK
+    # request is 5000.0, not the unclamped target. set_fill_level(0.5) here
+    # passes no explicit flow_rate either, so it shares the same
+    # _fill_flow_rate() fallback+clamp as empty()/refill() below.
     assert ("set_fill_level", 0.5, 5000.0) in pump.calls
     assert ("calibrate",) in pump.calls
     assert ("set_fill_level", 0.0, 5000.0) in pump.calls
     assert ("set_fill_level", 10.0, 5000.0) in pump.calls
+
+
+def test_qmix_initialization_refuses_existing_fault_without_clearing_or_enabling(tmp_path):
+    FakeQmixPumpModule.Pump.instances = []
+    backend = QmixPumpBackend(qmixbus=FakeQmixBusModule, qmixpump=FakeQmixPumpModule)
+
+    original_pump = FakeQmixPumpModule.Pump
+
+    class FaultedPump(original_pump):
+        def __init__(self):
+            super().__init__()
+            self.fault = True
+
+        def read_last_error(self):
+            self.calls.append(("read_last_error",))
+
+            class LastError:
+                code = 0
+                message = "All previous errors have been resolved"
+
+            return LastError()
+
+    FakeQmixPumpModule.Pump = FaultedPump
+    try:
+        with pytest.raises(
+            QmixPumpError,
+            match="code=0, message='All previous errors have been resolved'",
+        ):
+            backend.initialize(tmp_path / "qmix-config")
+    finally:
+        FakeQmixPumpModule.Pump = original_pump
+
+    pump = FaultedPump.instances[0]
+    assert ("read_last_error",) in pump.calls
+    assert ("clear_fault",) not in pump.calls
+    assert ("enable", True) not in pump.calls
+    assert backend.pump is None
+    assert backend.bus is None
+
+
+def test_qmix_refill_and_empty_target_200_ul_per_s_but_clamp_to_the_syringes_live_max(tmp_path):
+    # Regression test, revised (2026-08-03): default_fill_flow_rate_ul_min
+    # was first None (100% of the syringe's live max, no margin at all),
+    # then a flat 12000 uL/min (200 uL/s) with no ceiling check -- the flat
+    # version was verified on real hardware but with a DIFFERENT syringe
+    # actually configured than the one active by default, and caused real
+    # "Value range of parameter exceeded" SDK rejections on Refill/Empty
+    # once the smaller default syringe was connected
+    # (logs/hardware_transactions.log, 2026-08-03). The fix: still target
+    # 12000 uL/min, but clamp the actual SDK request to whichever
+    # syringe's real live max is smaller. This fake pump's own max_flow
+    # (5000.0) is deliberately BELOW 12000.0, so the correct, fixed
+    # behavior is a clamped 5000.0 request, not the unclamped 12000.0 a
+    # pre-clamp regression would produce.
+    FakeQmixPumpModule.Pump.instances = []
+    backend = QmixPumpBackend(
+        qmixbus=FakeQmixBusModule,
+        qmixpump=FakeQmixPumpModule,
+        pump_name="Pump A",
+    )
+    config = tmp_path / "qmix-config"
+    backend.initialize(config)
+    pump = FakeQmixPumpModule.Pump.instances[0]
+    assert pump.max_flow == 5000.0  # sanity: confirms the two numbers genuinely differ
+
+    backend.refill()
+    backend.empty()
+
+    assert ("set_fill_level", pump.max_volume, 5000.0) in pump.calls
+    assert ("set_fill_level", 0.0, 5000.0) in pump.calls
+    flow_rates_used = [call[2] for call in pump.calls if call[0] == "set_fill_level"]
+    assert 12000.0 not in flow_rates_used
+
+
+def test_qmix_refill_and_empty_use_the_target_unclamped_when_syringe_can_reach_it(tmp_path):
+    # Complements the clamping test above: when the currently-configured
+    # syringe's real live max is ABOVE the target, the target itself is
+    # used as-is (not further reduced) -- the clamp is a ceiling, not an
+    # unconditional override.
+    FakeQmixPumpModule.Pump.instances = []
+    backend = QmixPumpBackend(
+        qmixbus=FakeQmixBusModule,
+        qmixpump=FakeQmixPumpModule,
+        pump_name="Pump A",
+    )
+    config = tmp_path / "qmix-config"
+    backend.initialize(config)
+    pump = FakeQmixPumpModule.Pump.instances[0]
+    # backend.max_flow_rate_ul_min is cached at initialize() time -- set it
+    # directly (the field _fill_flow_rate() actually reads) rather than
+    # mutating the fake pump's own max_flow after the fact, which the
+    # already-cached value would no longer reflect.
+    backend.max_flow_rate_ul_min = 42635.68  # e.g. a larger syringe's real live max
+
+    backend.refill(flow_rate=12000.0)
+    backend.empty(flow_rate=12000.0)
+
+    assert ("set_fill_level", pump.max_volume, 12000.0) in pump.calls
+    assert ("set_fill_level", 0.0, 12000.0) in pump.calls
+
+
+def test_qmix_refill_and_empty_accept_an_explicit_flow_rate_clamped_the_same_way(tmp_path):
+    # The new qt_ui.py "Refill/Empty Flow Rate" field's value is passed as
+    # an explicit flow_rate argument to refill()/empty() (see
+    # MainWindow._refill()/_empty()) rather than relying on the dataclass
+    # default -- confirm an explicit, user-entered value is clamped
+    # exactly the same way the default is when it exceeds the syringe's
+    # real live max.
+    FakeQmixPumpModule.Pump.instances = []
+    backend = QmixPumpBackend(
+        qmixbus=FakeQmixBusModule,
+        qmixpump=FakeQmixPumpModule,
+        pump_name="Pump A",
+    )
+    config = tmp_path / "qmix-config"
+    backend.initialize(config)
+    pump = FakeQmixPumpModule.Pump.instances[0]
+    assert pump.max_flow == 5000.0
+
+    backend.refill(flow_rate=9000.0)
+
+    assert ("set_fill_level", pump.max_volume, 5000.0) in pump.calls
+
+
+def test_qmix_set_fill_level_clamps_negative_flow_rate_by_magnitude_without_changing_direction(tmp_path):
+    FakeQmixPumpModule.Pump.instances = []
+    backend = QmixPumpBackend(
+        qmixbus=FakeQmixBusModule,
+        qmixpump=FakeQmixPumpModule,
+    )
+    backend.initialize(tmp_path / "qmix-config")
+    pump = FakeQmixPumpModule.Pump.instances[0]
+    assert pump.max_flow == 5000.0
+
+    backend.set_fill_level(0.5, flow_rate=-9000.0)
+
+    assert ("set_fill_level", 0.5, -5000.0) in pump.calls
+    assert ("set_fill_level", 0.5, -9000.0) not in pump.calls
 
 
 def test_qmix_configure_flow_unit_accepts_micro_sign_and_legacy_mojibake(tmp_path):
@@ -2003,6 +2232,23 @@ def test_hamamatsu_backend_commands(tmp_path):
     assert ("start_capture",) in backend.calls
     assert ("stop_capture",) in backend.calls
     assert ("close",) in backend.calls
+
+
+def test_hamamatsu_cleanup_still_closes_backend_when_stop_capture_fails():
+    class StopFailingCameraBackend(FakeCameraBackend):
+        def stop_capture(self):
+            self.calls.append(("stop_capture",))
+            raise RuntimeError("stop failed")
+
+    backend = StopFailingCameraBackend()
+    camera = HamamatsuCamera(backend=backend, handle=backend.handle, capturing=True)
+
+    with pytest.raises(RuntimeError, match="stop capture failed: stop failed"):
+        camera.cleanup()
+
+    assert ("close",) in backend.calls
+    assert camera.handle is None
+    assert camera.capturing is False
 
 
 def test_center_roi_reapplies_centered_coordinates_to_real_backend():
@@ -2929,6 +3175,118 @@ def test_config_do_clock_special_leaves_do_config_unchanged_when_backend_call_fa
     assert ad2.get_do_config() is confirmed_config
     assert ad2.do_clock_settings is confirmed_config
     assert ad2.get_do_config().running is False
+
+
+def test_wfg_start_stop_leaves_wfg_config_unchanged_when_backend_call_fails():
+    backend = FakeWaveFormsBackendThatRaisesOnConfigure()
+    ad2 = AD2Sdk(backend=backend)
+    ad2.config_wfg(WfgConfig(running=False))
+    confirmed_config = ad2.get_wfg_config()
+
+    backend.fail = True
+    with pytest.raises(WaveFormsError):
+        ad2.wfg_start_stop_all_ch(True)
+
+    assert ad2.get_wfg_config() is confirmed_config
+    assert ad2.get_wfg_config().running is False
+
+
+def test_do_configure_leaves_do_config_unchanged_when_backend_call_fails():
+    backend = FakeWaveFormsBackendThatRaisesOnConfigure()
+    ad2 = AD2Sdk(backend=backend)
+    ad2.do_configure(DoConfig(running=False))
+    confirmed_config = ad2.get_do_config()
+
+    backend.fail = True
+    with pytest.raises(WaveFormsError):
+        ad2.do_configure(DoConfig(running=True))
+
+    assert ad2.get_do_config() is confirmed_config
+    assert ad2.get_do_config().running is False
+
+
+def test_start_stop_do_leaves_confirmed_config_unchanged_when_backend_call_fails():
+    backend = FakeWaveFormsBackendThatRaisesOnConfigure()
+    ad2 = AD2Sdk(backend=backend)
+    ad2.do_configure(DoConfig(running=False))
+    confirmed_config = ad2.get_do_config()
+
+    backend.fail = True
+    with pytest.raises(WaveFormsError):
+        ad2.start_stop_do(True)
+
+    assert ad2.get_do_config() is confirmed_config
+    assert ad2.get_do_config().running is False
+
+
+def test_configure_do_rejects_conflicting_enabled_channel_trigger_timing():
+    backend = WaveFormsBackend(dwf=FakeDwf())
+    config = DoConfig(
+        running=True,
+        channels=[
+            DoSingleChannelConfig(
+                channel_index=0,
+                enable=True,
+                trigger=TriggerSettings(sec_run=0.1, sec_wait=0.0),
+            ),
+            DoSingleChannelConfig(
+                channel_index=1,
+                enable=True,
+                trigger=TriggerSettings(sec_run=0.2, sec_wait=0.0),
+            ),
+        ],
+    )
+
+    with pytest.raises(WaveFormsError, match="different global trigger timing"):
+        backend.configure_do(123, config)
+
+
+def test_ad2_coercion_rejects_explicit_unknown_enum_values():
+    with pytest.raises(ValueError, match="Unsupported WaveformFunction"):
+        coerce_wfg_config({"channels": [{"function": "NotAWaveform"}]})
+    with pytest.raises(ValueError, match="Unsupported TriggerSource"):
+        coerce_do_config({"channels": [{"trigger": {"source": "NotATrigger"}}]})
+    with pytest.raises(ValueError, match="Unsupported WaveformFunction"):
+        coerce_wfg_config({"function": "NotAWaveform"})
+    with pytest.raises(ValueError, match="Unsupported TriggerSource"):
+        coerce_do_config({"trigger": {"source": "NotATrigger"}})
+
+
+def test_waveforms_backend_rejects_unknown_direct_enum_values():
+    backend = WaveFormsBackend(dwf=FakeDwf())
+    config = DoConfig(
+        channels=[DoSingleChannelConfig(channel_index=0, enable=True, output_type="NotADigitalOutType")]
+    )
+
+    with pytest.raises(WaveFormsError, match="Unsupported WaveForms enum value"):
+        backend.configure_do(123, config)
+
+
+def test_configure_do_uses_enabled_channel_trigger_not_a_trailing_disabled_channel():
+    fake = FakeDwf()
+    backend = WaveFormsBackend(dwf=fake)
+    config = DoConfig(
+        running=True,
+        channels=[
+            DoSingleChannelConfig(
+                channel_index=1,
+                enable=True,
+                trigger=TriggerSettings(sec_run=0.25, sec_wait=0.125),
+            ),
+            DoSingleChannelConfig(
+                channel_index=2,
+                enable=False,
+                trigger=TriggerSettings(sec_run=9.0, sec_wait=8.0),
+            ),
+        ],
+    )
+
+    backend.configure_do(123, config)
+
+    run_calls = [args for name, args in fake.calls if name == "FDwfDigitalOutRunSet"]
+    wait_calls = [args for name, args in fake.calls if name == "FDwfDigitalOutWaitSet"]
+    assert run_calls[-1][1].value == pytest.approx(0.25)
+    assert wait_calls[-1][1].value == pytest.approx(0.125)
 
 
 class FakeDcamApi:

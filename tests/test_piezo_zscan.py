@@ -138,6 +138,10 @@ def test_settle_delay_is_fixed_and_configurable_not_hardcoded(tmp_path, monkeypa
     assert sleep_calls == [0.075]  # default 75ms
 
 
+def test_non_integral_range_appends_exact_end_without_overshooting_requested_scan_interval():
+    assert ZScanCalibration._build_targets(0.0, 15.0, 10.0) == [0.0, 10.0, 15.0]
+
+
 def test_validation_rejects_bad_inputs(tmp_path):
     scan, _, _ = make_scan()
     with pytest.raises(ValueError, match="step_size_um"):
@@ -347,3 +351,16 @@ def test_manual_ppc001_probe_is_quarantined_and_not_a_pytest_test():
     assert "BPC303 Benchtop Piezo Controller probe" not in source
     assert "historical" in source.lower()
     assert "--confirm SEND" in source
+
+
+def test_legacy_action_capable_tools_are_explicitly_manual_only():
+    repo_root = Path(__file__).resolve().parents[1]
+    for relative_path in (
+        "tools/test_hamamatsu_camera.py",
+        "tools/test_qmix_pump.py",
+        "tools/capture_ad2_wavegen_scope.py",
+        "tools/capture_ad2_wavegen_scope_matplotlib.py",
+    ):
+        source = (repo_root / relative_path).read_text(encoding="utf-8")
+        assert "manual" in source.lower()
+        assert "__test__ = False" in source

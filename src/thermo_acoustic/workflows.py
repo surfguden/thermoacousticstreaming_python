@@ -73,14 +73,43 @@ class FlushSettings:
 
 @dataclass(slots=True)
 class TemperatureSeries:
+    # Channel 1's series when unlocked; the single shared series (both
+    # channels) when locked (temperature_points_ch2_c is None).
     temperature_points_c: list[float] = field(default_factory=list)
+    # None = locked, channel 2 mirrors temperature_points_c exactly (this
+    # project's original, still-default behavior). A list = unlocked,
+    # channel 2 has its own independent per-step targets -- must be the
+    # same length as temperature_points_c: the scan is one sequence of
+    # steps, each step moving both channels to their own target
+    # simultaneously before the shared experiment group at that step
+    # runs, so there is no coherent meaning for the two channels to have
+    # different step counts.
+    temperature_points_ch2_c: list[float] | None = None
     tolerance_c: float = 0.1
     min_settle_s: float = 5.0
     max_wait_s: float = 300.0
     poll_interval_s: float = 1.0
+    # Distinct from min_settle_s (which is part of HOW wait_until_stable()
+    # itself decides the TEC sensor reading is "stable" -- continuous time
+    # within tolerance). This is a SEPARATE, additional hold applied AFTER
+    # stability is already confirmed, before the temperature point's
+    # experiment group runs -- for real sample thermal equilibration,
+    # which can lag behind the TEC's own sensor stabilizing. Default 0.0:
+    # no extra wait, exactly today's existing behavior, unless explicitly
+    # set.
+    post_stable_hold_s: float = 0.0
 
     def __post_init__(self) -> None:
         self.temperature_points_c = [validate_tec_target_temperature(point) for point in self.temperature_points_c]
+        if self.temperature_points_ch2_c is not None:
+            self.temperature_points_ch2_c = [
+                validate_tec_target_temperature(point) for point in self.temperature_points_ch2_c
+            ]
+            if len(self.temperature_points_ch2_c) != len(self.temperature_points_c):
+                raise ValueError(
+                    "TEC temperature_points_ch2_c must be the same length as temperature_points_c "
+                    f"({len(self.temperature_points_ch2_c)} vs {len(self.temperature_points_c)})."
+                )
         if self.tolerance_c < 0:
             raise ValueError("TEC tolerance_c must be >= 0.")
         if self.min_settle_s < 0:
@@ -89,33 +118,61 @@ class TemperatureSeries:
             raise ValueError("TEC max_wait_s must be >= 0.")
         if self.poll_interval_s <= 0:
             raise ValueError("TEC poll_interval_s must be > 0.")
+        if self.post_stable_hold_s < 0:
+            raise ValueError("TEC post_stable_hold_s must be >= 0.")
 
     @property
     def enabled(self) -> bool:
         return bool(self.temperature_points_c)
+
+    @property
+    def unlocked(self) -> bool:
+        return self.temperature_points_ch2_c is not None
+
+    def target_at(self, step_index: int) -> float | dict[int, float]:
+        """The target for run_temperature_series()'s step `step_index`:
+        a plain float when locked (broadcasts to whichever channels
+        TecController is configured for), or a {1: ..., 2: ...} dict
+        when unlocked."""
+        if self.temperature_points_ch2_c is None:
+            return self.temperature_points_c[step_index]
+        return {1: self.temperature_points_c[step_index], 2: self.temperature_points_ch2_c[step_index]}
 
     @classmethod
     def from_text(
         cls,
         text: str,
         *,
+        text_ch2: str | None = None,
         tolerance_c: float = 0.1,
         min_settle_s: float = 5.0,
         max_wait_s: float = 300.0,
         poll_interval_s: float = 1.0,
+        post_stable_hold_s: float = 0.0,
     ) -> "TemperatureSeries":
+        # text_ch2 unset or blank -> locked (temperature_points_ch2_c stays
+        # None, channel 2 mirrors channel 1). A non-blank text_ch2 ->
+        # unlocked, parsed the same comma/semicolon-separated way.
+        points = cls._parse_points(text)
+        points_ch2 = cls._parse_points(text_ch2) if text_ch2 and text_ch2.strip() else None
+        return cls(
+            temperature_points_c=points,
+            temperature_points_ch2_c=points_ch2,
+            tolerance_c=tolerance_c,
+            min_settle_s=min_settle_s,
+            max_wait_s=max_wait_s,
+            poll_interval_s=poll_interval_s,
+            post_stable_hold_s=post_stable_hold_s,
+        )
+
+    @staticmethod
+    def _parse_points(text: str) -> list[float]:
         points = []
         for item in text.replace(";", ",").split(","):
             item = item.strip()
             if item:
                 points.append(float(item))
-        return cls(
-            temperature_points_c=points,
-            tolerance_c=tolerance_c,
-            min_settle_s=min_settle_s,
-            max_wait_s=max_wait_s,
-            poll_interval_s=poll_interval_s,
-        )
+        return points
 
 
 @dataclass(slots=True)

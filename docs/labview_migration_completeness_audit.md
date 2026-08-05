@@ -17,6 +17,10 @@ The live conservative holding list for unresolved or legacy items is
 `docs/known_open_items.md`; `docs/legacy_unresolved_items.md` is the focused
 high-risk safety summary.
 
+**Evidence boundary:** references below to a passing smoke test or hardware
+milestone are retained historical records, not an independent rerun in this
+audit. They support migration investigation but do not authorize real hardware.
+
 ## Executive Summary
 
 The current Python program is structurally migrated from the exported LabVIEW
@@ -149,7 +153,7 @@ The table classifies status in the current Python program, not just the raw
 | AD2 PC trigger | Present in `Application.run_experiment2()` immediately after `camera.start_capture()`. Semantics depend on WFG trigger source; uncertain for `trigsrcNone`. |
 | AD2 CH1/CH2 mapping | Python UI has two WFG channels. LabVIEW screenshot candidate has CH0 at `1.975 MHz`, `2 V` and CH1/index 1 at `1000 Hz`, `1 V`; CH2 purpose is unknown. Current staged acoustic mode is CH0-only. |
 | DO Custom / DO Clock | DO Clock Special is now active in the experiment path for DIO1 LED timing; DO Custom remains legacy/nonessential unless separately justified. |
-| Pump/Qmix init | Python backend opens bus, starts communication, clears faults, enables pump, and configures units. This is active behavior and may differ from the exact LabVIEW operational state. It is not safe as passive main-workflow init. |
+| Pump/Qmix init | Python backend opens bus, starts communication, refuses a pre-existing fault without clearing it, then enables pump and configures units. This is active behavior and may differ from the exact LabVIEW operational state. It is not safe as passive main-workflow init. |
 | Pump flow | Python has refill/empty/generate flow/set fill level/reference. Not validated for current one-pump hardware beyond discovery/readback. |
 | Flush order | Python now uses the LabVIEW-style combined `set_fill_level(level, flow_rate)` call for the first pump move, then waits, switches valve, waits, and updates the final fill level. Real semantics remain hardware-sensitive. |
 | Valve commands | Python opens COM5 and writes `P01`/`P02` with CR termination through `SerialTextCommandBackend`. The `S` status-query handshake is hardware-confirmed; the physical fluidic meaning of positions 1/2 remains unresolved. |
@@ -215,8 +219,8 @@ Priority items:
    - Current staged acoustic mode correctly keeps CH2/index 1 disabled.
 
 4. Pump/Qmix initialization and enable semantics.
-   - Python real Qmix init opens bus, starts communication, clears faults, and
-     enables the pump.
+   - Python real Qmix init opens bus, starts communication, refuses an existing
+     fault without clearing it, and otherwise enables the pump.
    - That is not passive and is not yet safe for main workflow initialization.
    - Current hardware uses one pump and the current one-pump QmixElements config.
 

@@ -9,7 +9,7 @@ from .hamamatsu_dcam import HamamatsuDcamBackend
 from .hardware_config import default_hardware_config
 from .instruments import AD2Sdk, CetoniPump, HamamatsuCamera, SerialTextCommandBackend, SimulatedAD2Sdk, Valve, ZStage
 from .qmix_backend import QmixPumpBackend
-from .tec import MeerstetterTecBackend, SimulatedTecBackend, TecController
+from .tec import MeerstetterTecBackend, SimulatedTecBackend, TecController, _real_tec_client_factory
 from .thorlabs_piezo import PiezoStage
 
 
@@ -89,7 +89,9 @@ def build_hardware_bundle(config: HardwareRuntimeConfig) -> HardwareBundle:
     tec = TecController(
         enabled=config.tec_enabled,
         simulate=config.sim_tec,
-        backend=SimulatedTecBackend() if config.sim_tec else MeerstetterTecBackend(port=config.tec_port or None),
+        backend=SimulatedTecBackend()
+        if config.sim_tec
+        else MeerstetterTecBackend(port=config.tec_port or None, client_factory=_real_tec_client_factory),
     )
     return HardwareBundle(ad2=ad2, camera=camera, pump=pump, valve=valve, z_motor=z_motor, tec=tec)
 

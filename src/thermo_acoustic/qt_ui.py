@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import logging
 import math
@@ -54,7 +55,7 @@ from .ad2 import (
     WfgChannelConfig,
     WfgConfig,
 )
-from .application import Application
+from .application import STEP_ORDER, Application
 from .camera import SubRegion
 from .hardware_factory import HardwareRuntimeConfig, apply_hardware_bundle, build_hardware_bundle
 from .hardware_config import ZStageBackend, default_hardware_config
@@ -77,6 +78,21 @@ CONVERSION_METHOD_OPTIONS = ["Full Dynamic", "90% Dynamic", "Downshift"]
 # go). 260px comfortably covers every sizeHint measured across every tab at
 # the time of that sweep, with a small margin.
 _SPIN_MAX_WIDTH = 260
+
+# UI layout audit round 3, Step 1b/2b (2026-08-02): the WFG tab's and
+# Experiment tab's Frequency/Amplitude/Offset/Symmetry/Phase fields (both
+# channels, both tabs) sat at the shared _SPIN_MAX_WIDTH ceiling above,
+# which was sized for this app's widest worst-case field elsewhere --
+# these fields only ever display 3-5 digit values, measured at 114-150px
+# of realistic content need (current value + 2 digits headroom) against
+# an actual rendered width of 260px, an excess of 90-190px that visibly
+# crowded these two dense per-channel blocks specifically (not flagged
+# elsewhere, e.g. the MSO tab's spinboxes, whose content need is much
+# closer to their actual width). Narrowed to a single shared width across
+# all five fields per the LabVIEW Style Guide "consistent size for
+# same-type controls" principle (already applied to the toolbar buttons).
+_DENSE_NUMERIC_FIELD_WIDTH = 150
+_DENSE_NUMERIC_FIELD_KEYS = frozenset({"frequency", "amplitude", "offset", "symmetry", "phase"})
 
 
 def _spin(value: float = 0.0, *, decimals: int = 3, minimum: float = -1e12, maximum: float = 1e12) -> QDoubleSpinBox:
@@ -152,6 +168,46 @@ def install_focus_wheel_guard(app: QApplication | None) -> None:
     app._thermo_acoustic_focus_wheel_guard = guard
 
 
+class TooltipDeclutterGuard(QObject):
+    """Prevents two native tooltips from visually overlapping (v2 audit,
+    2026-08-02 finding 1a: a real user screenshot showed the Z-Scan
+    tab's stacked "Z Start"/"Z End" tooltips both visible at once).
+    Root cause, confirmed empirically: round 2 left widget.toolTip() set
+    on every field (not just the click-triggered _TooltipIconButton), so
+    hovering the field itself also native-hover-triggers a tooltip; on
+    the real platform this delegates to the native OS tooltip control
+    (see _wrap_with_tooltip_icon()'s own note on this), whose fade-out
+    animation is not instant. A fast hover from one dense-form row to an
+    adjacent one -- exactly the Z Start/Z End layout -- can trigger the
+    second tooltip before the first has visually finished closing.
+    QEvent.ToolTip is delivered (via this app-wide filter, which runs
+    before the target widget's own event() handling) immediately before
+    Qt's default handling would call QToolTip.showText() for the new
+    tooltip; forcing an explicit QToolTip.hideText() here first turns
+    that into a clean hide-then-show instead of a same-widget
+    replace-in-place, closing the fade-overlap window. Click-triggered
+    icon tooltips don't raise QEvent.ToolTip (they call
+    QToolTip.showText() directly in Python), so they're unaffected by
+    this filter -- confirmed separately (rapid clicks across two
+    different icons never produced two visible bubbles, since
+    QToolTip.showText() already replaces its own single shared
+    instance); _TooltipIconButton._show_explanation() also calls
+    hideText() first now, for the same reasoning, applied uniformly."""
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 - Qt API name
+        if event.type() == QEvent.Type.ToolTip:
+            QToolTip.hideText()
+        return super().eventFilter(obj, event)
+
+
+def install_tooltip_declutter_guard(app: QApplication | None) -> None:
+    if app is None or getattr(app, "_thermo_acoustic_tooltip_declutter_guard", None) is not None:
+        return
+    guard = TooltipDeclutterGuard(app)
+    app.installEventFilter(guard)
+    app._thermo_acoustic_tooltip_declutter_guard = guard
+
+
 class _TooltipIconButton(QToolButton):
     """Small "ⓘ" marker placed next to a field that has a tooltip
     (Session 41, Part 2 -- replaces Session 40's label-underline marker).
@@ -174,6 +230,12 @@ class _TooltipIconButton(QToolButton):
         self.clicked.connect(self._show_explanation)
 
     def _show_explanation(self) -> None:
+        # Explicit hide-then-show, matching TooltipDeclutterGuard's fix for
+        # the native-hover path (2026-08-02, v2 audit finding 1a) -- applied
+        # here too for consistency, even though this click-triggered path
+        # was confirmed not to race on its own (QToolTip.showText() already
+        # replaces its own single shared instance).
+        QToolTip.hideText()
         QToolTip.showText(self.mapToGlobal(self.rect().bottomLeft()), self._explanation, self)
 
 
@@ -462,6 +524,7 @@ class MainWindow(QMainWindow):
     def __init__(self, app: Application | None = None) -> None:
         super().__init__()
         install_focus_wheel_guard(QApplication.instance())
+        install_tooltip_declutter_guard(QApplication.instance())
         self.app = app or Application(ad2=SimulatedAD2Sdk())
         self.setWindowTitle("Thermo Acoustic Streaming")
         self.resize(1280, 820)
@@ -475,9 +538,42 @@ class MainWindow(QMainWindow):
         # _run_experiment_series()). Distinct from `self.app.status` string
         # matching, which qt_ui_v2.py's "Experiment running" indicator used
         # to rely on and which was found to go stale the instant Abort is
-        # clicked (its own "Aborting..." status overwrites app.status while
-        # the series' current repeat may still genuinely be in flight).
+        # clicked (its own "Stopping after {unit}..." status overwrites
+        # app.status while the series' current repeat may still genuinely
+        # be in flight).
         self._experiment_series_active = False
+        # Distinct from _experiment_series_active above (set True whenever
+        # EITHER kind of series runs): tracks specifically whether the
+        # currently-running series is a TEC temperature scan
+        # (_run_temperature_experiment_series()), set/cleared via the
+        # "temperature_scan_active" progress kind. Needed because the
+        # graceful-stop message differs by unit-of-completion: a plain
+        # experiment series finishes "this repeat"; a TEC scan finishes
+        # "this temperature point" (target + wait + hold + ALL of that
+        # point's own repeats -- see Application.run_temperature_series()'s
+        # 2026-08-04 abort fix).
+        self._temperature_scan_active = False
+        # Graceful-stop indicator (2026-08-04, Part C follow-up): set True
+        # by _abort() while a series is actively running, cleared the
+        # instant that series' "experiment_series_active" progress goes
+        # False (its try/finally fires on every exit path -- normal
+        # completion, ExperimentSeriesAborted, or a raised error) --
+        # deliberately reset at series-end, not left to a fresh series'
+        # own first repeat to clear, so a later run never starts already
+        # showing a stale "Stopping..." from a previous Abort (the
+        # specific TestStand stale-highlight mistake this was designed to
+        # avoid).
+        self._stopping_after_current_repeat = False
+        # Phase 3 step-progress breadcrumb (2026-08-04): tracked here in the
+        # base class, not just qt_ui_v2.py, so the underlying state exists
+        # regardless of whether a widget is listening to it -- matches
+        # _experiment_series_active's own base-class-tracks-state,
+        # subclass-renders-it split. "pending" for every step until its own
+        # step_started/step_completed/step_failed event arrives, or until an
+        # explicit "step_reset" (fired once per repeat and once per TEC
+        # temperature point -- see application.py) puts every step back to
+        # "pending" ahead of the next unit's first step_started.
+        self._step_states: dict[str, str] = dict.fromkeys(STEP_ORDER, "pending")
         self._shutdown_in_progress = False
         self._close_after_shutdown = False
         self._shutdown_thread: threading.Thread | None = None
@@ -544,8 +640,10 @@ class MainWindow(QMainWindow):
             "(thorlabs_apt_serial, below) via the same thorlabs_piezo.PiezoStage connection the "
             "Z-Scan tab uses -- not the legacy Prior-serial/COM7 path this used to build (that path "
             "pointed at a port that never existed on this lab's hardware; see "
-            "docs/pending_feedback.md item 4). Z stage backend selection still has no real effect "
-            "(there is only one real backend now)."
+            "docs/pending_feedback.md item 4). Initialize only connects and reads device state; it does "
+            "not authorize or perform piezo motion. Motion remains limited to the separately confirmed "
+            "Z-Scan workflow. Z stage backend selection still has no real effect (there is only one real "
+            "backend now)."
         )
         self.camera_enabled = QCheckBox("Off/On")
         self.camera_enabled.setChecked(True)
@@ -560,9 +658,10 @@ class MainWindow(QMainWindow):
         self.tec_enabled.setChecked(False)
         self.tec_enabled.setToolTip(
             "Includes the Meerstetter TEC when Initialize is clicked. With Simulate checked it uses "
-            "the safe in-memory backend. With Simulate unchecked, the current UI intentionally fails "
-            "before any TEC connection or write because it cannot supply a reviewed MeCom client or "
-            "controller register map."
+            "the safe in-memory backend. With Simulate unchecked, the current uncommitted MeCom adapter "
+            "may attempt real I/O. Its named parameter mapping is source-checked, but the historical "
+            "bench evidence is not independently verified. Leave TEC simulated unless a human review "
+            "explicitly authorizes real operation."
         )
         self.sim_camera = QCheckBox("Off/On")
         self.sim_camera.setChecked(True)
@@ -580,9 +679,9 @@ class MainWindow(QMainWindow):
         self.sim_tec.setChecked(True)
         self.sim_tec.setToolTip(
             "Only matters when Meerstetter TEC above is On. Checked = safe in-memory fake backend, "
-            "no real hardware touched. Unchecked selects the unresolved real adapter; the current "
-            "factory then refuses before any TEC connection or write because no reviewed client is "
-            "available through this UI."
+            "no real hardware touched. Unchecked selects the current uncommitted MeCom adapter, which "
+            "may attempt real I/O; leave this checked unless its code and retained bench record have been "
+            "independently reviewed and approved."
         )
 
         self.z_backend = _combo([item.value for item in ZStageBackend], hardware_defaults.z_stage.backend.value)
@@ -604,7 +703,7 @@ class MainWindow(QMainWindow):
         self.thorlabs_apt_backend = QLineEdit(hardware_defaults.z_stage.thorlabs_apt_backend)
         self.thorlabs_apt_discovery_only = QCheckBox("Discovery only")
         self.thorlabs_apt_discovery_only.setChecked(hardware_defaults.z_stage.thorlabs_apt_discovery_only)
-        self.valve_resource = QLineEdit("COM5")  # real-hardware-confirmed default -- see Valve.visa_resource (instruments.py)
+        self.valve_resource = QLineEdit("COM5")  # Current application default; confirm physical wiring at the bench.
         # Relocated here from _instrument_group() (Session 40): that method
         # is v1-tab-only -- qt_ui_v2.py's InitializationDialog builds its own
         # separate form around this same widget without ever calling
@@ -613,8 +712,8 @@ class MainWindow(QMainWindow):
         # for exactly this reason (guaranteed to apply regardless of which
         # UI's layout method runs).
         self.valve_resource.setToolTip(
-            "The real COM port; passed to HardwareRuntimeConfig and genuinely used, unlike the "
-            "disabled Z stage backend/Thorlabs/Qmix path fields on this same tab."
+            "Valve COM port setting. It is passed to HardwareRuntimeConfig and used by the "
+            "serial backend; confirm physical wiring and valve routing at the bench."
         )
         self.qmix_sdk_python_path = QLineEdit(str(hardware_defaults.qmix.sdk_python_path))
         self.qmix_qmixsdk_path = QLineEdit(str(hardware_defaults.qmix.qmixsdk_path))
@@ -627,9 +726,9 @@ class MainWindow(QMainWindow):
         )
         self.tec_port = QLineEdit("")
         self.tec_port.setToolTip(
-            "Recorded USB/serial resource for a future reviewed Meerstetter integration. The current "
-            "UI cannot supply the reviewed MeCom client/factory or controller register map, so this "
-            "field alone cannot enable real TEC control; leave TEC simulated."
+            "USB/serial resource passed to the non-simulated TEC adapter. That adapter is currently "
+            "uncommitted and not independently approved for operation, so this field must not be used "
+            "to authorize real TEC control; leave TEC simulated."
         )
 
         self.wfg_running = QCheckBox("ON")
@@ -779,6 +878,26 @@ class MainWindow(QMainWindow):
         self.flow_rate.setToolTip(
             "Flow rate in uL/min: negative values aspirate/withdraw, positive values dispense/infuse."
         )
+        # Session (2026-08-03): Refill/Empty previously had no user-facing
+        # flow rate at all -- QmixPumpBackend._fill_flow_rate() picked
+        # 100% of the syringe's live max_flow_rate_ul_min unconditionally,
+        # then (briefly) a fixed 12000 uL/min (200 uL/s) constant, verified
+        # on real hardware but with a DIFFERENT syringe actually configured
+        # than the one active by default -- caused real
+        # "Value range of parameter exceeded" SDK rejections on Refill/
+        # Empty (logs/hardware_transactions.log, 2026-08-03). This field
+        # lets the operator set the target directly instead of a buried
+        # constant; QmixPumpBackend still clamps the actual SDK request to
+        # whichever syringe's real live max is smaller, so entering a value
+        # above what the currently-configured syringe can do is safe (gets
+        # capped, not rejected) rather than silently exceeding the ceiling.
+        self.fill_flow_rate = _spin(12000.0, decimals=1, minimum=0.0)
+        self.fill_flow_rate.setToolTip(
+            "Refill/Empty flow rate in uL/min (default 12000 = 200 uL/s). The actual SDK request "
+            "is clamped to the currently-configured syringe's "
+            "own live-reported max flow rate -- entering a value this syringe can't reach is "
+            "capped automatically, not rejected as an error."
+        )
         self.level_ml = _spin(0.0, decimals=3, minimum=0.0)
         self.level_ml.setToolTip(
             "Absolute mL target for 'Go to Level' (not a fraction of syringe capacity -- Session "
@@ -812,11 +931,10 @@ class MainWindow(QMainWindow):
         self.roi_h_offset = _int_spin(0, minimum=0)
         self.roi_v_offset = _int_spin(792, minimum=0)
         self.roi_v_offset.setToolTip(
-            "Startup default matches this repo's own validated-on-real-hardware combination "
-            "(vertical_offset=792, vertical_size=740, exposure=40.0ms; C15440-20UP; see "
-            "docs/current_workflow_audit.md and experiment_presets.py) -- Session 18 audit found "
-            "these diverging (classified SUSPECTED-PLACEHOLDER, never wired into these live "
-            "defaults); corrected (pending_feedback.md item 5, Part B2). Combines with Vertical "
+            "Startup default follows the retained LabVIEW screenshot candidate "
+            "(vertical_offset=792, vertical_size=740, exposure=40.0ms; see "
+            "experiment_presets.py). Confirm it against the connected camera before real use. "
+            "Combines with Vertical "
             "Size below (the two together set DCAM SUBARRAYVPOS/SUBARRAYVSIZE) and with Exposure "
             "Time to determine the real DCAM readout time _check_camera_timing_budget() checks "
             "against Camera FPS on the Experiment tab."
@@ -965,9 +1083,10 @@ class MainWindow(QMainWindow):
         )
         self.exp_camera_start = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_camera_start.setToolTip(
-            "Seconds after the AD2 PC trigger before the DO clock (LED) starts, used for every "
-            "repeat. Ignored whenever Dynamic Camera Start Time (below, in Camera Start Array(s)) "
-            "is checked -- each repeat then uses its own per-repeat value from that array instead."
+            "Programmed as the AD2 DigitalOut sec_wait value before the DIO1 pulse train, used for "
+            "every repeat. The current DO trigger source defaults to trigsrcNone, so its physical "
+            "reference to config_do_clock_special() versus pc_trigger() remains bench-unverified. "
+            "Ignored whenever Dynamic Camera Start Time (below, in Camera Start Array(s)) is checked."
         )
         self.exp_ch1_freq = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_ch1_freq.setToolTip(
@@ -985,7 +1104,10 @@ class MainWindow(QMainWindow):
             "WfgConfig.running is False and the AD2 WFG is not started at all (_experiment_wfg_config())."
         )
         self.exp_ch1_start = _spin(0.0, decimals=3, minimum=0.0)
-        self.exp_ch1_start.setToolTip("Delay in seconds after the AD2 PC trigger before this channel's output starts.")
+        self.exp_ch1_start.setToolTip(
+            "Programmed as this AnalogOut channel's sec_wait value. Its physical reference depends on "
+            "Trigger source; trigsrcNone timing versus the later shared PC trigger remains bench-unverified."
+        )
         self.exp_ch1_run = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_ch1_run.setToolTip(
             "Output duration in seconds. 0 = continuous/free-running (no defined stop time) -- "
@@ -1117,8 +1239,9 @@ class MainWindow(QMainWindow):
         self.exp_frames = _int_spin(1, minimum=0)
         self.exp_frames.setToolTip(
             "Frames captured per repeat. Combines with Camera FPS above: the DO clock's run "
-            "duration = this value / Camera FPS (_experiment_do_clock_config()) -- the real "
-            "duration the LED/camera trigger stays active each repeat."
+            "duration = this value / Camera FPS (_experiment_do_clock_config()), which programs the "
+            "DIO1 pulse-train window. Automated capture currently configures DCAM Internal trigger, "
+            "so this value does not prove that DIO1 paces or synchronizes camera frames."
         )
         self.exp_exposure_ms = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_exposure_ms.setToolTip(
@@ -1224,18 +1347,46 @@ class MainWindow(QMainWindow):
         )
         self.exp_tec_scan_enable = QCheckBox("Enable TEC temperature scan")
         self.exp_tec_scan_enable.setToolTip(
-            "When checked, Start exp uses one temperature target per experiment group. The current UI "
-            "supports this only with the simulated TEC: real TEC selection intentionally fails before "
-            "a device connection because this UI cannot supply a reviewed MeCom client/factory or "
-            "controller register map. No in-group ramping or per-frame temperature changes occur."
+            "When checked, Start exp uses one temperature target per experiment group, applied to "
+            "both TEC channels (locked) or independently per channel (unlocked, see the link toggle "
+            "next to Temperature points). No in-group ramping or per-frame temperature changes occur."
         )
         self.exp_tec_points = QLineEdit("25.0")
         self.exp_tec_points.setToolTip(
-            "Comma- or semicolon-separated TEC target temperatures in Celsius. One temperature "
-            "point creates one experiment group; each group uses the existing repeat settings. "
-            f"Targets are rejected outside the local safety range [{TEC_TARGET_MIN_C:.1f}, "
-            f"{TEC_TARGET_MAX_C:.1f}] C until a reviewed real MeCom backend defines tighter hardware limits."
+            "Comma- or semicolon-separated TEC target temperatures in Celsius for channel 1 (both "
+            "channels, while locked). One temperature point creates one experiment group; each group "
+            "uses the existing repeat settings. Targets are rejected outside the local safety range "
+            f"[{TEC_TARGET_MIN_C:.1f}, {TEC_TARGET_MAX_C:.1f}] C."
         )
+        # Lock/link toggle -- the same well-established pattern as Photoshop's
+        # aspect-ratio lock or a CSS box-model editor's margin/padding link
+        # icon: locked (default) keeps both channels' scan series identical
+        # (today's original, still-default behavior); unlocking allows
+        # genuinely independent per-channel series. Historical project notes
+        # report independent real control loops, but that evidence has not been
+        # independently reconciled in the current audit. Plain checkable QPushButton with a
+        # Unicode glyph, matching this app's existing convention of plain
+        # text/tooltip widgets with no icon-asset pipeline (no QIcon/
+        # QStyle.standardIcon usage anywhere else in this file).
+        self.exp_tec_lock_channels = QPushButton()
+        self.exp_tec_lock_channels.setCheckable(True)
+        self.exp_tec_lock_channels.setChecked(True)
+        self.exp_tec_lock_channels.setToolTip(
+            "Locked: channel 2's temperature scan always mirrors channel 1's (today's original "
+            "behavior). Unlocked: channel 2 gets its own independent temperature points, stepped "
+            "together with channel 1 (both channels move to their own target at each step, the scan "
+            "waits for both to stabilize before advancing)."
+        )
+        self.exp_tec_lock_channels.toggled.connect(self._on_tec_lock_toggled)
+        self._update_tec_lock_button_text(locked=True)
+        self.exp_tec_points_ch2 = QLineEdit("25.0")
+        self.exp_tec_points_ch2.setEnabled(False)
+        self.exp_tec_points_ch2.setToolTip(
+            "Channel 2's own TEC target temperatures (only editable while unlocked). Must have the "
+            "same number of points as channel 1's -- the scan is one sequence of steps, both channels "
+            "move together at each step."
+        )
+        self.exp_tec_points.textChanged.connect(self._on_tec_points_ch1_changed)
         self.exp_tec_tolerance_c = _spin(0.1, decimals=3, minimum=0.0)
         self.exp_tec_tolerance_c.setToolTip("Allowed absolute error from target temperature before the TEC is considered stable.")
         self.exp_tec_min_settle_s = _spin(5.0, decimals=3, minimum=0.0)
@@ -1244,6 +1395,13 @@ class MainWindow(QMainWindow):
         self.exp_tec_max_wait_s.setToolTip("Maximum time to wait for a TEC setpoint before failing clearly.")
         self.exp_tec_poll_interval_s = _spin(1.0, decimals=3, minimum=0.001)
         self.exp_tec_poll_interval_s.setToolTip("Seconds between TEC status polls while waiting for stability.")
+        self.exp_tec_post_stable_hold_s = _spin(0.0, decimals=3, minimum=0.0)
+        self.exp_tec_post_stable_hold_s.setToolTip(
+            "Additional hold time in seconds AFTER the TEC is already confirmed stable (Min settle "
+            "time above), before running that temperature point's experiment group -- for real "
+            "sample thermal equilibration, which can lag behind the TEC's own sensor reading. "
+            "Default 0.0 = no extra wait."
+        )
         self.average_fps = QLabel("0")
 
         # --- Z-scan calibration tab (Phase 4): piezo_zscan.ZScanCalibration's
@@ -1268,8 +1426,8 @@ class MainWindow(QMainWindow):
         self.zscan_z_end_um.setEnabled(False)
         self.zscan_z_end_um.setToolTip(
             "End Z position in micrometers -- ZScanCalibration.run()'s z_end_um, must be >= Z Start. "
-            "Inclusive: round((Z End - Z Start) / Step Size) + 1 positions are captured (Session 47's "
-            "_build_targets()); the real per-frame position embedded in each filename is the "
+            "Inclusive: full Step Size intervals are captured and an exact final End position is appended "
+            "when needed; no target is beyond Z End. The real per-frame position embedded in each filename is the "
             "closed-loop readback, not this nominal target. Range-limited to [0, MaxTravel] read live "
             "from the connected piezo (Session 46) -- disabled until Query Piezo Range or Start "
             "Z-Scan has connected at least once."
@@ -1353,7 +1511,10 @@ class MainWindow(QMainWindow):
             "spent in the 'high' phase for Square, or skew for Triangle/Sine). 50% is symmetric."
         )
         state["phase"].setToolTip("Starting phase offset of the carrier waveform, in degrees.")
-        state["sec_wait"].setToolTip("Delay in seconds after the AD2 PC trigger before this channel's output starts.")
+        state["sec_wait"].setToolTip(
+            "Programmed as this AnalogOut channel's sec_wait value. Its physical reference depends on "
+            "Trigger source; trigsrcNone timing versus a later PC trigger remains bench-unverified."
+        )
         state["trigger_source"].setToolTip(
             "AD2 SDK trigger source enum (trigsrcNone/trigsrcPC/etc.) controlling what starts this "
             "channel's output. The automated Experiment path always arms via config then fires a "
@@ -1411,8 +1572,12 @@ class MainWindow(QMainWindow):
         top = QGridLayout()
         exit_button = QPushButton("Exit")
         exit_button.clicked.connect(self._exit_app)
-        abort_button = QPushButton("Abort")
-        abort_button.clicked.connect(self._abort)
+        self.stop_series_button = QPushButton("Abort")
+        self.stop_series_button.setToolTip(
+            "Stops after the current repeat, or after the current temperature point during a TEC scan. "
+            "It does not stop hardware in the middle of an operation."
+        )
+        self.stop_series_button.clicked.connect(self._abort)
         self.status = HistoryLogWidget()
         self.status.setMinimumWidth(280)
         self.status.setMaximumHeight(80)
@@ -1426,15 +1591,48 @@ class MainWindow(QMainWindow):
         save_settings.clicked.connect(self._save_settings)
         load_settings = QPushButton("Load Settings")
         load_settings.clicked.connect(self._load_settings)
-        top.addWidget(QLabel("Exit"), 0, 0)
+        # UI layout audit (2026-08-02): these four are the same conceptual
+        # group (global actions) and should read as a uniform row per the
+        # LabVIEW Style Guide's "controls of the same type maintain
+        # consistent size" principle -- previously `top.setColumnStretch(3, 1)`
+        # gave all of this grid's extra width to column 3, which happens to
+        # be Load Settings' own column (748px actual vs. its natural 170px
+        # sizeHint, identical to Save Settings' own 170px). Matched to the
+        # widest natural sizeHint among the four, same effect the Z-Scan
+        # tab's Scan Control group already gets for free from a plain
+        # QVBoxLayout equalizing its own three buttons.
+        toolbar_button_width = max(
+            b.sizeHint().width() for b in (exit_button, self.stop_series_button, save_settings, load_settings)
+        )
+        for b in (exit_button, self.stop_series_button, save_settings, load_settings):
+            b.setFixedWidth(toolbar_button_width)
+        # UI layout audit round 3 (2026-08-02): removed the redundant "Exit"/
+        # "Abort" QLabel captions previously sitting in row 0 above these two
+        # buttons -- not a menu bar, not connected to anything (verified: no
+        # QMenuBar/QAction exists anywhere in this file), just static text
+        # duplicating each button's own visible label, and applied
+        # inconsistently in the first place (Save Settings/Load Settings,
+        # cols 2-3, never got one). Leaving these two buttons in row 1 with
+        # nothing above now matches Save Settings/Load Settings exactly.
         top.addWidget(exit_button, 1, 0)
-        top.addWidget(QLabel("Abort"), 0, 1)
-        top.addWidget(abort_button, 1, 1)
+        top.addWidget(self.stop_series_button, 1, 1)
         top.addWidget(save_settings, 1, 2)
         top.addWidget(load_settings, 1, 3)
         top.addWidget(QLabel("Status"), 0, 4)
-        top.addWidget(self.status, 1, 4)
-        top.setColumnStretch(3, 1)
+        # Session (2026-08-03): was a bare top.addWidget(self.status, ...) --
+        # unlike every other tooltip-bearing widget in this file, a widget
+        # placed directly in a QGridLayout (not a QFormLayout row) never
+        # passes through _add_tooltip_icons(), so this one's long tooltip
+        # was left both un-HTML-wrapped (round 2's word-wrap fix never
+        # applied to it) and without its own click-triggered "ⓘ" icon.
+        # Wrapping it explicitly here matches how every other grid-placed
+        # tooltip widget in this codebase already does it (e.g. the
+        # Elapsed Time/Time Left labels in qt_ui_v2.py's equivalent group).
+        top.addWidget(self._wrap_with_tooltip_icon(self.status), 1, 4)
+        # Extra grid width now goes to Status (col 4, already has its own
+        # setMinimumWidth(280) above and benefits from more room for a
+        # scrollable history log) instead of a fixed-width button's column.
+        top.setColumnStretch(4, 1)
         layout.addLayout(top)
 
         body = QHBoxLayout()
@@ -1575,12 +1773,33 @@ class MainWindow(QMainWindow):
         tip = widget.toolTip()
         if not tip:
             return widget
+        # Real-screenshot bug (2026-08-02): plain-text QToolTip does not
+        # word-wrap on Windows' real native tooltip control -- confirmed via
+        # a real user screenshot of the MSO tab's Range (V) field rendering
+        # as one unwrapped line. The prior offscreen-only verification
+        # missed this because the "offscreen" QPA platform has no native OS
+        # tooltip to delegate to, so it always falls back to Qt's own
+        # internal QLabel-based tooltip renderer, which DOES auto-wrap
+        # regardless of platform -- structurally incapable of reproducing
+        # this bug, not just an unlucky test case. Wrapping in a minimal
+        # HTML tag is Qt's own documented way to force QToolTip word-wrap
+        # on the real native control too. Escaped (not raw HTML) so a
+        # literal &/</> in tooltip text (e.g. "Pump&Valve",
+        # "z_<measured_um>um.tif") renders as the real character instead of
+        # being misinterpreted as markup or silently dropped.
+        # Applied to the field widget's own tooltip too, not just the icon
+        # button's: widget.toolTip() is still set here (never cleared), so
+        # a plain hover over the field itself -- not just a click on the
+        # icon -- also triggers Qt's native tooltip via this same string;
+        # both paths need the same fix.
+        wrapped_tip = f"<html>{html.escape(tip)}</html>"
+        widget.setToolTip(wrapped_tip)
         container = _TooltipIconWrapper()
         layout = QHBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
         layout.addWidget(widget)
-        layout.addWidget(_TooltipIconButton(tip))
+        layout.addWidget(_TooltipIconButton(wrapped_tip))
         return container
 
     @classmethod
@@ -1623,6 +1842,14 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(tab)
         note = QLabel("Manual AD2 test tool -- independent from Experiment tab. Settings here do NOT affect experiment runs.")
         note.setWordWrap(True)
+        # UI layout audit (2026-08-02): no explicit width cap previously --
+        # wrap width was whatever the tab's own current width happened to
+        # be, so this note only ever became a single very long unbroken
+        # line rather than the clean 1-2 line wrap the Z-Scan tab's
+        # description panel already demonstrates for the same wordWrap=True
+        # pattern (same fix, sized for a banner-width note rather than that
+        # panel's narrow side column).
+        note.setMaximumWidth(700)
         layout.addWidget(note)
         header = QHBoxLayout()
         header.addWidget(QLabel("WFGConfig"))
@@ -1639,6 +1866,10 @@ class MainWindow(QMainWindow):
         channels.addStretch()
         layout.addLayout(channels)
         apply = QPushButton("Apply WFG")
+        apply.setToolTip(
+            "Applies these settings immediately. If a real AD2 is initialized, this can start or change "
+            "real analog output without an additional confirmation dialog."
+        )
         apply.clicked.connect(self._start_apply_wfg)
         layout.addWidget(apply, alignment=Qt.AlignmentFlag.AlignLeft)
         layout.addStretch()
@@ -1693,6 +1924,8 @@ class MainWindow(QMainWindow):
             (f"Phase(Deg){overridden}", "phase"),
             (f"Function{overridden}", "function"),
         ):
+            if key in _DENSE_NUMERIC_FIELD_KEYS:
+                state[key].setMaximumWidth(_DENSE_NUMERIC_FIELD_WIDTH)
             form.addRow(label, state[key])
         state["enable"].setText(f"Enable{overridden}")
         form.addRow(state["enable"])
@@ -1845,6 +2078,15 @@ class MainWindow(QMainWindow):
     def _mso_tab(self) -> QWidget:
         tab = QWidget()
         layout = QVBoxLayout(tab)
+        # v3 design-idea adoption, Proposal C (2026-08-05): one-line
+        # orienting note, same wording pattern as the WFG tab's own note --
+        # confirmed via grep that neither application.py nor workflows.py
+        # ever reference "mso" in any form, so this is genuinely, not just
+        # apparently, independent from automated runs.
+        note = QLabel("Manual AD2 diagnostic tool -- independent from Experiment tab. Settings here do NOT affect experiment runs.")
+        note.setWordWrap(True)
+        note.setMaximumWidth(700)
+        layout.addWidget(note)
         content = QHBoxLayout()
         controls = QGroupBox("MSO Configuration")
         form = QFormLayout(controls)
@@ -1920,6 +2162,23 @@ class MainWindow(QMainWindow):
         # it, so surplus width scrolls instead of squeezing rows.
         tab = QWidget()
         outer = QVBoxLayout(tab)
+        # v3 design-idea adoption, Proposal C (2026-08-05): one-line
+        # orienting note, same wording pattern as the WFG tab's own note.
+        # This manual tab's own fields (flow_rate/level_ml/fill_flow_rate/
+        # flush_flowrate etc.) are confirmed distinct Qt objects and
+        # settings.json keys from the Experiment tab's own separate flush
+        # fields (batch 1's own independence test) -- values entered here
+        # do not feed automated runs, even though the pump/valve hardware
+        # itself is the same shared self.app.pump/self.app.valve instances
+        # an automated flush also uses.
+        note = QLabel(
+            "Manual pump/valve controls -- independent from the Experiment tab's own Flush "
+            "settings. Values entered here do NOT feed automated experiment runs, even though "
+            "the pump/valve hardware itself is shared."
+        )
+        note.setWordWrap(True)
+        note.setMaximumWidth(700)
+        outer.addWidget(note)
         content = QWidget()
         columns = QHBoxLayout(content)
         columns.setAlignment(Qt.AlignmentFlag.AlignTop)
@@ -1957,6 +2216,19 @@ class MainWindow(QMainWindow):
         # column is narrower than a single-row form normally assumes. Wrapping
         # the label onto its own line above the field when needed avoids
         # clipping without widening the columns themselves.
+        # Setup: a leading section read first, ahead of Refill/Empty and
+        # Flow Control's own experiment-adjacent fields (UI layout audit
+        # Part 3 design, agreed 2026-08-03, implemented here) -- Reference
+        # move is a one-time-per-mount calibration step that must happen
+        # BEFORE a syringe is loaded/refilled, not just another item mixed
+        # into Flow Control's actual flow-rate controls, which was its
+        # previous position (last row of that group).
+        setup_group = QGroupBox("Setup")
+        setup_form = QFormLayout(setup_group)
+        setup_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        setup_form.addRow("Reference move", ref)
+        self._add_tooltip_icons(setup_form)
+
         valve_group = QGroupBox("Valve")
         valve_form = QFormLayout(valve_group)
         valve_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
@@ -1964,6 +2236,7 @@ class MainWindow(QMainWindow):
         valve_form.addRow("Valve Pos2 (P02)", pos2)
         self._add_tooltip_icons(valve_form)
         column1 = QVBoxLayout()
+        column1.addWidget(setup_group)
         column1.addWidget(valve_group)
         column1.addWidget(QLabel("Stop Syringe"))
         column1.addWidget(stop)
@@ -1974,6 +2247,7 @@ class MainWindow(QMainWindow):
         pump_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         pump_form.addRow("Refill", refill)
         pump_form.addRow("Empty", empty)
+        pump_form.addRow("Refill/Empty Flow Rate (uL/min)", self.fill_flow_rate)
         self._add_tooltip_icons(pump_form)
         syringe_group = QGroupBox("Syringe")
         syringe_form = QFormLayout(syringe_group)
@@ -1996,7 +2270,6 @@ class MainWindow(QMainWindow):
         flow_form.addRow("Generate Flow", generate)
         flow_form.addRow("Level(ml)", self.level_ml)
         flow_form.addRow("Go to Level", go)
-        flow_form.addRow("Reference move", ref)
         self._add_tooltip_icons(flow_form)
         column3 = QVBoxLayout()
         column3.addWidget(flow_group)
@@ -2030,6 +2303,12 @@ class MainWindow(QMainWindow):
     def _flush_group(self) -> QGroupBox:
         group = QGroupBox("Flush Settings")
         form = QFormLayout(group)
+        # UI layout audit (2026-08-02): this form was the one of six
+        # sibling QFormLayouts in this tab missing the WrapLongRows policy
+        # (see valve_form/pump_form/syringe_form/flow_form/flush_count_form
+        # above -- all added by the same Session-38 fix this form's own
+        # column-width constraint applies to identically, just missed here).
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         form.addRow("Flush Flowrate(uL)", self.flush_flowrate)
         form.addRow("flush volume (ml)", self.flush_volume)
         form.addRow("WaitAfterFlush", self.wait_after_flush)
@@ -2040,10 +2319,27 @@ class MainWindow(QMainWindow):
         tab = QWidget()
         grid = QGridLayout(tab)
         grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        grid.addWidget(self._image_group(), 0, 0, 1, 2)
-        grid.addWidget(self._roi_group(), 1, 0, 1, 2)
-        grid.addWidget(self._conversion_group(), 0, 2, 2, 1)
-        grid.addWidget(self._sequence_group(), 2, 0, 1, 2)
+        # v3 design-idea adoption, Proposal C (2026-08-05): one-line
+        # orienting note, same wording pattern as the WFG tab's own note --
+        # but this tab is genuinely mixed (unlike WFG/MSO's clean "nothing
+        # here affects automated runs"): Image/ROI/Conversion below are
+        # independent (confirmed distinct from the Experiment tab's own
+        # exposure_ms, batch 2's own independence test), while Sequence
+        # Settings below already carries its own correct, more detailed
+        # "DO affect experiment runs" note right where it's relevant --
+        # not duplicated here, just pointed to.
+        note = QLabel(
+            "Manual camera controls -- Image/ROI/Conversion below are independent from the "
+            "Experiment tab. Sequence Settings below is the one exception: those DO affect "
+            "automated experiment runs (see that group's own note)."
+        )
+        note.setWordWrap(True)
+        note.setMaximumWidth(700)
+        grid.addWidget(note, 0, 0, 1, 3)
+        grid.addWidget(self._image_group(), 1, 0, 1, 2)
+        grid.addWidget(self._roi_group(), 2, 0, 1, 2)
+        grid.addWidget(self._conversion_group(), 1, 2, 2, 1)
+        grid.addWidget(self._sequence_group(), 3, 0, 1, 2)
         grid.setColumnStretch(3, 1)
         return tab
 
@@ -2062,8 +2358,18 @@ class MainWindow(QMainWindow):
         # sweep (Session 38) found this label clipped at 324px actual vs.
         # 744px required. Give it a fixed width to wrap into instead of one
         # long unbroken line.
+        # UI layout audit (2026-08-02): setMaximumWidth(260) alone wasn't
+        # enough -- this row's earlier siblings (Image/Image Continuous/
+        # checkbox) were squeezing the actual allocated width down to
+        # ~120px, well short of that 260px ceiling (measured: the longest
+        # word, "configure," is 108px wide at this label's font, leaving
+        # only ~12px of margin at 120px -- enough to force the mid-word
+        # break this label was originally fixed to avoid). setMinimumWidth
+        # forces the row to actually give it the intended width instead of
+        # treating 260 as an unreachable ceiling.
         hint_label = QLabel("If the button is grayed out, press the configure camera button")
         hint_label.setWordWrap(True)
+        hint_label.setMinimumWidth(260)
         hint_label.setMaximumWidth(260)
         row.addWidget(hint_label)
         row.addStretch()
@@ -2072,11 +2378,20 @@ class MainWindow(QMainWindow):
     def _live_image_continuous_checkbox(self) -> QCheckBox:
         try:
             self.image_continuous.isChecked()
-        except RuntimeError:
+        except (RuntimeError, SystemError):
             # v2 opens the validated v1 Camera tab as a late-created manual
             # dialog. Under offscreen Qt, the unparented checkbox created
             # during _build_state() can occasionally lose its C++ object
             # before that dialog is built; recreate only that dead widget.
+            # Widened to also catch SystemError (2026-08-04, Save/Load
+            # Settings gap-closure batch 2): bisected a real, deterministic
+            # full-suite crash to this exact widget -- shiboken's offscreen
+            # failure mode for an already-dead C++ object is not always a
+            # catchable RuntimeError; conftest.py's own build_with_retry()
+            # already treats SystemError as the expected exception class for
+            # this general problem (dead/failed native Qt object access),
+            # so this accessor now does the same for its own known-fragile
+            # widget instead of assuming only RuntimeError can occur.
             self.image_continuous = QCheckBox("Off/On")
             self.image_continuous.setChecked(False)
         return self.image_continuous
@@ -2204,8 +2519,19 @@ class MainWindow(QMainWindow):
         tab = QWidget()
         grid = QGridLayout(tab)
         grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        grid.addWidget(self._zscan_parameters_group(), 0, 0)
-        grid.addWidget(self._zscan_control_group(), 0, 1)
+        # v3 design-idea adoption, Proposal C (2026-08-05): one-line
+        # orienting note, same wording pattern as the WFG tab's own note.
+        # This is a separate concern from the Scan Control group's own
+        # existing hint below (which explains this tab's real dependency on
+        # the Camera tab's Configure Camera step, not its relationship to
+        # automated Experiment runs) -- Z-Scan calibration is a standalone
+        # workflow never called from run_experiment2()/the automated path.
+        note = QLabel("Manual Z-Scan calibration workflow -- independent from Experiment tab. Settings here do NOT affect experiment runs.")
+        note.setWordWrap(True)
+        note.setMaximumWidth(700)
+        grid.addWidget(note, 0, 0, 1, 2)
+        grid.addWidget(self._zscan_parameters_group(), 1, 0)
+        grid.addWidget(self._zscan_control_group(), 1, 1)
         grid.setColumnStretch(2, 1)
         return tab
 
@@ -2409,6 +2735,11 @@ class MainWindow(QMainWindow):
         self.queue_count = QLabel("0")
         grid.addWidget(self.queue_count, 1, 2)
         start = QPushButton("Start exp")
+        start.setToolTip(
+            "Starts the experiment with the currently initialized backends. Real hardware actions are not "
+            "protected by the staged smoke scripts' command-line confirmations. Abort stops only after the "
+            "current repeat or temperature point finishes."
+        )
         start.clicked.connect(self._start_experiment)
         browse = QPushButton("...")
         browse.clicked.connect(lambda: self._browse_folder(self.series_path))
@@ -2451,6 +2782,11 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(content)
         note = QLabel("These settings fully control AD2 output during experiment runs, independent of the WFG tab.")
         note.setWordWrap(True)
+        # UI layout audit (2026-08-02): same fix as the WFG tab's parallel
+        # intro note -- no explicit width cap previously meant this could
+        # render as one long unbroken line (or worse, get clipped) rather
+        # than wrapping cleanly regardless of window size.
+        note.setMaximumWidth(700)
         layout.addWidget(note)
 
         top = QFormLayout()
@@ -2463,9 +2799,24 @@ class MainWindow(QMainWindow):
         self._add_experiment_channel_sections(layout, "CH1")
 
         scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
+        # UI layout audit round 3 (2026-08-02): was setWidgetResizable(True),
+        # which actively shrinks the scroll area's content to match its
+        # viewport -- silently overriding every child widget's own preferred/
+        # max width, including the intro note's setMaximumWidth(700) above
+        # and every per-channel field's own natural size, regardless of the
+        # group's own comment describing the intended (False) behavior
+        # ("lets it lay out at its real size internally and scroll, instead
+        # of being compressed"). _wfg_channel_group()'s scroll area -- the
+        # direct sibling this method's own comment says it mirrors -- already
+        # uses False correctly; this was the one place that diverged.
+        # Horizontal policy also changed from AlwaysOff to AsNeeded to match:
+        # with setWidgetResizable(False), content lays out at its natural
+        # (possibly wider-than-viewport) size -- AlwaysOff would have
+        # silently clipped anything that didn't fit with no way to reach it,
+        # trading "squeezed but visible" for "natural-width but invisible."
+        scroll.setWidgetResizable(False)
         scroll.setMaximumHeight(360)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll.setWidget(content)
         outer.addWidget(scroll)
@@ -2500,6 +2851,8 @@ class MainWindow(QMainWindow):
         # confirming every one of these fields is independently read here,
         # not from the WFG tab, once an automated run starts).
         overrides = " (overrides WFG tab)"
+        for field in (freq, amp, offset, symmetry, phase):
+            field.setMaximumWidth(_DENSE_NUMERIC_FIELD_WIDTH)
         carrier = QFormLayout()
         carrier.addRow(f"{channel_label} Enable{overrides}", enable)
         carrier.addRow(f"{channel_label} Function{overrides}", function)
@@ -2600,11 +2953,14 @@ class MainWindow(QMainWindow):
         group = QGroupBox("TEC Temperature Scan")
         form = QFormLayout(group)
         form.addRow("Enable", self.exp_tec_scan_enable)
-        form.addRow("Temperature points (C)", self.exp_tec_points)
+        form.addRow("Temperature points CH1 (C)", self.exp_tec_points)
+        form.addRow("Channel lock", self.exp_tec_lock_channels)
+        form.addRow("Temperature points CH2 (C)", self.exp_tec_points_ch2)
         form.addRow("Tolerance (C)", self.exp_tec_tolerance_c)
         form.addRow("Minimum settle time (s)", self.exp_tec_min_settle_s)
         form.addRow("Maximum wait time (s)", self.exp_tec_max_wait_s)
         form.addRow("Poll interval (s)", self.exp_tec_poll_interval_s)
+        form.addRow("Post-stabilization hold (s)", self.exp_tec_post_stable_hold_s)
         self._add_tooltip_icons(form)
         return group
 
@@ -3119,10 +3475,10 @@ class MainWindow(QMainWindow):
     # way flush() already does) -- converting the bool result to a status
     # string here matches _flush()'s own established pattern just above.
     def _refill(self) -> str:
-        return "RefillComplete" if self.app.refill() else "RefillTimedOut"
+        return "RefillComplete" if self.app.refill(self.fill_flow_rate.value()) else "RefillTimedOut"
 
     def _empty(self) -> str:
-        return "EmptyComplete" if self.app.empty() else "EmptyTimedOut"
+        return "EmptyComplete" if self.app.empty(self.fill_flow_rate.value()) else "EmptyTimedOut"
 
     def _start_configure_camera(self) -> None:
         roi = SubRegion(
@@ -3380,11 +3736,11 @@ class MainWindow(QMainWindow):
                         "camera_start_s": [widget.value() for widget in self.camera_start_array],
                         # Explicit and deterministic so experiment runs never inherit
                         # whatever trigger source a prior manual Camera tab session left
-                        # the DCAM device in. Whether this should be "External" (paced by
-                        # the AD2 DIO pulse train, matching the DIO0/DIO1-triggered
-                        # transducer and LED) instead of "Internal" is still an open
-                        # question pending oscilloscope verification -- this only removes
-                        # the undefined-leftover-state risk, it does not answer that.
+                        # the DCAM device in. Whether this should be "External" and which
+                        # verified AD2 line would pace the camera is still an open bench
+                        # question. The current experiment DO config below programs only
+                        # DIO1; this deterministic Internal setting removes undefined
+                        # leftover state but does not establish physical synchronization.
                         "trigger_source": "Internal",
                     },
                     wfg_config=config,
@@ -3398,11 +3754,40 @@ class MainWindow(QMainWindow):
     def _temperature_series(self) -> TemperatureSeries:
         return TemperatureSeries.from_text(
             self.exp_tec_points.text(),
+            text_ch2=None if self.exp_tec_lock_channels.isChecked() else self.exp_tec_points_ch2.text(),
             tolerance_c=float(self.exp_tec_tolerance_c.value()),
             min_settle_s=float(self.exp_tec_min_settle_s.value()),
             max_wait_s=float(self.exp_tec_max_wait_s.value()),
             poll_interval_s=float(self.exp_tec_poll_interval_s.value()),
+            post_stable_hold_s=float(self.exp_tec_post_stable_hold_s.value()),
         )
+
+    def _update_tec_lock_button_text(self, *, locked: bool) -> None:
+        if locked:
+            self.exp_tec_lock_channels.setText("\U0001F517 Locked (CH1 = CH2)")
+        else:
+            self.exp_tec_lock_channels.setText("\U0001F513 Unlocked (independent)")
+
+    def _on_tec_lock_toggled(self, checked: bool) -> None:
+        locked = checked
+        self._update_tec_lock_button_text(locked=locked)
+        self.exp_tec_points_ch2.setEnabled(not locked)
+        if locked:
+            # Unlock -> lock: channel 1's current value becomes the new
+            # shared value (the less surprising choice -- this is a text
+            # field, not a hardware action, so silently discarding
+            # channel 2's now-hidden independent value is low-stakes and
+            # fully reversible by unlocking again; a confirmation dialog
+            # would be friction for a routine toggle).
+            self.exp_tec_points_ch2.setText(self.exp_tec_points.text())
+        # Lock -> unlock: channel 2 already mirrors channel 1 (kept in
+        # sync live by _on_tec_points_ch1_changed while locked), so it
+        # already starts from the previously-shared value -- nothing else
+        # to do here.
+
+    def _on_tec_points_ch1_changed(self, text: str) -> None:
+        if self.exp_tec_lock_channels.isChecked():
+            self.exp_tec_points_ch2.setText(text)
 
     @staticmethod
     def _temperature_folder_name(index: int, temperature_c: float) -> str:
@@ -3475,9 +3860,9 @@ class MainWindow(QMainWindow):
         # this is the ground truth qt_ui_v2.py's "Experiment running"
         # indicator now reads (see _handle_worker_progress()), instead of
         # its old "experiment" in self.app.status.lower() heuristic, which
-        # went stale the instant Abort was clicked (Abort's own "Aborting..."
-        # status overwrites app.status while the current repeat, if any, may
-        # still genuinely be in flight). Emitted via the existing
+        # went stale the instant Abort was clicked (Abort's own
+        # "Stopping after {unit}..." status overwrites app.status while the
+        # current repeat, if any, may still genuinely be in flight). Emitted via the existing
         # progress-signal mechanism (not set directly) since this method
         # runs on a background QThread (ActionWorker) and progress.emit()
         # is the established way this codebase marshals state back to the
@@ -3500,12 +3885,17 @@ class MainWindow(QMainWindow):
     ) -> str:
         if progress:
             progress("experiment_series_active", True)
+            progress("temperature_scan_active", True)
             progress("queue_count", sum(group.see_elements_left() for group in groups))
             progress("waveform", self._preview_points(config))
         started_at = time.monotonic()
         self.app.create_stop_event()
         try:
-            completed = self.app.run_temperature_series(temperature_series, groups)
+            # Same fix as _run_experiment_series_body()'s run_experiment2() call
+            # just below it in this file: `progress` was previously dropped
+            # here too, so a TEC scan never fired step_started/step_completed/
+            # step_failed either -- the v2 breadcrumb (2026-08-04) needs this.
+            completed = self.app.run_temperature_series(temperature_series, groups, progress=progress)
             if not completed:
                 message = f"TEC temperature scan stopped before completion (status={self.app.status!r})."
                 logger.error(message)
@@ -3519,6 +3909,7 @@ class MainWindow(QMainWindow):
         finally:
             if progress:
                 progress("experiment_series_active", False)
+                progress("temperature_scan_active", False)
 
     def _run_experiment_series_body(
         self,
@@ -3539,14 +3930,17 @@ class MainWindow(QMainWindow):
         repeat_index = 0
         while self.app.experiment_series.see_elements_left():
             if self.app.stop_fired:
-                # Abort was triggered (qt_ui.py:_abort()). The in-progress
-                # repeat, if any, has already run to completion or been
-                # disrupted by _abort_hardware()'s concurrent hardware stop --
-                # we deliberately do not attempt to interrupt a repeat that is
-                # mid-flight (camera/AD2/pump/valve state is safer left to
-                # finish or fail on its own than cut off partway through a
-                # flush or capture). What this check guarantees is that no
-                # *further* queued repeat starts after Abort was pressed.
+                # Abort was triggered (qt_ui.py:_abort()). This is now the
+                # ONLY place abort state is ever checked (2026-08-04 safety-
+                # behavior change): Abort no longer forces hardware to stop
+                # mid-repeat (the removed _abort_hardware()) and
+                # run_experiment2()/wait_for_pump() no longer bail early
+                # either -- the in-progress repeat, if any, has ALWAYS
+                # already run to full completion (capture, AD2 wait, flush,
+                # save) by the time this check is reached, since
+                # run_experiment2() only returns after that. What this
+                # check guarantees is that no *further* queued repeat
+                # starts after Abort was pressed.
                 remaining = self.app.experiment_series.see_elements_left()
                 logger.info(
                     f"Experiment series stopped after {repeat_index} repeat(s): Abort was triggered; "
@@ -3556,7 +3950,12 @@ class MainWindow(QMainWindow):
                 if progress:
                     progress("queue_count", remaining)
                 return "ExperimentSeriesAborted"
-            completed = self.app.run_experiment2()
+            # step_started/step_completed/step_failed (fired by application.py's
+            # _report_step() inside run_experiment2()) previously never reached
+            # the UI at all -- this call omitted `progress`, so v2's Phase 3
+            # step-progress breadcrumb (2026-08-04) had nothing to listen to.
+            # Fixed here, the real wiring point, not just in a test double.
+            completed = self.app.run_experiment2(progress=progress)
             repeat_index += 1
             if progress:
                 progress("queue_count", self.app.experiment_series.see_elements_left())
@@ -3598,31 +3997,38 @@ class MainWindow(QMainWindow):
             target.setText(selected)
 
     def _abort(self) -> None:
+        # Safety-behavior change (2026-08-04): Abort no longer forces
+        # hardware to stop mid-operation (the removed _abort_hardware(),
+        # previously run concurrently on its own QThread regardless of
+        # what the in-flight repeat was doing -- confirmed to have no
+        # other legitimate caller before removal). Abort now ONLY sets
+        # the stop flag qt_ui.py's own _run_experiment_series_body()
+        # already checks between repeats -- the currently in-flight
+        # repeat, if any, always runs to full completion (capture, AD2
+        # wait, flush, save) before the series actually halts. This is
+        # deliberate: no separate emergency hard-stop is offered anymore.
+        # The manual Pump&Valve tab's own "Stop" button (self.app.pump.stop,
+        # wired independently) is unaffected -- that's a distinct,
+        # operator-initiated single-instrument action, not part of Abort.
         self.app.fire_stop_event()
-        self._run_action(
-            lambda progress: self._abort_hardware(),
-            "Aborting...",
-            force=True,
-            timeout_s=10.0,
-            disable_controls=True,
-        )
-
-    def _abort_hardware(self) -> str:
-        errors: list[str] = []
-        for name, action in (
-            ("pump stop", self.app.pump.stop),
-            ("camera stop_capture", self.app.camera.stop_capture),
-            ("AD2 WFG stop", lambda: self.app.ad2.wfg_start_stop_all_ch(False)),
-        ):
-            try:
-                action()
-            except Exception as exc:  # pragma: no cover - hardware failure path
-                message = f"{name} failed during abort: {exc}"
-                self.app.check_loop_error(message)
-                errors.append(message)
-        if errors:
-            raise RuntimeError("; ".join(errors))
-        return "Aborted"
+        # Part C follow-up, extended 2026-08-04 (TEC-scan abort fix): the
+        # unit that finishes before stopping differs by what's running --
+        # a plain experiment series finishes "this repeat"; a TEC
+        # temperature scan finishes "this temperature point" (target +
+        # wait + hold + ALL of that point's own repeats -- see
+        # Application.run_temperature_series()'s matching fix). Both
+        # progress kinds ("experiment_series_active"/"temperature_scan_active")
+        # are set together at series start/end, so this flag reliably picks
+        # the right wording.
+        unit = "this temperature point" if self._temperature_scan_active else "this repeat"
+        self._set_status(f"Stopping after {unit}...")
+        # Only show the graceful-stop indicator in the repeat-counter area
+        # if a series is actually running -- Abort is reachable (menu
+        # action) even when idle, and in that case there is no counter to
+        # replace.
+        if self._experiment_series_active:
+            self._stopping_after_current_repeat = True
+            self.queue_count.setText(f"Stopping after {unit}...")
 
     def _exit_app(self) -> None:
         self._start_shutdown(close_after=True)
@@ -3772,10 +4178,29 @@ class MainWindow(QMainWindow):
     def _handle_worker_progress(self, kind: str, value: object) -> None:
         if kind == "status":
             self._set_status(str(value))
+        elif kind == "temperature_scan_active":
+            self._temperature_scan_active = bool(value)
         elif kind == "experiment_series_active":
             self._experiment_series_active = bool(value)
+            if not self._experiment_series_active:
+                # The series just halted (any reason: completed, aborted,
+                # or a raised error) -- clear the graceful-stop indicator
+                # here, at series-end, rather than waiting for a future
+                # series' first repeat to overwrite it. That deliberate
+                # reset point is what avoids TestStand's classic stale-
+                # highlight mistake (a leftover "Stopping..." from a
+                # previous Abort still showing when the next series starts).
+                # Also restore a real count immediately -- the last
+                # "queue_count" progress event fired while still stopping
+                # was suppressed below, so without this the label would be
+                # left reading "Stopping..." forever, past the point the
+                # series has genuinely already halted.
+                if self._stopping_after_current_repeat:
+                    self._stopping_after_current_repeat = False
+                    self.queue_count.setText(str(self.app.experiment_series.see_elements_left()))
         elif kind == "queue_count":
-            self.queue_count.setText(str(value))
+            if not self._stopping_after_current_repeat:
+                self.queue_count.setText(str(value))
         elif kind == "average_fps":
             self.average_fps.setText(str(value))
         elif kind == "waveform":
@@ -3795,6 +4220,27 @@ class MainWindow(QMainWindow):
             self._show_camera_preview(value)
         elif kind == "camera_capture_failed":
             self._show_camera_capture_failed()
+        elif kind == "step_reset":
+            self._step_states = dict.fromkeys(STEP_ORDER, "pending")
+            self._refresh_step_breadcrumb()
+        elif kind == "step_started":
+            self._step_states[str(value)] = "active"
+            self._refresh_step_breadcrumb()
+        elif kind == "step_completed":
+            self._step_states[str(value)] = "completed"
+            self._refresh_step_breadcrumb()
+        elif kind == "step_failed":
+            step_name, _message = value
+            self._step_states[str(step_name)] = "failed"
+            self._refresh_step_breadcrumb()
+
+    def _refresh_step_breadcrumb(self) -> None:
+        # No-op in the base (v1) window -- there is no breadcrumb widget to
+        # update, only the underlying _step_states being tracked. qt_ui_v2.py's
+        # MainWindowV2 overrides this to actually paint its _StepBreadcrumb,
+        # the same base-tracks/subclass-renders split _refresh_status() and
+        # _experiment_series_active already use elsewhere in this class.
+        pass
 
     def _handle_worker_finished(self, ok: bool, status: str, error: str) -> None:
         self._busy_count = max(self._busy_count - 1, 0)
@@ -3919,6 +4365,16 @@ class MainWindow(QMainWindow):
                 }
                 for item in self.wfg_channels
             ],
+            # Save/Load Settings gap-closure, batch 4 (2026-08-05): the WFG
+            # manual tab's own master On/Off toggle (feeds WfgConfig.running
+            # in _wfg_config()) -- previously unpersisted. A plain top-level
+            # key, not nested under a new "wfg" sub-dict: that name is
+            # already the per-channel list immediately above, and reusing it
+            # for a second, differently-shaped value would collide.
+            # Confirmed via grep: no connected .toggled/.stateChanged signal
+            # on this checkbox, so it is not a live action trigger the way
+            # image_continuous (batch 2) was.
+            "wfg_running": self.wfg_running.isChecked(),
             "mso": {
                 "ch1_enabled": self.mso_ch1_enabled.isChecked(),
                 "ch2_enabled": self.mso_ch2_enabled.isChecked(),
@@ -3927,6 +4383,102 @@ class MainWindow(QMainWindow):
                 "sample_count": self.mso_sample_count.value(),
                 "range_v": self.mso_range.value(),
                 "offset_v": self.mso_offset.value(),
+            },
+            # Save/Load Settings gap-closure, batch 1 (2026-08-04): Pump&Valve
+            # manual tab's own fields -- previously entirely unpersisted,
+            # including fill_flow_rate specifically (subject of an earlier,
+            # never-actually-executed instruction to persist it -- confirmed
+            # via audit, not a lost completion). Own sub-dict, mirroring
+            # "mso" above, per that audit's own recommendation. Distinct keys
+            # from "experiment"'s own flush_flowrate/flush_volume/
+            # wait_after_flush (self.exp_flush_flowrate etc.) -- these are
+            # the separate manual-tab widgets (self.flush_flowrate etc.),
+            # never the same Qt objects, so no collision either at the
+            # Python-attribute or the settings.json-key level.
+            "pump_valve": {
+                "syringe": self.syringe.currentText(),
+                "custom_syringe_volume_ml": self.custom_syringe_volume_ml.value(),
+                "custom_syringe_inner_diameter_mm": self.custom_syringe_inner_diameter_mm.value(),
+                "custom_syringe_stroke_mm": self.custom_syringe_stroke_mm.value(),
+                "flow_rate": self.flow_rate.value(),
+                "fill_flow_rate": self.fill_flow_rate.value(),
+                "level_ml": self.level_ml.value(),
+                "flush_flowrate": self.flush_flowrate.value(),
+                "flush_volume": self.flush_volume.value(),
+                "wait_after_flush": self.wait_after_flush.value(),
+                "flush_count": self.flush_count.value(),
+            },
+            # Save/Load Settings gap-closure, batch 2 (2026-08-04): Camera
+            # manual tab's own fields -- previously entirely unpersisted,
+            # same as batch 1's Pump&Valve tab. Own sub-dict, same shape.
+            # conversion_min/conversion_max deliberately EXCLUDED, not
+            # missed: confirmed via _update_conversion_controls()/
+            # _set_conversion_range() that both are always setReadOnly(True)
+            # and only ever written programmatically from a live capture's
+            # computed display range -- a live readout, not a user-set
+            # config value, so persisting it would round-trip stale
+            # historical capture data as if it were an intentional setting.
+            # Distinct key from "experiment"'s own exposure_ms
+            # (self.exp_exposure_ms) -- self.exposure_ms here is the
+            # separate manual ROI-group widget, never the same Qt object.
+            "camera": {
+                "roi_h_offset": self.roi_h_offset.value(),
+                "roi_v_offset": self.roi_v_offset.value(),
+                "roi_h_size": self.roi_h_size.value(),
+                "roi_v_size": self.roi_v_size.value(),
+                "center_roi": self.center_roi.isChecked(),
+                "exposure_ms": self.exposure_ms.value(),
+                "conversion_method": self.conversion_method.currentText(),
+                "conversion_shifts": self.conversion_shifts.value(),
+                "sequence_mode": self.sequence_mode.currentText(),
+                "sequence_source": self.sequence_source.currentText(),
+                "sequence_interval": self.sequence_interval.value(),
+                "sequence_burst": self.sequence_burst.value(),
+                "sequence_frames": self.sequence_frames.value(),
+                "capture_mode": self.capture_mode.currentText(),
+                "dcam_source": self.dcam_source.currentText(),
+                "external_polarity": self.external_polarity.currentText(),
+                "external_delay": self.external_delay.value(),
+                "sequence_exposure_ms": self.sequence_exposure_ms.value(),
+                # image_continuous deliberately EXCLUDED, not missed: unlike
+                # every other field here, it is a live action trigger, not
+                # passive configuration -- toggling it True
+                # (_set_image_continuous(), toggled.connect()'d) opens a real
+                # ImagePreviewWindow, starts a repeating QTimer, and attempts
+                # a live camera capture. Restoring it via _load_settings()
+                # would auto-start continuous capture the instant settings
+                # are loaded, before hardware is even connected -- the same
+                # class of thing conversion_min/conversion_max were already
+                # excluded for above (a live/derived value, not a saved
+                # preference), just via a different mechanism (an action
+                # side effect instead of a computed readout).
+            },
+            # Save/Load Settings gap-closure, batch 3 (2026-08-05): Z-Scan
+            # tab's own fields -- previously entirely unpersisted, same
+            # disposition as batches 1-2. Own sub-dict, same shape. Confirmed
+            # none of the 5 fields fire a connected signal on
+            # setValue/setChecked/setText (grepped for .valueChanged/
+            # .textChanged/.editingFinished connections on all 5 -- none
+            # exist), so none is a live action trigger the way
+            # image_continuous was. zscan_z_start_um/zscan_z_end_um needed a
+            # different, real correctness fix instead: both are disabled at
+            # construction with range [0.0, 0.0] until _query_zscan_range()
+            # reads the real piezo's MaxTravel and calls
+            # _apply_zscan_range() to widen the range and enable them -- a
+            # bare setValue() at load time (before any hardware has ever
+            # been queried) would silently clamp a real saved value straight
+            # to 0.0, a quiet data-loss trap distinct from but analogous to
+            # image_continuous's crash risk. Handled below in
+            # _load_settings() by widening the range just enough to hold the
+            # loaded value; _apply_zscan_range() still fully overwrites that
+            # range with the real device bound the next time it is queried,
+            # so this does not weaken that safety gate.
+            "zscan": {
+                "zscan_output_dir": self.zscan_output_dir.text(),
+                "zscan_z_start_um": self.zscan_z_start_um.value(),
+                "zscan_z_end_um": self.zscan_z_end_um.value(),
+                "zscan_step_size_um": self.zscan_step_size_um.value(),
+                "zscan_exposure_ms": self.zscan_exposure_ms.value(),
             },
             "experiment": {
                 "repeats": self.exp_repeats.value(),
@@ -3979,10 +4531,40 @@ class MainWindow(QMainWindow):
                 "freq_scan_step_khz": self.exp_freq_scan_step_khz.value(),
                 "tec_scan_enable": self.exp_tec_scan_enable.isChecked(),
                 "tec_points": self.exp_tec_points.text(),
+                "tec_lock_channels": self.exp_tec_lock_channels.isChecked(),
+                "tec_points_ch2": self.exp_tec_points_ch2.text(),
                 "tec_tolerance_c": self.exp_tec_tolerance_c.value(),
                 "tec_min_settle_s": self.exp_tec_min_settle_s.value(),
                 "tec_max_wait_s": self.exp_tec_max_wait_s.value(),
                 "tec_poll_interval_s": self.exp_tec_poll_interval_s.value(),
+                "tec_post_stable_hold_s": self.exp_tec_post_stable_hold_s.value(),
+                # Save/Load Settings gap-closure, batch 4 (2026-08-05):
+                # purely additive keys under this same "experiment" dict,
+                # same convention as Frequency Scanning/TEC above -- no
+                # schema_version bump. Confirmed via grep: none of these
+                # fields (nor camera_start_array below) has a connected
+                # .valueChanged/.toggled/.stateChanged signal with a real
+                # side effect -- the FM Sweep start/stop<->center/width
+                # cross-field sync (_connect_sweep_dual_mode_refresh()) is
+                # pure UI-side arithmetic (no hardware/window/timer touch),
+                # not a live action trigger the way image_continuous (batch
+                # 2) was; loading all four keeps them mutually consistent
+                # the same way editing any one live already does. None of
+                # these fields is disabled/range-gated behind a hardware
+                # query the way zscan_z_start_um/zscan_z_end_um (batch 3)
+                # were, so no special load-time handling is needed here.
+                "sweep_enable": self.exp_sweep_enable.isChecked(),
+                "sweep_start_khz": self.exp_sweep_start_khz.value(),
+                "sweep_stop_khz": self.exp_sweep_stop_khz.value(),
+                "sweep_center_khz": self.exp_sweep_center_khz.value(),
+                "sweep_width_khz": self.exp_sweep_width_khz.value(),
+                "sweep_time_ms": self.exp_sweep_time_ms.value(),
+                "sweep_type": self.exp_sweep_type.currentText(),
+                "camera_fps": self.exp_camera_fps.value(),
+                "camera_start": self.exp_camera_start.value(),
+                "dynamic_camera_start": self.dynamic_camera_start.isChecked(),
+                "camera_start_array": [widget.value() for widget in self.camera_start_array],
+                "global_exposure": self.global_exposure.isChecked(),
             },
         }
 
@@ -4021,6 +4603,7 @@ class MainWindow(QMainWindow):
             ("sim_valve", self.sim_valve),
             ("sim_tec", self.sim_tec),
             ("thorlabs_apt_discovery_only", self.thorlabs_apt_discovery_only),
+            ("wfg_running", self.wfg_running),
         ):
             if name in data:
                 widget.setChecked(bool(data[name]))
@@ -4074,6 +4657,85 @@ class MainWindow(QMainWindow):
             ):
                 if key in mso:
                     widget.setValue(mso[key])
+        pump_valve = data.get("pump_valve", {})
+        if isinstance(pump_valve, dict):
+            if "syringe" in pump_valve:
+                index = self.syringe.findText(str(pump_valve["syringe"]))
+                if index >= 0:
+                    self.syringe.setCurrentIndex(index)
+            for key, widget in (
+                ("custom_syringe_volume_ml", self.custom_syringe_volume_ml),
+                ("custom_syringe_inner_diameter_mm", self.custom_syringe_inner_diameter_mm),
+                ("custom_syringe_stroke_mm", self.custom_syringe_stroke_mm),
+                ("flow_rate", self.flow_rate),
+                ("fill_flow_rate", self.fill_flow_rate),
+                ("level_ml", self.level_ml),
+                ("flush_flowrate", self.flush_flowrate),
+                ("flush_volume", self.flush_volume),
+                ("wait_after_flush", self.wait_after_flush),
+                ("flush_count", self.flush_count),
+            ):
+                if key in pump_valve:
+                    widget.setValue(pump_valve[key])
+        camera = data.get("camera", {})
+        if isinstance(camera, dict):
+            for key, widget in (
+                ("roi_h_offset", self.roi_h_offset),
+                ("roi_v_offset", self.roi_v_offset),
+                ("roi_h_size", self.roi_h_size),
+                ("roi_v_size", self.roi_v_size),
+                ("exposure_ms", self.exposure_ms),
+                ("conversion_shifts", self.conversion_shifts),
+                ("sequence_interval", self.sequence_interval),
+                ("sequence_burst", self.sequence_burst),
+                ("sequence_frames", self.sequence_frames),
+                ("external_delay", self.external_delay),
+                ("sequence_exposure_ms", self.sequence_exposure_ms),
+            ):
+                if key in camera:
+                    widget.setValue(camera[key])
+            if "center_roi" in camera:
+                self.center_roi.setChecked(bool(camera["center_roi"]))
+            # image_continuous intentionally not loaded -- see the matching
+            # exclusion comment in _settings_dict() above.
+            for key, widget in (
+                ("conversion_method", self.conversion_method),
+                ("sequence_mode", self.sequence_mode),
+                ("sequence_source", self.sequence_source),
+                ("capture_mode", self.capture_mode),
+                ("dcam_source", self.dcam_source),
+                ("external_polarity", self.external_polarity),
+            ):
+                if key in camera:
+                    _set_combo_text(widget, str(camera[key]))
+        zscan = data.get("zscan", {})
+        if isinstance(zscan, dict):
+            if "zscan_output_dir" in zscan:
+                self.zscan_output_dir.setText(str(zscan["zscan_output_dir"]))
+            # zscan_z_start_um/zscan_z_end_um start disabled with range
+            # [0.0, 0.0] until a real "Query Piezo Range" hardware call
+            # widens it (see the matching comment in _settings_dict()) -- a
+            # plain setValue() here would silently clamp a real saved value
+            # to 0.0 before that ever happens. Widen the range just enough
+            # to hold the loaded value first; _apply_zscan_range() still
+            # fully replaces this range with the real device bound the next
+            # time it runs, so this does not weaken that gate, and the
+            # field stays disabled exactly as it already does by default.
+            for key, widget in (
+                ("zscan_z_start_um", self.zscan_z_start_um),
+                ("zscan_z_end_um", self.zscan_z_end_um),
+            ):
+                if key in zscan:
+                    value = float(zscan[key])
+                    if value > widget.maximum():
+                        widget.setMaximum(value)
+                    widget.setValue(value)
+            for key, widget in (
+                ("zscan_step_size_um", self.zscan_step_size_um),
+                ("zscan_exposure_ms", self.zscan_exposure_ms),
+            ):
+                if key in zscan:
+                    widget.setValue(zscan[key])
         experiment = data.get("experiment", {})
         if isinstance(experiment, dict):
             mapping = {
@@ -4107,6 +4769,14 @@ class MainWindow(QMainWindow):
                 "tec_min_settle_s": self.exp_tec_min_settle_s,
                 "tec_max_wait_s": self.exp_tec_max_wait_s,
                 "tec_poll_interval_s": self.exp_tec_poll_interval_s,
+                "tec_post_stable_hold_s": self.exp_tec_post_stable_hold_s,
+                "sweep_start_khz": self.exp_sweep_start_khz,
+                "sweep_stop_khz": self.exp_sweep_stop_khz,
+                "sweep_center_khz": self.exp_sweep_center_khz,
+                "sweep_width_khz": self.exp_sweep_width_khz,
+                "sweep_time_ms": self.exp_sweep_time_ms,
+                "camera_fps": self.exp_camera_fps,
+                "camera_start": self.exp_camera_start,
             }
             for key, widget in mapping.items():
                 if key in experiment:
@@ -4118,6 +4788,7 @@ class MainWindow(QMainWindow):
                 ("ch1_trigger_source", self.exp_ch1_trigger_source),
                 ("ch2_function", self.exp_ch2_function),
                 ("ch2_trigger_source", self.exp_ch2_trigger_source),
+                ("sweep_type", self.exp_sweep_type),
             ):
                 if key in experiment:
                     _set_combo_text(widget, str(experiment[key]))
@@ -4128,9 +4799,28 @@ class MainWindow(QMainWindow):
                 ("ch2_repeat_trigger", self.exp_ch2_repeat_trigger),
                 ("freq_scan_enable", self.exp_freq_scan_enable),
                 ("tec_scan_enable", self.exp_tec_scan_enable),
+                # Absent (older saved settings, pre-dual-channel-lock) ->
+                # setChecked() simply isn't called -> stays at its current
+                # default (locked=True), matching "default to locked for
+                # any config that doesn't specify it."
+                ("tec_lock_channels", self.exp_tec_lock_channels),
+                ("sweep_enable", self.exp_sweep_enable),
+                ("dynamic_camera_start", self.dynamic_camera_start),
+                ("global_exposure", self.global_exposure),
             ):
                 if key in experiment:
                     widget.setChecked(bool(experiment[key]))
+            if "camera_start_array" in experiment:
+                for widget, value in zip(self.camera_start_array, experiment["camera_start_array"]):
+                    widget.setValue(value)
+            # Restored AFTER tec_lock_channels above, deliberately: toggling
+            # the lock checkbox mirrors channel 1 into channel 2 as a live
+            # UI side effect (_on_tec_lock_toggled()) -- setting channel 2's
+            # own saved text here, last, guarantees an exact save/load round
+            # trip regardless of that side effect, in both locked and
+            # unlocked saved states.
+            if "tec_points_ch2" in experiment:
+                self.exp_tec_points_ch2.setText(str(experiment["tec_points_ch2"]))
             if "flush_enabled" in experiment:
                 self.exp_flush_enabled.setChecked(bool(experiment["flush_enabled"]))
             if any(
@@ -4197,7 +4887,7 @@ class MainWindow(QMainWindow):
 # Standalone entry point for the day-to-day application (see tools/run_ui.py
 # and launch_gui.bat). qt_ui_v2.MainWindowV2 subclasses MainWindow and reuses
 # its tab-building methods (WFG, MSO, Pump&Valve, Camera) as sidebar dialogs,
-# but is an in-development preview and not yet the default launch target.
+# but is a transitional UI and not yet the default launch target.
 def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     window = MainWindow()

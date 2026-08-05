@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 import time
 from dataclasses import dataclass
@@ -154,15 +155,15 @@ class ZScanCalibration:
 
     @staticmethod
     def _build_targets(z_start_um: float, z_end_um: float, step_size_um: float) -> list[float]:
-        # Inclusive of both endpoints. round() picks the nearest whole
-        # number of steps when (z_end - z_start) isn't an exact multiple of
-        # step_size_um, so the last target may land slightly short of or
-        # past a naive z_start + n*step_size_um sequence by a fraction of a
-        # step -- acceptable for a calibration scan; the real measured
-        # position (not this nominal target) is what actually gets recorded.
+        # Include both requested endpoints without ever stepping past the
+        # requested end. A partial final interval is preferable to moving the
+        # piezo outside the operator-confirmed range.
         span = z_end_um - z_start_um
-        n_steps = round(span / step_size_um)
-        return [z_start_um + i * step_size_um for i in range(n_steps + 1)]
+        n_full_steps = int(span // step_size_um)
+        targets = [z_start_um + i * step_size_um for i in range(n_full_steps + 1)]
+        if not targets or not math.isclose(targets[-1], z_end_um, rel_tol=0.0, abs_tol=1e-9):
+            targets.append(z_end_um)
+        return targets
 
     def _ensure_closed_loop(self) -> None:
         if not self.piezo.needs_closed_loop_confirmation():

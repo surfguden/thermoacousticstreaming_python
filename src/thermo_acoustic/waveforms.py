@@ -191,11 +191,13 @@ class WaveFormsBackend:
             raise WaveFormsError(f"{operation} failed: {message}")
 
     @staticmethod
-    def _enum_value(mapping: dict, value: object, default: int = 0) -> int:
+    def _enum_value(mapping: dict, value: object) -> int:
+        if isinstance(value, int):
+            return value
         for key, mapped in mapping.items():
             if value == key or value == getattr(key, "value", None):
                 return mapped
-        return default
+        raise WaveFormsError(f"Unsupported WaveForms enum value: {value!r}")
 
     def _output_mode_value(self, output_mode: object) -> int:
         # Finding 1 (waveforms.py review, Session 66): output_mode is a
@@ -347,7 +349,7 @@ class WaveFormsBackend:
         return bool(self._analog_node_get_int("FDwfAnalogOutNodeEnableGet", handle, channel_index, node))
 
     def analog_out_node_function_set(self, handle: int, channel_index: int, node: int, function: int | WaveformFunction) -> None:
-        self._analog_node_set_int("FDwfAnalogOutNodeFunctionSet", handle, channel_index, node, self._enum_value(self._FUNCTIONS, function, int(function) if isinstance(function, int) else 1))
+        self._analog_node_set_int("FDwfAnalogOutNodeFunctionSet", handle, channel_index, node, self._enum_value(self._FUNCTIONS, function))
 
     def analog_out_node_function_get(self, handle: int, channel_index: int, node: int) -> int:
         return self._analog_node_get_int("FDwfAnalogOutNodeFunctionGet", handle, channel_index, node)
@@ -422,7 +424,7 @@ class WaveFormsBackend:
         return bool(self._analog_out_get_int("FDwfAnalogOutRepeatTriggerGet", handle, channel_index))
 
     def analog_out_trigger_source_set(self, handle: int, channel_index: int, trigger_source: int | TriggerSource) -> None:
-        self._analog_out_set_int("FDwfAnalogOutTriggerSourceSet", handle, channel_index, self._enum_value(self._TRIGGER_SOURCES, trigger_source, int(trigger_source) if isinstance(trigger_source, int) else 0))
+        self._analog_out_set_int("FDwfAnalogOutTriggerSourceSet", handle, channel_index, self._enum_value(self._TRIGGER_SOURCES, trigger_source))
 
     def analog_out_trigger_source_get(self, handle: int, channel_index: int) -> int:
         return self._analog_out_get_int("FDwfAnalogOutTriggerSourceGet", handle, channel_index)
@@ -490,7 +492,7 @@ class WaveFormsBackend:
                 handle,
                 channel_index,
                 node_id,
-                c_int(self._enum_value(self._FUNCTIONS, settings.function, default=1)),
+                c_int(self._enum_value(self._FUNCTIONS, settings.function)),
             ),
             "FDwfAnalogOutNodeFunctionSet",
         )
@@ -546,10 +548,34 @@ class WaveFormsBackend:
             h = c_int(handle)
             trigger = None
             trigger_source = TriggerSource.NONE
+            # WaveForms exposes Wait/Run/Repeat/TriggerSource once for the
+            # whole DigitalOut instrument, not once per channel. Refuse an
+            # ambiguous multi-channel request rather than silently applying
+            # the last channel's timing to every enabled output.
+            trigger_signatures = {
+                (
+                    float(channel.trigger.sec_wait),
+                    float(channel.trigger.sec_run),
+                    int(channel.trigger.repeat_count),
+                    bool(channel.trigger.repeat_trigger),
+                    str(channel.trigger.source),
+                )
+                for channel in config.channels
+                if channel.enable
+            }
+            if len(trigger_signatures) > 1:
+                raise WaveFormsError(
+                    "Digital output channels request different global trigger timing; "
+                    "WaveForms applies one Wait/Run/Repeat/TriggerSource configuration to the whole device."
+                )
             for channel in config.channels:
                 idx = c_int(channel.channel_index)
-                trigger = channel.trigger
-                trigger_source = channel.trigger.source
+                # These settings are device-global. Only an enabled line may
+                # select them; otherwise a trailing disabled channel could
+                # silently replace the timing intended for the live output.
+                if channel.enable:
+                    trigger = channel.trigger
+                    trigger_source = channel.trigger.source
                 bits = channel.custom_data.bits
                 clock_divider = channel.clock_divider
                 if channel.clock_frequency_hz is not None:
@@ -702,14 +728,14 @@ class WaveFormsBackend:
         )
 
     def digital_out_type_set(self, handle: int, channel_index: int, output_type: int | DigitalOutType) -> None:
-        mapped = self._enum_value(self._DO_TYPES, output_type, int(output_type) if isinstance(output_type, int) else 0)
+        mapped = self._enum_value(self._DO_TYPES, output_type)
         self._check(
             self._dwf.FDwfDigitalOutTypeSet(c_int(handle), c_int(channel_index), c_int(mapped)),
             "FDwfDigitalOutTypeSet",
         )
 
     def digital_out_idle_set(self, handle: int, channel_index: int, idle_state: int | DigitalOutIdleState) -> None:
-        mapped = self._enum_value(self._DO_IDLE, idle_state, int(idle_state) if isinstance(idle_state, int) else 0)
+        mapped = self._enum_value(self._DO_IDLE, idle_state)
         self._check(
             self._dwf.FDwfDigitalOutIdleSet(c_int(handle), c_int(channel_index), c_int(mapped)),
             "FDwfDigitalOutIdleSet",
@@ -740,7 +766,7 @@ class WaveFormsBackend:
         self._check(self._dwf.FDwfDigitalOutRepeatTriggerSet(c_int(handle), c_int(int(repeat_trigger))), "FDwfDigitalOutRepeatTriggerSet")
 
     def digital_out_trigger_source_set(self, handle: int, trigger_source: int | TriggerSource) -> None:
-        mapped = self._enum_value(self._TRIGGER_SOURCES, trigger_source, int(trigger_source) if isinstance(trigger_source, int) else 0)
+        mapped = self._enum_value(self._TRIGGER_SOURCES, trigger_source)
         self._check(self._dwf.FDwfDigitalOutTriggerSourceSet(c_int(handle), c_int(mapped)), "FDwfDigitalOutTriggerSourceSet")
 
     def digital_out_configure(self, handle: int, start: bool) -> None:
@@ -797,11 +823,7 @@ class WaveFormsBackend:
         return result
 
     def analog_in_trigger_source_set(self, handle: int, trigger_source: int | TriggerSource) -> None:
-        mapped = self._enum_value(
-            self._TRIGGER_SOURCES,
-            trigger_source,
-            int(trigger_source) if isinstance(trigger_source, int) else 0,
-        )
+        mapped = self._enum_value(self._TRIGGER_SOURCES, trigger_source)
         self._check(self._dwf.FDwfAnalogInTriggerSourceSet(c_int(handle), c_int(mapped)), "FDwfAnalogInTriggerSourceSet")
 
     def capture_analog_in_channels(

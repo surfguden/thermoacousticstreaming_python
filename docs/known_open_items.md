@@ -28,16 +28,13 @@ historical notes. This document is a live issue register, whereas
 - **Valve protocol position versus physical fluidic routing.** The serial
   protocol and status tokens confirm numeric positions `P01`/`P02`, but the
   current workflow and migration audits still record the physical routing as
-  unverified. Current source/UI text also calls position 1 “Open” and position
-  2 “Closed.” Treat those human-readable routing labels as an unresolved bench
-  mapping until a controlled hardware check records what each position does;
-  numeric protocol confirmation is not proof of fluidic semantics.
-
-  **Current-source correction (2026-07-31):** the preceding historical
-  Open/Closed sentence is stale. The current source deliberately labels the
-  controls only `P01`/`P02`; it does not claim a fluidic route for either
-  numeric protocol position.
-
+  unverified. Current source/UI text deliberately labels controls only
+  `P01`/`P02`; it does not claim a fluidic route for either numeric protocol
+  position. Treat physical routing as an unresolved bench mapping until a
+  controlled hardware check records what each position does; numeric protocol
+  confirmation is not proof of fluidic semantics. A successful real serial
+  write is now shown as `requested P01/P02; confirmation pending`; only a
+  subsequent recognized `S` status reply restores `confirmed` state.
 - **DIO0 (acoustic)/DIO1 (LED) relative timing never oscilloscope-verified.**
   Session 19/31/43. The DO-clock derivation (`_experiment_do_clock_config()`)
   is structurally wired from real UI values, but whether its physical timing
@@ -46,7 +43,38 @@ historical notes. This document is a live issue register, whereas
   matching camera readout time, not the configured 0.2s DO-clock period) that
   is *consistent with* camera trigger source `"Internal"` free-running rather
   than being paced by the DO clock -- supporting evidence, not a resolution.
+  The current experiment configuration creates DIO1 only and explicitly sets
+  DCAM trigger source to `Internal`; it does not configure DIO0 or establish a
+  physical camera-trigger line. `Camera Start` is therefore a programmed DO
+  `sec_wait`, not a proven delay relative to the later `pc_trigger()` call.
   **Status: OPEN.**
+- **Staged hardware-test confirmations are not global GUI interlocks.**
+  `CONFIRM_REAL_HARDWARE` and timing acknowledgements protect action-capable
+  modes in newer `hardware_tests/` scripts. They do not apply to `qt_ui.py` or
+  `qt_ui_v2.py`: after real backends are initialized, manual WFG, pump, valve,
+  and experiment actions can be invoked without those command-line gates.
+  This is current reachable behavior, not proof that the actions are approved
+  or physically verified. **Status: OPEN; needs an explicit operator-policy/
+  UI-interlock decision.**
+- **The visible `Abort` action is a graceful series-boundary request, not an
+  emergency hardware stop.** It sets the shared stop flag and prevents the next
+  repeat (or next TEC temperature point) from starting; the current unit runs
+  through capture, AD2 wait, flush, and save. The v1 button, v2 menu action,
+  and Start-experiment tooltips now state that boundary. **Status: RESOLVED for
+  wording; OPEN if a separate emergency-stop policy is desired.**
+- **`qt_ui_v2.py` is an actively maintained transitional UI, not legacy or a
+  simulated preview shell.** It remains opt-in and not independently
+  hardware-verified, but it shares the real `Application` and hardware
+  backends. Its initialization now delegates to `Application.initialize()`
+  with progress reporting, removing the duplicate device-order/rollback loop.
+  **Status: TRANSITIONAL, not the default launch target.**
+- **`qt_ui_v3.py` is a layout-only evolution of v2, not a new hardware
+  runtime.** It subclasses `MainWindowV2`, reuses the same `Application`,
+  initialization, workers, and hardware objects, and keeps v2 available as the
+  rollback/reference path. It is now the active layout-development direction,
+  with task-oriented setup tabs and narrower manual panels; these changes are
+  offline-tested only. **Status: TRANSITIONAL, opt-in, not independently
+  hardware-verified.**
 - **GlobalExposure's disabled (`enabled=False`) DCAM behavior is
   implemented conservatively, not confirmed against real LabVIEW source
   (2026-07-31).** `HamamatsuDcamBackend.configure_trigger_global_exposure()`
@@ -89,6 +117,95 @@ historical notes. This document is a live issue register, whereas
   actual value immediately after LabVIEW itself sets `globalshutter=False`
   on real hardware. **Status: OPEN** (false-case behavior only; true case
   is RESOLVED).
+- **TEC real-path evidence remains unapproved, but the protocol mapping is no
+  longer wholly unknown (independent audit 2026-08-05).** The uncommitted
+  `tec.py`, `hardware_factory.py`, `tests/test_tec.py`, and
+  `docs/tec_verification_matrix.md` contain an executable pyMeCom client plus
+  Sessions 75-77 real-hardware claims, while
+  `docs/legacy_unresolved_items.md` and older workflow text still say that no
+  reviewed client/register map exists and real selection refuses before I/O.
+  Source inspection independently confirms that the installed pyMeCom table
+  and Meerstetter's official TEC-Family protocol agree with the five named
+  IDs used by this client: 104, 105, 1000, 2010, and 3000. That does not
+  independently establish the historical bench claims, model/firmware fit, or
+  safe real operation. Also, `_PyMeComTecClient.write_config()` is a no-op and
+  does not perform the vendor's separate flash-save operation. Keep TEC
+  disabled/simulated and do not use the historical claims as authorization
+  until a human review reconciles the implementation, commit state, and bench
+  record. **Status: OPEN for real operation; mapping source-checked.**
+- **Historical, unverified Meerstetter TEC session record (Sessions 75-77).**
+  The following claim has not been independently verified in this audit and
+  must not be read as current authorization for real operation: core path
+  reportedly real-hardware verified, including `wait_until_stable()`'s own
+  polling loop, plus a dual-channel lock/unlock scan UI. The real
+  device (COM6, TEC-1123, HW 2.00, FW 5.10) has been connected to and
+  both control loops individually confirmed with controlled write
+  tests: channel 1 (Session 75) and channel 2 (Session 76) each showed
+  genuine closed-loop thermal response to a target-temperature change,
+  fully independent of the other channel. Session 77 additionally
+  exercised `TecController.wait_until_stable()` itself (not a
+  hand-rolled polling script) against real hardware on channel 1 --
+  tolerance/settle-time/timeout logic confirmed working (target 25.65 C,
+  converged and held within the requested 0.2 C tolerance, `ready=True`,
+  no `error_state`, returned well inside the 60s bound). A real blocker
+  bug found during Session 75 -- `_MECOM_PARAM_TARGET_TEMP` was
+  `"Target Object Temp"`, but the real installed pyMeCom names parameter
+  3000 `"Target Object Temperature"`, so every real write would have
+  raised `UnknownParameter` -- was fixed and given a regression test
+  that compares directly against the installed package's own parameter
+  table. A second real finding -- Device Status (104)/Device Type (100)
+  are device-wide "Common Product Parameters" on this hardware, not
+  per-channel, confirmed both by the real protocol document's own
+  section structure and a live instance sweep -- was also fixed in
+  Session 76: `read_status()` now reads Device Status once (at
+  instance 1) instead of once per channel, which is what broke
+  channel 2's status reads originally. Scope loosened (user decision,
+  Session 76): writes remain strictly limited to Output Enable Status
+  (2010) and Target Object Temperature (3000), never any other
+  parameter, never `*_raw`; reads are no longer restricted to a fixed
+  parameter list, since a read cannot change device state.
+
+  **Dual-channel lock/unlock temperature scan -- implemented
+  (Session 77).** `TecController.apply_static_setpoint()`/
+  `wait_until_stable()` now accept either a plain float (broadcast to
+  every channel, original behavior) or a `dict[int, float]` (independent
+  per-channel targets, polled genuinely simultaneously in one call, not
+  one channel's full wait followed by the other's). `TemperatureSeries`
+  gained an optional `temperature_points_ch2_c` (`None` = locked,
+  unchanged default; a list = unlocked, same length as channel 1's
+  series required). New UI: a lock/link toggle (Photoshop-aspect-ratio-
+  lock pattern, plain checkable `QPushButton`, no new icon-asset
+  pipeline) next to the CH1/CH2 temperature-points fields, shared by
+  v1's tab and v2's page. Persisted via `tec_lock_channels`/
+  `tec_points_ch2` in Save/Load Settings, tolerant-absent = locked.
+  **The dict-target code path itself has only been fake/unit-tested,
+  not yet exercised against real hardware** -- the single-float
+  broadcast path it's built on has been real-hardware verified
+  repeatedly, but a real two-simultaneous-different-targets run has not.
+
+  **Error-state (Device Status == 3) surfacing -- investigated,
+  accepted as a documented gap (Session 77).** Real hardware has never
+  entered Error state, so `read_status()`'s Error-Number-read branch is
+  fake-tested only. A real trigger exists in principle (Error Threshold
+  parameters 4010/4011, an auto-reset feature at 6310) but deliberately
+  tripping a real threshold risks a genuine fault with no confirmed
+  in-scope recovery path (if auto-reset is disabled, recovery needs a
+  `Device Reset` write, parameter 111, outside the 2-parameter writable
+  scope) -- decided not to manufacture that risk for a one-line
+  conditional already covered by fake tests; will get exercised for
+  real if a genuine fault ever occurs during real use.
+
+  See `docs/tec_verification_matrix.md` for the full verification
+  matrix and `docs/claude_code_change_log.md` Sessions 75-77 for the
+  complete real-hardware evidence trail. Both channels were left OFF
+  (Output Enable Status = 0) at the end of every real-hardware session.
+  **Historical claimed status, not independently verified:** core
+  single-channel and per-channel read/write/enable path, and
+  `wait_until_stable()`'s own loop, real-hardware verified on both channels;
+  still open -- a real-hardware run of the new dict-target
+  (genuinely simultaneous dual-channel) code path, a `wait_until_stable()`
+  timeout/abort real-hardware pass, and error-state surfacing (accepted
+  gap, see above, not planned).**
 - **Camera trigger source Internal-vs-External unresolved.** Session 13
   hardcoded `"Internal"` to remove undefined-leftover-state risk; Session 19
   traced the real LabVIEW call chain (`RunExperiment2.vi` ->
@@ -149,7 +266,7 @@ historical notes. This document is a live issue register, whereas
   corrected). Not a code gap; a documented gotcha for future hardware
   troubleshooting. **Status: OPEN** (as a documentation note, not a bug).
 - **Several Category-A/LabVIEW-migration items remain fake-tested only, not
-  hardware-verified:** abort concurrency, ~~Qmix bus close on init
+  hardware-verified:** ~~abort concurrency~~, ~~Qmix bus close on init
   failure~~, serial read/write timeouts, ~~the AD2 SDK clock-divider wiring
   in `waveforms.py`'s `configure_do()`~~, and the TDMS metadata *content*
   itself (no real npTDMS-vs-LabVIEW file comparison has ever been
@@ -159,10 +276,15 @@ historical notes. This document is a live issue register, whereas
   on a real, deliberately-caused init failure left `bus`/`pump` both `None`
   and a follow-up real `initialize()` succeeded cleanly; the AD2
   clock-divider math was confirmed against the real internal clock
-  (100MHz) with an exact-frequency real hardware write. Abort concurrency
-  and serial read/write timeouts remain fake-tested only (not attempted
-  this pass, time-boxed). **Status: OPEN** (abort concurrency, serial
-  timeouts, TDMS content comparison).
+  (100MHz) with an exact-frequency real hardware write. **"Abort
+  concurrency" struck (Session 78): the concurrent-QThread hard-stop race
+  this item originally referred to (`_abort_hardware()` racing against the
+  in-flight repeat's own thread) no longer exists -- Abort was a real
+  safety-behavior change to never touch hardware concurrently at all, so
+  there is nothing left to hardware-verify under that name.** Serial
+  read/write timeouts remain fake-tested only (not attempted this pass,
+  time-boxed). **Status: OPEN** (serial timeouts, TDMS content
+  comparison).
 - **"Analog Discovery 3" row label** (`qt_ui.py:504`, `qt_ui.py:1395`,
   confirmed still present in current code) is the only place calling this
   device generation "3" -- everywhere else says "2". `docs/PORTING_TBD.md`
@@ -246,12 +368,13 @@ historical notes. This document is a live issue register, whereas
   relative to the same document's own later Session 26 entry; see Part 2 of
   the report.** **Status: RESOLVED** (the mechanism), **OPEN** (real-LabVIEW
   content comparison never done).
-- **Pump flow-rate sign convention was found unverifiable from code alone.**
-  Session 6/31. UI labels record `-=aspirate, +=dispense`; no sign-inversion
-  logic exists anywhere in the pipeline, but no documented LabVIEW reference
-  convention exists in-repo to compare against. An independent audit found at
-  least one tooltip still carrying older "unverifiable" wording after the
-  label was corrected elsewhere. **Status: OPEN.**
+- **Pump flow-rate sign convention is documented by the bundled CETONI/Qmix
+  Python wrapper.** `qmix_sdk_for_codex/python/qmixsdk/qmixpump.py` documents
+  `generate_flow()` as negative = aspiration and positive = dispension. The
+  Pump&Valve UI uses the same convention and no sign inversion occurs in the
+  Python path. This establishes the software convention; physical tubing
+  direction remains setup-dependent. **Status: RESOLVED (software sign
+  convention).**
 - **`CetoniPump.fill_level` has no readback/sync mechanism, so it always
   starts at `0.0` in a fresh process regardless of the real device's actual
   loaded volume.** No method anywhere in the pump path calls the real Qmix
@@ -326,8 +449,8 @@ historical notes. This document is a live issue register, whereas
   2 new tests in `tests/test_application.py`
   (`test_cetoni_pump_initialize_does_not_falsely_claim_referenced`,
   `test_cetoni_pump_reference_move_sets_referenced_true`). Full suite
-  green, 369/369 at the time of the fix. **Status: RESOLVED, not yet
-  committed** -- pending review, same as every other fix this session.
+  green, 369/369 at the time of the fix. **Status: RESOLVED, committed in
+  `17f24dd`.**
 - **`vci4109w5.sys` (IXXAT VCI4 USB-to-CAN adapter driver, used by the
   Qmix pump's CANopen bus) BSOD'd three times in one session during
   real-hardware pump diagnostics (2026-07-31) -- root-caused and
@@ -347,6 +470,19 @@ historical notes. This document is a live issue register, whereas
   polls at 20 Hz; the diagnostic scripts used 0.33-2 Hz) -- the crashes
   were a genuine outdated-driver bug, not caused by hammering the bus
   too fast. **Status: RESOLVED.**
+- **Current Qmix initialization is blocked by a relatching CAN transmit
+  queue fault (2026-08-05).** A minimal read-only bus session found
+  `is_in_fault_state=True` while `read_last_error()` initially returned
+  code `0` (all prior errors resolved). One guarded `clear_fault()` was
+  issued only after confirming the pump was disabled and stopped; the
+  fault cleared without movement. On the next read-only bus reconnect it
+  immediately relatched as code `33279` (`0x81FF`), whose Qmix SDK text is
+  `CAN Tx Queue Overrun`. The pump remained disabled, stopped, position
+  sensing initialized, and at the same reported fill level. Automatic
+  fault clearing remains prohibited; inspect the CAN adapter/bus and the
+  controller event state in QmixElements before treating real pump
+  initialization as trustworthy. **Status: OPEN; needs hardware/CAN-bus
+  diagnosis.**
 - **A disabled-but-real instrument's per-step hardware calls were handled
   inconsistently -- `AD2Sdk` silently skipped them (while falsely reporting
   success), `HamamatsuCamera`/`CetoniPump`/`Valve` attempted them anyway --
@@ -381,7 +517,7 @@ historical notes. This document is a live issue register, whereas
   `_PoisonBackend` (raises on any attribute access) to prove the disabled
   instrument's backend is never touched at all, not just that the call
   happens to no-op safely. See the Session 61 changelog entry for full
-  detail. **Status: RESOLVED, not yet committed** -- pending review.
+  detail. **Status: RESOLVED, committed in `17f24dd`.**
 - **`data.tdms` never recorded whether an instrument was genuinely
   enabled/disabled for a run, only whether it was simulated -- fixed
   (2026-07-31), same audit as above.** `SimAD2`/`SimCamera`/`SimPump`/
@@ -393,7 +529,7 @@ historical notes. This document is a live issue register, whereas
   live instrument state the same way `sim_*` already is) now write
   `AD2Enabled`/`CameraEnabled`/`PumpEnabled`/`ValveEnabled` into
   `data.tdms` alongside the existing `Sim*` fields. **Status: RESOLVED,
-  not yet committed.**
+  committed in `17f24dd`.**
 - **`generate_flow()`'s "continuous" flow genuinely stops on its own after
   a bounded real run -- confirmed intentional single-syringe-pump SDK/
   device behavior, not a bug, not readback staleness (pending_feedback.md
@@ -469,6 +605,15 @@ historical notes. This document is a live issue register, whereas
     configured soft/mechanical travel limit narrower than the syringe's
     nominal capacity) was not independently identified -- moot for the
     same reason above.
+- **A pump-move timeout previously reported failure without requesting a
+  stop (fixed in the current working tree, 2026-08-05).** `wait_for_pump()`
+  returns `False` only when its last status poll still reports pumping.
+  `refill()`/`empty()`/`go_to_level()` and `flush()` now call the existing
+  SDK-backed `pump.stop()` before resynchronizing fill level and reporting the
+  timeout. Fake-only tests cover the stop request. This does not resolve the
+  separate bench question of how quickly the real device physically stops,
+  provide independent post-stop motion confirmation, or make a vendor SDK call
+  already blocked inside `stop_pumping()` cancellable.
 - **Syringe stroke length is a derived value, not an independently-sourced
   BD spec figure.** Session 17. Computed as `volume / cross-sectional area`
   assuming full nominal volume over full piston travel in a cylindrical bore
@@ -479,17 +624,84 @@ historical notes. This document is a live issue register, whereas
   Syringe reference table and BD REF 309628/309649/300912 packaging
   (`qmix_backend.py`'s `SYRINGE_PRESETS` comment). **Status: OPEN** (stroke
   derivation only; diameters are resolved).
-- **Save/Load Settings persistence is incomplete for most manual-tab-only
-  fields.** Session 39, Frequency Scanning specifically closed Session 44.
-  WFG Trigger/FM Mod/Sweep sub-fields, the entire Pump&Valve and Camera tabs
-  (including the Session-22 load-bearing Sequence cluster), and several
-  Experiment-tab fields (Camera FPS/Start/Array, Dynamic Camera Start Time,
-  GlobalExposure, FM Sweep) are silently dropped by Save Settings and reset
-  to defaults on next Load. Long-standing baseline behavior, not a
-  regression. **Status: DESIGN FORK** -- whether comprehensive persistence
-  was ever the intended design is not resolvable from code alone; a
-  mechanical fix is available (`_settings_dict()`/`_load_settings()`'s
-  existing tolerant `if key in data` pattern) if the answer is "yes."
+- **Save/Load Settings persistence gap-closure -- RESOLVED, all 4 batches
+  complete (2026-08-04/05).** Session 39, Frequency Scanning specifically
+  closed Session 44. A
+  dedicated audit (2026-08-04) re-confirmed via git history that
+  `schema_version` has only ever gated the Hz->kHz unit migration
+  (commit `f569143`), never a broader persistence effort, and traced the
+  real current gap precisely: WFG's `wfg_running`, the entire Pump&Valve
+  and Camera tabs (including the Session-22 load-bearing Sequence
+  cluster), the entire Z-Scan tab, and several Experiment-tab fields
+  (Camera FPS/Start/Array, Dynamic Camera Start Time, GlobalExposure, FM
+  Sweep) were all confirmed still genuinely absent from
+  `_settings_dict()`/`_load_settings()`. Also found `fill_flow_rate`
+  specifically was the subject of an earlier explicit instruction to
+  persist it that was never actually executed (confirmed via grep --
+  no key, no round-trip test -- not a memory error). **Batch 1 (same
+  day) closed the Pump&Valve manual tab**: `syringe`,
+  `custom_syringe_volume_ml`, `custom_syringe_inner_diameter_mm`,
+  `custom_syringe_stroke_mm`, `flow_rate`, `fill_flow_rate`, `level_ml`,
+  `flush_flowrate`, `flush_volume`, `wait_after_flush`, `flush_count`
+  now round-trip via a new `"pump_valve"` sub-dict, tolerant-absent per
+  the established pattern. Confirmed `qt_ui_v2.py` needed no separate
+  change (`_settings_dict`/`_load_settings` still not in
+  `MainWindowV2.__dict__`). See Session 82 changelog entry.
+  **Batch 2 (2026-08-04/05) closed the Camera manual tab**: 17 fields
+  (ROI h/v offset/size, `center_roi`, the manual `exposure_ms` --
+  confirmed distinct from the Experiment tab's own `exp_exposure_ms` --
+  `conversion_method`/`conversion_shifts`, the sequence-cluster fields,
+  `capture_mode`, `dcam_source`, `external_polarity`/`external_delay`,
+  `sequence_exposure_ms`) now round-trip via a new `"camera"` sub-dict.
+  Two fields deliberately excluded, not missed: `conversion_min`/
+  `conversion_max` (always read-only, live-capture-derived display
+  values, never user-set) and, found only during this batch's own
+  verification, **`image_continuous`** -- unlike every other field
+  audited so far, it is a live action trigger (its `toggled` signal opens
+  a real camera preview window and starts continuous capture), not
+  passive configuration; persisting it would auto-start live capture the
+  instant settings load, before hardware is connected. See Session 83
+  changelog entry for the full root-cause trace (a genuine, deterministic
+  full-suite crash, distinct from this project's usual pre-existing
+  offscreen-Qt flakiness, caused by exactly this field being toggled).
+  **Batch 3 (2026-08-05) closed the Z-Scan tab**: all 5 fields
+  (`zscan_output_dir`, `zscan_z_start_um`, `zscan_z_end_um`,
+  `zscan_step_size_um`, `zscan_exposure_ms`) now round-trip via a new
+  `"zscan"` sub-dict, none excluded -- the batch-2-mandated connected-
+  signal check found no live action trigger among the 5, but did
+  surface a different real hazard: `zscan_z_start_um`/`zscan_z_end_um`
+  are disabled with range `[0.0, 0.0]` until a genuine
+  `_query_zscan_range()` hardware read widens it, so a bare
+  `setValue()` at load time would have silently clamped a real saved
+  value to `0.0`. Fixed in `_load_settings()` by widening the range to
+  fit the loaded value first (field stays disabled; the real hardware
+  query still fully overwrites this range later, so the safety gate is
+  unweakened). See Session 84 changelog entry.
+  **Batch 4 (2026-08-05, final) closed WFG's `wfg_running`
+  (a new plain top-level key, not nested under `"wfg"` -- that name was
+  already the existing per-channel list, and reusing it would have
+  collided) and the Experiment tab's FM Sweep group (`sweep_enable`/
+  `start_khz`/`stop_khz`/`center_khz`/`width_khz`/`time_ms`/`type` --
+  all four of the live-cross-synced start/stop/center/width values
+  persisted, not just the primary pair, for an exact round trip) and
+  camera-acquisition fields (`camera_fps`, `camera_start`,
+  `dynamic_camera_start`, `camera_start_array` (10 fields),
+  `global_exposure`) -- all 15 fields, none excluded. Both standing
+  checks (live-action-trigger, hardware-query-gated range) came back
+  clean for all 15. See Session 85 changelog entry.**
+
+  **Status: RESOLVED.** Every field identified in the original audit is
+  now persisted (three deliberate exclusions: `conversion_min`/
+  `conversion_max`/`image_continuous`, none of them passive
+  configuration). No remaining batches. The general caution below
+  remains load-bearing for any *future* field ever added to a manual
+  tab, not just as a closed historical note: **confirm no candidate
+  field is a live action trigger** (a connected signal with real side
+  effects, like `image_continuous`) **and confirm no candidate field
+  has a hardware-query-gated range or other state that could silently
+  discard a loaded value even without any signal being connected at
+  all** (like `zscan_z_start_um`/`zscan_z_end_um`) -- "looks like a
+  plain config field" is not sufficient on its own for either check.
 - **The LabVIEW port registry (`labview_ports.py`) is confirmed materially
   incomplete.** Session 11. Entire `AD2_MSO_SDK_class` surface (17 real VIs,
   1 documented), several `AD2_SDK_class`/`AD2_WFG_SDK_class`/
@@ -556,13 +768,6 @@ historical notes. This document is a live issue register, whereas
   (`qt_ui.py`). It is retained as migration reference only and now carries an
   explicit module banner saying it is not a supported hardware-control surface.
   **Status: retained legacy, not an active removal task.**
-- **`qt_ui_v2.py`/`MainWindowV2` remains explicitly not the default launch
-  target.** Session 3 set it as default; Session 4 explicitly reverted that
-  per direct user instruction ("not yet hardware-verified... must not be the
-  default until the user explicitly approves it") -- deliberate, not a bug.
-  Still pending hardware verification and approval despite working sidebar
-  panels, valve handshake, and Init dialog fixes. **Status: DESIGN FORK,
-  deliberately held.**
 - **DO Custom remains legacy/nonessential** per `docs/legacy_unresolved_
   items.md` -- should stay out of the active workflow unless new LabVIEW or
   hardware evidence proves it load-bearing. Not from the changelog directly;
@@ -626,6 +831,13 @@ historical notes. This document is a live issue register, whereas
   Their default/no-confirmation paths may be passive, but any action-capable
   mode is operator-gated. Their results must be recorded as hardware evidence,
   not inferred from unit-test results.
+- **Legacy action-capable scripts under `tools/` are manual-only, not pytest
+  coverage.** `test_hamamatsu_camera.py`, `test_qmix_pump.py`, and
+  `capture_ad2_wavegen_scope*.py` are outside `testpaths` and explicitly set
+  `__test__ = False`, but can still open/configure hardware without the newer
+  confirmation gates. Keep them as historical diagnostics; do not treat them
+  as approved procedures or automated evidence. **Status: RETAINED LEGACY,
+  MANUAL-ONLY.**
 
 ## Other
 
@@ -713,9 +925,19 @@ historical notes. This document is a live issue register, whereas
   **Status: OPEN, low priority** -- same disposition as the
   `instruments.py` backlog entry above: revisit if any of these becomes
   reachable, or during a future cleanup pass.
-- **`hamamatsu_dcam.py` line-by-line review (2026-07-31) found 1 more
-  low-priority item, beyond the 3 MEDIUM findings fixed the same day --
-  see the Session 65 changelog entry.**
+- **Camera initialization and capture-session rollback were hardened in the
+  current working tree (2026-08-04).** A failed `dev_open()` now rolls back
+  the partially created DCAM object and API initialization;
+  `HamamatsuCamera.cleanup()` still attempts backend close when capture stop
+  fails; and `Application.run_experiment2()` now attempts capture cleanup when
+  either capture start or frame reading raises while preserving the primary
+  acquisition error. These boundaries are covered by fake-only lifecycle
+  tests. They did not require a real-camera action, and are not new hardware
+  validation evidence.
+- **`hamamatsu_dcam.py` line-by-line review (2026-07-31) found 1 remaining
+  low-priority item, beyond the findings fixed then and the rollback hardening
+  recorded above -- see the Session 65 changelog entry for the historical
+  review.**
   1. `_stop_capture_if_active()` clears `self.capture_active = False` in a
      `finally` block regardless of whether the real `self.dcam.cap_stop()`
      call succeeded or raised
@@ -731,44 +953,30 @@ historical notes. This document is a live issue register, whereas
      `dcam.*` call anyway (`is_opened()`/`_check()` guards throughout).
   **Status: OPEN, low priority** -- same disposition as the
   `instruments.py`/`qmix_backend.py` backlog entries above.
-- **`waveforms.py` line-by-line review (2026-07-31) found 1 more
-  low-priority item, beyond the 2 findings fixed the same day (1 local
-  to `waveforms.py`, 1 in `instruments.py`'s `AD2Sdk`) -- see the
+- **`waveforms.py` line-by-line review (2026-07-31) found 1 remaining
+  low-priority item, beyond the findings fixed the same day -- see the
   Session 66 changelog entry.**
   1. `WaveFormsBackend._enum_value()`'s silent default-value fallback
      ([waveforms.py:193-198](../src/thermo_acoustic/waveforms.py:193))
      -- backs `_FUNCTIONS`/`_TRIGGER_SOURCES`/`_DO_TYPES`/`_DO_IDLE`.
      Checked: all four are currently exhaustive 1:1 matches of their
-     corresponding `ad2.py` enums, so the silent-default branch is dead
-     code for every valid enum member today, and doubly so since
-     `ad2.py`'s own `_coerce_enum()` already independently
-     silently-defaults on an unrecognized string before the value ever
-     reaches this file. Not fixed -- not currently reachable -- but no
-     test enforces that each enum and its `waveforms.py` dict stay in
-     lockstep, so a future enum member added without updating the
-     matching dict would silently misconfigure hardware rather than
-     raise.
-  2. `AD2Sdk.do_configure()` ([instruments.py:376-381](../src/thermo_acoustic/instruments.py:376))
-     has the identical optimistic-update-before-confirmation shape fixed
-     in `config_wfg()`/`wfg_configure()`/`config_do_custom()`/
-     `config_do_clock_special()` the same day (Session 66) -- assigns
-     `self.do_config` before the real backend call is confirmed. Not
-     fixed: it wasn't one of the four methods named in that task's
-     scope. **`AD2Sdk.wfg_start_stop_all_ch()`
-     ([instruments.py:507-511](../src/thermo_acoustic/instruments.py:507))
-     has the identical shape** -- `self.get_wfg_config().running =
-     running` mutates before the backend call is confirmed -- found
-     during the targeted `qt_ui.py`/`qt_ui_v2.py` UI audit (Session 69)
-     while auditing direct hardware call sites; confirmed genuinely
-     reachable from the manual WFG tab's "Configure" button
-     ([qt_ui.py:2987](../src/thermo_acoustic/qt_ui.py:2987)) and the
-     Abort path ([qt_ui.py:3607](../src/thermo_acoustic/qt_ui.py:3607)).
-     Folded into this entry rather than opening a new one -- same root
-     cause as `do_configure()`.
-  **Status: OPEN, low priority** -- same disposition as the
-  `instruments.py`/`qmix_backend.py`/`hamamatsu_dcam.py` backlog entries
-  above; revisit `do_configure()`/`wfg_start_stop_all_ch()` alongside
-  any future pass over these sibling methods.
+     corresponding `ad2.py` enums, so the silent-default branch was dead
+     code for every valid enum member at review time. That was still unsafe
+     for a future enum/configuration mismatch.
+  **Resolved in the current working tree (2026-08-02; pending review):**
+  `AD2Sdk.do_configure()` and `AD2Sdk.wfg_start_stop_all_ch()` now use the
+  same commit-after-confirmation pattern. The latter configures a copied
+  `WfgConfig`, and both retain their last confirmed cached state if the
+  backend raises. Focused raising-backend tests and the complete offline suite
+  pass. This is not an open-item candidate unless real-hardware verification
+  finds a separate issue.
+  **Resolved in the current working tree (2026-08-04; pending review):**
+  `ad2._coerce_enum()` preserves defaults only for missing values and rejects
+  explicit unknown enum strings; `WaveFormsBackend._enum_value()` accepts only
+  known mappings or raw integer SDK values and otherwise raises. Focused
+  fake-only regression tests cover both boundaries. This entry remains as
+  historical rationale, not an open item. **Status: RESOLVED in the working
+  tree, pending review.**
 - **The Experiment tab has no general per-channel FM-modulation
   control (feature-completeness note, not a bug; found during the
   targeted `qt_ui.py`/`qt_ui_v2.py` UI audit, Session 69).**
@@ -881,8 +1089,8 @@ historical notes. This document is a live issue register, whereas
   production environment doesn't actually have) should be considered
   closed going forward by running `python tools/check_environment.py`
   after any environment change** -- re-run it, don't re-investigate by
-  hand, if this is ever suspected again. **Status: RESOLVED, not yet
-  committed** -- pending review.
+  hand, if this is ever suspected again. **Status: RESOLVED, committed in
+  `17f24dd`.**
 - **Valve-handshake hardening (Session 43 Part 2) was investigated and left
   "uncommitted, pending a decision" in the changelog -- but has since been
   committed (`8149bc1`, "Harden valve initialize() to reject unrecognized
@@ -924,17 +1132,94 @@ historical notes. This document is a live issue register, whereas
   `PiezoStage.disconnect()`, and `Application._cleanup_instruments()`
   each independently evolved a different error-handling shape for
   device teardown. `docs/hardware_safety_patterns.md`'s "Standard
-  hardware-cleanup shape" section (added Session 57) documents
-  `QmixPumpBackend.close()`'s shape as the required template for any
-  *new* hardware module going forward. **One retrofit landed
-  (pending_feedback.md item 6, Task 2):** `PiezoStage.disconnect()` now
-  matches the template's timeout-guarded-thread + collect-then-raise-once
-  shape exactly (previously plain try/except, no timeout guard -- a hung
-  Kinesis call could have blocked indefinitely). `HamamatsuDcamBackend.close()`
-  (best-effort, never raises) and `Application._cleanup_instruments()`
-  (device-level, not step-level, orchestration) remain their own separate
-  shapes -- unifying *those* two is still a real design decision, not
-  attempted here (this was a scoped, approved single-method retrofit, not
-  a blanket unification). **Status: OPEN for
-  `HamamatsuDcamBackend`/`Application` (documented, not unified);
-  RESOLVED for `PiezoStage.disconnect()` and future code.**
+  hardware-cleanup shape" section (added Session 57) documents the
+  collect-errors + timeout-wrap + combined-raise shape as the required
+  template for any *new* hardware module going forward.
+  **Update (cross-module architecture review, 2026-08-02): the
+  timeout-wrap mechanism itself is no longer independently implemented
+  three times.** `QmixPumpBackend._run_close_step()`,
+  `PiezoStage._run_disconnect_step()` (retrofitted with a timeout guard
+  per `pending_feedback.md` item 6 Task 2), and
+  `Application._run_cleanup_call_with_timeout()` all now call one shared
+  `hw_logging.run_with_timeout()` utility -- concrete evidence the
+  "document a copyable template" approach alone wasn't propagating
+  reliably (see below). `HamamatsuDcamBackend.close()` (best-effort,
+  never raises -- a deliberately different design per Finding F's own
+  reasoning, not an inconsistency) and `Application._cleanup_instruments()`
+  (device-level orchestration around the shared per-step timeout guard,
+  not a competing implementation of it) remain their own shapes by
+  design, not by omission.
+  **New gap found by the same review: `TecController.cleanup()`
+  (`tec.py`) has no timeout guard of any kind** -- added after the
+  original Session 57 audit, and didn't pick up the documented template
+  despite the doc's explicit instruction to use it for new modules. Not
+  fixed in this pass (`tec.py` is part of the still-uncommitted TEC
+  integration, out of scope here) -- low real-world urgency today since
+  `MeerstetterTecBackend` has no real client wired yet, so `close()`
+  can't actually hang against real hardware, but worth applying
+  `run_with_timeout()` there once TEC gets a real backend.
+  **Status: RESOLVED for the shared timeout mechanism
+  (`QmixPumpBackend`/`PiezoStage`/`Application` now share one
+  implementation); OPEN for `TecController.cleanup()` (no guard at all)
+  and for `HamamatsuDcamBackend`'s deliberately-different shape (a
+  design decision, not a gap).**
+- **STALE, corrected Session 78: `Valve.wait_until_ready()` has no
+  abort-awareness (fixed timeout only).** Originally flagged (2026-08-02
+  cross-module architecture review) as an inconsistency against the
+  pump's `wait_for_pump()`, which at the time checked `Application.
+  listen_abort()`. **That comparison point no longer applies: Session 78
+  deliberately removed `wait_for_pump()`'s abort check as a real
+  safety-behavior fix** (Abort must never interrupt an in-progress pump
+  move mid-flush -- see the Abort entry above). So `Valve.wait_until_ready()`
+  having no abort-awareness is now the *consistent* state, not a gap --
+  no instrument's own hardware-wait loop should be abort-interruptible
+  anymore; the only abort check anywhere is the between-repeats one in
+  `qt_ui.py`'s `_run_experiment_series_body()`. **Updated (Session 80):**
+  `TecController.wait_until_stable()`'s `should_abort` parameter still
+  exists as a general `tec.py` API feature, but it is no longer fed by
+  the real production call path -- `run_temperature_series()` stopped
+  passing `self.listen_abort` into it and now checks `self.stop_fired`
+  once per temperature point instead, the same between-units convention
+  as everything else. This closes what used to be described here as a
+  "live, intentional exception" for TEC temperature-scan waits; there is
+  no longer a carve-out to conflate. **Status: RESOLVED (by the
+  comparison point no longer holding, not by adding abort-awareness to
+  the valve).**
+- **`AD2Sdk.config_do_custom()` and `config_do_clock_special()` write to
+  overlapping state (`self.do_config`) with no conflict detection.**
+  Found during the same review. Both assign to `self.do_config` (in
+  addition to their own `self.do_custom_config`/`self.do_clock_settings`)
+  -- if a future change ever wired both into the same `run_experiment2()`
+  run, the second call would silently clobber the first's confirmed
+  configuration with no error or warning, the same "silent state
+  clobber" shape found and fixed elsewhere this session, just not yet
+  triggered here. Currently dormant/unreachable: nothing in the
+  automated `run_experiment2()` path calls `config_do_custom()` today
+  (confirmed via the qt_ui.py call-site audit). **Not fixed -- not
+  worth restructuring dormant code with no reported issue.** Flag for
+  design review if `config_do_custom()` is ever wired into the automated
+  path alongside `config_do_clock_special()`. **Status: OPEN, low
+  priority, latent risk only.**
+- **Pump&Valve "Syringe" dropdown looks live-selected but has no real
+  effect until "ConfigureSyringe" is clicked -- a real operator-confusion
+  trap, found investigating the Refill/Empty flow-rate rejection
+  (2026-08-03).** Selecting a different syringe in the dropdown
+  (`self.syringe`, [qt_ui.py:2119](../src/thermo_acoustic/qt_ui.py:2119)-area
+  `syringe_form`) only updates the widget's own displayed selection --
+  the real pump's configured geometry (and therefore its real live
+  `max_flow_rate_ul_min`/`max_volume_ml`) does not change until the
+  separate "ConfigureSyringe" button is pressed
+  (`QmixPumpBackend.configure_syringe()`). Confirmed via a real
+  `logs/hardware_transactions.log` session: the dropdown showed "BD
+  5ml" selected while the pump remained connected with the config
+  file's own default "1 ml Glass" geometry (`Cetoni_1pump_config_FM`'s
+  `nemesys.xml`), since no `configure_syringe` call ever fired that
+  session before Refill/Empty ran -- an operator has no way to tell
+  from the dropdown alone whether the syringe they see selected is the
+  one actually active on the real device. **Not fixed -- flagged for a
+  future UX pass:** possible directions include disabling Refill/Empty/
+  Generate Flow/Go to Level until the dropdown selection has been
+  applied, or a visible "applied"/"pending" indicator next to the
+  dropdown reflecting whether the last `configure_syringe()` call
+  matches the current selection. **Status: OPEN, real operator-facing
+  risk, not yet fixed.**

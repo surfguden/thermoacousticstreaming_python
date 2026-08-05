@@ -26,6 +26,7 @@ CORE_DEPENDENCIES: dict[str, tuple[str, str]] = {
     "npTDMS": ("nptdms", "workflows.py -- writing data.tdms; missing until 2026-07-31"),
     "numpy": ("numpy", "workflows.py / qt_ui.py -- top-level imports, always needed"),
     "pythonnet": ("clr", "thorlabs_piezo.py -- real Z-stage/piezo motion via Kinesis .NET"),
+    "mecom": ("mecom", "tec.py -- real Meerstetter TEC controller via pyMeCom (MeComSerial)"),
 }
 
 # Only needed for a standalone diagnostic script, not the real production

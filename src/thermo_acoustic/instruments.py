@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 import logging
 import math
@@ -127,9 +128,9 @@ class SerialTextCommandBackend:
 class PumpBackend(Protocol):
     def initialize(self, configuration_path: Path) -> None: ...
 
-    def refill(self) -> None: ...
+    def refill(self, flow_rate: float | None = None) -> None: ...
 
-    def empty(self) -> None: ...
+    def empty(self, flow_rate: float | None = None) -> None: ...
 
     def stop(self) -> None: ...
 
@@ -323,13 +324,17 @@ class AD2Sdk:
         return self.get_wfg_config()
 
     def wfg_start_stop_all_ch(self, running: bool) -> None:
-        self.get_wfg_config().running = running
+        # Configure a copy first: the existing cached config is the last
+        # confirmed hardware state and must survive a failed start/stop call.
+        new_config = deepcopy(self.get_wfg_config())
+        new_config.running = running
         handle = self.open_and_use_first_device()
         if handle is None:
             raise AD2SdkError(
                 "wfg_start_stop_all_ch() called while AD2 is disabled -- caller must check ad2.enabled first."
             )
-        self.get_backend().configure_wfg(handle, self.get_wfg_config())
+        self.get_backend().configure_wfg(handle, new_config)
+        self.wfg_config = new_config
 
     def get_do_config(self) -> DoConfig:
         if self.do_config is None:
@@ -393,11 +398,14 @@ class AD2Sdk:
         channel.custom_data.count_of_bits = len(bits)
 
     def do_configure(self, config: DoConfig | dict | None) -> None:
-        self.do_config = coerce_do_config(config)
+        # Keep the cached value as the last confirmed hardware config until
+        # the backend accepts this requested replacement.
+        new_config = coerce_do_config(config)
         handle = self.open_and_use_first_device()
         if handle is None:
             raise AD2SdkError("do_configure() called while AD2 is disabled -- caller must check ad2.enabled first.")
-        self.get_backend().configure_do(handle, self.get_do_config())
+        self.get_backend().configure_do(handle, new_config)
+        self.do_config = new_config
 
     def do_reset(self) -> None:
         handle = self.open_and_use_first_device()
@@ -407,13 +415,17 @@ class AD2Sdk:
         self.do_config = DoConfig()
 
     def start_stop_do(self, running: bool) -> None:
-        self.get_do_config().running = running
+        # Keep the cached value as the last confirmed hardware configuration
+        # until the backend accepts the requested start/stop transition.
+        new_config = deepcopy(self.get_do_config())
+        new_config.running = running
         handle = self.open_and_use_first_device()
         if handle is None:
             raise AD2SdkError(
                 "start_stop_do() called while AD2 is disabled -- caller must check ad2.enabled first."
             )
-        self.get_backend().configure_do(handle, self.get_do_config())
+        self.get_backend().configure_do(handle, new_config)
+        self.do_config = new_config
 
     def mso_init(self, phdwf: object | int | None = None) -> None:
         if phdwf is None:
@@ -728,10 +740,25 @@ class HamamatsuCamera:
             self.backend.sw_trigger()
 
     def cleanup(self) -> None:
-        self.stop_capture()
+        errors: list[str] = []
+        try:
+            self.stop_capture()
+        except Exception as exc:
+            errors.append(f"stop capture failed: {exc}")
+
+        backend_closed = self.backend is None
         if self.backend is not None:
-            self.backend.close()
-        self.handle = None
+            try:
+                self.backend.close()
+                backend_closed = True
+            except Exception as exc:
+                errors.append(f"close failed: {exc}")
+
+        if backend_closed:
+            self.handle = None
+            self.capturing = False
+        if errors:
+            raise RuntimeError("Hamamatsu camera cleanup failed: " + "; ".join(errors))
 
 
 @dataclass(slots=True)
@@ -794,9 +821,9 @@ class CetoniPump:
         # does, via QmixPumpBackend.reference_move()'s poll-until-confirmed
         # or raise).
 
-    def refill(self) -> None:
+    def refill(self, flow_rate: float | None = None) -> None:
         if self.backend is not None:
-            self.backend.refill()
+            self.backend.refill(flow_rate)
             # Same fix as initialize() above, same reason: the real
             # backend's own refill() fills the physical syringe to its
             # true max_volume_ml (see QmixPumpBackend.refill()), which is
@@ -808,9 +835,9 @@ class CetoniPump:
         else:
             self.fill_level = self.max_volume_ml
 
-    def empty(self) -> None:
+    def empty(self, flow_rate: float | None = None) -> None:
         if self.backend is not None:
-            self.backend.empty()
+            self.backend.empty(flow_rate)
         self.fill_level = 0.0
 
     def stop(self) -> None:
@@ -945,6 +972,13 @@ class Valve:
             command = self.command_position_1 if position == 1 else self.command_position_2
             self.backend.write(command)
         self.position = position
+        if self.backend is not None:
+            # A successful serial write confirms only that the command was
+            # accepted by the host serial API. Do not carry a previous
+            # position's "confirmed" status across this new request; the next
+            # S-query/readback must confirm the requested protocol position.
+            command = self.command_position_1 if position == 1 else self.command_position_2
+            self.status_note = f"requested {command}; confirmation pending"
 
     def wait_until_ready(self, timeout_s: float = 1.0, poll_interval_s: float = 0.05) -> bool:
         # Bounded poll of the same "S\r" handshake used at initialize() time,

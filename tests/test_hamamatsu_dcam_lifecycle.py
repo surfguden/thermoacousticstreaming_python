@@ -240,6 +240,50 @@ class FakePartialSequenceFaultDcamModule(FakeDcamModule):
             return True
 
 
+def test_failed_device_open_rolls_back_dcam_object_and_api_initialization():
+    class CountingApi:
+        init_calls = 0
+        uninit_calls = 0
+
+        @classmethod
+        def init(cls):
+            cls.init_calls += 1
+            return True
+
+        @classmethod
+        def uninit(cls):
+            cls.uninit_calls += 1
+            return True
+
+        @classmethod
+        def lasterr(cls):
+            return "no camera"
+
+    class FailingOpenDcam(FakeDcamModule.Dcam):
+        def dev_open(self):
+            self.calls.append(("dev_open",))
+            return False
+
+        def lasterr(self):
+            return "open failed"
+
+    class FailingOpenModule(FakeDcamModule):
+        Dcamapi = CountingApi
+        Dcam = FailingOpenDcam
+
+    backend = HamamatsuDcamBackend()
+    backend.dcam_module = FailingOpenModule
+    backend.dcamapi = CountingApi
+
+    with pytest.raises(HamamatsuDcamError, match="Dcam.dev_open failed"):
+        backend.open_camera()
+
+    assert CountingApi.init_calls == 1
+    assert CountingApi.uninit_calls == 1
+    assert backend.initialized is False
+    assert backend.dcam is None
+
+
 def test_image_sequence_reuses_active_capture_buffer_without_reallocating():
     FakeDcamModule.instances = []
     backend = HamamatsuDcamBackend(buffer_frames=3)

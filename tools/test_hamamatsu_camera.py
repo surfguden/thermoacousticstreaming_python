@@ -1,4 +1,13 @@
+"""Legacy manual camera diagnostic, not automated pytest coverage.
+
+Running this file opens/configures the real camera, captures a frame, and
+writes an ignored TIFF artifact. It has no operator-confirmation gate; use the
+gated discovery/smoke tools in ``hardware_tests/`` for new hardware work.
+"""
+
 from __future__ import annotations
+
+__test__ = False
 
 import sys
 from pathlib import Path

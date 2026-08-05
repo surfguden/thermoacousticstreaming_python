@@ -18,16 +18,23 @@ experiment program. They are manual tools, not normal pytest coverage:
 - Tests should not modify `src/`, `tests/`, `tools/`, `UI_tabs/`,
   `dcamsdk4/`, or `qmix_sdk_for_codex/` without later approval.
 
-## Devices Found
+## Devices Referenced by Current Code and Manual Tools
 
-- Digilent Analog Discovery / Analog Discovery 3 through the WaveForms SDK.
+This section records code paths and local operator notes, not an independent
+inventory of currently connected hardware. Confirm the physical device model,
+ports, wiring, and routing before an action-capable probe.
+
+- Digilent Analog Discovery-family hardware through the WaveForms SDK. The
+  exact connected model must be confirmed at the bench; legacy text uses both
+  AD2 and AD3 names.
   The code covers wavegen, digital output, analog-in/MSO capture, device
   enumeration, PC trigger, reset, and close-all behavior.
 - Hamamatsu camera through the DCAM SDK Python wrapper.
 - Cetoni/Qmix pump through the Qmix SDK Python wrapper and QmixElements project
   configuration.
-- MX Valve 2 through serial text commands over a COM/VISA-style resource.
-- Current Z hardware through a Thorlabs PPC001/PFM450(E) precision-piezo path.
+- Rheodyne/MX valve through serial text commands over a COM-style resource.
+- The current code's manual Z-scan path uses a Thorlabs PPC001/PFM450(E)
+  precision-piezo backend.
   It uses the Kinesis USB API, not a generic serial-device backend. The old
   Prior COM7 implementation is retained only as migration history and is not
   the current hardware path.
@@ -65,11 +72,19 @@ wavegen/digital-output paths.
 - `tools/release_ad2.py`: WaveForms device enumeration and close-all utility.
 - `tools/capture_ad2_wavegen_scope.py` and
   `tools/capture_ad2_wavegen_scope_matplotlib.py`: existing AD2 output/capture
-  tests. These actively enable wavegen and should not be used as first-contact
-  tests.
-- `tools/test_hamamatsu_camera.py`: existing camera open/snapshot test.
-- `tools/test_qmix_pump.py`: existing Qmix pump initialization test, with an
-  optional flow command.
+  diagnostics. These actively enable wavegen and should not be used as
+  first-contact tests.
+- `tools/test_hamamatsu_camera.py`: legacy manual camera open/configure/
+  snapshot diagnostic; it captures and writes a TIFF without an operator
+  confirmation gate.
+- `tools/test_qmix_pump.py`: legacy manual Qmix diagnostic; initialization can
+  enable the pump and its optional flow argument can move it. It has no
+  confirmation gate.
+
+The four legacy `tools/` diagnostics above are marked `__test__ = False` and
+live outside `testpaths = ["tests"]`. They are retained as historical tools,
+not automated evidence or approved first-contact procedures; prefer the
+explicitly gated scripts in `hardware_tests/`.
 - `README.md`, `docs/current_workflow_audit.md`, and
   `docs/known_open_items.md`: current operator-facing status and safety notes.
   `docs/HANDOVER.md` and `docs/PORTING_TBD.md` are historical/reference
@@ -95,9 +110,9 @@ wavegen/digital-output paths.
   `QMIXSDK` environment variable if set, otherwise derives a local path.
 - Qmix configuration path default:
   `C:\Users\Lab user\Desktop\Franzi\video paper 2\Paper 2 slow flow\Configurations\Cetoni_1pump_config_FM`.
-- Serial resources: valve default `COM5` (real-hardware-confirmed; `COM6` was
-  a standing documentation error). Prior `COM7` is legacy only and is not used
-  for the current PPC001 piezo.
+- Serial resources: the app default for the valve is `COM5`; physical wiring
+  and the fluidic route must still be confirmed at the bench. Prior `COM7` is
+  legacy only and is not used for the PPC001 path.
 - Serial defaults for the current valve backend: 19200 baud, 8 data bits, no
   parity, 1 stop bit, no flow control, 1 s read timeout, 5 s write timeout,
   and bare carriage-return (`\r`) command termination.
@@ -170,8 +185,9 @@ semantics, and operator confirmation.
 - The pump system is still the original neMESYS/Qmix pump system.
 - It was previously configured or used as a two-unit/two-pump setup.
 - The two-unit setup did not work reliably.
-- The current physical setup has only one pump unit connected.
-- Current active Python validation should use the one-pump QmixElements
+- Current operator notes describe a one-pump setup; confirm that setup before
+  enabling a real pump.
+- The current code's recommended QmixElements configuration is the one-pump
   configuration:
   `C:\Users\Lab user\Desktop\Franzi\video paper 2\Paper 2 slow flow\Configurations\Cetoni_1pump_config_FM`
 - The previous `two_pumps` configuration is not suitable for the current

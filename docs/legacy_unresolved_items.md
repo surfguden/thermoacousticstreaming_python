@@ -9,16 +9,17 @@ a human decision, hardware confirmation, or focused implementation resolves them
 
 ## Hardware Integration
 
-- **Real TEC MeCom mapping remains unresolved.** TEC Service Software/MeCom/
-  pyMeCom are the expected vendor stack, but this repository still does not
-  contain a reviewed Meerstetter client or register map. The current TEC path is
-  a conservative scaffold: disabled by default, simulated by default, locally
-  range-limited, and refusing real connection before I/O because the shipped
-  UI/factory cannot supply a reviewed client/factory. A UI resource field alone
-  does not enable real TEC control. The installed controller model/firmware,
-  selected channel instance, communication address, and persistence mapping are
-  also unrecorded. See `docs/tec_verification_matrix.md` for the official-source
-  inventory and step-by-step verification matrix.
+- **Real TEC MeCom operation is unresolved pending reconciliation.** The
+  current *uncommitted* `tec.py`/factory/test work contains a pyMeCom client and
+  historical real-hardware claims. Independent source review confirms its five
+  named parameter IDs against the installed pyMeCom table and official
+  TEC-Family protocol, but does not authenticate those bench claims or establish
+  model/firmware compatibility. Its `write_config()` is deliberately a RAM-only
+  no-op, not the vendor's flash-save operation. Keep TEC disabled/simulated by
+  default and require human review of the implementation, hardware record, and
+  commit state before real operation. See the canonical
+  entry in `docs/known_open_items.md` and the evidence inventory in
+  `docs/tec_verification_matrix.md`.
 - **Manual PPC001 Z-scan is integrated only as a manual calibration feature.**
   The Qt Z-Scan tab can connect to the PPC001/PFM450(E), query live travel
   range, optionally switch to ClosedLoop after explicit confirmation, and then
@@ -32,15 +33,26 @@ a human decision, hardware confirmation, or focused implementation resolves them
   command. It is intentionally ignored by `.gitignore`, deliberately not named
   `test_*.py`, and must not become part of automated pytest collection without a
   separate review.
+- **Legacy action-capable `tools/` scripts remain manual-only.**
+  `tools/test_hamamatsu_camera.py`, `tools/test_qmix_pump.py`, and the two
+  `tools/capture_ad2_wavegen_scope*.py` scripts sit outside pytest collection
+  and are now explicitly marked `__test__ = False`. They can still perform
+  real actions without the confirmation gates used by newer hardware tools, so
+  they are retained as historical diagnostics rather than approved procedures.
 - **Passive Thorlabs/APT discovery remains separate from PPC001 motion.**
   `thorlabs_apt.py` and `hardware_tests/test_thorlabs_apt_discovery.py` are
   discovery-only helpers. Do not use their "discovery-only" status to describe
   the separate manual PPC001 Z-Scan motion path.
 - **Qmix/pump real-motion semantics still need hardware confirmation.** The
-  one-pump Qmix configuration is the current validated setup, and the UI now
-  labels the flow-rate sign convention. Real pump flow, reference move,
+  current code is configured around a one-pump Qmix setup, and the UI labels
+  the flow-rate sign convention. Real pump flow, reference move,
   syringe-specific geometry, and flush behavior still require deliberate
   operator confirmation before broad use.
+- **Current Qmix initialization is hardware-blocked, not software-approved.** A
+  fresh bus session relatches SDK error `0x81FF` (`CAN Tx Queue Overrun`) while
+  the pump remains stopped and disabled. Initialization correctly refuses the
+  fault and does not clear it automatically. Diagnose the CAN adapter/bus and
+  controller event state in QmixElements before further real pump use.
 - **Valve physical routing remains hardware-dependent.** The code sends Rheodyne
   position commands `P01\r` and `P02\r` and rejects unknown initialization
   responses. The physical meaning of position 1 vs. position 2 and COM-port
@@ -48,9 +60,18 @@ a human decision, hardware confirmation, or focused implementation resolves them
 
 ## AD2 and Timing
 
-- **Full LabVIEW acoustic output remains blocked.** The full `1.975 MHz`, `2 V`,
-  `60 s` condition is not considered a default-safe action and must remain behind
-  explicit gates.
+- **Staged-script safety gates do not protect the canonical GUI.**
+  `CONFIRM_REAL_HARDWARE` and timing acknowledgements are command-line
+  interlocks in newer `hardware_tests/` tools. They are not application-wide
+  policy: after real devices are initialized, the GUI can start WFG output,
+  pump/valve actions, and an experiment without those flags. This is an
+  unresolved operator-safety boundary and must not be described as if the
+  canonical GUI were already confirmation-gated.
+
+- **Full LabVIEW acoustic output is not approved.** The staged smoke script
+  blocks the full `1.975 MHz`, `2 V`, `60 s` condition behind explicit gates,
+  but the canonical GUI does not provide the same application-wide interlock.
+  Do not mistake the script refusal for a GUI-enforced block.
 - **DIO/LED timing has been migrated structurally, not fully hardware-proven.**
   The experiment path builds a DIO1 LED clock configuration from Camera FPS,
   Camera Start, Frames, and Dynamic Camera Start Time, but physical timing should
@@ -70,10 +91,14 @@ a human decision, hardware confirmation, or focused implementation resolves them
   unless future backend work makes them operational.
 - **Elapsed Time and Time Left are display stubs.** They are marked as not wired
   because no current timing update path drives them.
-- **v2 is an opt-in preview UI, not a separate implementation.** Its manual
-  WFG/MSO/PumpValve/Camera buttons reuse the validated v1 panel builders and
+- **v2 is an opt-in transitional UI, not a separate implementation.** Its manual
+  WFG/MSO/PumpValve/Camera buttons reuse the v1 panel builders and
   shared `Application` instance. That reuse is deliberate; v2 should not drift
   into a second hardware-control implementation.
+- **v3 is the active layout-development direction and v2 is its rollback path.**
+  `MainWindowV3` subclasses `MainWindowV2`; it reorganizes layout and manual
+  panels without introducing another hardware runtime. Neither transitional UI
+  is independently hardware-verified, and v1 remains the approved default.
 - **Settings persistence is not comprehensive.** Several manual-tab-only fields
   remain outside the saved settings file by long-standing design ambiguity. Add
   persistence only when the expected operator workflow is explicit.

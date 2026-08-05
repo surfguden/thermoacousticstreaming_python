@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import queue
 from dataclasses import dataclass, field
 from pathlib import Path
 import sys
-import threading
 import time
 from typing import Any
 
-from .hw_logging import log_call, log_transaction
+from .hw_logging import log_call, log_transaction, run_with_timeout
 
 
 class QmixPumpError(RuntimeError):
@@ -93,7 +91,19 @@ class QmixPumpBackend:
     sdk_python_path: Path = field(default_factory=_default_sdk_python_path)
     pump_name: str | None = None
     pump_index: int = 0
-    default_fill_flow_rate_ul_min: float | None = None
+    # 200 uL/s (2026-08-03): originally confirmed on real hardware via
+    # CETONI Elements, but with a different syringe actually configured
+    # than the one active by default -- this flat value alone caused real
+    # "Value range of parameter exceeded" SDK rejections on Refill/Empty
+    # once the smaller default syringe was connected
+    # (logs/hardware_transactions.log). Kept as the fallback TARGET (used
+    # when the qt_ui.py "Refill/Empty Flow Rate" field's value isn't
+    # passed through explicitly -- e.g. the legacy MessageName.CETONI_
+    # REFILL/CETONI_EMPTY dispatch path in application.py), but
+    # _fill_flow_rate() below now always clamps whatever target is in play
+    # to the currently-configured syringe's own live max, so this can
+    # never again be requested past what's actually mounted.
+    default_fill_flow_rate_ul_min: float | None = 200.0 * 60.0
     reference_move_timeout_s: float = 60.0
     qmixbus: Any = None
     qmixpump: Any = None
@@ -157,30 +167,58 @@ class QmixPumpBackend:
     def _enable_pump(self) -> None:
         pump = self._require_pump()
         if pump.is_in_fault_state():
-            pump.clear_fault()
-        if pump.is_in_fault_state():
-            raise QmixPumpError("Qmix pump remains in fault state after clear_fault().")
+            # A fault can represent an interlock, drive problem, or stale
+            # communication state. Clearing it is an actuator command, not a
+            # passive part of connecting, so initialization must fail closed
+            # and leave diagnosis/recovery to an explicit operator action.
+            detail = ""
+            read_last_error = getattr(pump, "read_last_error", None)
+            if callable(read_last_error):
+                try:
+                    last_error = read_last_error()
+                    code = getattr(last_error, "code", "unknown")
+                    message = getattr(last_error, "message", str(last_error))
+                    detail = f" Last device error: code={code}, message={message!r}."
+                except Exception as exc:
+                    detail = f" Last device error could not be read: {exc}."
+            raise QmixPumpError(
+                "Qmix pump is in a fault state; initialization will not clear faults automatically."
+                f"{detail} Inspect and resolve the fault in QmixElements before enabling the pump."
+            )
         if not pump.is_enabled():
             pump.enable(True)
 
-    def _fill_flow_rate(self) -> float:
-        if self.default_fill_flow_rate_ul_min is not None:
-            return self.default_fill_flow_rate_ul_min
+    def _fill_flow_rate(self, requested_ul_min: float | None = None) -> float:
+        # Clamped to the currently-configured syringe's own live-reported
+        # max_flow_rate_ul_min (2026-08-03): a flat, syringe-independent
+        # default was tried first (12000 uL/min = 200 uL/s, verified on
+        # real hardware) and caused real "Value range of parameter
+        # exceeded" SDK rejections on Refill/Empty
+        # (logs/hardware_transactions.log) once a smaller syringe than the
+        # one the verification used was actually configured. Clamping
+        # means the caller's requested/default target is used whenever the
+        # active syringe can reach it, and its magnitude is silently capped
+        # (not rejected) otherwise. Preserve the sign because negative flow
+        # denotes aspiration while positive flow denotes dispension.
         if self.max_flow_rate_ul_min is None:
             self.max_flow_rate_ul_min = float(self._require_pump().get_flow_rate_max())
-        return self.max_flow_rate_ul_min
+        target = requested_ul_min if requested_ul_min is not None else self.default_fill_flow_rate_ul_min
+        if target is None:
+            return self.max_flow_rate_ul_min
+        limit = abs(float(self.max_flow_rate_ul_min))
+        return max(-limit, min(float(target), limit))
 
-    def refill(self) -> None:
+    def refill(self, flow_rate: float | None = None) -> None:
         pump = self._require_pump()
         with log_call("pump", "refill") as result:
             max_volume = self.max_volume_ml if self.max_volume_ml is not None else float(pump.get_volume_max())
             self.max_volume_ml = max_volume
-            pump.set_fill_level(max_volume, self._fill_flow_rate())
+            pump.set_fill_level(max_volume, self._fill_flow_rate(flow_rate))
             result["response"] = max_volume
 
-    def empty(self) -> None:
+    def empty(self, flow_rate: float | None = None) -> None:
         with log_call("pump", "empty") as result:
-            self._require_pump().set_fill_level(0.0, self._fill_flow_rate())
+            self._require_pump().set_fill_level(0.0, self._fill_flow_rate(flow_rate))
             result["response"] = 0.0
 
     def stop(self) -> None:
@@ -229,7 +267,7 @@ class QmixPumpBackend:
         with log_call("pump", "set_fill_level", command=fill_level) as result:
             pump.set_fill_level(
                 float(fill_level),
-                self._fill_flow_rate() if flow_rate is None else float(flow_rate),
+                self._fill_flow_rate(flow_rate),
             )
             result["response"] = "applied"
 
@@ -287,7 +325,7 @@ class QmixPumpBackend:
         time_unit = self.qmixpump.TimeUnit.per_minute
         if text in {"ml/min", "millilitre/min", "milliliter/min"}:
             prefix = self.qmixpump.UnitPrefix.milli
-        elif text in {"ul/s", "uL/s".lower(), "microlitre/s", "microliter/s"}:
+        elif text in {"ul/s", "microlitre/s", "microliter/s"}:
             time_unit = self.qmixpump.TimeUnit.per_second
         elif text in {"ml/s", "millilitre/s", "milliliter/s"}:
             prefix = self.qmixpump.UnitPrefix.milli
@@ -338,25 +376,11 @@ class QmixPumpBackend:
         log_transaction("pump", "close", success=True, response="closed")
 
     def _run_close_step(self, name: str, action) -> list[str]:
-        result_queue: queue.Queue[BaseException | None] = queue.Queue(maxsize=1)
-
-        def run() -> None:
-            try:
-                action()
-            except BaseException as exc:  # pragma: no cover - defensive SDK cleanup path
-                result_queue.put(exc)
-            else:
-                result_queue.put(None)
-
-        worker = threading.Thread(target=run, name=f"qmix-close-{name}", daemon=True)
-        worker.start()
-        worker.join(max(self.close_timeout_s, 0.0))
-        if worker.is_alive():
-            return [f"Qmix {name} timed out after {self.close_timeout_s:.1f}s."]
-        try:
-            error = result_queue.get_nowait()
-        except queue.Empty:  # pragma: no cover - thread completed without reporting
-            return [f"Qmix {name} finished without reporting a result."]
-        if error is not None:
-            return [f"Qmix {name} failed: {error}"]
-        return []
+        # Cross-module architecture review (2026-08-02): now the shared
+        # hw_logging.run_with_timeout() utility -- was previously its own
+        # hand-copied implementation of the same shape
+        # Application._run_cleanup_call_with_timeout()/
+        # PiezoStage._run_disconnect_step() each independently
+        # re-implemented. Message wording ("Qmix {name} ...") unchanged.
+        error = run_with_timeout(action, f"Qmix {name}", self.close_timeout_s)
+        return [error] if error is not None else []

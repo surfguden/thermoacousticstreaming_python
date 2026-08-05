@@ -17,6 +17,7 @@ from thermo_acoustic.application import (
     STEP_CONFIGURE_WFG,
     STEP_FLUSH,
     STEP_INITIALIZE_EXPERIMENT,
+    STEP_ORDER,
     STEP_SAVE_RESULTS,
     STEP_WAIT_FOR_AD2_COMPLETION,
 )
@@ -107,8 +108,31 @@ def test_v2_is_separate_main_window_without_old_tab_widget(monkeypatch, tmp_path
     try:
         assert isinstance(window, qt_ui.MainWindow)
         assert not hasattr(window, "tabs")
-        assert window.windowTitle() == "Thermo Acoustic Streaming - New UI Preview"
+        assert window.windowTitle() == "Thermo Acoustic Streaming - Transitional UI (shared hardware runtime)"
         assert window.connection_button.text() == "* Not Connected"
+    finally:
+        window.close()
+
+
+def test_v2_abort_menu_explains_graceful_not_mid_operation_semantics(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        actions = {action.text(): action for action in window.menuBar().actions()}
+        assert "Abort" in actions
+        tooltip = actions["Abort"].toolTip()
+        assert "current repeat" in tooltip
+        assert "does not stop hardware" in tooltip
+    finally:
+        window.close()
+
+
+def test_v2_start_experiment_discloses_shared_real_hardware_boundary(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        start_exp = next(button for button in window.findChildren(QPushButton) if button.text() == "Start exp")
+        assert "currently initialized backends" in start_exp.toolTip()
+        assert "not protected" in start_exp.toolTip()
+        assert "Abort stops only after" in start_exp.toolTip()
     finally:
         window.close()
 
@@ -182,8 +206,10 @@ def test_v2_valve_status_flags_unverified_and_busy_responses(monkeypatch, tmp_pa
         assert window.valve_position_status.text() == "1 (P01)"
 
         window.app.valve.position = 2
+        window.app.valve.status_note = "requested P02; confirmation pending"
         window._refresh_status()
         assert window.valve_position_status.text() == "2 (P02)"
+        assert window.valve_connection_status.text() == "Connected (requested P02; confirmation pending)"
 
         window.app.valve.status_note = "unverified position response: 'ERR'"
         window._refresh_status()
@@ -355,6 +381,76 @@ def test_v2_initialization_progress_uses_existing_instrument_order(monkeypatch, 
         assert window.camera_connection_status.text() == "Connected"
         assert window.pump_connection_status.text() == "Connected"
         assert window.valve_connection_status.text() == "Connected"
+    finally:
+        window.close()
+
+
+def test_v2_tec_init_failure_reports_rollback_instead_of_stale_complete(monkeypatch, tmp_path):
+    # Regression test (2026-08-03): a user screenshot showed the
+    # Initialize dialog reporting AD2/Camera/Pump/Valve/Z-stage as
+    # "Complete" while Global Status simultaneously showed them "Not
+    # connected" -- traced to Application's real, deliberate, and
+    # already-tested "partial-initialization rollback" (see
+    # claude_code_change_log.md): one device's init failure rolls back
+    # every previously-successful device via _cleanup_instruments(),
+    # which genuinely disconnects them (AD2Sdk.cleanup() etc. reset
+    # device_handle/initialized). Global Status was accurately reporting
+    # that real rollback; the actual bug was that the Initialize
+    # dialog's own progress events never told it about the rollback, so
+    # its rows stayed frozen on "Complete" instead. This test confirms
+    # both halves stay true after the fix: the rollback itself is
+    # unchanged (still real, not removed), and the dialog's own events
+    # now report "Rolled back" for the previously-successful devices
+    # instead of leaving them on a now-false "Complete".
+    from thermo_acoustic.tec import TecController
+
+    def _raise_tec_failure(self) -> None:
+        raise RuntimeError("TEC not found")
+
+    monkeypatch.setattr(TecController, "initialize", _raise_tec_failure)
+
+    window = make_window(monkeypatch, tmp_path)
+    events = []
+    config = HardwareRuntimeConfig(
+        ad2_enabled=True,
+        sim_ad2=True,
+        camera_enabled=True,
+        sim_camera=True,
+        pump_enabled=True,
+        sim_pump=True,
+        valve_enabled=True,
+        sim_valve=True,
+        z_enabled=False,
+        thorlabs_apt_serial="44533854",
+        valve_resource="COM6",
+        cetoni_config_path=tmp_path,
+        tec_enabled=True,
+        sim_tec=True,
+        tec_port="",
+    )
+    try:
+        with pytest.raises(RuntimeError, match="TEC initialize failed"):
+            window._initialize_system(config, lambda kind, value: events.append((kind, value)))
+
+        # Each previously-successful device's LAST reported status must
+        # be "Rolled back", not the "Complete" it got a moment earlier.
+        final_status: dict[str, str] = {}
+        for kind, value in events:
+            if kind == "init_device":
+                name, status = value
+                final_status[name] = status
+        for name in ("AD2", "Camera", "Pump", "Valve"):
+            assert "Complete" not in final_status[name], f"{name} still shows stale Complete: {final_status[name]}"
+            assert "Rolled back" in final_status[name], f"{name}: {final_status[name]}"
+        assert final_status["TEC"] == "Failed"
+
+        # The rollback must still be real (not merely reported) -- Global
+        # Status must AGREE with the dialog now, not contradict it.
+        window._refresh_status()
+        assert window.ad2_connection_status.text() == "Not connected"
+        assert window.camera_connection_status.text() == "Not connected"
+        assert window.pump_connection_status.text() == "Not connected"
+        assert window.valve_connection_status.text() == "Not connected"
     finally:
         window.close()
 
@@ -691,7 +787,7 @@ def test_v2_experiment_sequence_view_has_seven_cards_in_named_step_order(monkeyp
 
 
 def test_v2_experiment_sequence_view_embeds_the_real_shared_group_widgets(monkeypatch, tmp_path):
-    # Each card re-parents v2's *existing*, already-validated group-box
+    # Each card re-parents v2's existing shared group-box
     # builders whole (not rebuilt) -- confirm identity, matching this file's
     # established reuse-verification convention (e.g.
     # test_v2_experiment_area_exposes_fm_sweep_and_frequency_scanning above).
@@ -719,21 +815,42 @@ def test_v2_experiment_sequence_view_embeds_the_real_shared_group_widgets(monkey
         window.close()
 
 
+def test_v2_flush_card_tooltip_explains_the_real_sequential_valve_pump_relationship(monkeypatch, tmp_path):
+    # Part A/C follow-up (2026-08-04): the real sequence (confirmed against
+    # the LabVIEW source and the current Python flush()) is valve position
+    # 1 -> pump move -> valve position 2, strictly sequential -- the pump
+    # never flows through a valve switch. The Flush card's own tooltip
+    # should say so, so the operator's mental model matches reality.
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        view = build_with_retry(window._experiment_sequence_view)
+        flush_card = view.step_card(STEP_FLUSH)
+
+        tooltip = flush_card.toolTip()
+        assert "position 1" in tooltip
+        assert "position 2" in tooltip
+        assert "idle" in tooltip.lower()
+    finally:
+        window.close()
+
+
 def test_v2_experiment_sequence_view_placeholder_cards_show_honest_empty_state(monkeypatch, tmp_path):
     # CaptureFrames/WaitForAd2Completion/SaveResults currently have no
     # Experiment-tab-specific configuration of their own (their real
     # behavior is entirely derived from other steps' settings) -- confirm
-    # they get the honest "no configuration" placeholder rather than
-    # invented content, and that no real field widget leaked into them.
+    # they get the honest "no configuration" compact row (restructure
+    # proposal 1, 2026-08-03) rather than invented content, and that no
+    # real field widget leaked into them.
     window = make_window(monkeypatch, tmp_path)
     try:
         view = build_with_retry(window._experiment_sequence_view)
 
         for step_name in (STEP_CAPTURE_FRAMES, STEP_WAIT_FOR_AD2_COMPLETION, STEP_SAVE_RESULTS):
             card = view.step_card(step_name)
+            assert isinstance(card, qt_ui_v2._CompactPlaceholderRow)
             labels = card.findChildren(QLabel)
-            assert len(labels) == 1
-            assert "No Experiment-tab configuration" in labels[0].text()
+            assert len(labels) == 2
+            assert any("no configuration for this step" in label.text() for label in labels)
     finally:
         window.close()
 
@@ -753,5 +870,103 @@ def test_v2_experiment_sequence_view_excludes_tec_scan_which_stays_a_separate_se
             card = view.step_card(step_name)
             assert not card.isAncestorOf(window.exp_tec_scan_enable)
             assert not card.isAncestorOf(window.exp_tec_points)
+    finally:
+        window.close()
+
+
+def test_v2_step_breadcrumb_has_seven_markers_in_step_order(monkeypatch, tmp_path):
+    # Phase 3 step-progress breadcrumb (2026-08-04): same 7-step order as
+    # ExperimentSequenceView's cards (both derive from application.py's
+    # STEP_ORDER, the single source of truth), all pending before any real
+    # progress event has ever arrived.
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        assert tuple(window.step_breadcrumb._markers.keys()) == STEP_ORDER
+        for step_name in STEP_ORDER:
+            assert window.step_breadcrumb.state_of(step_name) == "pending"
+    finally:
+        window.close()
+
+
+def test_v2_step_breadcrumb_marks_active_step_on_step_started_event(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        window._handle_worker_progress("step_started", STEP_CONFIGURE_WFG)
+
+        assert window.step_breadcrumb.state_of(STEP_CONFIGURE_WFG) == "active"
+        # Untouched steps stay pending -- a step_started event for one step
+        # must not imply anything about any other step's own state.
+        assert window.step_breadcrumb.state_of(STEP_INITIALIZE_EXPERIMENT) == "pending"
+        assert window.step_breadcrumb.state_of(STEP_CAPTURE_FRAMES) == "pending"
+    finally:
+        window.close()
+
+
+def test_v2_step_breadcrumb_completed_and_failed_styling_are_distinct_from_active(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        window._handle_worker_progress("step_started", STEP_INITIALIZE_EXPERIMENT)
+        window._handle_worker_progress("step_completed", STEP_INITIALIZE_EXPERIMENT)
+        window._handle_worker_progress("step_started", STEP_CONFIGURE_WFG)
+        window._handle_worker_progress("step_failed", (STEP_CONFIGURE_WFG, "simulated failure"))
+        window._handle_worker_progress("step_started", STEP_CONFIGURE_CAMERA)
+
+        assert window.step_breadcrumb.state_of(STEP_INITIALIZE_EXPERIMENT) == "completed"
+        assert window.step_breadcrumb.state_of(STEP_CONFIGURE_WFG) == "failed"
+        assert window.step_breadcrumb.state_of(STEP_CONFIGURE_CAMERA) == "active"
+
+        # Three genuinely different states must render three genuinely
+        # different colors -- not just three different internal state
+        # strings that happen to look identical on screen.
+        completed_style = window.step_breadcrumb._markers[STEP_INITIALIZE_EXPERIMENT].styleSheet()
+        failed_style = window.step_breadcrumb._markers[STEP_CONFIGURE_WFG].styleSheet()
+        active_style = window.step_breadcrumb._markers[STEP_CONFIGURE_CAMERA].styleSheet()
+        assert len({completed_style, failed_style, active_style}) == 3
+    finally:
+        window.close()
+
+
+def test_v2_step_breadcrumb_step_reset_clears_every_marker_including_mid_highlight_ones(monkeypatch, tmp_path):
+    # TestStand-lesson-aware reset (same discipline as
+    # _stopping_after_current_repeat elsewhere in this codebase): a
+    # step_reset must return EVERY marker to "pending", including one that
+    # was still "active" (interrupted mid-step, not cleanly completed) and
+    # ones already "completed" -- not rely on the next repeat's own step
+    # events to eventually overwrite each marker one at a time, which would
+    # leave a misleading "already partway done" impression for however long
+    # that takes.
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        window._handle_worker_progress("step_started", STEP_INITIALIZE_EXPERIMENT)
+        window._handle_worker_progress("step_completed", STEP_INITIALIZE_EXPERIMENT)
+        window._handle_worker_progress("step_started", STEP_CONFIGURE_WFG)
+        window._handle_worker_progress("step_completed", STEP_CONFIGURE_WFG)
+        # STEP_CONFIGURE_CAMERA left "active" -- simulates a repeat
+        # interrupted mid-step (e.g. an Abort-triggered stop between
+        # repeats, or a prior repeat's step_failed never explicitly fired).
+        window._handle_worker_progress("step_started", STEP_CONFIGURE_CAMERA)
+
+        window._handle_worker_progress("step_reset", None)
+
+        for step_name in STEP_ORDER:
+            assert window.step_breadcrumb.state_of(step_name) == "pending", step_name
+    finally:
+        window.close()
+
+
+def test_v1_window_tracks_step_states_without_a_breadcrumb_widget(monkeypatch, tmp_path):
+    # Base MainWindow (v1, qt_ui.py) has no breadcrumb widget, but still
+    # tracks _step_states -- _refresh_step_breadcrumb() is a no-op there,
+    # confirming the base-tracks/subclass-renders split doesn't crash
+    # without a v2-only widget present.
+    from test_qt_ui_hardware_settings import make_window as make_v1_window
+
+    window = make_v1_window(monkeypatch, tmp_path)
+    try:
+        assert not hasattr(window, "step_breadcrumb")
+        window._handle_worker_progress("step_started", STEP_FLUSH)
+        assert window._step_states[STEP_FLUSH] == "active"
+        window._handle_worker_progress("step_reset", None)
+        assert all(state == "pending" for state in window._step_states.values())
     finally:
         window.close()

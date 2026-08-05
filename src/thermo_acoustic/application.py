@@ -2,18 +2,17 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import logging
-import queue
 from dataclasses import dataclass, field
 import math
-import threading
 import time
 from typing import Callable
 
 from .ad2 import coerce_do_config, coerce_wfg_config
+from .hw_logging import run_with_timeout
 from .instruments import AD2Sdk, CetoniPump, HamamatsuCamera, SimulatedAD2Sdk, Valve, ZStage
 from .messages import Message, MessageName, QueueResult, UiEvent
 from .queues import LabViewQueue
-from .tec import TecAbortedError, TecController
+from .tec import TecController
 from .workflows import Experiment2, ExperimentSeries2, FlushSettings, TemperatureSeries
 
 
@@ -51,6 +50,22 @@ STEP_FLUSH = "Flush"
 STEP_SAVE_RESULTS = "SaveResults"
 STEP_SET_TEC_TARGET = "SetTecTarget"
 STEP_WAIT_TEC_STABLE = "WaitTecStable"
+
+# Single source of truth for the per-repeat step order (v2's
+# ExperimentSequenceView card order and the Phase 3 step-progress breadcrumb,
+# 2026-08-04, both derive from this rather than each hardcoding it
+# separately). Deliberately excludes STEP_SET_TEC_TARGET/STEP_WAIT_TEC_STABLE
+# -- see the TEC-SCAN RENDERING note above; those wrap this list from
+# outside, once per temperature point, not part of the reused/reset sequence.
+STEP_ORDER = (
+    STEP_INITIALIZE_EXPERIMENT,
+    STEP_CONFIGURE_WFG,
+    STEP_CONFIGURE_CAMERA,
+    STEP_CAPTURE_FRAMES,
+    STEP_WAIT_FOR_AD2_COMPLETION,
+    STEP_FLUSH,
+    STEP_SAVE_RESULTS,
+)
 
 
 @contextmanager
@@ -199,27 +214,47 @@ class Application:
         self.fire_stop_event()
         return True
 
-    def initialize(self) -> None:
+    def initialize(self, progress: Callable[[str, object], None] | None = None) -> None:
         self.create_queues()
         self.register_events()
         self.fire_status_event("Initializing")
-        initialized: list[tuple[str, object]] = []
-        for name, instrument in (
-            ("ad2", self.ad2),
-            ("camera", self.camera),
-            ("pump", self.pump),
-            ("valve", self.valve),
-            ("z_motor", self.z_motor),
-            ("tec", self.tec),
+        initialized: list[tuple[str, str, object]] = []
+        for name, display_name, instrument in (
+            ("ad2", "AD2", self.ad2),
+            ("camera", "Camera", self.camera),
+            ("pump", "Pump", self.pump),
+            ("valve", "Valve", self.valve),
+            ("z_motor", "Z-stage", self.z_motor),
+            ("tec", "TEC", self.tec),
         ):
+            if progress:
+                progress("init_device", (display_name, "In Progress"))
             try:
                 instrument.initialize()
             except Exception as exc:
-                rollback_errors = self._cleanup_instruments(initialized)
-                details = [f"{name} initialize failed: {exc}"]
+                if progress:
+                    progress("init_device", (display_name, "Failed"))
+                rollback_errors = self._cleanup_instruments(
+                    [
+                        (initialized_name, initialized_instrument)
+                        for initialized_name, _display, initialized_instrument in initialized
+                    ]
+                )
+                if progress:
+                    for _initialized_name, initialized_display, _instrument in initialized:
+                        progress(
+                            "init_device",
+                            (initialized_display, f"Rolled back ({display_name} init failed)"),
+                        )
+                error_name = display_name if progress else name
+                details = [f"{error_name} initialize failed: {exc}"]
                 details.extend(rollback_errors)
                 raise RuntimeError("; ".join(details)) from exc
-            initialized.append((name, instrument))
+            initialized.append((name, display_name, instrument))
+            if progress:
+                status_note = getattr(instrument, "status_note", "")
+                complete_text = f"Complete ({status_note})" if status_note else "Complete"
+                progress("init_device", (display_name, complete_text))
         self.fire_status_event("System Initialized")
 
     def cleanup(self) -> None:
@@ -258,28 +293,13 @@ class Application:
         return errors
 
     def _run_cleanup_call_with_timeout(self, name: str, action, timeout_s: float) -> str | None:
-        result_queue: queue.Queue[BaseException | None] = queue.Queue(maxsize=1)
-
-        def run() -> None:
-            try:
-                action()
-            except BaseException as exc:  # pragma: no cover - defensive hardware cleanup path
-                result_queue.put(exc)
-            else:
-                result_queue.put(None)
-
-        worker = threading.Thread(target=run, name=f"cleanup-{name}", daemon=True)
-        worker.start()
-        worker.join(max(timeout_s, 0.0))
-        if worker.is_alive():
-            return f"{name} cleanup timed out after {timeout_s:.1f}s."
-        try:
-            error = result_queue.get_nowait()
-        except queue.Empty:  # pragma: no cover - thread completed without reporting
-            return f"{name} cleanup finished without reporting a result."
-        if error is not None:
-            return f"{name} cleanup failed: {error}"
-        return None
+        # Cross-module architecture review (2026-08-02): was previously its
+        # own hand-copied implementation of the same timeout-guarded-thread
+        # shape QmixPumpBackend._run_close_step()/PiezoStage._run_disconnect_step()
+        # each independently re-implemented -- now the shared
+        # hw_logging.run_with_timeout() utility. Message wording unchanged
+        # ("{name} cleanup ..."), so this stays a drop-in replacement.
+        return run_with_timeout(action, f"{name} cleanup", timeout_s)
 
     def wait(self, seconds: float) -> Message | None:
         deadline = time.monotonic() + max(seconds, 0.0)
@@ -295,11 +315,6 @@ class Application:
         if result.message is None:
             return False
         return result.message.name in (MessageName.ABORT, MessageName.EXIT, "Abort", "Exit")
-
-    def _is_abort_exit_or_error(self, message: Message | None) -> bool:
-        if message is None:
-            return False
-        return message.name in (MessageName.ABORT, MessageName.EXIT, "Abort", "Exit", "Error")
 
     def _ad2_completion_wait_seconds(self, experiment: Experiment2) -> float:
         wfg_config = coerce_wfg_config(experiment.wfg_config)
@@ -392,77 +407,73 @@ class Application:
         return max(sec_run, 0.0) + max(sec_wait, 0.0)
 
     def wait_for_pump(self, timeout_s: float) -> bool:
+        # Abort no longer interrupts an in-progress pump move (2026-08-04
+        # safety-behavior change): once a flush/refill/empty move has
+        # started, it must run to genuine completion or genuine timeout --
+        # the only remaining abort check is the between-repeats one in
+        # qt_ui.py's _run_experiment_series_body(), before the *next*
+        # repeat starts.
         self.fire_status_event("Waiting for Pump")
         deadline = time.monotonic() + max(timeout_s, 0.0)
         while self.pump.read_status():
-            if self.listen_abort():
-                return False
             if time.monotonic() >= deadline:
                 return False
             time.sleep(0.05)
         return True
 
-    # H1 (qmix_backend.py line-by-line review, 2026-07-31): CetoniPump.refill()/
-    # empty() issue the same asynchronous, target-based set_fill_level() SDK
-    # call flush() uses, but returned as soon as the command was issued --
-    # unlike flush(), nothing waited for the real pump to actually arrive, and
-    # CetoniPump.refill()/empty()'s own internal fill_level sync ran
-    # immediately after issuing the move, reading back a premature, likely
-    # still-in-progress value rather than the real final one. Manual "Refill"/
-    # "Empty" buttons (qt_ui.py) called self.app.pump.refill()/empty()
-    # directly, bypassing Application entirely -- moved here to reuse the
-    # same wait_for_pump()/timeout architecture flush() already established,
-    # rather than duplicating a wait loop inside CetoniPump/QmixPumpBackend.
+    # H1 (qmix_backend.py line-by-line review, 2026-07-31) + Finding 1
+    # (qt_ui.py targeted UI audit, 2026-07-31) independently found the
+    # identical bug on three different pump-move buttons: refill()/empty()
+    # issue the same asynchronous, target-based set_fill_level() SDK call
+    # flush() uses but returned as soon as the command was issued, not when
+    # the real pump actually arrived; the manual "GO" button's
+    # go_to_level() had the same shape. Cross-module architecture review
+    # (2026-08-02) consolidated the now-identical fix (issue move -> wait
+    # -> unconditional resync -> fire one of two status events) into this
+    # shared helper rather than three hand-copied bodies -- the third
+    # near-identical copy (go_to_level()) was direct evidence a fourth
+    # button would eventually repeat the same mistake if this stayed
+    # unshared. flush() is deliberately NOT migrated here -- it has its
+    # own capacity pre-check and a sandwiched valve move that don't
+    # generalize cleanly into this shape.
+    def _move_pump_and_confirm(self, action: Callable[[], None], timeout_s: float, event_prefix: str) -> bool:
+        action()
+        completed = self.wait_for_pump(timeout_s)
+        if not completed:
+            # A timeout means the last real status poll still reported an
+            # active move. Fail closed: request an SDK stop before reporting
+            # TimedOut. This is distinct from Abort, which intentionally does
+            # not interrupt an in-progress pump operation.
+            self.pump.stop()
+        # Always re-sync after waiting, not only on timeout: CetoniPump.
+        # refill()'s own internal sync (inside action() above, for refill()
+        # specifically) already ran before this wait, so even the success
+        # path needs a fresh read to capture the value actually confirmed
+        # by wait_for_pump() -- not flush()'s exact shape (which re-issues
+        # a second set_fill_level() call to refresh its own already-correct
+        # target), but the same "don't trust a pre-confirmation snapshot"
+        # principle.
+        self.pump.sync_fill_level()
+        if not completed:
+            self.fire_status_event(f"{event_prefix}TimedOut")
+            return False
+        self.fire_status_event(f"{event_prefix}Complete")
+        return True
+
     # Default timeout_s=60.0 mirrors QmixPumpBackend.reference_move_timeout_s's
     # own default -- both are bounded, generous-for-a-full-stroke-move
     # timeouts with no equivalent to FlushSettings' volume/flowrate-derived
-    # formula (refill()/empty() have no caller-supplied settings object).
-    def refill(self, timeout_s: float = 60.0) -> bool:
-        self.pump.refill()
-        completed = self.wait_for_pump(timeout_s)
-        # Always re-sync after waiting, not only on timeout: CetoniPump.
-        # refill()'s own internal sync (inside the call above) already ran
-        # before this wait, so even the success path needs a fresh read to
-        # capture the value actually confirmed by wait_for_pump() -- not
-        # flush()'s exact shape (which re-issues a second set_fill_level()
-        # call to refresh its own already-correct target), but the same
-        # "don't trust a pre-confirmation snapshot" principle.
-        self.pump.sync_fill_level()
-        if not completed:
-            self.fire_status_event("RefillTimedOut")
-            return False
-        self.fire_status_event("RefillComplete")
-        return True
+    # formula (these three have no caller-supplied settings object).
+    def refill(self, flow_rate: float | None = None, timeout_s: float = 60.0) -> bool:
+        return self._move_pump_and_confirm(lambda: self.pump.refill(flow_rate), timeout_s, "Refill")
 
-    def empty(self, timeout_s: float = 60.0) -> bool:
-        self.pump.empty()
-        completed = self.wait_for_pump(timeout_s)
-        self.pump.sync_fill_level()
-        if not completed:
-            self.fire_status_event("EmptyTimedOut")
-            return False
-        self.fire_status_event("EmptyComplete")
-        return True
+    def empty(self, flow_rate: float | None = None, timeout_s: float = 60.0) -> bool:
+        return self._move_pump_and_confirm(lambda: self.pump.empty(flow_rate), timeout_s, "Empty")
 
-    # Finding 1 (qt_ui.py/qt_ui_v2.py targeted UI audit, 2026-07-31): the
-    # manual "GO" button called self.app.pump.set_fill_level() directly --
-    # the exact same fire-and-forget shape refill()/empty() were fixed for
-    # above, just never in that fix's scope since it's a different button
-    # (arbitrary-level moves, not full/empty). Same pattern reused
-    # verbatim, not redesigned: issue the move, wait_for_pump(), then
-    # unconditionally re-sync fill_level from real hardware regardless of
-    # timeout/success, for the same reason refill()/empty() do -- without
-    # this, a later flush()'s own over-draw guard would trust a fabricated
-    # fill_level instead of reality.
     def go_to_level(self, level: float, flow_rate: float | None = None, timeout_s: float = 60.0) -> bool:
-        self.pump.set_fill_level(level, flow_rate)
-        completed = self.wait_for_pump(timeout_s)
-        self.pump.sync_fill_level()
-        if not completed:
-            self.fire_status_event("GoToLevelTimedOut")
-            return False
-        self.fire_status_event("GoToLevelComplete")
-        return True
+        return self._move_pump_and_confirm(
+            lambda: self.pump.set_fill_level(level, flow_rate), timeout_s, "GoToLevel"
+        )
 
     def flush(self, settings: FlushSettings, progress: Callable[[str, object], None] | None = None) -> bool:
         with _report_step(progress, STEP_FLUSH):
@@ -527,6 +538,11 @@ class Application:
                 # worse than the timeout alone, and must not be swallowed
                 # into a quiet False return the caller could mistake for an
                 # ordinary "flush failed, state is otherwise known" outcome.
+                # wait_for_pump() only returns False while the last status
+                # poll still says the move is active. Request an SDK stop before
+                # returning a failed flush; otherwise motion could
+                # continue after the UI reports failure.
+                self.pump.stop()
                 self.pump.sync_fill_level()
                 return False
 
@@ -547,6 +563,15 @@ class Application:
             self.fire_status_event("NoExperiment")
             return False
 
+        # Explicit reset before this repeat's first step is marked active --
+        # not left for step_started(STEP_INITIALIZE_EXPERIMENT) below to imply
+        # it by omission. Without this, a v2 breadcrumb/step-card display
+        # would carry the PREVIOUS repeat's steps 2-7 forward as "completed"
+        # for however long it takes this repeat to touch each one again --
+        # the exact stale-highlight mistake already avoided elsewhere in this
+        # codebase (see qt_ui.py's _stopping_after_current_repeat handling).
+        if progress:
+            progress("step_reset", None)
         with _report_step(progress, STEP_INITIALIZE_EXPERIMENT):
             ad2_wait_seconds = self._ad2_completion_wait_seconds(experiment)
 
@@ -652,14 +677,23 @@ class Application:
             else:
                 self.fire_status_event("CameraDisabled -- camera configuration skipped")
 
+        # Safety-behavior change (2026-08-04): once a repeat has started
+        # (past this point), it always runs to full completion -- through
+        # capture, the AD2-completion wait, flush, and save -- regardless
+        # of abort state. Abort no longer bails mid-repeat (previously via
+        # listen_abort() checks here and in wait_for_pump()); it now only
+        # ever prevents the *next* repeat from starting, via
+        # qt_ui.py's _run_experiment_series_body() between-repeats check.
+        # This guarantees captured frames are never silently discarded and
+        # the valve is never left mid-flush at position 1.
         image_data: list = []
         frame_timestamps: list[str] = []
-        aborted = False
         ad2_triggered_at: float | None = None
         with _report_step(progress, STEP_CAPTURE_FRAMES):
-            if self.camera.enabled:
-                self.camera.start_capture()
+            capture_error: BaseException | None = None
             try:
+                if self.camera.enabled:
+                    self.camera.start_capture()
                 if self.ad2.enabled:
                     self.ad2.pc_trigger()
                     ad2_triggered_at = time.monotonic()
@@ -677,27 +711,28 @@ class Application:
                     frame_timestamps = self.camera.read_frame_timestamps()
                 else:
                     self.fire_status_event("CameraDisabled -- frame capture skipped")
-
-                aborted = self.listen_abort()
+            except BaseException as exc:
+                capture_error = exc
+                raise
             finally:
                 if self.camera.enabled:
-                    self.camera.stop_capture()
-
-        if aborted:
-            self.fire_status_event("ExperimentAborted")
-            experiment.cleanup()
-            return False
+                    try:
+                        self.camera.stop_capture()
+                    except Exception as cleanup_exc:
+                        if capture_error is None:
+                            raise
+                        logger.error(
+                            "Camera stop failed while preserving an earlier capture error: %s",
+                            cleanup_exc,
+                        )
+                        self.check_loop_error(cleanup_exc)
 
         if ad2_triggered_at is not None:
             remaining_ad2_wait_s = max(ad2_wait_seconds - (time.monotonic() - ad2_triggered_at), 0.0)
             if remaining_ad2_wait_s > 0:
                 with _report_step(progress, STEP_WAIT_FOR_AD2_COMPLETION):
                     self.fire_status_event("Waiting for AD2 completion")
-                    ad2_wait_message = self.wait(remaining_ad2_wait_s)
-                if self._is_abort_exit_or_error(ad2_wait_message):
-                    self.fire_status_event("ExperimentAborted")
-                    experiment.cleanup()
-                    return False
+                    self.wait(remaining_ad2_wait_s)
 
         if experiment.flush_enabled:
             if self.pump.enabled and self.valve.enabled:
@@ -763,36 +798,75 @@ class Application:
                 "Temperature series group count must match the number of temperature points "
                 f"({len(experiment_groups)} groups, {len(temperature_series.temperature_points_c)} points)."
             )
-        for group_index, (target_c, group) in enumerate(
-            zip(temperature_series.temperature_points_c, experiment_groups, strict=True),
-            start=1,
-        ):
-            if self.listen_abort():
+        for group_index, group in enumerate(experiment_groups, start=1):
+            # Safety-behavior change (2026-08-04, closing a gap Session 78's
+            # non-TEC abort fix didn't reach): self.stop_fired is the ONLY
+            # abort check anywhere in this method, checked here -- once per
+            # temperature point, before that point does anything -- exactly
+            # mirroring qt_ui.py's _run_experiment_series_body()'s
+            # between-repeats `if self.app.stop_fired:` check. Once a
+            # temperature point's sequence starts (target set), it always
+            # runs to full completion -- wait for stability, the post-
+            # stable hold, and its ENTIRE experiment group including every
+            # repeat -- regardless of abort state. The previous
+            # listen_abort()-based checks at target-set/wait_until_stable()/
+            # post_stable_hold_s/the inner repeat loop were all confirmed
+            # dead (qt_ui.py's real _abort() never enqueues the message
+            # listen_abort() reads -- identical to the pattern Session 78
+            # found and fixed in run_experiment2()/wait_for_pump(); this
+            # TEC-scan code was simply out of scope for that pass). Removed
+            # entirely, not replaced, matching "finish the current unit,
+            # then stop" applied at the temperature-point granularity.
+            if self.stop_fired:
                 self.fire_status_event("TemperatureSeriesAborted")
                 return False
-            self.fire_status_event(f"Setting TEC {target_c:.3f} C")
+            # Explicit reset at the temperature-point boundary too, not just
+            # inside run_experiment2() below: SetTecTarget/WaitTecStable/the
+            # post-stable hold can run for a long time before this point's
+            # first repeat ever calls run_experiment2() (whose own reset
+            # covers repeats). Without this, a v2 breadcrumb would keep
+            # showing the PREVIOUS temperature point's steps as "completed"
+            # for that entire stabilization wait -- the same stale-highlight
+            # risk, at the point granularity instead of the repeat one.
+            if progress:
+                progress("step_reset", None)
+            # target: a plain float when temperature_series is locked
+            # (broadcasts to every configured channel, today's original
+            # behavior, unchanged); a {1: ..., 2: ...} dict when unlocked
+            # -- TecController.apply_static_setpoint()/wait_until_stable()
+            # both accept either shape directly (2026-08-04 extension).
+            target = temperature_series.target_at(group_index - 1)
+            target_label = f"{target:.3f} C" if isinstance(target, float) else (
+                ", ".join(f"ch{channel}={value:.3f}C" for channel, value in target.items())
+            )
+            self.fire_status_event(f"Setting TEC {target_label}")
             with _report_step(progress, STEP_SET_TEC_TARGET):
-                self.tec.apply_static_setpoint(target_c)
-            self.fire_status_event(f"Waiting for TEC {target_c:.3f} C")
-            try:
-                with _report_step(progress, STEP_WAIT_TEC_STABLE):
-                    self.tec.wait_until_stable(
-                        target_c,
-                        tolerance_c=temperature_series.tolerance_c,
-                        min_settle_s=temperature_series.min_settle_s,
-                        max_wait_s=temperature_series.max_wait_s,
-                        poll_interval_s=temperature_series.poll_interval_s,
-                        should_abort=self.listen_abort,
-                    )
-            except TecAbortedError:
-                self.fire_status_event("TemperatureSeriesAborted")
-                return False
+                self.tec.apply_static_setpoint(target)
+            self.fire_status_event(f"Waiting for TEC {target_label}")
+            with _report_step(progress, STEP_WAIT_TEC_STABLE):
+                self.tec.wait_until_stable(
+                    target,
+                    tolerance_c=temperature_series.tolerance_c,
+                    min_settle_s=temperature_series.min_settle_s,
+                    max_wait_s=temperature_series.max_wait_s,
+                    poll_interval_s=temperature_series.poll_interval_s,
+                )
+            # post_stable_hold_s is deliberately separate from min_settle_s
+            # above: min_settle_s is part of HOW wait_until_stable() itself
+            # decides the TEC's own sensor reading is "stable" (continuous
+            # time within tolerance); this is an ADDITIONAL hold applied
+            # only after that stability is already confirmed, for real
+            # sample thermal equilibration, which can lag behind the TEC
+            # sensor. Default 0.0 -- no wait, unchanged existing behavior.
+            if temperature_series.post_stable_hold_s > 0:
+                self.fire_status_event(
+                    f"Holding {temperature_series.post_stable_hold_s:.3f}s after TEC stability "
+                    "for sample equilibration"
+                )
+                self.wait(temperature_series.post_stable_hold_s)
             self.fire_status_event(f"Running temperature group {group_index}/{len(experiment_groups)}")
             self.set_experiment_series_general(group)
             while self.experiment_series.see_elements_left():
-                if self.listen_abort():
-                    self.fire_status_event("TemperatureSeriesAborted")
-                    return False
                 if not self.run_experiment2(progress=progress):
                     return False
         self.fire_status_event("TemperatureSeriesComplete")

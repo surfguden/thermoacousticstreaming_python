@@ -11,7 +11,8 @@ cross-device interference (e.g. the documented shared-USB-hub risk)
 diagnosable from the log at all; per-device files would need manual
 timestamp interleaving to answer the same question.
 
-Deliberately synchronous, plain `logging` + `RotatingFileHandler` -- no
+The logging primitives above (`configure()`/`log_transaction()`/`log_call()`)
+are deliberately synchronous, plain `logging` + `RotatingFileHandler` -- no
 threading/async. This project's own documented real-hardware call
 latencies run from single-digit milliseconds up to multiple *seconds*
 (e.g. the valve's pre-Session-55 `readline()` bug blocked ~5s per call);
@@ -19,16 +20,24 @@ a synchronous file write is microseconds by comparison (see
 `tests/test_hw_logging.py`'s own timing assertion), so added complexity
 here would be solving a problem that doesn't exist for this call
 frequency.
+
+`run_with_timeout()` below is a separate, unrelated utility that DOES use a
+background thread -- shared home in this module because it's the other
+piece of cross-cutting hardware infrastructure (the standard
+timeout-guarded-cleanup-thread shape, previously hand-copied independently
+in Application/QmixPumpBackend/PiezoStage; see
+docs/hardware_safety_patterns.md).
 """
 
 from __future__ import annotations
 
 import logging
+import queue
 import threading
 from contextlib import contextmanager
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 DEFAULT_LOG_DIR = Path(__file__).resolve().parent.parent.parent / "logs"
 DEFAULT_LOG_FILE = DEFAULT_LOG_DIR / "hardware_transactions.log"
@@ -113,3 +122,49 @@ def log_call(device: str, operation: str, *, command: object = None) -> Iterator
         raise
     else:
         log_transaction(device, operation, command=command, response=result["response"], success=True)
+
+
+def run_with_timeout(action: Callable[[], None], name: str, timeout_s: float) -> str | None:
+    """Run `action()` in a daemon thread, waiting up to `timeout_s` seconds
+    for it to finish -- so a real hardware cleanup/close/disconnect call
+    that hangs (a documented real risk for .NET/SDK calls this project has
+    hit) cannot block the caller indefinitely. Never raises itself: returns
+    `None` on success, or a one-line description of what went wrong
+    (timeout, a raised exception, or the thread finishing without reporting
+    a result) for the caller to collect/log/re-raise as it sees fit.
+
+    `name` should already include whatever context belongs in the message
+    (device/step name, and "cleanup" if that's the caller's own convention)
+    -- this function does not add its own prefix, so callers control their
+    own message wording exactly as before extracting this from three
+    independent hand-copied implementations (Application, QmixPumpBackend,
+    PiezoStage -- the standard hardware-cleanup shape documented in
+    docs/hardware_safety_patterns.md).
+
+    Usage:
+        error = run_with_timeout(self.stop, "pump stop", self.close_timeout_s)
+        if error is not None:
+            errors.append(error)
+    """
+    result_queue: queue.Queue[BaseException | None] = queue.Queue(maxsize=1)
+
+    def run() -> None:
+        try:
+            action()
+        except BaseException as exc:  # pragma: no cover - defensive hardware cleanup path
+            result_queue.put(exc)
+        else:
+            result_queue.put(None)
+
+    worker = threading.Thread(target=run, name=f"hw-timeout-{name}", daemon=True)
+    worker.start()
+    worker.join(max(timeout_s, 0.0))
+    if worker.is_alive():
+        return f"{name} timed out after {timeout_s:.1f}s."
+    try:
+        error = result_queue.get_nowait()
+    except queue.Empty:  # pragma: no cover - thread completed without reporting
+        return f"{name} finished without reporting a result."
+    if error is not None:
+        return f"{name} failed: {error}"
+    return None

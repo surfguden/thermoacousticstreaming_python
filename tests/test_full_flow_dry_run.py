@@ -511,6 +511,27 @@ def test_run_experiment2_stops_capture_when_image_sequence_raises(tmp_path):
     assert not any(call[:2] == ("camera", "save_sequence") for call in calls)
 
 
+def test_run_experiment2_attempts_capture_cleanup_when_start_capture_raises(tmp_path):
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+    experiment = make_recording_experiment(calls, tmp_path)
+    app.experiment_series.enqueue_experiments([experiment])
+
+    def failing_start_capture():
+        calls.append(("camera", "start_capture"))
+        raise RuntimeError("camera start failed")
+
+    app.camera.start_capture = failing_start_capture
+
+    with pytest.raises(RuntimeError, match="camera start failed"):
+        app.run_experiment2()
+
+    assert calls.count(("camera", "start_capture")) == 1
+    assert calls.count(("camera", "stop_capture")) == 1
+    assert calls.index(("camera", "start_capture")) < calls.index(("camera", "stop_capture"))
+    assert not any(call[:2] == ("ad2", "pc_trigger") for call in calls)
+
+
 def test_application_full_flow_dry_run_can_opt_into_fake_flush(tmp_path):
     imported_before = {name for name in REAL_HARDWARE_MODULES if name in sys.modules}
     calls = []

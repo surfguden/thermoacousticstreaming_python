@@ -7,16 +7,16 @@ current state, always check `git log`, `git status`, `git diff`, and the
 code itself.
 
 **Current repo-state note, refreshed during independent audit on
-2026-07-30.** The old
+2026-08-04.** The old
 top-level caveat in this document said the branch history ended at
 `5419043` and that none of the work below had been committed. That is no
 longer true. As of this audit pass, branch `junjiebranch` has commits
-through `556eea2` (`Replace Status/Error Out single-value displays with
-scrollable session history (HistoryLogWidget)`). The working tree is not
+through `17f24dd` (`Add TEC control and real-piezo Z-stage integration; complete
+a 7-module hardware-safety review (14 fixes)`). The working tree is not
 clean and includes TEC-related source/tests, UI/workflow edits, hardware
 smoke-script edits, documentation updates, and untracked helper files.
 Current code/docs/tests also contain explicit references through at least
-**Session 58**. Treat this changelog as a historical narrative, not as an
+**Session 77**, including uncommitted material. Treat this changelog as a historical narrative, not as an
 authoritative live inventory; re-check `git log`, `git status`, `git diff`,
 and the code before acting on any session claim.
 
@@ -5412,6 +5412,1380 @@ and fixed (5 in `instruments.py`, 1 in `qmix_backend.py`, 3 in
 `hamamatsu_dcam.py`, 2 in `waveforms.py`/its `AD2Sdk` layer, 1 in
 `application.py`, 1 in `workflows.py`, 1 in `qt_ui.py`), plus a
 documented backlog of low-priority items in `known_open_items.md`.
+
+---
+
+### Session 70 -- Backfill: fix for `do_configure()`/`wfg_start_stop_all_ch()`'s
+optimistic-commit shape (landed without a changelog entry)
+
+**Documentation backfill, not new work this session.** The documentation-
+accuracy audit following the module review series (2026-08-02) found
+`AD2Sdk.do_configure()` and `AD2Sdk.wfg_start_stop_all_ch()` already
+fixed in the working tree -- both now use the same commit-after-
+confirmation shape as `config_wfg()`/`wfg_configure()`/`config_do_custom()`/
+`config_do_clock_special()` (Session 66's Fix 2), with passing regression
+tests (`test_do_configure_leaves_do_config_unchanged_when_backend_call_fails`,
+`test_wfg_start_stop_leaves_wfg_config_unchanged_when_backend_call_fails`
+in `tests/test_application.py`) -- but with no comment marker or
+changelog entry of the kind every other fix this session recorded.
+`known_open_items.md`'s own backlog entry for these two methods had
+already been correctly updated in place to note the fix (dated
+2026-08-02), so the *information* was never wrong anywhere -- only this
+file's narrative record was missing, breaking from the
+one-doc-plus-one-narrative-entry convention every other fix in this
+series followed. This entry closes that gap; see `known_open_items.md`'s
+`waveforms.py` backlog entry for the technical detail (both methods now
+build the coerced config into a local variable, issue the real backend
+call, and only commit it to `self.do_config`/`self.wfg_config` after
+that call succeeds -- `wfg_start_stop_all_ch()` additionally configures
+a *copy* of the current `WfgConfig`, not the live one, so a failed
+attempt can't leave it half-mutated either).
+
+**Verification:** confirmed via `git show HEAD:...` that the committed
+version still has the pre-fix optimistic-commit code (so this is a real,
+already-landed working-tree fix, not a documentation error going the
+other direction), and via the two regression tests above passing against
+current code.
+
+**Not committed** -- pending review, per standing instruction, same as
+everything else in this series.
+
+---
+
+### Session 71 -- CORRECTION: tooltip text does not actually auto-wrap on
+real Windows; Session 41's claim (and this session's own initial
+re-confirmation of it) were both wrong
+
+**Correcting a false claim that has stood in this changelog since Session
+41, not a new regression.** Session 41 stated "Tooltip text auto-wrap
+confirmed, not just assumed... `QToolTip.showText()` wraps Qt's standard
+tooltip rendering, which auto-wraps long text at a reasonable pixel width
+by default." An earlier pass in this same broader session re-derived and
+restated the identical conclusion ("Step 2c needs no code change")
+independently, via its own offscreen-platform measurement -- both were
+wrong, caught only when the user captured a real desktop screenshot of the
+MSO tab's Range (V) tooltip (`self.mso_range`, [qt_ui.py:673-678](src/thermo_acoustic/qt_ui.py:673))
+rendering as one long unwrapped line.
+
+**Root cause of both false verifications: the "offscreen" QPA platform
+cannot reproduce this bug at all, by construction, not through bad luck.**
+On real Windows, `QToolTip` delegates to the native OS tooltip control,
+which does **not** word-wrap plain text. The "offscreen" platform has no
+native OS window system to delegate to, so it always falls back to Qt's
+own internal QLabel-based tooltip renderer -- which *does* auto-wrap,
+regardless of text length or platform. Confirmed directly: triggering the
+exact real click-triggered code path (`_TooltipIconButton._show_explanation()`
+-> `QToolTip.showText()`) for `mso_range`'s real 307-character tooltip
+under `QT_QPA_PLATFORM=offscreen` produced a wrapped 476x130 label every
+time, for every tooltip tried, regardless of length -- there was no
+offscreen test that could have caught this, since the platform itself
+never exercises the code path where the bug lives.
+
+**Real fix:** `_wrap_with_tooltip_icon()` ([qt_ui.py:1592-1624](src/thermo_acoustic/qt_ui.py:1592))
+-- the single choke point all 142 tooltip-bearing widgets already pass
+through -- now wraps the tooltip text in a minimal HTML tag
+(`f"<html>{html.escape(tip)}</html>"`) before setting it, both on the
+field widget's own `.toolTip()` (still set and reachable via plain hover,
+never cleared -- both trigger paths needed the same fix, not just the
+icon button's explicit call) and on `_TooltipIconButton`'s stored
+explanation. This is Qt's own documented mechanism for forcing
+`QToolTip` to render as word-wrapped rich text regardless of platform.
+Escaped, not raw HTML, so a literal `&`/`<`/`>` in tooltip text (found:
+"Pump&Valve", "z_<measured_um>um.tif") renders as the real character
+instead of being misinterpreted as markup or silently dropped by the
+HTML parser.
+
+**Verification: genuinely non-offscreen this time, with before/after
+visual proof, not another geometry measurement.** Ran with
+`QT_QPA_PLATFORM` unset (confirmed `QApplication.platformName() ==
+"windows"`, the real native platform, not a fallback) and triggered the
+exact real user code path (found and clicked the real `_TooltipIconButton`
+next to `mso_range`). Grabbed only the specific tooltip `QLabel` widget
+itself (`QWidget.grab()`), not the screen (`QScreen.grabWindow()` was
+tried first and had to be discarded -- it captured the entire real
+desktop, including unrelated windows, not just the test window; deleted
+immediately, nothing from it is retained or described anywhere).
+**Before the fix** (temporarily reverted via Edit, not git, to avoid
+disturbing this session's own uncommitted diff): real widget size
+1659x20, `wordWrap=False` -- a single unwrapped line, visually confirmed
+by inspecting the grabbed image, reproducing the user's screenshot
+exactly. **After the fix restored:** real widget size 241x132,
+`wordWrap=True`, `textFormat=AutoText` (Qt auto-detected the HTML markup
+and switched to rich-text rendering) -- visually confirmed as cleanly
+wrapped across 9 short lines, fully readable, no truncation.
+
+**Tests:** full suite green, 410/410, two consecutive clean runs (no
+existing test asserted on tooltip wrap behavior specifically, so none
+needed updating; the 142-widget tooltip-coverage count and every
+substring-based tooltip-content assertion are unaffected since HTML-
+escaping only touches `&`/`<`/`>`/`"`/`'` characters, confirmed absent
+from every string any test currently checks for).
+
+**Not committed** -- pending review, per standing instruction.
+
+---
+
+### Session 72 -- Refill/Empty default flow rate set to 200 uL/s
+(12000 uL/min), confirmed on real hardware; corrects a prior
+investigation's mistaken premise about the old ceiling number
+
+**Context: a prior investigation this session found real evidence
+directly contradicting its own starting premise.** The premise was
+that an earlier-cited `flow_rate_max` of 7316.42 uL/min was stale,
+specific to a smaller syringe from an unrelated diagnostic session,
+and should not be reused as a ceiling. A read-only trace (real
+hardware transaction log, real Cetoni XML config, live SDK query
+values) found the opposite: 7316.42 uL/min is the live, current,
+real ceiling for the syringe actually configured right now (`"1 ml
+Glass"`, 5mm inner diameter, 60mm stroke,
+`Cetoni_1pump_config_FM`) -- confirmed twice today via the SDK's own
+`get_flow_rate_max()`, logged in `logs/hardware_transactions.log`.
+That investigation also found `QmixPumpBackend._fill_flow_rate()`
+([qmix_backend.py:164](src/thermo_acoustic/qmix_backend.py:164))
+unconditionally ran Refill/Empty at exactly 100% of whatever the
+current syringe's live max was (no margin at all, syringe-dependent),
+and could not pin a root cause on a specific stall mechanism from the
+available log evidence (one non-reproduced CANopen SDO timeout, no
+occurrence of the CAN Error Passive/Heartbeat pattern during
+refill/empty specifically).
+
+**This session's fix, on direct user instruction:** the user verified
+200 uL/s directly on real hardware via CETONI Elements with the
+currently-mounted syringe and confirmed it works reliably --
+superseding further investigation.
+`QmixPumpBackend.default_fill_flow_rate_ul_min`
+([qmix_backend.py:94](src/thermo_acoustic/qmix_backend.py:94)) changed
+from `None` to `200.0 * 60.0` (12000.0 uL/min), wired as an actual
+dataclass default -- `QmixPumpBackend` is constructed with no
+explicit args anywhere in this codebase
+(`hardware_factory.build_hardware_bundle()`), so every real run now
+gets this value automatically, without any caller needing to pass it.
+
+**Scope confirmed, one shared-path behavior change flagged, not
+silently made:** `Application.flush()` remains untouched -- it passes
+`settings.flush_flowrate` explicitly to `set_fill_level()`, a
+completely separate path that never reaches `_fill_flow_rate()`.
+`Application.go_to_level(level, flow_rate=None, ...)` shares the same
+`_fill_flow_rate()` fallback via
+`QmixPumpBackend.set_fill_level()`'s own `flow_rate is None` check
+([qmix_backend.py:238](src/thermo_acoustic/qmix_backend.py:238)) --
+its one current caller, the GO button
+(`qt_ui.py::_start_go_level()`), always passes an explicit
+`self.flow_rate.value()`, so this is currently a dormant effect, not
+an active behavior change -- but any future caller of
+`go_to_level()`/`set_fill_level()` that omits `flow_rate` will now
+also get 200 uL/s instead of the syringe's live max. Flagged per
+explicit instruction rather than silently left ambiguous.
+
+**Tests:** `test_qmix_pump_backend_initializes_and_dispatches`
+updated (`set_fill_level`/`empty`/`refill` assertions: `5000.0` ->
+`12000.0`, matching the new default rather than the fake pump's own
+`get_flow_rate_max()`). Added
+`test_qmix_refill_and_empty_use_the_200_ul_per_s_default_not_the_syringes_live_max`,
+which deliberately keeps the fake pump's own max flow at a different
+value (5000.0) so a regression back to "100% of live max" would
+produce a visibly wrong flow value instead of accidentally matching.
+Full suite green.
+
+**Not committed** -- pending review, per standing instruction.
+
+---
+
+### Session 73 -- Refill/Empty: user-adjustable flow rate clamped to
+the syringe's real live max (fixes a real SDK rejection from Session
+72's flat default); PumpValve "Reference move" promoted to its own
+leading Setup section (confirmed never actually implemented from the
+earlier design conversation, not a caching/wrong-file issue)
+
+**Part 1 -- root cause confirmed from real evidence, not assumed.** A
+fresh screenshot showed Refill throwing Error -> Refilling -> Error.
+`logs/hardware_transactions.log` (2026-08-03 15:28:34) had the real
+error: `('Value range of parameter exceeded', -513, 'Flow of pump ...
+out of range. Value 12000 - range [0...7316.42]')`. Tracing the same
+log window back to `pump | initialize` (15:27:53) showed the pump
+connected via `Cetoni_1pump_config_FM`'s own default syringe ("1 ml
+Glass", 5mm ID, real live max 7316.42 uL/min) -- with **no
+`configure_syringe` call anywhere in between**, even though "BD 5ml"
+appeared selected in the Syringe dropdown in the screenshot.
+Selecting a syringe in that dropdown does not apply it to the real
+pump; only clicking "ConfigureSyringe" does. So Session 72's flat
+12000 uL/min default (verified on real hardware, but evidently with a
+different syringe actually configured at verification time) genuinely
+exceeded the syringe active by default, and the SDK correctly
+rejected it -- confirmed, not guessed, per explicit instruction not
+to silently pick a new fix without checking this.
+
+**Fix, per explicit direction (Option A from a user decision point):**
+added a real "Refill/Empty Flow Rate (uL/min)" field
+(`self.fill_flow_rate`, [qt_ui.py:841](src/thermo_acoustic/qt_ui.py:841)-area,
+default 12000.0) to the Pump group, replacing the buried constant.
+`QmixPumpBackend._fill_flow_rate(requested_ul_min=None)`
+([qmix_backend.py:172](src/thermo_acoustic/qmix_backend.py:172)) now
+always clamps the target (explicit argument, or
+`default_fill_flow_rate_ul_min` if none given) to
+`self.max_flow_rate_ul_min` -- the currently-configured syringe's own
+live-reported ceiling -- via `min(target, live_max)`. `flow_rate`
+threaded through as an optional parameter at every layer:
+`Application.refill()/empty()` ->
+`CetoniPump.refill()/empty()` -> `QmixPumpBackend.refill()/empty()`,
+mirroring `go_to_level()`'s existing shape rather than inventing a new
+one. `flush()` (separate `settings.flush_flowrate` path) and
+`go_to_level()`'s own explicit-rate behavior are both unchanged;
+`go_to_level()`'s `flow_rate=None` fallback still shares
+`_fill_flow_rate()`, so it now also benefits from the clamp (a safety
+improvement, not a behavior change for its one real caller, which
+always passes an explicit rate).
+
+**Flagged, not fixed:** the Syringe-dropdown UX trap that caused this
+(selection looks live but needs a separate ConfigureSyringe click) is
+now a `known_open_items.md` entry for a future UX pass, not silently
+left undocumented.
+
+**Part 2 -- confirmed never implemented (not a caching/wrong-file
+bug).** `_pump_tab()` still had `flow_form.addRow("Reference move",
+ref)` as the last row of "Flow Control" -- the earlier Part 3 design
+conversation's reorg was discussed and agreed but never actually
+built. Fixed: a new leading "Setup" `QGroupBox`
+([qt_ui.py:2093](src/thermo_acoustic/qt_ui.py:2093)-area) now holds
+Reference move alone, placed first in column 1 (ahead of Valve/Stop),
+ahead of Refill/Empty and Flow Control's own experiment-adjacent
+fields -- matching the physical sequence (reference move before
+mounting/refilling a syringe). Shared by v1's tab and v2's page, as
+scoped in the task.
+
+**Tests:** `test_qmix_pump_backend_initializes_and_dispatches` and
+Session 72's own new test updated for the clamp (fake pump max_flow
+5000.0 < requested 12000.0 -> actual SDK call now correctly 5000.0,
+not the unclamped target). Added
+`test_qmix_refill_and_empty_target_200_ul_per_s_but_clamp_to_the_syringes_live_max`,
+`test_qmix_refill_and_empty_use_the_target_unclamped_when_syringe_can_reach_it`,
+`test_qmix_refill_and_empty_accept_an_explicit_flow_rate_clamped_the_same_way`
+(test_application.py), `test_pump_tab_reference_move_is_promoted_to_a_leading_setup_group`,
+`test_refill_and_empty_pass_the_fill_flow_rate_field_value_through`
+(test_qt_ui_hardware_settings.py -- also updated the hardcoded
+tooltip-coverage count, 142 -> 143, for the new field). Two existing
+fake pump backends (`FakePumpBackend`, `_FakePumpBackendWithRealFillLevel`
+in test_application.py) updated to accept the new optional
+`flow_rate` parameter on `refill()`/`empty()`. Real-platform
+screenshot verification: Setup/Reference move confirmed first in
+column 1; Refill/Empty Flow Rate field confirmed showing 12000.0
+under Refill/Empty. Full suite: 416 passed, clean run (two
+SystemError-class failures during earlier runs both confirmed via
+isolation rerun as the same pre-existing offscreen/shiboken
+construction flakiness documented elsewhere in this log, not
+regressions).
+
+**Not committed** -- pending review, per standing instruction.
+
+---
+
+### Session 74 -- Real Meerstetter TEC integration via pyMeCom: investigation, then dual-channel implementation, both scoped to 5 whitelisted parameters
+
+**Part 1 -- investigation (no device-control code changed).** Read
+`tec.py`'s existing scaffold in full and compared it against pyMeCom
+(`github.com/meerstetter/pyMeCom`, MIT, org `meerstetter`, no PyPI
+release -- confirmed via a direct PyPI JSON API check for both
+`mecom` and `pyMeCom`, both `{"message": "Not Found"}`) and the real
+71-page vendor protocol document (TEC-Family MeCom Communication
+Protocol 5136AU, downloaded directly from meerstetter.ch, text
+extracted locally with `pypdf` since this Windows environment has no
+`pdftoppm`). Confirmed the exact parameter IDs for the 5 operations
+this integration is allowed to touch -- 2010 "Output Enable Status"
+(write 1 = Static ON), 3000 "Target Object Temp" (write, °C), 1000
+"Object Temperature" (read-only, °C), 104 "Device Status" (read-only,
+0 Init/1 Ready/2 Run/3 Error/4 Bootloader/5 Resetting), 105 "Error
+Number" (read-only) -- cross-checked against a worked wire-level
+example in the protocol document itself, not just pyMeCom's own
+`commands.py` table. Confirmed pyMeCom's own built-in safety design:
+`get_parameter()`/`set_parameter()` (by name) resolve only through a
+static allow-list and raise `UnknownParameter` otherwise;
+`get_parameter_raw()`/`set_parameter_raw()` are separate methods that
+bypass that list entirely and must never be called. Confirmed the
+existing local `TEC_TARGET_MIN_C=0.0`/`TEC_TARGET_MAX_C=80.0` bound in
+`tec.py` cannot be responsibly tightened from in-scope evidence alone
+(the real device-specific safe range lives in Upper/Lower Error
+Threshold parameters 4010/4011, explicitly out of scope to read) --
+recommended leaving it unchanged. Real hardware detail: the
+established COM port discovery methodology from Session 54 (passive
+`serial.tools.list_ports.comports()` cross-checked against
+`Get-PnpDevice -Class Ports` and real USB topology via
+`DEVPKEY_Device_Parent`) surfaced two active, not-yet-identified FTDI
+candidates (COM4, COM6) plus one currently-disconnected candidate
+(COM3) -- no live protocol probe was attempted this session (see
+below).
+
+**Part 2 -- implementation.** `tec.py` extended, not restructured:
+`TecStatus` gained a `channel: int = 1` field; `TecBackend`'s
+per-operation methods (`read_status`, `set_output_stage_static_on`,
+`set_target_temperature`) now take a `channel: int` argument;
+`SimulatedTecBackend` converted from scalar fields to per-channel
+dict-keyed state; `MeerstetterTecBackend` threads `channel` through to
+its client. New `_PyMeComTecClient` class wraps pyMeCom's
+`MeComSerial`, calling only `get_parameter()`/`set_parameter()` by
+name for the 5 whitelisted parameters above, never `*_raw`; `mecom` is
+imported lazily inside `connect()`, matching this project's existing
+vendor-SDK convention (`qmix_backend.py`'s `_load_sdk()`,
+`thorlabs_piezo.py`'s lazy `import clr`). `write_config()` is a
+deliberate no-op (documented inline, not just here): MeCom `VS`
+commands apply immediately in the device's RAM per the protocol
+document's own worked examples, so flash persistence isn't needed --
+the app re-applies its target every session anyway, and flash write
+cycles are finite, a real cost for a temperature series stepping
+through many setpoints. `close()` is wrapped the same way as
+Pump/Valve/Piezo's own cleanup path (via `hw_logging.run_with_timeout()`
+inside `MeerstetterTecBackend`/`TecController`, unchanged from before
+this session).
+
+**Channel architecture decision, reasoned from the real call sites
+before implementing:** rejected two independent `TecController`
+instances in favor of one `TecController` with a new
+`channels: tuple[int, ...] = (1, 2)` field and an optional `channels`
+parameter on `apply_static_setpoint()`/`wait_until_stable()`/
+`read_status()`, defaulting to `self.channels` ("apply to all
+configured channels" when the caller omits it). Chosen because
+`application.py`'s only real caller
+(`run_temperature_series()`) calls both methods with no channel
+argument today -- this design requires zero changes there while still
+letting a future caller drive channels independently (e.g.
+`apply_static_setpoint(t1, channels=(1,))` then
+`apply_static_setpoint(t2, channels=(2,))`). `last_status` changed
+from a single `TecStatus` to `dict[int, TecStatus]`; confirmed via a
+repo-wide grep that no UI code (`qt_ui.py`/`qt_ui_v2.py`) reads
+`last_status` or any `TecStatus` field directly, so this shape change
+has no other call site to update. The single "Temperature points (C)"
+UI field therefore continues to broadcast the same target to both
+channels unchanged, via this default.
+
+`hardware_factory.py`'s `build_hardware_bundle()` now wires
+`client_factory=_real_tec_client_factory` into the non-simulated
+`MeerstetterTecBackend` (previously left unset, an intentional gap
+from before pyMeCom existed). `pyproject.toml`/`requirements-exp_ctrl.txt`
+declare `mecom` as a PEP 508 git reference pinned to tag `v1.1` (not
+on PyPI, so a plain `pip install mecom` would not work);
+`tools/check_environment.py` gained a matching `CORE_DEPENDENCIES`
+entry so a missing `mecom` install is caught the same way the original
+npTDMS gap should have been (Session 62).
+
+**Tests (`test_tec.py`, fake-backend only -- no real hardware, per
+explicit instruction this pass):** existing fakes/tests updated for
+the channel-aware signatures and the new `dict[int, TecStatus]` return
+shape. Added a `FakeMeComSerial` double (raises if any parameter name
+outside the 5 whitelisted ones is ever read or written, and exposes
+`get_parameter_raw()`/`set_parameter_raw()` stubs that raise
+`AssertionError` if `_PyMeComTecClient` ever reaches for them) plus
+tests confirming: only the 5 named parameters are ever touched;
+"Error Number" is read only when "Device Status" == 3; channels 1 and
+2 are addressed independently (`parameter_instance`); `write_config()`
+makes no calls at all, a true no-op. `TecController`-level tests added
+for independent per-channel setpoints and for the existing
+all-channels-by-default broadcast. One pre-existing safety-gate test
+(`client_factory is None` after building a real-backend bundle) was
+now stale -- replaced with a test confirming the real factory is wired
+in while building the bundle still performs zero I/O (the client is
+constructed lazily, only inside `connect()`, which the test
+deliberately never calls). Full suite: 424 tests, all green (two
+Qt/PySide6 `SystemError`-class failures on the first full-suite run
+both confirmed via isolated rerun as the same pre-existing
+offscreen/shiboken construction flakiness already documented
+elsewhere in this log, not regressions, and unrelated to this
+session's changes).
+
+**Explicitly not done this session, per direct instruction:** no real
+serial connection to the physical TEC was attempted (`AskUserQuestion`
+resolved the task's own Step 1/Step 5 tension in favor of deferring
+the live confirming probe); `hardware_tests/test_serial_discovery.py`'s
+`DEFAULT_PORTS` was not extended with a "TEC default" entry, since the
+port hasn't been confirmed by a live probe yet. Real-hardware
+verification (connect -> enable -> set both channels' temperatures ->
+read back -> disconnect) is reserved for a separate pass with the user
+present.
+
+**Not committed** -- pending review, per standing instruction.
+
+---
+
+### Session 75 -- First real-hardware TEC verification: confirmed port, found and fixed a real blocker bug, safe shutdown, channel-2 addressing under diagnosis
+
+**Part 1 -- real-hardware verification (user present, step by step,
+confirming before each hardware-touching action).** Installed the
+already-reviewed, pinned `mecom` (pyMeCom) package into the real
+`exp_ctrl` conda environment for the first time (declared since Session
+74, never actually installed since no real hardware had been touched
+yet). **Step 1:** re-ran the established port-enumeration methodology
+(`list_ports.comports()` cross-checked against `Get-PnpDevice -Class
+Ports`) -- COM4 and COM6 still the active untested candidates from
+Session 74. A read-only confirming probe (parameter 104, Device Status)
+on each: COM4 timed out (not a MeCom device); **COM6 responded `1`
+(Ready)** -- confirmed as the real TEC, no other port touched. **Step
+2:** read-only status on both channels -- channel 1: Ready, 24.66 C, no
+error; **channel 2: `ResponseException('device 0 raised Instance is not
+available')`** -- not an error *status*, a communication-level rejection
+of the channel-2 instance itself. Stopped per the task's own abnormal-
+condition rule and asked the user how to proceed (`AskUserQuestion`);
+user chose to proceed on channel 1 only for this pass. **Step 3:**
+enabled Output Stage Static ON (parameter 2010 = 1) for channel 1 only
+-- Device Status moved to Run, no error. **Step 4:** set Target Object
+Temp on channel 1 to a small, safe +1.85 C step (24.65 C baseline -> 26.5
+C target) -- **first attempt raised `UnknownParameter()`**, revealing a
+real bug (below); after using the correct name, the object temperature
+climbed monotonically over 20s (25.02 -> 25.15 -> 25.82 -> 26.43 -> 26.58
+-> 26.60 C) toward the target, confirming genuine closed-loop control,
+not a silent-accept write. **Step 5:** disconnected through the real
+production path (`TecController`/`MeerstetterTecBackend`/
+`_PyMeComTecClient`, channel 1 only, not a throwaway script) --
+`initialize()` read back 26.4997 C (essentially exact on target),
+`ready=True`, `error=None`; `cleanup()`/`close()` completed with no
+exception.
+
+**Part 2 -- urgent shutdown, then fix the bug Step 4 exposed.** The
+device was left with channel 1's output actively enabled and holding
+26.5 C between turns. **First action this session:** turned Output
+Enable Status (2010) off (value 0) for channel 1 via the real production
+`MeerstetterTecBackend`/`_PyMeComTecClient` connect path (the OFF write
+itself used the client's internal `set_parameter()` directly, since
+`set_output_stage_static_on()` only ever writes the ON value 1 --
+still the same whitelisted parameter 2010, still not `*_raw`). Confirmed
+off: Output Enable Status readback `False`, Device Status no longer
+Run, no error, temperature reading 23.31 C at that moment (a lower
+transient reading than the pre-heating ~25 C baseline; observed and
+reported as-is, not investigated further -- not a safety-relevant
+value).
+
+**Root cause of the Step 4 write failure, confirmed against the real
+installed package, not guessed:** `tec.py`'s `_MECOM_PARAM_TARGET_TEMP`
+was `"Target Object Temp"`; the actual installed pyMeCom's own
+`mecom.commands.TEC_PARAMETERS` table names parameter 3000 **"Target
+Object Temperature"**. Every other whitelisted constant (Device Status,
+Error Number, Object Temperature, Output Enable Status) matched exactly
+-- confirmed by inspecting `TEC_PARAMETERS` directly, not by trial and
+error. As shipped since Session 74, this meant `apply_static_setpoint()`
+would have raised `UnknownParameter` on every real write; caught here
+because this was the first real-hardware exercise of that code path.
+Fixed in `tec.py`. New regression test
+(`test_tec_parameter_name_constants_match_the_real_installed_pymecom_table`)
+compares all 5 `_MECOM_PARAM_*` constants directly against the
+installed package's own `mecom.commands.TEC_PARAMETERS`, not a second
+hand-typed string, so a future mismatch can't hide behind two wrong
+strings agreeing with each other -- `pytest.importorskip("mecom")`
+skips it (not fails it) when `mecom` isn't installed, matching this
+project's existing real-vendor-SDK test convention; confirmed to
+actually pass (not just skip) by running the suite a second time under
+the real `exp_ctrl` environment where `mecom` is now installed.
+
+**Scope rule updated (user decision, real loosening from Session 74's
+"5 parameters, read or write" rule):** writes remain strictly limited to
+exactly 2 parameter names (`_MECOM_WRITABLE_PARAMETER_NAMES` = Output
+Enable Status, Target Object Temperature), never any other parameter,
+never `*_raw`. Reads are no longer restricted to a fixed list -- any
+parameter may be read by name for real-hardware diagnostics, since a
+read cannot change device state. `tec.py`'s module comment,
+`_PyMeComTecClient`'s class docstring, and `test_tec.py`'s
+`FakeMeComSerial` double were all updated to match: the fake no longer
+raises on an unlisted *read*, but still raises on any *write* outside
+the 2-name whitelist, and still forbids `get_parameter_raw()`/
+`set_parameter_raw()` in both directions.
+
+**Tests:** `test_tec.py` fully updated for the corrected parameter name
+and the loosened read policy; two tests renamed/refocused (whitelist-
+enforcement framing no longer applies to reads); two new tests added
+(write-restriction-to-2-parameters, and unrestricted-diagnostic-reads).
+Full suite: 427 passed, 1 skipped (the mecom-dependent regression test,
+correctly skipped under the base environment where `mecom` isn't
+installed, independently confirmed to pass under `exp_ctrl` where it
+is).
+
+**Part 3 -- channel-2 diagnosis (read-only, no writes of any kind, no
+code changes).** User was confident the device is genuinely dual-channel
+and asked for real diagnosis rather than accepting "single-channel" as
+the conclusion. Read-only investigation (all via `get_parameter()`/
+`get_parameter_raw()` by name/id -- reads are unrestricted project-wide
+per this session's scope update, `*_raw` reads used only where a
+parameter isn't in pyMeCom's own name table, e.g. Device Type/General
+Operating Mode) found:
+
+- **Device Type (parameter 100, not 1123 -- 1123 is the model NUMBER
+  value "TEC-1123", not a parameter ID) reads 1123** -- confirms the
+  real model matches the TEC Service Software screenshot. Hardware
+  Version 2.00, Firmware Version 5.10, Serial Number 5091.
+- **General Operating Mode (parameter 2040) reads 0 (Bipolar)** -- not
+  one of the "Parallel Bipolar" combined-loop modes; could not confirm
+  this is the exact register behind the TEC Service Software's "Single
+  (Independent)" label without the user's own screenshot cross-check.
+- **A clean, consistent pattern across instances 1-4 for 4 parameters**
+  (Device Type, Device Status, Object Temperature, Output Enable
+  Status): instance 1 -- all 4 succeed. **Instance 2 -- Device Type and
+  Device Status both fail ("Instance is not available"), but Object
+  Temperature (23.49 C, a distinct real reading from channel 1's 23.45 C)
+  and Output Enable Status (reads 0/OFF) both SUCCEED.** A follow-up
+  read-only check found Target Object Temperature also succeeds at
+  instance 2 (25.0 C, a different value than channel 1's leftover 26.5 C
+  target). Instances 3 and 4 fail across the board.
+- **Working hypothesis, not yet confirmed by a write test:** Device Type
+  and Device Status may simply be device-wide "Common Product
+  Parameters" by protocol design (the real protocol document files them
+  under that heading), not genuinely per-channel -- meaning Device Type
+  failing at instance 2 doesn't prove channel 2 is absent, only that
+  Device Type itself was never going to be per-instance on any
+  multi-channel unit. Device Status behaving the same way is a weaker
+  but still real signal that the device may report one unified run-state
+  for the whole unit rather than one per control loop. The fact that
+  Output Enable Status and Target Object Temperature both hold real,
+  independent, distinct state at instance 2 is the strongest evidence
+  found this session that **channel 2 is likely a genuine second control
+  loop**, just one whose Device Status can't be queried the way `tec.py`'s
+  `read_status()` currently assumes (`get_parameter(parameter_name="Device
+  Status", parameter_instance=channel)` for every channel) -- which is
+  the direct, confirmed reason `TecController.initialize()`/`read_status()`
+  fail for channel 2 today.
+- **Deliberately not tested this session (per the read-only constraint):**
+  whether *writing* Output Enable Status or Target Object Temperature at
+  instance 2 actually drives a second physical Peltier loop. That would
+  confirm or refute the hypothesis directly but is a real hardware write,
+  reserved for an explicit future step with the user present.
+
+No code changes made for Part 3 -- this is diagnosis only, reported for
+the user to decide how `tec.py`'s `read_status()` should be redesigned
+around a possibly device-wide (not per-channel) Device Status parameter.
+
+**Not committed** -- pending review, per standing instruction.
+
+---
+
+### Session 76 -- Confirmed channel 2 is a genuine independent control loop with a real write test, then fixed read_status()'s Device Status addressing
+
+**Part 1 -- confirmed the Session 75 hypothesis against the real
+protocol document's own section structure, not just the live-probe
+pattern, before touching hardware again.** Device Status (104)/Device
+Type (100) are filed under Sec 3.3.1 "Common Product Parameters" --
+the same section as Firmware Version, which the document's own general
+addressing rule (Sec 3.1) names as its worked example of a
+single-instance parameter ("If there is only one instance available,
+Parameter Instance must be set to 1, e.g. Firmware Version"). Object
+Temperature (1000), Target Object Temp (3000), and Output Enable (2010)
+are all filed under a separate section, Sec 3.3.4 "Temperature
+Controller." Real textual support for the hypothesis, not proof beyond
+doubt on its own -- confirmed properly in Part 2.
+
+**Part 2 -- real controlled write test on channel 2, same discipline as
+the original channel-1 verification.** Baseline (channel 2): Object
+Temperature 23.64 C, Output Enable 0, Target Object Temperature 25.0 C
+(confirmed channel 1 still off first). Enabled Output Stage on channel
+2 ONLY (2010=1, instance 2) -- readback confirmed, no error;
+device-wide Device Status flipped to Run. Set Target Object Temperature
+on channel 2 to 25.5 C (a small, safe step) and polled for 24s: **object
+temperature climbed and held/oscillated tightly around 25.5 C (25.11 ->
+25.54 -> 25.53 -> 25.44 -> 25.50 -> 25.55 -> 25.47 C)** -- genuine
+closed-loop thermal response, fully independent of channel 1 (verified
+off throughout), matching channel 1's original verification behavior
+exactly. **Confirms channel 2 is a real, physically populated second
+control loop**, not an artifact of the device accepting writes to an
+absent instance. Turned channel 2's Output Enable back to 0 regardless
+of outcome; confirmed BOTH channels off at the end (Output Enable
+Status = 0 for instance 1 and 2), and device-wide Device Status dropped
+back to Ready (1) once both loops were disabled -- further confirming
+it aggregates across both loops rather than being per-channel.
+
+**Part 3 -- fixed `read_status()` based on the confirmed evidence (not
+the hypothesis alone).** `_PyMeComTecClient.read_status()` (and the
+`TecBackend` Protocol / `SimulatedTecBackend` / `MeerstetterTecBackend`
+implementing it) changed from a per-channel signature
+(`read_status(channel: int) -> TecStatus`, called once per channel in a
+loop) to a multi-channel signature
+(`read_status(channels: tuple[int, ...]) -> dict[int, TecStatus]`,
+called once per `TecController` operation). Device Status (104) and
+Error Number (105) are now read ONCE at instance 1 and applied to every
+requested channel's `TecStatus` -- not re-read per channel, which is
+exactly what broke channel 2 before. `TecController.initialize()`,
+`read_status()`, and `apply_static_setpoint()` all updated to call
+`backend.read_status(channels)` once instead of looping
+`backend.read_status(channel)` per channel. `TecStatus`'s own shape is
+unchanged (still per-channel, still carries `ready`/`error_state`) --
+chose to keep those fields duplicated across each channel's `TecStatus`
+(populated from the same shared device-wide read) rather than splitting
+into a separate device-level status type, since this requires zero
+changes to `wait_until_stable()`'s/`apply_static_setpoint()`'s existing
+per-channel iteration over `dict[int, TecStatus]`, matching this
+project's repeated "extend, don't restructure" instruction.
+
+**Tests:** all three `test_tec.py` fakes
+(`RecordingTecBackend`/`FailingStatusTecBackend`/
+`ChannelAwareRecordingTecBackend`) updated for the new
+multi-channel-in/dict-out `read_status()` signature; every assertion on
+`backend.calls` for `("read_status", ...)` updated from a per-channel
+int to the channels tuple actually passed. New regression test
+`test_real_tec_client_reads_device_status_once_for_multiple_channels`
+asserts Device Status is queried exactly once (at instance 1) when
+reading both channels -- fails loudly if a future change reintroduces
+the per-channel Device Status read that broke channel 2 originally.
+Full suite: 428 passed, 1 skipped (the mecom-dependent regression test
+from Session 75, confirmed passing again under `exp_ctrl`).
+
+**Both channels confirmed OFF at the end of this session**, per the
+task's explicit requirement, regardless of the write test's outcome.
+
+**Not committed** -- pending review, per standing instruction.
+
+---
+
+### Session 77 -- TEC wrap-up: dual-channel lock/unlock scan UI, wait_until_stable() real-hardware pass, error-state gap accepted, docs closed out
+
+**Item 1 -- dual-channel lock/unlock temperature scan.** Investigated the
+current `TemperatureSeries`/`run_temperature_series()` shape first: one
+flat `list[float]` (`temperature_points_c`), broadcast to both channels
+via `apply_static_setpoint()`/`wait_until_stable()` calls with no
+`channels=` argument. Two real complications flagged before touching
+code: (a) unequal-length per-channel series has no coherent mapping onto
+`run_temperature_series()`'s one-group-per-step loop -- resolved to
+require equal length, stepped together; (b) `wait_until_stable()` took
+one scalar target, so a shared call couldn't check two channels against
+two different targets correctly. User confirmed extending
+`wait_until_stable()`/`apply_static_setpoint()` to accept
+`float | dict[int, float]` (over calling per-channel sequentially, which
+would double per-step wait time). Implemented: both methods now accept
+either shape -- a float broadcasts (unchanged, backward compatible with
+every existing real-hardware-verified call site); a `dict[int, float]`
+drives each channel to its own target, polled genuinely simultaneously
+in one call, not one channel's full wait followed by the other's.
+`TemperatureSeries` gained `temperature_points_ch2_c: list[float] | None`
+(`None` = locked, unchanged default; a list = unlocked, same length as
+channel 1's required, `ValueError` otherwise) plus a `target_at(index)`
+helper and `from_text(text, text_ch2=...)`. `Application.run_temperature_series()`
+updated to call `temperature_series.target_at(step)` instead of a plain
+zip, passing whichever shape through unchanged.
+
+**UI**: a lock/link toggle next to the CH1/CH2 "Temperature points (C)"
+fields in `_experiment_temperature_group()` (shared by v1's tab and v2's
+page) -- the same Photoshop-aspect-ratio-lock / CSS-box-model-link-icon
+pattern, a plain checkable `QPushButton` with a Unicode glyph (checked
+this codebase's convention first: no `QIcon`/`QStyle.standardIcon` usage
+anywhere in `qt_ui.py`, so no new icon-asset pipeline was introduced).
+Locked (default): CH2 is disabled and mirrors CH1 live as it's typed.
+Unlocked: CH2 becomes independently editable, starting from whatever
+value it was already mirroring (not reset to a default). Relocking
+copies CH1's current value into CH2 -- the less-surprising choice for a
+reversible text-field toggle, no confirmation dialog (this isn't a
+hardware action; CH1's value is preserved and visible either way).
+Persisted via new `tec_lock_channels`/`tec_points_ch2` Save/Load Settings
+keys, restored last (after the lock-checkbox restore's own mirroring
+side effect) so a save/load round trip is exact regardless of internal
+signal ordering; absent (older saved settings) defaults to locked,
+matching the existing tolerant-load convention. Also fixed a stale
+tooltip on `exp_tec_scan_enable` claiming real TEC selection "intentionally
+fails" -- no longer true since Sessions 74-76's real integration.
+
+**Tests**: `tec.py`-level tests for the dict-target extension (including
+a regression test proving per-channel targets are checked against their
+own channel, not a shared value -- the actual bug the extension fixes);
+`workflows.py`-level tests for `TemperatureSeries`'s new field (locked
+default, unlocked shape, mismatched-length rejection, safety-range
+validation on CH2 too); an end-to-end `Application.run_temperature_series()`
+test confirming an unlocked series drives real independent per-channel
+writes; widget-level tests in `test_qt_ui_hardware_settings.py` for
+locked-mirrors-live, unlock-preserves-value, relock-copies-CH1, and the
+full Save/Load round trip. Tooltip-coverage hardcoded count updated
+143 -> 144 (one new tooltipped `QLineEdit`; the lock toggle itself is a
+`QPushButton`, outside that sweep's tracked widget types). Real-render
+screenshot check (offscreen) confirmed the enabled/disabled visual state
+actually flips between locked and unlocked.
+
+**The new dict-target code path itself has not been run against real
+hardware this session** -- fake/unit-tested only. The single-float
+broadcast path it's built on top of has been real-hardware verified
+repeatedly (Sessions 75-77).
+
+**Item 2 -- error-state verification: investigated, accepted as a
+documented gap, not fixed.** `read_status()`'s Error-Number-read branch
+(`if device_status_id == 3`) is fake-tested only; real hardware has never
+entered Error state. Investigated whether a safe real trigger exists:
+Error Threshold parameters (4010/4011 per-channel, 5010/5011
+device-level) could be read (unrestricted now) to learn configured
+margins, and an auto-reset feature exists (parameter 6310, "Delay till
+Restart"). But deliberately tripping a real threshold means commanding
+the Peltier to a value the device itself flags unsafe, with no confirmed
+in-scope recovery path if auto-reset turns out disabled (recovery would
+need a `Device Reset` write, parameter 111, outside the 2-parameter
+writable scope). Recommended not manufacturing that risk for a one-line
+conditional already covered by fake tests -- accepted as a gap that will
+close itself if a genuine fault ever occurs during real use.
+
+**Item 3 -- `wait_until_stable()` real-hardware test: proposed, confirmed,
+run.** Plan: channel 1, baseline read, `apply_static_setpoint(baseline +
+1.5, channels=(1,))`, then `wait_until_stable(...)` itself (not a
+hand-rolled polling script) with `tolerance_c=0.2, min_settle_s=5.0,
+max_wait_s=60.0, poll_interval_s=2.0`. User confirmed; ran against the
+real device: baseline 24.15 C, target 25.65 C, converged to 25.75 C,
+`ready=True`, `error_state=None`, well inside the 60s bound. Turned
+channel 1 back off afterward, confirmed OFF.
+
+**Item 4 -- documentation.** `docs/tec_verification_matrix.md` and
+`docs/known_open_items.md` both updated: all 5 whitelisted parameters'
+core paths (connect, per-channel read/write/enable, write_config no-op,
+device-wide Device Status fix) marked real-hardware-verified;
+`wait_until_stable()`'s success path added as real-hardware-verified;
+the new dual-channel dict-target feature and lock/unlock UI documented
+as implemented but fake-tested only; the error-state gap documented as
+investigated-and-accepted, not "unverified" with no explanation.
+
+**Full suite: 442 passed, 1 skipped** (the mecom-dependent regression
+test; one unrelated `SystemError`-class Qt/PySide6 flakiness on the WFG
+tab appeared on the first full run, confirmed via isolated rerun as the
+same pre-existing offscreen/shiboken construction issue documented
+elsewhere in this log, not a regression).
+
+**Not committed** -- pending review, per standing instruction.
+
+---
+
+### Session 78 -- SAFETY-BEHAVIOR CHANGE: Abort no longer force-stops hardware mid-operation -- it now always finishes the current repeat first
+
+**This session changes what the Abort button actually does. Read this
+entry before relying on Abort's behavior.** Previous behavior: clicking
+Abort immediately, forcibly called `pump.stop()`/`camera.stop_capture()`/
+`ad2.wfg_start_stop_all_ch(False)` on a separate concurrent thread,
+regardless of what the in-flight repeat was doing -- this could interrupt
+a flush mid-pump-move (leaving the valve stuck at position 1) or a
+capture mid-frame (discarding captured data, since the repeat would then
+bail out of `run_experiment2()` without ever reaching the save step).
+**New behavior, by explicit user decision (no separate emergency hard-stop
+is offered anymore): Abort only ever prevents the *next* repeat from
+starting. The currently in-flight repeat, if any, always runs to full,
+genuine completion -- capture, the AD2-completion wait, flush (valve
+position 1 -> pump move -> valve position 2), and save -- before the
+series actually halts.**
+
+**Step 1 -- investigation, before removing anything.** Traced every real
+caller of `_abort_hardware()` (the removed concurrent hard-stop) and its
+three primitives: confirmed it had exactly one caller (`_abort()`
+itself) -- no shutdown/close path or other UI element used it, so
+removing it destroys no other functionality. `pump.stop` is *also* wired
+independently to the manual Pump&Valve tab's own "Stop" button
+([qt_ui.py:2127](src/thermo_acoustic/qt_ui.py:2127)) -- untouched, a
+distinct operator-initiated action. `qt_ui_v2.py` has no independent
+Abort wiring -- `MainWindowV2(MainWindow)` inherits `_abort()` directly,
+so fixing the shared base class fixes both UIs.
+
+**A bigger finding than expected: the `listen_abort()` mid-repeat checks
+inside `run_experiment2()`/`wait_for_pump()` were already dead code, not
+a live bug, in the real UI.** `listen_abort()` peeks `Application.main_queue`
+for an ABORT/EXIT message -- but `qt_ui.py` never enqueues anything into
+that queue (verified: zero `Message(`/`enqueue_main` calls anywhere in
+`qt_ui.py`). The message-queue dispatch loop
+(`run_until_idle()`/`handle_message()`) is only ever driven by `main.py`,
+a trivial CLI stub -- already documented in
+[known_open_items.md:874-876](docs/known_open_items.md:874) from an
+earlier, unrelated investigation. The real `_abort()` set `stop_fired`
+directly, a wholly separate mechanism `listen_abort()` never read. So in
+practice, only `_abort_hardware()`'s concurrent hard-stop was ever a live
+interrupt path in production; the `listen_abort()` checks were misleading
+dead code implying a working "abort mid-repeat" feature that was never
+actually reachable. Confirmed further by zero test coverage of
+`"ExperimentAborted"`/`listen_abort()` triggering anywhere in
+`test_application.py` before this session.
+`_run_experiment_series_body()`'s existing between-repeats `stop_fired`
+check was confirmed to already be correct and sufficient on its own (an
+existing test, `test_run_experiment_series_stops_queuing_further_repeats_after_abort`,
+already proved it works).
+
+**Step 2 -- implementation.**
+- `qt_ui.py`'s `_abort()` no longer calls `_abort_hardware()` (deleted
+  entirely -- no other caller existed). It now only calls
+  `self.app.fire_stop_event()` and updates status -- synchronous, no
+  QThread, no busy-state tracking (nothing left to run in the
+  background).
+- `application.py`'s `run_experiment2()`: removed the dead post-capture
+  and post-AD2-wait `listen_abort()`/`_is_abort_exit_or_error()` early
+  returns (`_is_abort_exit_or_error()` itself deleted, now unused). A
+  repeat that has started always continues through flush and save.
+- `wait_for_pump()`: removed its `listen_abort()` poll -- flush's pump
+  move always runs to genuine completion or genuine timeout (the
+  pre-existing timeout-return path is unchanged).
+- Confirmed: the between-repeats check in `_run_experiment_series_body()`
+  is now the *only* place abort state is ever read anywhere in this
+  codebase's experiment-run path.
+
+**Step 3 -- tests.** Two existing tests were built entirely around the
+now-explicitly-rejected behavior and were replaced, not just adapted:
+`test_abort_hardware_worker_starts_while_another_action_is_blocked` and
+`test_abort_stops_dcam_wait_and_releases_buffer_with_measured_elapsed_time`
+both asserted Abort forcibly interrupts blocking hardware calls quickly
+-- the opposite of the new intended behavior. Replaced with
+`test_abort_does_not_touch_hardware_even_while_another_action_is_blocked`
+and `test_abort_sets_stop_flag_synchronously_without_a_background_thread`,
+confirming the new behavior directly. New `test_application.py`
+regression tests:
+`test_run_experiment2_completes_fully_even_after_abort_is_fired_mid_run`
+(a real `run_experiment2()` call with `fire_stop_event()` already set
+still completes fully: `status="ExperimentComplete"`, valve ends at
+position 2 not stuck at 1, `FlushCompleted=True` in the final `data.tdms`,
+queue correctly drains) and
+`test_wait_for_pump_no_longer_checks_abort_state` (direct unit coverage
+of the removed check). The existing
+`test_run_experiment_series_stops_queuing_further_repeats_after_abort`
+was left unchanged -- it already validates the correct target behavior.
+
+**Step 4 -- Part C follow-up: graceful-stop visibility + Flush tooltip.**
+New `MainWindow._stopping_after_current_repeat` flag: set by `_abort()`
+(only when a series is actually running -- Abort is reachable even when
+idle, where there's no repeat counter to replace), shown by replacing
+the v2 live-monitoring column's repeat-counter area (`self.queue_count`)
+with `"Stopping after this repeat..."` instead of the raw remaining
+count, until the series actually halts. Deliberately cleared at the
+`"experiment_series_active"` progress kind going `False` (fires via
+`try`/`finally` on every exit path) rather than waiting for a future
+series' first repeat to clear it -- the specific TestStand stale-
+highlight mistake this was designed to avoid (a leftover "Stopping..."
+from a previous Abort still showing when the next series starts). Also
+restores a real count immediately once cleared, rather than leaving the
+label stuck reading "Stopping..." past the point the series has already
+halted. `ExperimentSequenceView.add_step_card()` gained an optional
+`tooltip` parameter; the Flush card (`qt_ui_v2.py`) now explains the
+real sequential valve-position-1 -> pump-move -> valve-position-2
+relationship (Part A's finding from the prior session) so the operator's
+mental model matches reality, without decomposing Flush into multiple
+cards (that design decision from Session 58 stays unchanged).
+
+**Full suite: 456 passed** (454 + 2 confirmed-flaky Qt/PySide6
+`SystemError`-class failures on unrelated widgets -- WFG channel group,
+FM sweep -- verified via isolated rerun as the same pre-existing
+offscreen/shiboken construction issue documented elsewhere in this log,
+not a regression), 1 skipped (the mecom-dependent regression test).
+
+**Not committed** -- pending review, per standing instruction. This is a
+real safety-behavior change to how the app responds to Abort during a
+running experiment series -- operators should be aware Abort no longer
+provides an immediate hardware stop.
+
+---
+
+### Session 79 -- TEC temperature scan: add a separate post-stabilization hold for real sample thermal equilibration
+
+**Extends the uncommitted TEC integration, does not restructure it.**
+Added `TemperatureSeries.post_stable_hold_s: float = 0.0`
+(workflows.py) -- deliberately distinct from `min_settle_s`:
+`min_settle_s` is part of HOW `wait_until_stable()` itself decides the
+TEC's own sensor reading counts as "stable" (continuous time within
+tolerance); this is a SEPARATE, additional hold applied only after that
+stability is already confirmed, before the temperature point's
+experiment group runs -- for real sample thermal equilibration, which
+can lag behind the TEC sensor. Default `0.0` -- no behavior change for
+any existing config unless explicitly set.
+
+`Application.run_temperature_series()`: after `wait_until_stable()`
+returns successfully for a temperature point, if `post_stable_hold_s > 0`
+it now fires a status event and calls `self.wait(post_stable_hold_s)`,
+then checks `self.listen_abort()` before running that point's experiment
+group -- matching the exact abort-awareness convention this loop already
+uses at its other checkpoints (the pre-existing `listen_abort()`-based
+mechanism for this specific TEC-scan loop, left untouched by Session 78's
+separate abort-behavior fix, which only touched `run_experiment2()`/
+`wait_for_pump()`, not `run_temperature_series()`).
+
+New UI field "Post-stabilization hold (s)" (`self.exp_tec_post_stable_hold_s`,
+a `QDoubleSpinBox`, default `0.0`, unit named explicitly in the label per
+request) added to `_experiment_temperature_group()` (shared by v1's tab
+and v2's page) after Poll interval, same styling/tooltip convention as
+its siblings. Persisted via a new `tec_post_stable_hold_s` Save/Load
+Settings key, same tolerant-absent-defaults-to-widget-default pattern as
+every other field in this group.
+
+**Tests:** `workflows.py`-level (`TemperatureSeries` default/validation/
+`from_text`), `application.py`-level via `test_tec.py`
+(`run_temperature_series()`: default `0.0` calls `Application.wait()`
+zero times; a nonzero value calls `wait()` exactly once, for exactly the
+configured duration, strictly before `run_experiment2()`; abort arriving
+during the hold -- simulated via `listen_abort()` returning `True` only
+once the hold has actually been waited -- stops the series with
+`TemperatureSeriesAborted` and never runs the experiment group, while
+still confirming the hold itself ran for its full duration first), and
+`qt_ui.py`-level (Save/Load round trip, default value feeds
+`_temperature_series()` correctly, a changed field value feeds through
+correctly). Tooltip-coverage hardcoded count updated 144 -> 145 (one
+new tooltipped `QDoubleSpinBox`). Real-render (offscreen) screenshot
+confirmed the new row renders cleanly as the group's 9th row, correctly
+sized, with its own tooltip icon marker (font glyphs render as boxes
+under the offscreen QPA platform -- a known, already-documented
+limitation of this environment, not a rendering defect).
+
+**Full suite: 463 passed, 1 skipped** (the mecom-dependent regression
+test) -- clean run, no flaky Qt failures this time.
+
+**Not committed** -- pending review, per standing instruction.
+
+---
+
+### Session 80 -- TEC temperature scan abort: closes a gap Session 78's non-TEC abort fix didn't reach
+
+**Not a regression from Session 79's `post_stable_hold_s` work -- a
+pre-existing gap in `run_temperature_series()`, present before this
+session touched anything, now investigated and fixed.**
+
+**Investigation (requested and done before any implementation).**
+Traced every `listen_abort()` call site inside `run_temperature_series()`
+(pre-target-set, `wait_until_stable()`'s `should_abort=self.listen_abort`,
+the `post_stable_hold_s` wait, the inner per-repeat loop) against the
+same fact Session 78 established: `qt_ui.py`'s real `_abort()` only ever
+calls `Application.fire_stop_event()` -- it never enqueues a message
+`listen_abort()` reads. **Confirmed identical dead pattern** -- not a
+different, live mechanism. Worse: unlike the non-TEC path (which has a
+real `self.app.stop_fired` check between repeats in
+`_run_experiment_series_body()`), the TEC-scan wrapper,
+`_run_temperature_experiment_series()`, had **no fallback check at all**
+-- a single blocking call into `run_temperature_series()`, no loop, no
+`stop_fired` read anywhere. **Net effect confirmed: clicking the real
+Abort button during a running TEC temperature scan did nothing --
+the scan always ran to completion regardless.** The passing test added
+in Session 79 (`test_run_temperature_series_abort_during_post_stable_hold`)
+masked this by overriding `Application.listen_abort()` directly on a
+subclass -- proving the interface contract, not proving the real UI ever
+reaches it, the exact same reachability gap Session 78's fix was
+originally about.
+
+**Investigated whether `_run_temperature_experiment_series()` (qt_ui.py)
+needs its own loop, mirroring `_run_experiment_series_body()`, before
+assuming yes.** Finding: no -- `Application.run_temperature_series()` is
+already architecturally the loop-across-units method for the TEC path
+(it takes the full `experiment_groups` list and loops internally, unlike
+`run_experiment2()`, which only ever does one repeat and requires an
+external loop in qt_ui.py). This is a pre-existing structural difference
+between the two paths, not something to relocate as part of this fix.
+The correct fix is to make `run_temperature_series()`'s own existing
+loop check `self.stop_fired` at the right granularity instead of
+`listen_abort()` at the wrong one.
+
+**Implemented, applying Session 78's exact principle ("finish the
+current unit, then stop") at the temperature-point granularity:** the
+smallest unit for a TEC scan is one full temperature point -- target
+set, wait for stability, the post-stable hold, and its ENTIRE experiment
+group including every repeat. `run_temperature_series()` now checks
+`self.stop_fired` exactly once per temperature point, at the very top of
+that point's loop iteration, before it does anything -- mirroring
+`_run_experiment_series_body()`'s `if self.app.stop_fired:` between-
+repeats check precisely. Every other abort check inside the method was
+removed, not replaced: the pre-target-set check, `wait_until_stable()`'s
+`should_abort` wiring (dropped entirely -- `wait_until_stable()`'s own
+`should_abort`/`TecAbortedError` machinery in `tec.py` is untouched and
+still available for other callers, just no longer fed a dead callable
+from this one), the post-hold check, and the inner per-repeat loop's
+check. `TecAbortedError` import removed from `application.py` (now
+genuinely unused there). `_run_temperature_experiment_series()`
+(qt_ui.py) needed no new loop -- it already calls
+`self.app.create_stop_event()` before its one call into
+`run_temperature_series()`, matching the non-TEC wrapper's own reset-
+before-start.
+
+**Part C follow-up extended to TEC scans.** The graceful-stop indicator
+from Session 78 ("Stopping after this repeat...") now generalizes
+correctly: a new `self._temperature_scan_active` flag (set/cleared via a
+new `"temperature_scan_active"` progress kind, bracketing
+`_run_temperature_experiment_series()` the same way
+`"experiment_series_active"` already does) lets `_abort()` pick the
+right wording -- "this temperature point" for a TEC scan, "this repeat"
+otherwise -- for both the general status text and the repeat-counter
+area. Also fixed a small pre-existing wording inconsistency in the same
+change: the status text used to say "Stopping after **current**
+repeat..." while the counter said "Stopping after **this** repeat..." --
+now unified to the same wording in both places.
+
+**Tests:** the two Session 79 tests that mocked `listen_abort()` directly
+were confirmed stale against the new behavior (one would now raise
+`AssertionError` inside its own stubbed `run_experiment2()`, since the
+group it asserted must never run, now correctly does) and were replaced,
+not patched around, matching Session 78's precedent for handling
+now-incorrect tests. New tests exercise the **real** `stop_fired`
+mechanism directly (`self.fire_stop_event()`, the exact call `_abort()`
+makes) -- not a mocked `listen_abort()` override -- confirming: abort
+signaled during `wait_until_stable()` still lets that point reach its
+target and run its full group; abort signaled during the post-stable
+hold still lets that point's group run; abort signaled mid-repeat within
+a point's own group still lets every remaining repeat in that same point
+run; in all three cases, the *next* temperature point never starts.
+Also new `qt_ui.py`-level tests for the temperature-point-vs-repeat
+wording split, including a sanity check that a plain series doesn't
+accidentally pick up TEC wording from a stale flag.
+
+**Full suite: 466 passed effectively** (464 + 2 confirmed-flaky
+Qt/PySide6 `SystemError`-class failures on unrelated widgets --
+WFG channel group, FM sweep group-box sizing -- verified via isolated
+rerun as the same pre-existing offscreen/shiboken construction issue
+documented elsewhere in this log, not a regression), 1 skipped (the
+mecom-dependent regression test).
+
+**Not committed** -- pending review, per standing instruction. Like
+Session 78, this is a real safety-behavior correction to what Abort
+actually does -- TEC temperature scans now genuinely respond to Abort
+for the first time (previously it silently did nothing during a running
+scan).
+
+---
+
+### Session 81 -- v2 step-progress breadcrumb: the previously-deferred Phase 3 stepper indicator
+
+**Investigation before implementing, findings reported first.** Confirmed
+the 7-step per-repeat order (`application.py`'s `STEP_*` constants, same
+order `ExperimentSequenceView`'s cards already use) and the recorded
+design decision that `SetTecTarget`/`WaitTecStable` wrap that sequence
+from outside, once per temperature point -- not folded into it.
+Recommended keeping the breadcrumb scoped to the same 7 steps only,
+deferring a separate "temperature point X of Y" indicator as a follow-up
+candidate rather than expanding scope.
+
+**Critical pre-existing gap found and fixed first, not scope creep:**
+neither `_run_experiment_series_body()` (`self.app.run_experiment2()`)
+nor `_run_temperature_experiment_series()`
+(`self.app.run_temperature_series(...)`) passed `progress=progress` into
+their real call -- `step_started`/`step_completed`/`step_failed`
+(`application.py`'s `_report_step()`) never reached the UI at all, for
+either the plain series or a TEC scan, before this fix. No per-card
+highlighting existed yet either (Phase 3 was never previously started,
+confirmed by `ExperimentSequenceView`'s own docstring) -- so this
+introduces the first shared source of truth (`MainWindow._step_states`,
+base-class-tracks/subclass-renders, matching `_experiment_series_active`'s
+existing split) that both the new breadcrumb and any future per-card
+highlighting should read from.
+
+**Implemented:** `STEP_ORDER` (application.py) as the single ordered
+7-step tuple; a new `"step_reset"` progress event, fired explicitly (not
+inferred from the next step's own `step_started`) at the top of
+`run_experiment2()` (every new repeat) and at the top of
+`run_temperature_series()`'s per-point loop, right where Session 80's
+`stop_fired` check already lives (every new temperature point, covering
+the SetTecTarget/WaitTecStable/hold window that would otherwise show the
+*previous* point's stale completed markers for however long
+stabilization takes). `qt_ui.py`'s `_handle_worker_progress()` now tracks
+`_step_states` and calls a `_refresh_step_breadcrumb()` hook (no-op in
+the base v1 window). `qt_ui_v2.py` adds `_StepBreadcrumb` (7 markers,
+`○`/gray = pending, `●`/dodgerblue = active, `●`/green = completed,
+`●`/red = failed -- colors matching this window's own existing
+running/connected/not-connected conventions), placed first in the
+"Status / Progress" group (top of the live-monitoring column, the one
+built to stay visible without scrolling); `group.setMinimumHeight()`
+bumped 175->187 to match the real measured minimumSizeHint with the new
+row. Deliberately does not show a separate "stopping" visual during a
+graceful stop (Session 78/80's indicator already owns that message) --
+the breadcrumb keeps reporting the real in-progress state of the unit
+that is still genuinely running to completion.
+
+**Tests:** widget-level (7 markers in `STEP_ORDER`; `step_started` marks
+only that step active; `step_completed`/`step_failed` render distinct
+colors from `active` and from each other; `step_reset` clears every
+marker including one left `active` mid-highlight, not just untouched
+ones; base v1 window tracks `_step_states` correctly with no widget
+attached) plus two **real, non-mocked progress-plumbing tests** calling
+the actual `_run_experiment_series()`/`_run_temperature_experiment_series()`
+chain (not `_handle_worker_progress()` called directly) -- confirming the
+prerequisite fix lands for real: the non-TEC test found
+`WaitForAd2Completion`/`Flush` are genuinely conditional in real
+`run_experiment2()` (not always fired), corrected the test to assert
+against that real, expected behavior rather than a wrong "all 7 always
+fire" assumption; the TEC test confirms one `step_reset` + one
+`SetTecTarget` + one `WaitTecStable`, correctly ordered, per temperature
+point across 2 points.
+
+**Real (non-offscreen) rendering verified**, not just the automated
+offscreen suite: launched `MainWindowV2` on the real Qt platform at
+1440x860, drove real progress events (two completed steps, one failed
+step), screenshotted -- markers 1-2 render filled green, marker 3 filled
+red, markers 4-7 hollow gray, exactly as designed, breadcrumb visible
+without scrolling above Elapsed Time/Time Left/queue count.
+
+**Full suite: 473 passed, 1 skipped** -- clean run, no flaky Qt failures
+this time.
+
+**Not committed** -- pending review, per standing instruction.
+
+---
+
+### Session 82 -- Save/Load Settings gap-closure, batch 1: Pump&Valve manual tab (including the confirmed-never-implemented fill_flow_rate)
+
+**Preceded by a dedicated audit (same day)** that traced `schema_version`
+back to commit `f569143` -- confirmed it has only ever gated the Hz->kHz
+unit migration, never a broader persistence effort -- and enumerated every
+control across every tab against the real, current `_settings_dict()`/
+`_load_settings()`. Found the entire Pump&Valve manual tab, entire Camera
+manual tab, entire Z-Scan tab, WFG's `wfg_running`, and the Experiment
+tab's FM Sweep group + camera-acquisition-adjacent fields all genuinely
+unpersisted today. Also found `fill_flow_rate` specifically was the
+subject of an earlier task explicitly titled "persist new field per
+existing Save/Load Settings convention" -- confirmed via grep that it was
+never actually added to `_settings_dict()`/`_load_settings()`, and no
+round-trip test for it exists, only a test that it's passed into
+`refill()`/`empty()` calls (different, unrelated wiring). A real
+instruction that was never executed, not a memory error.
+
+**This session closes batch 1: the Pump&Valve manual tab only**, per
+explicit scope. `_settings_dict()` (`qt_ui.py`) gained a new
+`"pump_valve"` sub-dict, mirroring `"mso"`'s own existing sub-dict shape
+(the audit's own recommendation) rather than scattering loose top-level
+keys: `syringe`, `custom_syringe_volume_ml`,
+`custom_syringe_inner_diameter_mm`, `custom_syringe_stroke_mm`,
+`flow_rate`, `fill_flow_rate`, `level_ml`, `flush_flowrate`,
+`flush_volume`, `wait_after_flush`, `flush_count`. `_load_settings()`
+loads each field with the same tolerant `if key in data` pattern already
+used everywhere else in this method -- an older settings.json with no
+`"pump_valve"` key at all loads cleanly, leaving these fields at their
+`_build_state()` construction defaults. No `schema_version` bump: these
+are new keys, not a meaning change to an existing one, matching the exact
+precedent the recent TEC field additions (`tec_lock_channels`/
+`tec_points_ch2`/`tec_post_stable_hold_s`) already established.
+
+**Confirmed, not assumed, that qt_ui_v2.py needed no changes:** checked
+`"_settings_dict" in qt_ui_v2.MainWindowV2.__dict__` and
+`"_load_settings" in qt_ui_v2.MainWindowV2.__dict__` directly after this
+edit -- both `False`, confirming v2's Save/Load Settings menu actions
+still resolve to the same inherited base-class methods, so this batch
+applies to v2 automatically with no separate wiring.
+
+**The manual tab's own `flush_flowrate`/`flush_volume`/`wait_after_flush`/
+`flush_count` (`self.flush_flowrate` etc.) are distinct Qt objects from
+the Experiment tab's own `exp_flush_flowrate`/`exp_flush_volume`/
+`exp_wait_after_flush` (`self.exp_flush_flowrate` etc.) -- different
+Python attributes, different settings.json keys (`"pump_valve"` vs.
+`"experiment"`), confirmed by a dedicated test setting different values
+on each and asserting both save and reload independently with no
+cross-contamination.**
+
+**Tests:** full save/load round trip for all 11 fields in this batch
+(`test_qt_ui_save_and_restore_pump_valve_manual_tab_fields`); an
+old-format settings.json missing the `"pump_valve"` key entirely still
+loads without error, all fields at construction defaults
+(`test_qt_ui_load_settings_without_pump_valve_key_loads_without_error`);
+the manual-vs-Experiment-tab flush-field independence test described
+above (`test_qt_ui_pump_valve_manual_flush_fields_round_trip_independently_of_experiment_flush_fields`).
+
+**Full suite: 476 passed, 1 skipped** -- clean run, no flaky Qt failures
+this time.
+
+**Not committed** -- pending review, per standing instruction. Remaining
+batches (Camera tab, Z-Scan tab, WFG `wfg_running`, Experiment tab's FM
+Sweep + camera-acquisition fields) are out of scope for this session, per
+the batch-1-only instruction.
+
+---
+
+### Session 83 -- Save/Load Settings gap-closure, batch 2: Camera manual tab (plus a real, deterministic process-crash root-cause and fix, not the usual pre-existing flakiness)
+
+**Confirmed the field list against real current attribute names before
+implementing**, per instruction -- `conversion_shifts` (not "shifts"), and
+found `conversion_min`/`conversion_max` (both always `setReadOnly(True)`,
+written only from `_set_conversion_range()`'s live-capture-derived
+display range, never a user-set value) needed excluding, the same
+disposition batch 1 gave nothing but this batch's own new find:
+**`image_continuous` also needed excluding, for a different, more
+consequential reason -- see below.**
+
+**Implementation:** new `"camera"` sub-dict in `_settings_dict()`
+(`qt_ui.py`), 17 fields: `roi_h_offset`/`roi_v_offset`/`roi_h_size`/
+`roi_v_size`/`center_roi`, `exposure_ms` (the manual ROI-group field,
+`self.exposure_ms` -- confirmed a distinct Qt object and settings key
+from the Experiment tab's own `self.exp_exposure_ms`/`"experiment".
+exposure_ms`, by a dedicated independence test), `conversion_method`/
+`conversion_shifts`, `sequence_mode`/`sequence_source`/
+`sequence_interval`/`sequence_burst`/`sequence_frames`, `capture_mode`,
+`dcam_source`, `external_polarity`/`external_delay`,
+`sequence_exposure_ms`. Tolerant `if key in data` loads for all, no
+`schema_version` bump, matching batch 1's proven pattern exactly.
+Confirmed `qt_ui_v2.py` needed no changes the same way batch 1 did --
+`_settings_dict`/`_load_settings` still absent from
+`MainWindowV2.__dict__`, checked directly.
+
+**A real, deterministic full-suite process crash was found and root-
+caused during verification -- not the documented pre-existing offscreen-
+Qt flakiness class, despite initially looking identical to it.**
+Constructing this batch's round-trip test crashed the entire pytest
+process (no traceback, no catchable exception -- `exit 127`) 100% of the
+time it ran after ~30 preceding tests in the same file, every attempt,
+across many isolated bisection re-runs. Two false leads were investigated
+and ruled out before the real cause was found: (1) the general "SystemError,
+random widget, retry helps" class this codebase's own
+`conftest.py:build_with_retry()` already documents and handles --
+ruled out because retry/`.close()`/widening `_live_image_continuous_
+checkbox()`'s except clause to also catch `SystemError` (a real,
+independently-defensible improvement, kept) did not stop the crash; (2)
+the checkbox's own documented "C++ object can be dead" fragility --
+ruled out because a pure `.isChecked()` read never crashed, only
+`.setChecked(True)` did, and `blockSignals()` around it didn't help
+either. **Systematic field-by-field bisection within the real full-suite
+context (not an isolated repro, which could not reproduce it) traced it
+conclusively to `image_continuous.setChecked(True)`**, and inspecting
+its connected `toggled` signal explained why: `_set_image_continuous()`
+opens a real `ImagePreviewWindow`, starts a repeating `QTimer`, and
+attempts a live camera capture -- real side effects entirely unrelated to
+what a settings round-trip test (or, more importantly, `_load_settings()`
+loading a saved settings.json at real app startup) should ever trigger.
+**Fix: excluded `image_continuous` from persistence entirely** -- not a
+test workaround, a genuine design correction: unlike every other field in
+this batch, it is a live action trigger, not passive configuration, and
+restoring it via `_load_settings()` would auto-start continuous capture
+the instant settings load, before hardware is even connected. Same
+category as `conversion_min`/`conversion_max`'s exclusion (a value that
+shouldn't be treated as a saved preference), reached via a different
+mechanism (an action side effect instead of a computed readout).
+
+**Tests:** full round trip for the 17 included fields
+(`test_qt_ui_save_and_restore_camera_manual_tab_fields`); old-format
+settings.json missing the `"camera"` key loads cleanly at construction
+defaults (`test_qt_ui_load_settings_without_camera_key_loads_without_error`);
+manual-vs-Experiment `exposure_ms` independence test, mirroring batch 1's
+flush-field independence test
+(`test_qt_ui_camera_manual_exposure_field_round_trips_independently_of_experiment_exposure_field`);
+explicit assertions that `conversion_min`/`conversion_max`/
+`image_continuous` are absent from the saved dict, not just omitted by
+oversight.
+
+**Full suite: 495 passed, 1 skipped** -- clean run. (Two unrelated,
+different-widget-each-time `RuntimeError: already deleted` failures
+appeared on other full-suite attempts during this session's own
+verification passes -- confirmed via isolated re-run both times as the
+genuinely pre-existing, already-documented offscreen-Qt flakiness class,
+not a regression; contrast with the crash investigated and fixed above,
+which was 100% deterministic and had a real root cause.)
+
+**Not committed** -- pending review, per standing instruction.
+
+---
+
+### Session 84 -- Save/Load Settings gap-closure, batch 3: Z-Scan manual tab
+
+**Confirmed the 5-field list against real current attribute names**
+before implementing (`zscan_output_dir`, `zscan_z_start_um`,
+`zscan_z_end_um`, `zscan_step_size_um`, `zscan_exposure_ms`) -- all
+matched exactly, no renames needed this time.
+
+**Applied batch 2's lesson explicitly, not just by habit:** grepped all
+5 fields for any connected `.valueChanged`/`.textChanged`/
+`.editingFinished` signal before writing a single line of persistence
+code. None exists -- none of these 5 fields is a live action trigger the
+way `image_continuous` was. But the check surfaced a different, real
+correctness hazard specific to two of them: `zscan_z_start_um`/
+`zscan_z_end_um` are constructed disabled with range `[0.0, 0.0]` and
+only get a real range (and get enabled) via `_apply_zscan_range()`,
+itself only ever called after a genuine `_query_zscan_range()` hardware
+read of the piezo's `MaxTravel`. A bare `widget.setValue(loaded_value)`
+at load time -- before any hardware has ever been queried in a fresh
+process -- would have silently clamped a real saved value straight to
+`0.0` (standard Qt spin-box behavior: `setValue()` clamps into the
+current `[minimum, maximum]`). Not a crash, not a live-action trigger,
+but the same class of "looks like it persisted, silently didn't" trap
+in spirit.
+
+**Fix, in `_load_settings()` only (not a widget-lifecycle change):**
+for these two fields specifically, widen `.setMaximum()` to the loaded
+value first if it exceeds the field's current maximum, then
+`.setValue()`. The field stays disabled exactly as it already does by
+default -- only the numeric range is touched, not the enablement gate --
+and `_apply_zscan_range()` still fully overwrites this range with the
+real device-reported bound the next time a genuine hardware query runs,
+so this does not weaken that safety gate in any way.
+
+**Implementation:** new `"zscan"` sub-dict in `_settings_dict()`, all 5
+fields; tolerant `if key in data` loads in `_load_settings()`, no
+`schema_version` bump -- same proven shape as batches 1-2. Confirmed
+`qt_ui_v2.py` needed no changes by direct `MainWindowV2.__dict__` check,
+both before and after the edit.
+
+**Tests:** full round trip
+(`test_qt_ui_save_and_restore_zscan_tab_fields`) -- deliberately uses
+`zscan_z_start_um`/`zscan_z_end_um` values (12.5/487.5) that exceed the
+field's real default `[0.0, 0.0]` range on the freshly-constructed
+`second_window`, specifically to prove the range-widening fix actually
+engages rather than merely happening to fit; also confirms both fields
+stay disabled after load, matching the unchanged safety gate. Old-format
+settings.json missing the `"zscan"` key loads cleanly at construction
+defaults, including confirming `isEnabled() is False` for both
+range-gated fields
+(`test_qt_ui_load_settings_without_zscan_key_loads_without_error`).
+
+**Full suite: 497 passed, 1 skipped** -- clean on the confirming re-run.
+(Two different-widget `SystemError: <class> returned NULL without
+setting an exception` failures appeared on the first full-suite attempt
+this session -- one in an unrelated batch-1 test, one in `test_qt_ui_v3.py`,
+neither touched by this batch's changes -- confirmed via isolated re-run
+both times as the same pre-existing, already-documented offscreen-Qt
+flakiness class this project has hit repeatedly, not a regression.)
+
+**Not committed** -- pending review, per standing instruction. Remaining
+batch: WFG's `wfg_running`, and the Experiment tab's FM Sweep +
+camera-acquisition-adjacent fields.
+
+---
+
+### Session 85 -- Save/Load Settings gap-closure, batch 4 (final): WFG running + FM Sweep/camera-acquisition, plus v3 Proposal C adoption
+
+**Part 1 -- final persistence batch.** Confirmed all field names against
+real current attributes first, same discipline as batches 1-3 -- all
+matched, `camera_start_array` confirmed exactly 10 widgets
+(`range(10)`). Applied both standing checks (batch 2's live-action-
+trigger grep, batch 3's disabled/range-gated-state check) to all 15
+fields explicitly before implementing: no connected
+`.valueChanged`/`.toggled`/`.stateChanged` signal with a real side
+effect on any of them, and none is disabled or range-gated at
+construction the way `zscan_z_start_um`/`zscan_z_end_um` were -- both
+checks came back clean this time, no special load-time handling needed.
+One real design decision surfaced: `wfg_running` could not be nested
+under a new `"wfg"` sub-dict the way batches 1-3 nested their new
+fields, because `"wfg"` is already the existing per-channel list key --
+added as a plain top-level `"wfg_running"` key instead to avoid the
+collision. FM Sweep's `sweep_start_khz`/`sweep_stop_khz`/
+`sweep_center_khz`/`sweep_width_khz` are cross-synced live by
+`_connect_sweep_dual_mode_refresh()` (pure UI-side arithmetic, no
+hardware touch, confirmed not a live action trigger) -- all four
+persisted anyway for an exact round trip rather than relying on
+recomputation from just the primary pair. All fields added as tolerant,
+purely-additive keys (`"wfg_running"` top-level; the rest under the
+existing `"experiment"` dict), no `schema_version` bump. Confirmed
+`qt_ui_v2.py` needed no changes by direct `MainWindowV2.__dict__` check.
+
+**This closes the Save/Load Settings gap-closure effort entirely** --
+every field identified in the original audit (2026-08-04) across
+Pump&Valve, Camera, Z-Scan, WFG, and the Experiment tab's FM
+Sweep/camera-acquisition fields is now persisted, with three
+deliberate, documented exclusions (`conversion_min`/`conversion_max`,
+`image_continuous`) for fields that are genuinely not passive
+configuration.
+
+**Part 2 -- v3 design-idea adoption, Proposal C.** Added or confirmed a
+one-line orienting note at the top of every manual test panel stating
+its relationship to automated Experiment runs, matching the model
+wording already correct on the WFG tab (`qt_ui.py`, unchanged).
+Confirmed via grep that MSO is never referenced anywhere in
+`application.py`/`workflows.py`, so its "does NOT affect" note is
+genuinely, not just apparently, true. Camera tab already had a
+correctly-scoped "DO affect" note on its Sequence Settings group
+specifically (not duplicated) -- added a top-level note alongside it
+covering the rest of the tab (Image/ROI/Conversion, confirmed
+independent by batch 2's own `exposure_ms` independence test) and
+pointing to the Sequence Settings exception rather than restating it.
+Pump&Valve and Z-Scan tabs had no top-level orienting note at all --
+added both, Pump&Valve's confirmed against batch 1's own manual-vs-
+Experiment flush-field independence test, Z-Scan's confirmed by
+tracing that its calibration workflow is never called from
+`run_experiment2()`/the automated path at all. Z-Scan's existing "Scan
+Control" hint (about needing the Camera tab's Configure Camera first)
+covers a different topic and was left untouched, not merged with the
+new note. Shared by v1 and v2 automatically (same source methods, no
+separate v2 wiring needed). `qt_ui_v3.py` itself untouched throughout,
+per instruction.
+
+**Verification:** real (non-offscreen) render of all 5 manual tabs
+confirmed every note wraps cleanly with no layout breakage, including
+the Camera and Z-Scan tabs' grid-row insertions (existing widgets
+shifted down one row programmatically, not by hand-editing every
+`addWidget` call's row index individually).
+
+**Tests:** full round trip for all 15 batch-4 fields, including reading
+back the FM Sweep dual-mode sync's own live-recomputed center/width
+values (not hardcoded expectations) to confirm the saved values stay
+internally consistent; old-format settings.json missing all batch-4
+keys loads cleanly at construction defaults.
+
+**Full suite: 499 passed, 1 skipped** on the clean run. (A further
+re-run surfaced two more different-widget-each-time `SystemError`/
+`RuntimeError` failures -- one in a pre-existing, untouched-by-this-
+batch test, one in `test_qt_ui_v3.py` -- both confirmed passing in
+isolation as the same pre-existing offscreen-Qt flakiness class hit
+repeatedly throughout this whole gap-closure effort, not a regression.)
+
+**Not committed** -- pending review, per standing instruction.
 
 ---
 

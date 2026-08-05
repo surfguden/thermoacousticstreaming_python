@@ -93,8 +93,9 @@ Instrument status:
   captures a snapshot, and saves `hamamatsu_snapshot.tiff`.
 - Pump: simulated API exists and `QmixPumpBackend` provides the real
   Cetoni/Qmix SDK adapter. It opens the Qmix bus, looks up a pump by name or
-  index, starts communication, clears faults, enables the drive, configures
-  uL/min flow units, supports syringe presets/explicit geometry, and dispatches
+  index, starts communication, refuses a pre-existing fault without clearing
+  it automatically, enables the drive only after that check, configures uL/min
+  flow units, supports syringe presets/explicit geometry, and dispatches
   refill/empty/flow/fill-level/reference commands.
 - Valve/Z-stage: serial text backend exists through `pyserial`, but real command
   strings, baud, line endings, and response parsing still need validation on the

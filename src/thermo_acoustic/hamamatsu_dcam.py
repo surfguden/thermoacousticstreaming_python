@@ -68,14 +68,33 @@ class HamamatsuDcamBackend:
 
     def open_camera(self) -> object:
         with log_call("camera", "open_camera", command=self.device_index) as result:
-            self._load_sdk()
-            if not self.initialized:
-                self._check(self.dcamapi.init(), "Dcamapi.init")
-                self.initialized = True
-            if self.dcam is None:
-                self.dcam = self.dcam_module.Dcam(self.device_index)
-            if not self.dcam.is_opened():
-                self._check(self.dcam.dev_open(), "Dcam.dev_open")
+            try:
+                self._load_sdk()
+                if not self.initialized:
+                    self._check(self.dcamapi.init(), "Dcamapi.init")
+                    self.initialized = True
+                if self.dcam is None:
+                    self.dcam = self.dcam_module.Dcam(self.device_index)
+                if not self.dcam.is_opened():
+                    self._check(self.dcam.dev_open(), "Dcam.dev_open")
+            except Exception as exc:
+                rollback_errors: list[str] = []
+                if self.dcam is not None:
+                    try:
+                        if self.dcam.is_opened():
+                            self._check(self.dcam.dev_close(), "Dcam.dev_close after failed open")
+                        self.dcam = None
+                    except Exception as rollback_exc:
+                        rollback_errors.append(f"device rollback failed: {rollback_exc}")
+                if self.initialized and self.dcamapi is not None:
+                    try:
+                        self._check(self.dcamapi.uninit(), "Dcamapi.uninit after failed open")
+                        self.initialized = False
+                    except Exception as rollback_exc:
+                        rollback_errors.append(f"API rollback failed: {rollback_exc}")
+                if rollback_errors:
+                    raise HamamatsuDcamError(f"{exc}; {'; '.join(rollback_errors)}") from exc
+                raise
             result["response"] = "opened"
         return self.dcam
 

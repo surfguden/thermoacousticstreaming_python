@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import queue
-import threading
 from dataclasses import dataclass
 from typing import Any
 
-from .hw_logging import log_call
+from .hw_logging import log_call, run_with_timeout
 
 
 class PiezoStageError(RuntimeError):
@@ -181,28 +179,14 @@ class PiezoStage:
             result["response"] = "disconnected"
 
     def _run_disconnect_step(self, name: str, action) -> list[str]:
-        result_queue: queue.Queue[BaseException | None] = queue.Queue(maxsize=1)
-
-        def run() -> None:
-            try:
-                action()
-            except BaseException as exc:  # pragma: no cover - defensive SDK cleanup path
-                result_queue.put(exc)
-            else:
-                result_queue.put(None)
-
-        worker = threading.Thread(target=run, name=f"piezo-disconnect-{name}", daemon=True)
-        worker.start()
-        worker.join(max(self.disconnect_timeout_s, 0.0))
-        if worker.is_alive():
-            return [f"Piezo {name} timed out after {self.disconnect_timeout_s:.1f}s."]
-        try:
-            error = result_queue.get_nowait()
-        except queue.Empty:  # pragma: no cover - thread completed without reporting
-            return [f"Piezo {name} finished without reporting a result."]
-        if error is not None:
-            return [f"Piezo {name} failed: {error}"]
-        return []
+        # Cross-module architecture review (2026-08-02): now the shared
+        # hw_logging.run_with_timeout() utility -- was previously its own
+        # hand-copied implementation of the same shape
+        # Application._run_cleanup_call_with_timeout()/
+        # QmixPumpBackend._run_close_step() each independently
+        # re-implemented. Message wording ("Piezo {name} ...") unchanged.
+        error = run_with_timeout(action, f"Piezo {name}", self.disconnect_timeout_s)
+        return [error] if error is not None else []
 
     def _require_connected(self) -> Any:
         if not self.connected or self.channel is None:
