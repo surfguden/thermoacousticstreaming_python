@@ -16,7 +16,7 @@ TBD_PATH = ROOT / "docs" / "PORTING_TBD.md"
 RUNTIME_TBD = [
     (
         "Hamamatsu real camera validation",
-        "Run `tools/test_hamamatsu_camera.py` against the connected camera and verify "
+        "Run `tools/legacy_hamamatsu_camera_probe.py` against the connected camera and verify "
         "open, exposure, ROI/subarray, snapshot, sequence capture, software trigger, "
         "and cleanup behavior.",
     ),
@@ -510,9 +510,9 @@ def _write_tbd(entries: list[PortEntry]) -> None:
     lines = [
         "# Porting TBD",
         "",
-        "This file is generated from `labview_manifest.json` and records the current",
-        "semantic porting status for every documented VI in `main_html/main`.",
-        "Runtime and hardware validation items are maintained here as post-port tasks.",
+        "This file is generated from `labview_manifest.json` and records a historical",
+        "semantic-porting snapshot for every documented VI in `main_html/main.html`.",
+        "Historical follow-up notes may appear below; use docs/known_open_items.md for live status.",
         "",
         "## Summary",
         "",

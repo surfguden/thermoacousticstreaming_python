@@ -34,6 +34,51 @@ def make_window(monkeypatch, tmp_path) -> qt_ui_v2.MainWindowV2:
     return build_with_retry(qt_ui_v2.MainWindowV2)
 
 
+@pytest.mark.parametrize(
+    ("module", "window_class"),
+    ((qt_ui, qt_ui.MainWindow), (qt_ui_v2, qt_ui_v2.MainWindowV2)),
+)
+def test_reinitialize_refuses_replacement_bundle_when_existing_cleanup_fails(
+    monkeypatch, tmp_path, module, window_class
+):
+    class FailingCleanupApplication:
+        def __init__(self):
+            self.errors = []
+
+        def cleanup(self):
+            raise RuntimeError("simulated blocked hardware cleanup")
+
+        def check_loop_error(self, error):
+            self.errors.append(error)
+
+    class WindowHolder:
+        app = FailingCleanupApplication()
+
+    replacement_calls = []
+    monkeypatch.setattr(module, "build_hardware_bundle", lambda config: replacement_calls.append("build"))
+    monkeypatch.setattr(module, "apply_hardware_bundle", lambda app, bundle: replacement_calls.append("apply"))
+    config = HardwareRuntimeConfig(
+        ad2_enabled=False,
+        sim_ad2=True,
+        camera_enabled=False,
+        sim_camera=True,
+        pump_enabled=False,
+        sim_pump=True,
+        valve_enabled=False,
+        sim_valve=True,
+        z_enabled=False,
+        thorlabs_apt_serial="",
+        valve_resource="COM5",
+        cetoni_config_path=tmp_path,
+    )
+
+    with pytest.raises(RuntimeError, match="refusing to initialize a replacement hardware bundle"):
+        window_class._initialize_system(WindowHolder(), config)
+
+    assert replacement_calls == []
+    assert len(WindowHolder.app.errors) == 1
+
+
 def _synthetic_wheel_event(target, dy: int = 120) -> QWheelEvent:
     pos = QPointF(max(target.width(), 1) / 2, max(target.height(), 1) / 2)
     return QWheelEvent(
@@ -126,6 +171,22 @@ def test_v2_abort_menu_explains_graceful_not_mid_operation_semantics(monkeypatch
         window.close()
 
 
+def test_v2_menu_actions_have_stable_identifiers_for_layout_adapters(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        actions = {action.objectName(): action for action in window.menuBar().actions()}
+        assert set(actions) == {
+            "menuExitAction",
+            "menuAbortAction",
+            "menuSaveSettingsAction",
+            "menuLoadSettingsAction",
+        }
+        assert actions["menuSaveSettingsAction"].text() == "Save Settings"
+        assert actions["menuLoadSettingsAction"].text() == "Load Settings"
+    finally:
+        window.close()
+
+
 def test_v2_start_experiment_discloses_shared_real_hardware_boundary(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
     try:
@@ -187,6 +248,15 @@ def test_v2_sidebar_buttons_open_existing_manual_test_panels(monkeypatch, tmp_pa
 
         checkboxes = window._manual_panels["WFG"].findChildren(QCheckBox)
         assert window.wfg_running in checkboxes
+        wfg_frequency_label = window._manual_panels["WFG"].findChild(
+            QLabel, "manualWfgCarrier_frequencyLabel"
+        )
+        assert wfg_frequency_label is not None
+        assert wfg_frequency_label.text().startswith("Frequency (kHz) Carrier")
+        window.wfg_channels[0]["enable"].setChecked(True)
+        window.wfg_channels[1]["enable"].setChecked(True)
+        window._update_wfg_preview()
+        assert set(window.wfg_preview_graph._series) == {"Ch1", "Ch2"}
 
         mso_dialog_widgets = window._manual_panels["MSO"].findChildren(type(window.mso_sample_frequency))
         assert window.mso_sample_frequency in mso_dialog_widgets
@@ -381,27 +451,38 @@ def test_v2_initialization_progress_uses_existing_instrument_order(monkeypatch, 
         assert window.camera_connection_status.text() == "Connected"
         assert window.pump_connection_status.text() == "Connected"
         assert window.valve_connection_status.text() == "Connected"
+
+        # Bug fix regression test (found during v3 design evaluation,
+        # 2026-08-06): connection_button used to derive "connected" from
+        # `self.app.status == "System Initialized"`, a general status
+        # string every later action overwrites -- a flush, a refill, an
+        # experiment run, etc. -- so the button flipped to red
+        # "* Not Connected" after the very first successful post-init
+        # action, even though hardware was still fully connected. Same
+        # "directly overwrite window.app.status to simulate a later
+        # action" pattern already used above for the analogous
+        # experiment_running_status fix (Category 2, Session 39).
+        window.app.status = "FlushComplete"
+        window._refresh_status()
+        assert window.connection_button.text() == "* Connected"
+        assert window.connection_button.styleSheet() == "color: green;"
     finally:
         window.close()
 
 
-def test_v2_tec_init_failure_reports_rollback_instead_of_stale_complete(monkeypatch, tmp_path):
-    # Regression test (2026-08-03): a user screenshot showed the
-    # Initialize dialog reporting AD2/Camera/Pump/Valve/Z-stage as
-    # "Complete" while Global Status simultaneously showed them "Not
-    # connected" -- traced to Application's real, deliberate, and
-    # already-tested "partial-initialization rollback" (see
-    # claude_code_change_log.md): one device's init failure rolls back
-    # every previously-successful device via _cleanup_instruments(),
-    # which genuinely disconnects them (AD2Sdk.cleanup() etc. reset
-    # device_handle/initialized). Global Status was accurately reporting
-    # that real rollback; the actual bug was that the Initialize
-    # dialog's own progress events never told it about the rollback, so
-    # its rows stayed frozen on "Complete" instead. This test confirms
-    # both halves stay true after the fix: the rollback itself is
-    # unchanged (still real, not removed), and the dialog's own events
-    # now report "Rolled back" for the previously-successful devices
-    # instead of leaving them on a now-false "Complete".
+def test_v2_tec_init_failure_leaves_other_devices_genuinely_connected(monkeypatch, tmp_path):
+    # Architecture fix (2026-08-13), superseding the 2026-08-03 regression
+    # test this replaces: devices are confirmed functionally independent
+    # (no device's initialize() reads another's state), so
+    # Application.initialize() no longer rolls back AD2/Camera/Pump/Valve
+    # just because a later, unrelated device (TEC here) fails -- see
+    # docs/hardware_repair_plan.md's "Initialization And Failure Recovery".
+    # The old version of this test asserted the opposite (rollback was
+    # real and the dialog had to report it); this confirms the new,
+    # correct behavior: the Initialize dialog's per-device rows AND
+    # Global Status both genuinely agree the earlier devices stayed
+    # connected, and only TEC (the device that actually failed) shows
+    # "Failed".
     from thermo_acoustic.tec import TecController
 
     def _raise_tec_failure(self) -> None:
@@ -432,25 +513,27 @@ def test_v2_tec_init_failure_reports_rollback_instead_of_stale_complete(monkeypa
         with pytest.raises(RuntimeError, match="TEC initialize failed"):
             window._initialize_system(config, lambda kind, value: events.append((kind, value)))
 
-        # Each previously-successful device's LAST reported status must
-        # be "Rolled back", not the "Complete" it got a moment earlier.
+        # Each device's own genuine outcome is reported -- AD2/Camera/Pump/
+        # Valve stay "Complete", only TEC shows "Failed". No "Rolled back"
+        # text anywhere; nothing gets rolled back anymore.
         final_status: dict[str, str] = {}
         for kind, value in events:
             if kind == "init_device":
                 name, status = value
                 final_status[name] = status
         for name in ("AD2", "Camera", "Pump", "Valve"):
-            assert "Complete" not in final_status[name], f"{name} still shows stale Complete: {final_status[name]}"
-            assert "Rolled back" in final_status[name], f"{name}: {final_status[name]}"
+            assert "Complete" in final_status[name], f"{name}: {final_status[name]}"
+            assert "Rolled back" not in final_status[name], f"{name}: {final_status[name]}"
         assert final_status["TEC"] == "Failed"
 
-        # The rollback must still be real (not merely reported) -- Global
-        # Status must AGREE with the dialog now, not contradict it.
+        # Global Status must AGREE with the dialog: genuinely still
+        # connected, not artificially disconnected by a rollback that no
+        # longer happens.
         window._refresh_status()
-        assert window.ad2_connection_status.text() == "Not connected"
-        assert window.camera_connection_status.text() == "Not connected"
-        assert window.pump_connection_status.text() == "Not connected"
-        assert window.valve_connection_status.text() == "Not connected"
+        assert window.ad2_connection_status.text() == "Connected"
+        assert window.camera_connection_status.text() == "Connected"
+        assert window.pump_connection_status.text() == "Connected"
+        assert window.valve_connection_status.text() == "Connected"
     finally:
         window.close()
 
@@ -749,84 +832,69 @@ def test_v2_every_value_widget_has_a_tooltip_and_visible_marker(monkeypatch, tmp
         window.close()
 
 
-def test_v2_experiment_sequence_view_has_seven_cards_in_named_step_order(monkeypatch, tmp_path):
-    # Phase 2 (v2 sequence-visualization): confirm the step-card container
-    # has exactly one card per named per-repeat step from application.py's
-    # STEP_* constants (run_experiment2()'s own traced order), in that same
-    # order, with the numbered titles the cards were built with. TEC scan's
-    # SetTecTarget/WaitTecStable wrap the sequence from outside once per
-    # temperature point (see application.py's STEP_* design note) and are
-    # deliberately NOT cards here -- covered separately below.
+def test_v2_experiment_setup_tabs_has_four_task_oriented_tabs(monkeypatch, tmp_path):
+    # v3 design-idea adoption, Proposal B (2026-08-05): replaces the former
+    # per-step card sequence (Phase 2) with task-oriented setup tabs,
+    # grouping by what an operator is configuring rather than
+    # run_experiment2()'s internal step order.
     window = make_window(monkeypatch, tmp_path)
     try:
-        view = build_with_retry(window._experiment_sequence_view)
-
-        assert view.step_names() == [
-            STEP_INITIALIZE_EXPERIMENT,
-            STEP_CONFIGURE_WFG,
-            STEP_CONFIGURE_CAMERA,
-            STEP_CAPTURE_FRAMES,
-            STEP_WAIT_FOR_AD2_COMPLETION,
-            STEP_FLUSH,
-            STEP_SAVE_RESULTS,
+        tabs = build_with_retry(window._v2_experiment_setup_tabs)
+        assert [tabs.tabText(i) for i in range(tabs.count())] == [
+            "AD2 Output",
+            "Camera",
+            "Fluidics",
+            "Advanced",
         ]
-
-        expected_titles = {
-            STEP_INITIALIZE_EXPERIMENT: "1. Initialize Experiment",
-            STEP_CONFIGURE_WFG: "2. Configure WFG",
-            STEP_CONFIGURE_CAMERA: "3. Configure Camera",
-            STEP_CAPTURE_FRAMES: "4. Capture Frames",
-            STEP_WAIT_FOR_AD2_COMPLETION: "5. Wait For AD2 Completion",
-            STEP_FLUSH: "6. Flush",
-            STEP_SAVE_RESULTS: "7. Save Results",
-        }
-        for step_name, expected_title in expected_titles.items():
-            assert view.step_card(step_name).title() == expected_title
     finally:
         window.close()
 
 
-def test_v2_experiment_sequence_view_embeds_the_real_shared_group_widgets(monkeypatch, tmp_path):
-    # Each card re-parents v2's existing shared group-box
-    # builders whole (not rebuilt) -- confirm identity, matching this file's
-    # established reuse-verification convention (e.g.
+def test_v2_experiment_setup_tabs_embeds_the_real_shared_group_widgets(monkeypatch, tmp_path):
+    # Each tab re-parents v2's existing shared group-box builders whole (not
+    # rebuilt) -- confirm identity, matching this file's established
+    # reuse-verification convention (e.g.
     # test_v2_experiment_area_exposes_fm_sweep_and_frequency_scanning above).
     window = make_window(monkeypatch, tmp_path)
     try:
-        view = build_with_retry(window._experiment_sequence_view)
+        tabs = build_with_retry(window._v2_experiment_setup_tabs)
 
-        init_card = view.step_card(STEP_INITIALIZE_EXPERIMENT)
-        assert init_card.isAncestorOf(window.series_path)
+        ad2_tab = tabs.widget(0)
+        assert ad2_tab.isAncestorOf(window.exp_ad2_channels[0]["enable"])
+        assert ad2_tab.isAncestorOf(window.exp_ad2_channels[1]["enable"])
+        assert ad2_tab.isAncestorOf(window.exp_sweep_start_khz)
+        assert ad2_tab.isAncestorOf(window.exp_freq_scan_start_khz)
 
-        wfg_card = view.step_card(STEP_CONFIGURE_WFG)
-        assert wfg_card.isAncestorOf(window.exp_ad2_channels[0]["enable"])
-        assert wfg_card.isAncestorOf(window.exp_ad2_channels[1]["enable"])
-        assert wfg_card.isAncestorOf(window.exp_sweep_start_khz)
-        assert wfg_card.isAncestorOf(window.exp_freq_scan_start_khz)
+        camera_tab = tabs.widget(1)
+        assert camera_tab.isAncestorOf(window.exp_camera_fps)
+        assert camera_tab.isAncestorOf(window.exp_frames)
 
-        camera_card = view.step_card(STEP_CONFIGURE_CAMERA)
-        assert camera_card.isAncestorOf(window.exp_camera_fps)
-        assert camera_card.isAncestorOf(window.exp_frames)
+        fluidics_tab = tabs.widget(2)
+        assert fluidics_tab.isAncestorOf(window.exp_flush_flowrate)
+        assert fluidics_tab.isAncestorOf(window.exp_wait_after_flush)
 
-        flush_card = view.step_card(STEP_FLUSH)
-        assert flush_card.isAncestorOf(window.exp_flush_flowrate)
-        assert flush_card.isAncestorOf(window.exp_wait_after_flush)
+        advanced_tab = tabs.widget(3)
+        assert advanced_tab.isAncestorOf(window.exp_tec_scan_enable)
+        assert advanced_tab.isAncestorOf(window.exp_tec_points)
     finally:
         window.close()
 
 
-def test_v2_flush_card_tooltip_explains_the_real_sequential_valve_pump_relationship(monkeypatch, tmp_path):
-    # Part A/C follow-up (2026-08-04): the real sequence (confirmed against
-    # the LabVIEW source and the current Python flush()) is valve position
-    # 1 -> pump move -> valve position 2, strictly sequential -- the pump
-    # never flows through a valve switch. The Flush card's own tooltip
-    # should say so, so the operator's mental model matches reality.
+def test_v2_flush_group_tooltip_explains_the_real_sequential_valve_pump_relationship(monkeypatch, tmp_path):
+    # Part A/C follow-up (2026-08-04), moved onto the Flush group itself
+    # when Proposal B retired the step-card view that used to carry this
+    # tooltip: the real sequence (confirmed against the LabVIEW source and
+    # the current Python flush()) is valve position 1 -> pump move -> valve
+    # position 2, strictly sequential -- the pump never flows through a
+    # valve switch. Hovering the Flush group should still say so.
     window = make_window(monkeypatch, tmp_path)
     try:
-        view = build_with_retry(window._experiment_sequence_view)
-        flush_card = view.step_card(STEP_FLUSH)
+        tabs = build_with_retry(window._v2_experiment_setup_tabs)
+        fluidics_tab = tabs.widget(2)
+        flush_groups = [g for g in fluidics_tab.findChildren(QGroupBox) if g.title() == "Flush settings"]
+        assert len(flush_groups) == 1
 
-        tooltip = flush_card.toolTip()
+        tooltip = flush_groups[0].toolTip()
         assert "position 1" in tooltip
         assert "position 2" in tooltip
         assert "idle" in tooltip.lower()
@@ -834,51 +902,57 @@ def test_v2_flush_card_tooltip_explains_the_real_sequential_valve_pump_relations
         window.close()
 
 
-def test_v2_experiment_sequence_view_placeholder_cards_show_honest_empty_state(monkeypatch, tmp_path):
-    # CaptureFrames/WaitForAd2Completion/SaveResults currently have no
-    # Experiment-tab-specific configuration of their own (their real
-    # behavior is entirely derived from other steps' settings) -- confirm
-    # they get the honest "no configuration" compact row (restructure
-    # proposal 1, 2026-08-03) rather than invented content, and that no
-    # real field widget leaked into them.
+def test_v2_experiment_setup_tabs_have_inline_safety_caveats(monkeypatch, tmp_path):
+    # Proposal B's second half: the safety-relevant tabs carry inline
+    # caveat text where the control lives, matching this project's actual
+    # current TEC/fluidics safety framing (not invented wording).
     window = make_window(monkeypatch, tmp_path)
     try:
-        view = build_with_retry(window._experiment_sequence_view)
-
-        for step_name in (STEP_CAPTURE_FRAMES, STEP_WAIT_FOR_AD2_COMPLETION, STEP_SAVE_RESULTS):
-            card = view.step_card(step_name)
-            assert isinstance(card, qt_ui_v2._CompactPlaceholderRow)
-            labels = card.findChildren(QLabel)
-            assert len(labels) == 2
-            assert any("no configuration for this step" in label.text() for label in labels)
+        tabs = build_with_retry(window._v2_experiment_setup_tabs)
+        fluidics_text = " ".join(label.text() for label in tabs.widget(2).findChildren(QLabel))
+        advanced_text = " ".join(label.text() for label in tabs.widget(3).findChildren(QLabel))
+        assert "disabled by default" in fluidics_text.lower()
+        assert "simulated by default" in advanced_text.lower()
     finally:
         window.close()
 
 
-def test_v2_experiment_sequence_view_excludes_tec_scan_which_stays_a_separate_section(monkeypatch, tmp_path):
-    # Design decision recorded alongside application.py's STEP_* constants:
-    # SetTecTarget/WaitTecStable wrap the per-repeat step list from outside,
-    # once per temperature point -- the TEC-scan configuration group is
-    # rendered as its own separate top-level section by
-    # _center_experiment_area(), not one of this view's per-repeat cards.
+def test_v2_primary_run_control_group_reuses_series_path_and_start_button(monkeypatch, tmp_path):
+    # v3 design-idea adoption, Proposal A (2026-08-05): confirms the
+    # elevated run-control group reuses the real self.series_path widget
+    # (no new state) and its Start button is wired to the same
+    # self._start_experiment handler the old "Sequence Control" card used.
     window = make_window(monkeypatch, tmp_path)
     try:
-        view = build_with_retry(window._experiment_sequence_view)
-        assert window._experiment_sequence_view() is view
+        group = build_with_retry(window._experiment_primary_run_control_group)
+        assert group.isAncestorOf(window.series_path)
+        buttons = group.findChildren(QPushButton)
+        start_buttons = [b for b in buttons if b.text() == "Start exp"]
+        assert len(start_buttons) == 1
+        assert start_buttons[0].minimumHeight() >= 44
+    finally:
+        window.close()
 
-        for step_name in view.step_names():
-            card = view.step_card(step_name)
-            assert not card.isAncestorOf(window.exp_tec_scan_enable)
-            assert not card.isAncestorOf(window.exp_tec_points)
+
+def test_v2_configuration_column_places_run_control_above_setup_tabs(monkeypatch, tmp_path):
+    # Confirms the run-control group sits inside the scrolling configuration
+    # column (not stacked above the config/live-monitoring split, which
+    # would compete with the live-monitoring column's own always-visible
+    # screen space -- the specific mistake flagged when v3 was evaluated).
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        area = build_with_retry(window._configuration_column)
+        content = area.widget()
+        assert content.isAncestorOf(window.series_path)
+        assert content.isAncestorOf(window.exp_tec_scan_enable)
     finally:
         window.close()
 
 
 def test_v2_step_breadcrumb_has_seven_markers_in_step_order(monkeypatch, tmp_path):
-    # Phase 3 step-progress breadcrumb (2026-08-04): same 7-step order as
-    # ExperimentSequenceView's cards (both derive from application.py's
-    # STEP_ORDER, the single source of truth), all pending before any real
-    # progress event has ever arrived.
+    # Phase 3 step-progress breadcrumb (2026-08-04): derives its 7-step
+    # order from application.py's STEP_ORDER, the single source of truth,
+    # all pending before any real progress event has ever arrived.
     window = make_window(monkeypatch, tmp_path)
     try:
         assert tuple(window.step_breadcrumb._markers.keys()) == STEP_ORDER

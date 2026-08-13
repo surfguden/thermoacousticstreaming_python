@@ -109,6 +109,8 @@ class QmixPumpBackend:
     qmixpump: Any = None
     bus: Any = None
     pump: Any = None
+    bus_opened: bool = False
+    bus_started: bool = False
     initialized: bool = False
     max_flow_rate_ul_min: float | None = None
     max_volume_ml: float | None = None
@@ -134,15 +136,19 @@ class QmixPumpBackend:
     def initialize(self, configuration_path: Path) -> None:
         self._load_sdk()
         self.bus = self.qmixbus.Bus()
+        self.bus_opened = False
+        self.bus_started = False
         with log_call("pump", "initialize", command=str(configuration_path)) as result:
             try:
                 self.bus.open(str(configuration_path), 0)
+                self.bus_opened = True
                 self.pump = self.qmixpump.Pump()
                 if self.pump_name:
                     self.pump.lookup_by_name(self.pump_name)
                 else:
                     self.pump.lookup_by_device_index(self.pump_index)
                 self.bus.start()
+                self.bus_started = True
                 self._enable_pump()
                 self.configure_flow_unit("ul/min")
                 self.pump.set_volume_unit(self.qmixpump.UnitPrefix.milli, self.qmixpump.VolumeUnit.litres)
@@ -155,6 +161,63 @@ class QmixPumpBackend:
                 except Exception as rollback_exc:
                     raise QmixPumpError(
                         f"Qmix initialization failed: {exc}; rollback close failed: {rollback_exc}"
+                    ) from exc
+                raise
+            result["response"] = f"max_flow_rate_ul_min={self.max_flow_rate_ul_min}, max_volume_ml={self.max_volume_ml}"
+
+    def clear_fault_and_reinitialize(self, configuration_path: Path) -> None:
+        """Explicit, operator-initiated fault clear followed by a full reconnect.
+
+        This is a deliberate, scoped exception to the fail-closed rule
+        _enable_pump() enforces below -- see docs/hardware_repair_plan.md
+        (Qmix CAN Tx Queue Overrun / 0x81FF, observed to relatch on fresh bus
+        connections) and Session 104 of docs/claude_code_change_log.md. It
+        must NEVER be called from initialize() or any other automated/
+        background path -- only an explicit operator action (the
+        "Clear Fault & Retry Connection" UI action in qt_ui.py/qt_ui_v2.py,
+        itself gated behind a non-skippable warning dialog) may reach this
+        method.
+
+        Deliberately duplicated from initialize() above rather than
+        refactored into a shared helper: initialize()'s own fail-closed
+        behavior must stay verifiably unchanged, and a shared helper would
+        make that harder to audit for zero risk of regression. The only
+        behavioral difference from initialize() is the explicit clear_fault()
+        call below; _enable_pump() itself is reused completely unchanged as
+        the final gate -- if the fault immediately relatches (as it has been
+        observed to do), _enable_pump() correctly raises QmixPumpError again,
+        exactly as initialize() would.
+        """
+        self._load_sdk()
+        self.bus = self.qmixbus.Bus()
+        self.bus_opened = False
+        self.bus_started = False
+        with log_call("pump", "clear_fault_and_reinitialize", command=str(configuration_path)) as result:
+            try:
+                self.bus.open(str(configuration_path), 0)
+                self.bus_opened = True
+                self.pump = self.qmixpump.Pump()
+                if self.pump_name:
+                    self.pump.lookup_by_name(self.pump_name)
+                else:
+                    self.pump.lookup_by_device_index(self.pump_index)
+                self.bus.start()
+                self.bus_started = True
+                if self.pump.is_in_fault_state():
+                    self.pump.clear_fault()
+                self._enable_pump()
+                self.configure_flow_unit("ul/min")
+                self.pump.set_volume_unit(self.qmixpump.UnitPrefix.milli, self.qmixpump.VolumeUnit.litres)
+                self.max_flow_rate_ul_min = float(self.pump.get_flow_rate_max())
+                self.max_volume_ml = float(self.pump.get_volume_max())
+                self.initialized = True
+            except Exception as exc:
+                try:
+                    self.close()
+                except Exception as rollback_exc:
+                    raise QmixPumpError(
+                        f"Qmix clear_fault_and_reinitialize failed: {exc}; "
+                        f"rollback close failed: {rollback_exc}"
                     ) from exc
                 raise
             result["response"] = f"max_flow_rate_ul_min={self.max_flow_rate_ul_min}, max_volume_ml={self.max_volume_ml}"
@@ -179,6 +242,11 @@ class QmixPumpBackend:
                     code = getattr(last_error, "code", "unknown")
                     message = getattr(last_error, "message", str(last_error))
                     detail = f" Last device error: code={code}, message={message!r}."
+                    if code == 0:
+                        detail += (
+                            " The SDK's last-error record is resolved, but the pump still reports "
+                            "an active fault state; do not treat this as a recovered connection."
+                        )
                 except Exception as exc:
                     detail = f" Last device error could not be read: {exc}."
             raise QmixPumpError(
@@ -363,12 +431,16 @@ class QmixPumpBackend:
         # shape documented in docs/hardware_safety_patterns.md; log the
         # overall outcome without altering that collect-then-raise control flow.
         errors: list[str] = []
-        errors.extend(self._run_close_step("pump stop", self.stop))
-        if self.bus is not None:
+        if self.bus_started and self.pump is not None:
+            errors.extend(self._run_close_step("pump stop", self.stop))
+        if self.bus is not None and self.bus_started:
             errors.extend(self._run_close_step("bus stop", self.bus.stop))
+        if self.bus is not None and self.bus_opened:
             errors.extend(self._run_close_step("bus close", self.bus.close))
         self.bus = None
         self.pump = None
+        self.bus_opened = False
+        self.bus_started = False
         self.initialized = False
         if errors:
             log_transaction("pump", "close", success=False, error="; ".join(errors))

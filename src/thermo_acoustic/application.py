@@ -51,10 +51,9 @@ STEP_SAVE_RESULTS = "SaveResults"
 STEP_SET_TEC_TARGET = "SetTecTarget"
 STEP_WAIT_TEC_STABLE = "WaitTecStable"
 
-# Single source of truth for the per-repeat step order (v2's
-# ExperimentSequenceView card order and the Phase 3 step-progress breadcrumb,
-# 2026-08-04, both derive from this rather than each hardcoding it
-# separately). Deliberately excludes STEP_SET_TEC_TARGET/STEP_WAIT_TEC_STABLE
+# Single source of truth for the per-repeat step order (v2's Phase 3
+# step-progress breadcrumb, 2026-08-04, derives from this rather than
+# hardcoding it separately). Deliberately excludes STEP_SET_TEC_TARGET/STEP_WAIT_TEC_STABLE
 # -- see the TEC-SCAN RENDERING note above; those wrap this list from
 # outside, once per temperature point, not part of the reused/reset sequence.
 STEP_ORDER = (
@@ -113,6 +112,15 @@ class Application:
     _running: bool = False
     cleanup_device_timeout_s: float = 5.0
     cleanup_total_timeout_s: float = 15.0
+    # Set by clear_pump_fault_and_retry() below -- never anywhere else.
+    # Session-scoped (not persisted to settings.json): a fresh app process
+    # starts False again, matching that the underlying CAN-bus fault is a
+    # live hardware condition, not a saved preference. run_experiment2()
+    # copies this onto Experiment2.pump_fault_manually_cleared for every
+    # repeat's data.tdms, same pattern as the sim_*/*_enabled flags below, so
+    # a run whose pump fault was manually cleared this session is
+    # distinguishable after the fact from one where it never faulted.
+    pump_fault_manually_cleared_this_session: bool = False
 
     def create_queues(self) -> None:
         self.main_queue = LabViewQueue("Main Queue")
@@ -215,18 +223,41 @@ class Application:
         return True
 
     def initialize(self, progress: Callable[[str, object], None] | None = None) -> None:
+        # Devices are independent (2026-08-13 architecture fix): each one's
+        # initialize() only ever touches its own fields/backend -- none reads
+        # another instrument's state or takes one as an argument (confirmed
+        # by inspection of every initialize() in instruments.py/tec.py before
+        # this change). AD2 -> Camera -> Pump -> Valve -> Z-stage -> TEC is
+        # therefore an arbitrary reporting order, not a dependency chain: one
+        # device failing must not stop the others from getting their own
+        # attempt, and a device that DID succeed must not be torn back down
+        # just because a later, unrelated device failed. This replaces the
+        # previous "stop at the first failure and roll back everything
+        # already-succeeded" loop -- see docs/hardware_repair_plan.md's
+        # "Initialization And Failure Recovery" section and
+        # docs/claude_code_change_log.md's dated entry for the investigation
+        # that found the old cross-device rollback had no documented
+        # dependency rationale anywhere in this project's history; every
+        # actual per-device rollback gap this project fixed (Sessions 96-99)
+        # was about a device cleaning up its OWN partial-init state, never
+        # about one device's failure requiring another's teardown. Per-device
+        # rollback-on-partial-failure inside a single instrument's own
+        # initialize() (Valve/CetoniPump/PiezoStage/TEC's own local cleanup
+        # paths) is untouched by this change.
         self.create_queues()
         self.register_events()
         self.fire_status_event("Initializing")
-        initialized: list[tuple[str, str, object]] = []
-        for name, display_name, instrument in (
+        devices = (
             ("ad2", "AD2", self.ad2),
             ("camera", "Camera", self.camera),
             ("pump", "Pump", self.pump),
             ("valve", "Valve", self.valve),
             ("z_motor", "Z-stage", self.z_motor),
             ("tec", "TEC", self.tec),
-        ):
+        )
+        failures: list[tuple[str, Exception]] = []
+        succeeded_count = 0
+        for _name, display_name, instrument in devices:
             if progress:
                 progress("init_device", (display_name, "In Progress"))
             try:
@@ -234,28 +265,57 @@ class Application:
             except Exception as exc:
                 if progress:
                     progress("init_device", (display_name, "Failed"))
-                rollback_errors = self._cleanup_instruments(
-                    [
-                        (initialized_name, initialized_instrument)
-                        for initialized_name, _display, initialized_instrument in initialized
-                    ]
-                )
-                if progress:
-                    for _initialized_name, initialized_display, _instrument in initialized:
-                        progress(
-                            "init_device",
-                            (initialized_display, f"Rolled back ({display_name} init failed)"),
-                        )
-                error_name = display_name if progress else name
-                details = [f"{error_name} initialize failed: {exc}"]
-                details.extend(rollback_errors)
-                raise RuntimeError("; ".join(details)) from exc
-            initialized.append((name, display_name, instrument))
+                failures.append((display_name, exc))
+                continue
+            succeeded_count += 1
             if progress:
                 status_note = getattr(instrument, "status_note", "")
                 complete_text = f"Complete ({status_note})" if status_note else "Complete"
                 progress("init_device", (display_name, complete_text))
+        if failures:
+            failed_names = ", ".join(display_name for display_name, _exc in failures)
+            details = "; ".join(f"{display_name} initialize failed: {exc}" for display_name, exc in failures)
+            self.fire_status_event(
+                f"System Partially Initialized ({succeeded_count}/{len(devices)} succeeded; failed: {failed_names})"
+            )
+            # Chained from the first failure for traceback context; when
+            # several devices fail independently, all of them are still
+            # named in the combined message above, not just the first.
+            raise RuntimeError(details) from failures[0][1]
         self.fire_status_event("System Initialized")
+
+    def clear_pump_fault_and_retry(self) -> None:
+        """Explicit, operator-initiated pump fault clear and reconnect.
+
+        A deliberate, scoped exception to initialize()'s fail-closed pump
+        behavior above -- NOT a reversal of it. See docs/hardware_repair_plan.md
+        (Qmix CAN Tx Queue Overrun / 0x81FF, a real unresolved bus-level fault
+        confirmed to relatch on fresh connections even with QmixElements
+        fully closed) and Session 104 of docs/claude_code_change_log.md.
+
+        Only ever called from an explicit UI action (the "Clear Fault & Retry
+        Connection" button in qt_ui.py/qt_ui_v2.py's Pump&Valve area), itself
+        gated behind a non-skippable warning dialog -- never from initialize()
+        or any other automated/background path. The pump's own
+        clear_fault_and_reinitialize() still runs the same fail-closed
+        _enable_pump() gate afterward, so if the fault immediately relatches
+        this correctly raises again rather than silently succeeding.
+
+        Records the manual clear both in the live status/history log
+        (fire_status_event(), same mechanism every other status transition in
+        this file uses) and in pump_fault_manually_cleared_this_session, which
+        run_experiment2() copies onto Experiment2.pump_fault_manually_cleared
+        for every subsequent repeat's data.tdms -- so a manual clear this
+        session stays traceable in saved data, not just in the live log.
+        """
+        self.fire_status_event("Clearing Pump Fault (manual operator action)")
+        try:
+            self.pump.clear_fault_and_reinitialize()
+        except Exception as exc:
+            self.fire_status_event(f"PumpFaultClearFailed: {exc}")
+            raise
+        self.pump_fault_manually_cleared_this_session = True
+        self.fire_status_event("PumpFaultClearedAndReconnected (manual operator action)")
 
     def cleanup(self) -> None:
         errors = self._cleanup_instruments(
@@ -482,6 +542,11 @@ class Application:
                     f"Flush volume {settings.flush_volume_ml} ml exceeds syringe capacity "
                     f"{settings.syringe_volume_ml} ml; refusing to flush."
                 )
+            if settings.flush_flowrate <= 0:
+                raise ValueError(
+                    f"Flush flow rate must be greater than 0 uL/min for the dispense workflow; "
+                    f"got {settings.flush_flowrate}. Refusing to move the valve or pump."
+                )
             # Hardware-safety-priority fix (found by an end-to-end simulated
             # dry-run verification pass, not a fresh audit): the capacity check
             # above only bounds flush_volume_ml against the syringe's total
@@ -598,6 +663,13 @@ class Application:
             experiment.camera_enabled = self.camera.enabled
             experiment.pump_enabled = self.pump.enabled
             experiment.valve_enabled = self.valve.enabled
+
+            # Session 104: whether clear_pump_fault_and_retry() (the manual,
+            # operator-initiated fault-clear escape hatch) has been used at
+            # any point this session, read from live Application state like
+            # the sim_*/*_enabled flags above -- so data.tdms stays
+            # traceable if a manual fault clear happened before this repeat.
+            experiment.pump_fault_manually_cleared = self.pump_fault_manually_cleared_this_session
 
             self.fire_status_event("Initializing Experiment")
             experiment_folder = experiment.create_folder_and_tdms()

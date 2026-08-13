@@ -134,6 +134,56 @@ def _widen_for_content(widget: QLineEdit, padding: int = 40) -> QLineEdit:
     return widget
 
 
+def _hardware_reference_tabs(window: QWidget, mark_unwired_stub) -> QTabWidget:
+    """Task-grouped presentation of the Initialization surface's resource/
+    path fields, separating what hardware_factory.build_hardware_bundle()
+    actually reads (Connections) from informational-only reference paths
+    and fields retained for migration reference that it never reads (v3
+    design-idea adoption, Proposal 5, 2026-08-06). Shared by qt_ui.py's own
+    Initialization tab and qt_ui_v2.py's InitializationDialog, which
+    re-parent these same widget instances -- same convention as
+    _widen_for_content() above. `mark_unwired_stub` is each caller's own
+    static helper (their tooltip wording differs slightly), not duplicated
+    here."""
+    tabs = QTabWidget()
+
+    connections = QWidget()
+    connections_form = QFormLayout(connections)
+    connections_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+    connections_form.addRow("Thorlabs/APT serial", window.thorlabs_apt_serial)
+    connections_form.addRow("Valve VISA resource name", window.valve_resource)
+    connections_form.addRow("Cetoni Device Configuration Path", _widen_for_content(window.cetoni_config_path))
+    connections_form.addRow("TEC resource", window.tec_port)
+    window._add_tooltip_icons(connections_form)
+
+    reference_paths = QWidget()
+    reference_form = QFormLayout(reference_paths)
+    reference_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+    reference_form.addRow("Qmix SDK Python Path", mark_unwired_stub(_widen_for_content(window.qmix_sdk_python_path)))
+    reference_form.addRow("Qmix QMIXSDK Path", mark_unwired_stub(_widen_for_content(window.qmix_qmixsdk_path)))
+    reference_note = QLabel("Reference paths only; the runtime does not read these fields.")
+    reference_note.setWordWrap(True)
+    reference_form.addRow(reference_note)
+    window._add_tooltip_icons(reference_form)
+
+    retained = QWidget()
+    retained_form = QFormLayout(retained)
+    retained_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+    retained_form.addRow("Z stage backend", mark_unwired_stub(window.z_backend))
+    retained_form.addRow("Prior VISA resource name (legacy, unwired)", mark_unwired_stub(window.prior_resource))
+    retained_form.addRow("Thorlabs/APT backend", mark_unwired_stub(window.thorlabs_apt_backend))
+    retained_form.addRow("Thorlabs/APT discovery only", mark_unwired_stub(window.thorlabs_apt_discovery_only))
+    retained_note = QLabel("Retained for migration reference; the runtime does not use these fields.")
+    retained_note.setWordWrap(True)
+    retained_form.addRow(retained_note)
+    window._add_tooltip_icons(retained_form)
+
+    tabs.addTab(connections, "Connections")
+    tabs.addTab(reference_paths, "Reference paths")
+    tabs.addTab(retained, "Retained fields")
+    return tabs
+
+
 def _set_combo_text(widget: QComboBox, value: str) -> None:
     index = widget.findText(value)
     if index >= 0:
@@ -903,16 +953,10 @@ class MainWindow(QMainWindow):
             "Absolute mL target for 'Go to Level' (not a fraction of syringe capacity -- Session "
             "13 removed an earlier 0.0-1.0 fraction-vs-absolute-mL ambiguity)."
         )
-        self.flush_flowrate = _spin(0.0, decimals=3)
+        self.flush_flowrate = _spin(0.0, decimals=3, minimum=0.0)
         self.flush_flowrate.setToolTip(
-            "uL/min on the real device (QmixPumpBackend.initialize() configures the pump's flow "
-            "unit as uL/min, confirmed via the FlushSettings.timeout_s fix, Session 31/32) -- "
-            "this row's label omits the unit shown on its Experiment-tab twin "
-            "('Flush Flowrate(uL)'); same field, same unit, just not spelled out here. Combines "
-            "with Flush Volume below to compute the real pump-move timeout: "
-            "(flush_volume_ml*1000/this_value)*60+5 seconds (FlushSettings.timeout_s) -- too low "
-            "a flowrate for a given volume risks the flush being declared failed before the pump "
-            "physically finishes (the exact bug Session 31/32 fixed)."
+            "Positive dispense flow rate in uL/min. Zero means unset and is rejected if a flush "
+            "is started. Together with Flush Volume, it determines the pump-move timeout."
         )
         self.flush_volume = _spin(0.0, decimals=3, minimum=0.0)
         self.flush_volume.setToolTip(
@@ -1252,14 +1296,11 @@ class MainWindow(QMainWindow):
             "capture starts if this exposure plus the real DCAM readout time (set by the ROI size, "
             "Camera tab) can't sustain the configured Camera FPS (Session 19)."
         )
-        self.exp_flush_flowrate = _spin(0.0, decimals=3)
+        self.exp_flush_flowrate = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_flush_flowrate.setToolTip(
-            "uL/min on the real device (QmixPumpBackend.initialize() configures the pump's flow "
-            "unit as uL/min, Session 31/32). Combines with flush volume (ml) below to compute the "
-            "real pump-move timeout: (flush_volume_ml*1000/this_value)*60+5 seconds "
-            "(FlushSettings.timeout_s) -- too low a flowrate for a given volume risks the flush "
-            "being declared failed before the pump physically finishes (the exact bug Session "
-            "31/32 fixed)."
+            "Positive dispense flow rate in uL/min. Zero means unset and is rejected if the "
+            "experiment attempts a flush. Together with Flush Volume, it determines the "
+            "pump-move timeout."
         )
         self.exp_flush_volume = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_flush_volume.setToolTip(
@@ -1685,34 +1726,35 @@ class MainWindow(QMainWindow):
         # them as if they were live, editable settings. Applied here too for
         # consistency between the two UIs' Initialization surfaces.
         group = QGroupBox("Hardware")
-        form = QFormLayout(group)
+        outer = QVBoxLayout(group)
+        form = QFormLayout()
         form.addRow("Analog Discovery 3", self.ad2_enabled)
         form.addRow("Z stage", self.z_enabled)
-        form.addRow("Z stage backend", self._mark_unwired_stub(self.z_backend))
-        # Pending feedback item 5/B1: Z-stage now connects via the real
-        # Thorlabs piezo (thorlabs_apt_serial), not the legacy PriorZMotor/
-        # COM7 path -- prior_resource is genuinely unwired now (was never a
-        # real connection for this lab's hardware to begin with; see
-        # pending_feedback.md item 4), thorlabs_apt_serial is genuinely wired.
-        form.addRow("Prior VISA resource name (legacy, unwired)", self._mark_unwired_stub(self.prior_resource))
-        form.addRow("Thorlabs/APT serial", self.thorlabs_apt_serial)
-        form.addRow("Thorlabs/APT backend", self._mark_unwired_stub(self.thorlabs_apt_backend))
-        form.addRow("Thorlabs/APT discovery only", self._mark_unwired_stub(self.thorlabs_apt_discovery_only))
         form.addRow("Hamamatsu", self.camera_enabled)
         form.addRow("Cetoni Pump", self.pump_enabled)
-        # Pending feedback item 3: these three can hold long real Windows
-        # paths -- qt_ui_v2.py's InitializationDialog already widens these
-        # same shared widget instances for itself (_widen_for_content()), but
-        # a user running v1 alone (never opening the v2 dialog) never got
-        # that treatment. Same shared helper, applied here too.
-        form.addRow("Qmix SDK Python Path", self._mark_unwired_stub(_widen_for_content(self.qmix_sdk_python_path)))
-        form.addRow("Qmix QMIXSDK Path", self._mark_unwired_stub(_widen_for_content(self.qmix_qmixsdk_path)))
-        form.addRow("Cetoni Device Configuration Path", _widen_for_content(self.cetoni_config_path))
         form.addRow("MX Valve", self.valve_enabled)
-        form.addRow("Valve VISA resource name", self.valve_resource)
         form.addRow("Meerstetter TEC", self.tec_enabled)
-        form.addRow("TEC resource", self.tec_port)
+        outer.addLayout(form)
+        # _add_tooltip_icons() must run after the layout is actually
+        # installed on a parent widget (outer.addLayout() above), not
+        # before -- confirmed by a real, reproducible test failure when
+        # this was called on a still-unparented QFormLayout() first: every
+        # other call site in this file uses the QFormLayout(group)
+        # constructor form, which installs the layout immediately, so this
+        # ordering requirement never surfaced there.
         self._add_tooltip_icons(form)
+        # v3 design-idea adoption, Proposal 5 (2026-08-06): the resource/path
+        # fields below used to sit interleaved with the enable checkboxes
+        # above in one flat form, live-wired fields (Thorlabs/APT serial,
+        # Valve VISA resource, Cetoni config path, TEC resource) mixed in
+        # with informational-only reference paths (Qmix SDK/QMIXSDK paths)
+        # and fields retained purely for migration reference (Z stage
+        # backend, Prior VISA resource, Thorlabs/APT backend, Thorlabs/APT
+        # discovery only) -- all disabled the same way regardless of which
+        # of those two very different categories they were actually in.
+        # Grouped into task-oriented tabs instead, same shared helper
+        # qt_ui_v2.py's InitializationDialog now also uses.
+        outer.addWidget(_hardware_reference_tabs(self, self._mark_unwired_stub))
         return group
 
     @staticmethod
@@ -1927,6 +1969,7 @@ class MainWindow(QMainWindow):
             if key in _DENSE_NUMERIC_FIELD_KEYS:
                 state[key].setMaximumWidth(_DENSE_NUMERIC_FIELD_WIDTH)
             form.addRow(label, state[key])
+            form.labelForField(state[key]).setObjectName(f"manualWfgCarrier_{key}Label")
         state["enable"].setText(f"Enable{overridden}")
         form.addRow(state["enable"])
         # _add_tooltip_icons() must run AFTER layout.addLayout() here, not
@@ -1947,10 +1990,14 @@ class MainWindow(QMainWindow):
             (f"Repeat count   [0 = infinite]{overridden}", "repeat"),
         ):
             trigger.addRow(label, state[key])
+            trigger.labelForField(state[key]).setObjectName(f"manualWfgTrigger_{key}Label")
         state["repeat_trigger"].setText(f"Repeat Trigger{overridden}")
         trigger.addRow(state["repeat_trigger"])
         trigger.addRow(f"Trigger source{overridden}", state["trigger_source"])
-        layout.addWidget(QLabel("Trigger"))
+        trigger.labelForField(state["trigger_source"]).setObjectName("manualWfgTrigger_sourceLabel")
+        trigger_header = QLabel("Trigger")
+        trigger_header.setObjectName("manualWfgTriggerSectionLabel")
+        layout.addWidget(trigger_header)
         layout.addLayout(trigger)
         self._add_tooltip_icons(trigger)
         fm = QFormLayout()
@@ -1969,8 +2016,11 @@ class MainWindow(QMainWindow):
             (f"Function 2{fm_note}", "fm_function"),
         ):
             fm.addRow(label, state[key])
+            fm.labelForField(state[key]).setObjectName(f"manualWfgFm_{key}Label")
         fm.addRow(state["fm_enable"])
-        layout.addWidget(QLabel("FM Mod"))
+        fm_header = QLabel("FM Mod")
+        fm_header.setObjectName("manualWfgFmSectionLabel")
+        layout.addWidget(fm_header)
         layout.addLayout(fm)
         self._add_tooltip_icons(fm)
         sweep = QFormLayout()
@@ -2001,6 +2051,7 @@ class MainWindow(QMainWindow):
             "Sweep (FM modulation, manual tab only -- independent from the Experiment tab, "
             "distinct from Frequency Scanning)"
         )
+        sweep_header.setObjectName("manualWfgSweepSectionLabel")
         sweep_header.setWordWrap(True)
         sweep_header.setMaximumWidth(450)
         layout.addWidget(sweep_header)
@@ -2180,8 +2231,8 @@ class MainWindow(QMainWindow):
         note.setMaximumWidth(700)
         outer.addWidget(note)
         content = QWidget()
-        columns = QHBoxLayout(content)
-        columns.setAlignment(Qt.AlignmentFlag.AlignTop)
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
 
         # P01/P02 are protocol-confirmed position tokens. Their physical
         # fluidic routing remains a bench-confirmation item, so the controls
@@ -2192,21 +2243,27 @@ class MainWindow(QMainWindow):
         pos2 = QPushButton("Pos2 (P02)")
         pos2.setToolTip("Sends the protocol-confirmed valve position command P02. Physical fluidic routing remains unverified.")
         pos2.clicked.connect(lambda: self._run_action(lambda progress: self.app.valve.set_position(2), "Valve Pos2 (P02)"))
-        refill = QPushButton("Refill")
+        # v3 design-idea adoption, Proposal 7 (2026-08-06): selectively
+        # clearer button text -- picked the four genuinely ambiguous ones
+        # (bare "GO"/"STOP" and terse "Refill"/"Empty" with no adjacent
+        # label spelling out the action), left Configure/Generate/Ref
+        # Move/Flush alone (already reasonably self-explanatory or already
+        # paired with a clarifying row label).
+        refill = QPushButton("Refill syringe")
         refill.clicked.connect(lambda: self._run_action(lambda progress: self._refill(), "Refilling"))
-        empty = QPushButton("Empty")
+        empty = QPushButton("Empty syringe")
         empty.clicked.connect(lambda: self._run_action(lambda progress: self._empty(), "Emptying"))
         configure = QPushButton("Configure")
         configure.clicked.connect(self._start_configure_syringe)
         generate = QPushButton("Generate")
         generate.clicked.connect(self._start_generate_flow)
-        go = QPushButton("GO")
+        go = QPushButton("Move to target fill level")
         go.clicked.connect(self._start_go_level)
         ref = QPushButton("Ref Move")
         ref.clicked.connect(self._start_reference_move)
         flush = QPushButton("Flush")
         flush.clicked.connect(self._start_flush)
-        stop = QPushButton("STOP")
+        stop = QPushButton("Stop pump")
         stop.setMinimumSize(200, 70)
         stop.clicked.connect(lambda: self._run_action(lambda progress: self.app.pump.stop(), "Pump stopped"))
 
@@ -2216,18 +2273,45 @@ class MainWindow(QMainWindow):
         # column is narrower than a single-row form normally assumes. Wrapping
         # the label onto its own line above the field when needed avoids
         # clipping without widening the columns themselves.
-        # Setup: a leading section read first, ahead of Refill/Empty and
-        # Flow Control's own experiment-adjacent fields (UI layout audit
-        # Part 3 design, agreed 2026-08-03, implemented here) -- Reference
-        # move is a one-time-per-mount calibration step that must happen
-        # BEFORE a syringe is loaded/refilled, not just another item mixed
-        # into Flow Control's actual flow-rate controls, which was its
-        # previous position (last row of that group).
+        # v3 design-idea adoption, Proposal D (2026-08-05): split into
+        # "Operational controls" (Valve/Pump refill-empty/Flow Control/
+        # Flush/STOP -- genuinely touched every run) and "Static
+        # configuration" (Setup/Syringe -- one-time-per-mount calibration
+        # and geometry, not something an operator revisits mid-run).
+        # Continues the same precedent Reference Move's own leading Setup
+        # section already established (UI layout audit Part 3, 2026-08-03):
+        # Reference move must happen BEFORE a syringe is loaded/refilled,
+        # so it belongs with the other one-time setup, not mixed into
+        # Flow Control's actual flow-rate controls. No widgets rebuilt --
+        # this only changes which section each existing group is placed
+        # under.
         setup_group = QGroupBox("Setup")
         setup_form = QFormLayout(setup_group)
         setup_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         setup_form.addRow("Reference move", ref)
         self._add_tooltip_icons(setup_form)
+
+        # Session 104: manual, operator-initiated pump fault-clear escape
+        # hatch -- a deliberate, scoped exception to Initialize's fail-closed
+        # pump behavior, not a reversal of it (see
+        # QmixPumpBackend._enable_pump()'s own comment and
+        # docs/hardware_repair_plan.md's Qmix CAN Tx Queue Overrun / 0x81FF
+        # entry). Deliberately its own separate, red-styled group -- visually
+        # and operationally distinct from Setup/Initialize -- and gated
+        # behind a non-skippable QMessageBox.question() in
+        # _start_clear_pump_fault() below; never invoked automatically.
+        fault_group = QGroupBox("Pump Fault Recovery (advanced)")
+        fault_form = QFormLayout(fault_group)
+        fault_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        clear_fault = QPushButton("Clear Fault && Retry Connection")
+        clear_fault.setStyleSheet("color: darkred; font-weight: bold;")
+        clear_fault.setToolTip(
+            "Only use this if the pump reports a fault on Initialize. Shows a warning "
+            "before doing anything -- see docs/hardware_repair_plan.md."
+        )
+        clear_fault.clicked.connect(self._start_clear_pump_fault)
+        fault_form.addRow("Manual fault clear", clear_fault)
+        self._add_tooltip_icons(fault_form)
 
         valve_group = QGroupBox("Valve")
         valve_form = QFormLayout(valve_group)
@@ -2236,7 +2320,6 @@ class MainWindow(QMainWindow):
         valve_form.addRow("Valve Pos2 (P02)", pos2)
         self._add_tooltip_icons(valve_form)
         column1 = QVBoxLayout()
-        column1.addWidget(setup_group)
         column1.addWidget(valve_group)
         column1.addWidget(QLabel("Stop Syringe"))
         column1.addWidget(stop)
@@ -2260,7 +2343,6 @@ class MainWindow(QMainWindow):
         self._add_tooltip_icons(syringe_form)
         column2 = QVBoxLayout()
         column2.addWidget(pump_group)
-        column2.addWidget(syringe_group)
         column2.addStretch()
 
         flow_group = QGroupBox("Flow Control")
@@ -2286,11 +2368,44 @@ class MainWindow(QMainWindow):
         column4.addWidget(self._flush_group())
         column4.addStretch()
 
-        columns.addLayout(column1)
-        columns.addLayout(column2)
-        columns.addLayout(column3)
-        columns.addLayout(column4)
-        columns.addStretch()
+        operational_columns = QHBoxLayout()
+        operational_columns.setAlignment(Qt.AlignmentFlag.AlignTop)
+        operational_columns.addLayout(column1)
+        operational_columns.addLayout(column2)
+        operational_columns.addLayout(column3)
+        operational_columns.addLayout(column4)
+        operational_columns.addStretch()
+
+        setup_column = QVBoxLayout()
+        setup_column.addWidget(setup_group)
+        setup_column.addStretch()
+        syringe_column = QVBoxLayout()
+        syringe_column.addWidget(syringe_group)
+        syringe_column.addStretch()
+        # Session 104: its own column, not folded into setup_column above --
+        # keeps this rare/advanced recovery action visually separate from
+        # routine one-time setup, matching the task's requirement that it be
+        # "visually/operationally distinct" from normal controls.
+        fault_column = QVBoxLayout()
+        fault_column.addWidget(fault_group)
+        fault_column.addStretch()
+        static_columns = QHBoxLayout()
+        static_columns.setAlignment(Qt.AlignmentFlag.AlignTop)
+        static_columns.addLayout(setup_column)
+        static_columns.addLayout(syringe_column)
+        static_columns.addLayout(fault_column)
+        static_columns.addStretch()
+
+        operational_label = QLabel("Operational controls")
+        operational_label.setStyleSheet("font-weight: bold;")
+        static_label = QLabel("Static configuration")
+        static_label.setStyleSheet("font-weight: bold;")
+
+        content_layout.addWidget(operational_label)
+        content_layout.addLayout(operational_columns)
+        content_layout.addWidget(static_label)
+        content_layout.addLayout(static_columns)
+        content_layout.addStretch()
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(False)
@@ -2309,7 +2424,7 @@ class MainWindow(QMainWindow):
         # above -- all added by the same Session-38 fix this form's own
         # column-width constraint applies to identically, just missed here).
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        form.addRow("Flush Flowrate(uL)", self.flush_flowrate)
+        form.addRow("Flush Flow Rate (uL/min)", self.flush_flowrate)
         form.addRow("flush volume (ml)", self.flush_volume)
         form.addRow("WaitAfterFlush", self.wait_after_flush)
         self._add_tooltip_icons(form)
@@ -2340,6 +2455,7 @@ class MainWindow(QMainWindow):
         grid.addWidget(self._roi_group(), 2, 0, 1, 2)
         grid.addWidget(self._conversion_group(), 1, 2, 2, 1)
         grid.addWidget(self._sequence_group(), 3, 0, 1, 2)
+        grid.addWidget(self._camera_retained_fields_group(), 3, 2)
         grid.setColumnStretch(3, 1)
         return tab
 
@@ -2474,12 +2590,10 @@ class MainWindow(QMainWindow):
         settings.addRow("Source", self.sequence_source)
         settings.addRow("Interval", self.sequence_interval)
         settings.addRow("Burst", self.sequence_burst)
-        settings.addRow("Capture mode (unused)", self.capture_mode)
         settings.addRow("Frames", self.sequence_frames)
         settings.addRow("Dcam Trigger Source", self.dcam_source)
         settings.addRow("Polarity", self.external_polarity)
         settings.addRow("Delay", self.external_delay)
-        settings.addRow("ExposureTime(ms) (unused)", self.sequence_exposure_ms)
         grid.addWidget(QLabel("StartSequence"), 0, 0)
         grid.addWidget(start, 1, 0)
         grid.addWidget(QLabel("Trigg"), 2, 0)
@@ -2511,6 +2625,25 @@ class MainWindow(QMainWindow):
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll.setWidget(content)
         outer.addWidget(scroll)
+        return group
+
+    def _camera_retained_fields_group(self) -> QGroupBox:
+        # v3 design-idea adoption, Proposal 6 (2026-08-06): capture_mode and
+        # sequence_exposure_ms previously sat inline inside Sequence
+        # Settings' own form, each individually suffixed "(unused)" --
+        # correct, but visually indistinguishable at a glance from the
+        # live, automated-run-affecting fields right above/below them in
+        # that same group (which Sequence Settings' own note says DO
+        # affect experiment runs). Isolated into their own group instead of
+        # a full tab restructure, matching this fix's scope.
+        group = QGroupBox("Retained (not used by runtime)")
+        form = QFormLayout(group)
+        form.addRow("Capture mode", self.capture_mode)
+        form.addRow("ExposureTime(ms)", self.sequence_exposure_ms)
+        note = QLabel("Retained for migration reference; the current runtime does not use these fields.")
+        note.setWordWrap(True)
+        form.addRow(note)
+        self._add_tooltip_icons(form)
         return group
 
     # --- Z-scan calibration tab (Phase 4) ---
@@ -2723,18 +2856,25 @@ class MainWindow(QMainWindow):
         self._zscan_abort_requested = True
         self._set_status("Z-scan abort requested")
 
-    def _experiment_tab(self) -> QWidget:
-        tab = QWidget()
-        grid = QGridLayout(tab)
-        grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        grid.addWidget(QLabel("Elapsed Time"), 0, 0)
-        grid.addWidget(self._elapsed_time_label(), 1, 0)
-        grid.addWidget(QLabel("Time Left"), 0, 1)
-        grid.addWidget(self._time_left_label(), 1, 1)
-        grid.addWidget(QLabel("# elements in queue"), 0, 2)
-        self.queue_count = QLabel("0")
-        grid.addWidget(self.queue_count, 1, 2)
+    def _experiment_primary_run_control_group(self) -> QGroupBox:
+        # v3 design-idea adoption, Proposal A (2026-08-05): "Start exp" was
+        # previously just one of several equally-weighted rows/cards (v1's
+        # flat Experiment-tab grid; v2's "Sequence Control" card, itself
+        # buried as step-card 1 of 7 inside the scrolling configuration
+        # column) -- easy to miss among the surrounding configuration
+        # fields despite being the single most consequential control on
+        # this tab. Elevated into its own dedicated, visually distinct
+        # group, placed at the TOP of the configuration content (not
+        # stacked above the v2 config/live-monitoring column split --
+        # that would compete with the live-monitoring column's own
+        # always-visible screen space, the exact mistake flagged when v3
+        # was evaluated for design ideas). Reuses self.series_path/
+        # self._browse_folder/self._start_experiment verbatim -- no new
+        # state, same widgets/handlers the old locations used.
+        group = QGroupBox("Run Experiment")
+        grid = QGridLayout(group)
         start = QPushButton("Start exp")
+        start.setMinimumHeight(44)
         start.setToolTip(
             "Starts the experiment with the currently initialized backends. Real hardware actions are not "
             "protected by the staged smoke scripts' command-line confirmations. Abort stops only after the "
@@ -2743,16 +2883,41 @@ class MainWindow(QMainWindow):
         start.clicked.connect(self._start_experiment)
         browse = QPushButton("...")
         browse.clicked.connect(lambda: self._browse_folder(self.series_path))
-        grid.addWidget(QLabel("Start Experiment series"), 3, 0)
-        grid.addWidget(start, 4, 0)
-        grid.addWidget(QLabel("Series path"), 5, 0)
-        grid.addWidget(self._wrap_with_tooltip_icon(self.series_path), 6, 0, 1, 5)
-        grid.addWidget(browse, 6, 5)
-        grid.addWidget(self._ad_settings_group(), 7, 0, 1, 2)
-        grid.addWidget(self._experiment_settings_column(), 7, 2, 2, 1)
-        grid.addWidget(self._camera_start_group(), 7, 4, 2, 1)
-        grid.addWidget(QLabel("Average FPS"), 10, 5)
-        grid.addWidget(self.average_fps, 11, 5)
+        note = QLabel("Uses the configured setup below and the currently initialized hardware.")
+        note.setWordWrap(True)
+        note.setMaximumWidth(520)
+        grid.addWidget(start, 0, 0, 2, 1)
+        grid.addWidget(QLabel("Series path"), 0, 1)
+        grid.addWidget(self._wrap_with_tooltip_icon(self.series_path), 1, 1)
+        grid.addWidget(browse, 1, 2)
+        grid.addWidget(note, 0, 3, 2, 1)
+        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(3, 1)
+        return group
+
+    def _experiment_tab(self) -> QWidget:
+        tab = QWidget()
+        grid = QGridLayout(tab)
+        grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        grid.addWidget(self._experiment_primary_run_control_group(), 0, 0, 1, 6)
+        # v3 design-idea adoption, Proposal 3 (2026-08-06): these captions
+        # sit right above the already-disabled, already-tooltipped stale
+        # placeholders (_stale_static_display(), Session 39) -- the caption
+        # itself said nothing about that, so a "00:00:00" reading grayed out
+        # for no apparent reason was the only signal. Honest labeling
+        # instead of implying a live value.
+        grid.addWidget(QLabel("Elapsed Time (unavailable)"), 1, 0)
+        grid.addWidget(self._elapsed_time_label(), 2, 0)
+        grid.addWidget(QLabel("Time Left (unavailable)"), 1, 1)
+        grid.addWidget(self._time_left_label(), 2, 1)
+        grid.addWidget(QLabel("# elements in queue"), 1, 2)
+        self.queue_count = QLabel("0")
+        grid.addWidget(self.queue_count, 2, 2)
+        grid.addWidget(self._ad_settings_group(), 3, 0, 1, 2)
+        grid.addWidget(self._experiment_settings_column(), 3, 2, 2, 1)
+        grid.addWidget(self._camera_start_group(), 3, 4, 2, 1)
+        grid.addWidget(QLabel("Average FPS"), 6, 5)
+        grid.addWidget(self.average_fps, 7, 5)
         # Measured offscreen (Session 38): only a ~5px safety margin between
         # this label's required text width (168px) and its actual rendered
         # width (173px) at the app's own minimum window size (980x680) --
@@ -2761,9 +2926,9 @@ class MainWindow(QMainWindow):
         # slightly narrower real window. setMinimumWidth gives real headroom.
         waveform_graph_label = QLabel("Waveform Graph")
         waveform_graph_label.setMinimumWidth(200)
-        grid.addWidget(waveform_graph_label, 10, 0)
+        grid.addWidget(waveform_graph_label, 6, 0)
         self.waveform_graph = WaveformGraph()
-        grid.addWidget(self.waveform_graph, 11, 0, 1, 5)
+        grid.addWidget(self.waveform_graph, 7, 0, 1, 5)
         grid.setColumnStretch(6, 1)
         return tab
 
@@ -2790,8 +2955,14 @@ class MainWindow(QMainWindow):
         layout.addWidget(note)
 
         top = QFormLayout()
-        top.addRow("Camera FPS", self.exp_camera_fps)
-        top.addRow("Camera Start (s)", self.exp_camera_start)
+        # v3 design-idea adoption, Proposal 4 (2026-08-06): these fields'
+        # own tooltips already explain the real DIO1 relationship ("used to
+        # derive the AD2 DIO1 LED clock", "Programmed as the AD2 DigitalOut
+        # sec_wait value before the DIO1 pulse train") -- the terse caption
+        # alone didn't. Captions now name what's actually being configured,
+        # not just the camera-facing effect.
+        top.addRow("Camera FPS (drives DIO1 LED clock)", self.exp_camera_fps)
+        top.addRow("Camera Start (s) (DIO1 pulse delay)", self.exp_camera_start)
         layout.addLayout(top)
         self._add_tooltip_icons(top)
 
@@ -2943,7 +3114,7 @@ class MainWindow(QMainWindow):
         group = QGroupBox("Flush settings")
         form = QFormLayout(group)
         form.addRow("Flush after capture", self.exp_flush_enabled)
-        form.addRow("Flush Flowrate(uL)", self.exp_flush_flowrate)
+        form.addRow("Flush Flow Rate (uL/min)", self.exp_flush_flowrate)
         form.addRow("flush volume (ml)", self.exp_flush_volume)
         form.addRow("WaitAfterFlush", self.exp_wait_after_flush)
         self._add_tooltip_icons(form)
@@ -2974,7 +3145,10 @@ class MainWindow(QMainWindow):
         # content moves onto its own QScrollArea instead of laying directly
         # into the group, so it can lay out at full natural height internally
         # and scroll rather than being compressed.
-        group = QGroupBox("Camera Start Array(s)")
+        # v3 design-idea adoption, Proposal 4 (2026-08-06): names the real
+        # DIO1 relationship, matching Dynamic Camera Start Time's own
+        # tooltip below.
+        group = QGroupBox("Camera Start Array(s) (per-repeat DIO1 delays)")
         outer = QVBoxLayout(group)
         content = QWidget()
         form = QFormLayout(content)
@@ -2982,7 +3156,7 @@ class MainWindow(QMainWindow):
         # Dynamic Camera Start Time is the toggle that controls whether this
         # array is used at all (see _experiment_do_clock_config()), so it
         # belongs directly above the array it controls.
-        form.addRow("Dynamic Camera Start Time", self.dynamic_camera_start)
+        form.addRow("Dynamic Camera Start Time (per-repeat DIO1 delays)", self.dynamic_camera_start)
         for widget in self.camera_start_array:
             form.addRow(widget)
         self._add_tooltip_icons(form)
@@ -2997,7 +3171,7 @@ class MainWindow(QMainWindow):
         return group
 
     def _experiment_frequency_scan_group(self) -> QGroupBox:
-        group = QGroupBox("Frequency Scanning (Dynamic Frequency, Ch1 only)")
+        group = QGroupBox("Frequency Scanning (Dynamic Frequency, CH0 only)")
         form = QFormLayout(group)
         form.addRow(self.exp_freq_scan_enable)
         form.addRow("Start Frequency (kHz)", self.exp_freq_scan_start_khz)
@@ -3081,7 +3255,12 @@ class MainWindow(QMainWindow):
         refresh_count_display()
 
     def _error_panel(self) -> QGroupBox:
-        group = QGroupBox("Error Out")
+        # v3 design-idea adoption, Proposal 2 (2026-08-06): "Error Out" was
+        # literal LabVIEW-era jargon describing a display mode this widget
+        # no longer has -- Session 58 already replaced the single-value
+        # display with this scrollable HistoryLogWidget, but the caption
+        # itself was never updated to match.
+        group = QGroupBox("Status and error history")
         group.setMaximumWidth(280)
         layout = QVBoxLayout(group)
         self.error_log = HistoryLogWidget()
@@ -3326,6 +3505,9 @@ class MainWindow(QMainWindow):
             self.app.cleanup()
         except Exception as exc:
             self.app.check_loop_error(exc)
+            raise RuntimeError(
+                "Existing hardware cleanup failed; refusing to initialize a replacement hardware bundle."
+            ) from exc
         apply_hardware_bundle(self.app, build_hardware_bundle(config))
         self.app.initialize()
         return "System Initialized"
@@ -3455,6 +3637,36 @@ class MainWindow(QMainWindow):
         if answer != QMessageBox.StandardButton.Yes:
             return
         self._run_action(lambda progress: self.app.pump.reference_move(), "Reference move")
+
+    def _start_clear_pump_fault(self) -> None:
+        # Session 104: manual, operator-initiated pump fault-clear escape
+        # hatch. This QMessageBox is the "plain-language warning" the task
+        # requires -- non-skippable (defaults to No, requires an explicit
+        # Yes click) and shown before Application.clear_pump_fault_and_retry()
+        # is ever called. See docs/hardware_repair_plan.md's Qmix CAN Tx
+        # Queue Overrun / 0x81FF entry and QmixPumpBackend._enable_pump()'s
+        # own comment on why initialization itself must stay fail-closed.
+        answer = QMessageBox.question(
+            self,
+            "Confirm Pump Fault Clear",
+            "The pump has reported a fault (observed as a CAN-bus condition, code 0x81FF "
+            '"CAN Tx Queue Overrun") that has been seen to relatch on fresh bus connections. '
+            "This is a real, documented, UNRESOLVED hardware issue -- see "
+            "docs/hardware_repair_plan.md.\n\n"
+            "Clearing the fault will let the pump be used now, but does NOT fix the "
+            "underlying cause, and the fault may return. This action will be recorded in "
+            "the status/error history below, and in data.tdms if an experiment run "
+            "follows this session.\n\n"
+            "Clear the fault and retry the pump connection now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            self._set_status("Pump fault clear cancelled.")
+            return
+        self._run_action(
+            lambda progress: self.app.clear_pump_fault_and_retry(), "Clearing Pump Fault"
+        )
 
     def _start_flush(self) -> None:
         settings = self._flush_settings()

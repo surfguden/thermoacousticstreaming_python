@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import threading
+import time
+
 import pytest
 
 from thermo_acoustic.application import Application
@@ -323,6 +326,61 @@ def test_tec_controller_initialize_closes_backend_when_status_read_fails():
 
     assert controller.initialized is False
     assert backend.calls == [("connect",), ("read_status", (1, 2)), ("close",)]
+
+
+def test_tec_controller_failed_initialize_bounds_a_stuck_backend_close():
+    close_started = threading.Event()
+
+    class HangingCloseBackend(FailingStatusTecBackend):
+        def close(self) -> None:
+            self.calls.append(("close",))
+            close_started.set()
+            threading.Event().wait()
+
+    backend = HangingCloseBackend()
+    controller = TecController(
+        enabled=True,
+        simulate=True,
+        backend=backend,
+        cleanup_timeout_s=0.02,
+    )
+    started = time.perf_counter()
+
+    with pytest.raises(TecError) as exc_info:
+        controller.initialize()
+
+    assert time.perf_counter() - started < 0.5
+    assert close_started.is_set()
+    assert "status read failed" in str(exc_info.value)
+    assert "TEC failed-initialize cleanup timed out" in str(exc_info.value)
+    assert controller.initialized is False
+
+
+def test_tec_controller_cleanup_bounds_a_stuck_backend_close():
+    close_started = threading.Event()
+
+    class HangingCloseBackend(RecordingTecBackend):
+        def close(self) -> None:
+            self.calls.append(("close",))
+            close_started.set()
+            threading.Event().wait()
+
+    backend = HangingCloseBackend()
+    controller = TecController(
+        enabled=True,
+        simulate=True,
+        backend=backend,
+        initialized=True,
+        cleanup_timeout_s=0.02,
+    )
+    started = time.perf_counter()
+
+    with pytest.raises(TecError, match="TEC cleanup timed out"):
+        controller.cleanup()
+
+    assert time.perf_counter() - started < 0.5
+    assert close_started.is_set()
+    assert controller.initialized is True
 
 
 def test_tec_controller_waits_for_stable_status_without_hardware_sleep():

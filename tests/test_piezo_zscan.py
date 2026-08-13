@@ -356,8 +356,8 @@ def test_manual_ppc001_probe_is_quarantined_and_not_a_pytest_test():
 def test_legacy_action_capable_tools_are_explicitly_manual_only():
     repo_root = Path(__file__).resolve().parents[1]
     for relative_path in (
-        "tools/test_hamamatsu_camera.py",
-        "tools/test_qmix_pump.py",
+        "tools/legacy_hamamatsu_camera_probe.py",
+        "tools/legacy_qmix_pump_probe.py",
         "tools/capture_ad2_wavegen_scope.py",
         "tools/capture_ad2_wavegen_scope_matplotlib.py",
     ):

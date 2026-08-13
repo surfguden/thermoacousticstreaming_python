@@ -44,10 +44,10 @@ except ImportError:
 CANDIDATES = {
     "cr_1":        (b"1\r",        "Bare '1' + CR only (most common Rheodyne-style)"),
     "cr_2":        (b"2\r",        "Bare '2' + CR only"),
-    "crlf_1":      (b"1\r\n",      "Bare '1' + CRLF (current app default, already tried)"),
+    "crlf_1":      (b"1\r\n",      "Legacy bare '1' + CRLF candidate; not the current application format"),
     "lf_1":        (b"1\n",        "Bare '1' + LF only"),
-    "p01_cr":      (b"P01\r",      "'P01' + CR (position-prefixed format)"),
-    "p02_cr":      (b"P02\r",      "'P02' + CR"),
+    "p01_cr":      (b"P01\r",      "Current application/LabVIEW position-1 command; fluidic route unverified"),
+    "p02_cr":      (b"P02\r",      "Current application/LabVIEW position-2 command; fluidic route unverified"),
     "go1_cr":      (b"GO1\r",      "'GO1' + CR (go-to-position style)"),
     "go2_cr":      (b"GO2\r",      "'GO2' + CR"),
     "cp1_cr":      (b"CP1\r",      "'CP1' + CR (change position style)"),

@@ -32,8 +32,8 @@ CANDIDATES = {
     "cr_1":        (b"1\r",        "Bare '1' + CR only"),
     "cr_2":        (b"2\r",        "Bare '2' + CR only"),
     "crlf_1":      (b"1\r\n",      "Bare '1' + CRLF"),
-    "p01_cr":      (b"P01\r",      "'P01' + CR (confirmed LabVIEW format for position 1)"),
-    "p02_cr":      (b"P02\r",      "'P02' + CR (candidate for position 2)"),
+    "p01_cr":      (b"P01\r",      "Current application/LabVIEW position-1 command; fluidic route unverified"),
+    "p02_cr":      (b"P02\r",      "Current application/LabVIEW position-2 command; fluidic route unverified"),
     "status_query": (b"S\r",       "'S' + CR -- status/position query used by the current "
                                     "application. Record the raw response; its exact device "
                                     "semantics require bench confirmation. Use --read-response "

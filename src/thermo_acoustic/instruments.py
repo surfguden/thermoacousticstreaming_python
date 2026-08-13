@@ -799,17 +799,28 @@ class CetoniPump:
     def initialize(self) -> None:
         if not self.enabled:
             return
+        backend_initialized = False
         if self.backend is not None:
-            self.backend.initialize(self.configuration_path)
-        # fill_level otherwise stays at its Python-side dataclass default
-        # (0.0) regardless of what the real syringe actually holds --
-        # found on real hardware (Session 54 dry-run): a fresh process
-        # read 0.0 while the syringe still had ~0.05 ml loaded from a
-        # prior session. Syncing from the real device's own readback
-        # here means flush()'s fill-level guard (Session 53) checks
-        # reality instead of a stale assumption from the moment the
-        # process started.
-        self.sync_fill_level()
+            try:
+                self.backend.initialize(self.configuration_path)
+                backend_initialized = True
+                # A successful backend open is not a complete pump initialize
+                # until the real fill-level readback also succeeds.
+                self.sync_fill_level()
+            except Exception as exc:
+                self.initialized = False
+                if not backend_initialized:
+                    # QmixPumpBackend.initialize() owns rollback of failures
+                    # raised inside its own open/start/enable sequence.
+                    raise
+                try:
+                    self.backend.close()
+                except Exception as cleanup_exc:
+                    raise RuntimeError(
+                        f"Pump initialize failed after backend open: {exc}; "
+                        f"cleanup after failed initialize also failed: {cleanup_exc}"
+                    ) from exc
+                raise
         self.initialized = True
         # Deliberately not setting self.referenced here -- initialize() never
         # calls calibrate()/reference_move(), so it has no basis to claim a
@@ -820,6 +831,48 @@ class CetoniPump:
         # set referenced=True, and only after confirming success (it already
         # does, via QmixPumpBackend.reference_move()'s poll-until-confirmed
         # or raise).
+
+    def clear_fault_and_reinitialize(self) -> None:
+        # Deliberate, scoped exception to initialize()'s fail-closed behavior
+        # above -- never called automatically. Only an explicit operator
+        # action (Application.clear_pump_fault_and_retry(), itself only
+        # reachable from the UI's "Clear Fault & Retry Connection" action
+        # behind a non-skippable warning dialog) calls this method. See
+        # docs/hardware_repair_plan.md and Session 104 of
+        # docs/claude_code_change_log.md. Mirrors initialize()'s own
+        # backend-open/rollback structure rather than reusing it directly, so
+        # initialize() itself never has to change to support this.
+        if not self.enabled:
+            return
+        if self.backend is None:
+            # Simulated pump: there is no real fault state to clear, so this
+            # is equivalent to a normal (re)initialize.
+            self.initialize()
+            return
+        clear_fault_and_reinitialize = getattr(self.backend, "clear_fault_and_reinitialize", None)
+        if not callable(clear_fault_and_reinitialize):
+            raise RuntimeError("This pump backend does not support an explicit fault-clear action.")
+        backend_initialized = False
+        try:
+            clear_fault_and_reinitialize(self.configuration_path)
+            backend_initialized = True
+            self.sync_fill_level()
+        except Exception as exc:
+            self.initialized = False
+            if not backend_initialized:
+                # QmixPumpBackend.clear_fault_and_reinitialize() owns rollback
+                # of failures raised inside its own open/start/clear/enable
+                # sequence.
+                raise
+            try:
+                self.backend.close()
+            except Exception as cleanup_exc:
+                raise RuntimeError(
+                    f"Pump clear_fault_and_reinitialize failed after backend open: {exc}; "
+                    f"cleanup after failed clear_fault_and_reinitialize also failed: {cleanup_exc}"
+                ) from exc
+            raise
+        self.initialized = True
 
     def refill(self, flow_rate: float | None = None) -> None:
         if self.backend is not None:
@@ -921,10 +974,23 @@ class Valve:
     def initialize(self) -> None:
         self.status_note = ""
         if self.backend is not None:
-            self.backend.write(f"OPEN {self.visa_resource}")
-            raw_response = self.backend.query(self.status_query_command)
-            if not self._apply_status_response(raw_response):
-                raise ValveError(f"Valve returned unrecognized status on {self.visa_resource}: {self.status_note}")
+            try:
+                self.backend.write(f"OPEN {self.visa_resource}")
+                raw_response = self.backend.query(self.status_query_command)
+                if not self._apply_status_response(raw_response):
+                    raise ValveError(
+                        f"Valve returned unrecognized status on {self.visa_resource}: {self.status_note}"
+                    )
+            except Exception as exc:
+                self.initialized = False
+                try:
+                    self.backend.close()
+                except Exception as cleanup_exc:
+                    raise ValveError(
+                        f"Valve initialize failed on {self.visa_resource}: {exc}; "
+                        f"cleanup after failed initialize also failed: {cleanup_exc}"
+                    ) from exc
+                raise
         self.initialized = True
 
     def _apply_status_response(self, raw_response: str) -> bool:
@@ -959,11 +1025,31 @@ class Valve:
         self.status_note = f"unverified position response: {text!r}"
         return False
 
+    def _ensure_connected(self) -> None:
+        # Lazy reconnect (2026-08-13 architecture fix), matching the pattern
+        # already proven for AD2Sdk.open_and_use_first_device()/
+        # HamamatsuDcamBackend.open_camera(): a manual Pump&Valve-tab action
+        # must not require a prior, successful, whole-system
+        # Application.initialize() -- e.g. this Valve was skipped because an
+        # earlier device in the reporting order failed under the old
+        # cross-device-abort design (see docs/hardware_repair_plan.md), or
+        # was simply never initialized this session for any other reason.
+        # Deliberately calls initialize() itself rather than a shortcut
+        # "just open the port" duplicate: unlike AD2/Camera's lazy-open,
+        # Valve.initialize() is not just a handle open, it also runs the
+        # real "S" status handshake/validation (_apply_status_response()) --
+        # skipping that here would silently accept an unconfirmed connection
+        # on the fluid-routing-critical path. No-op when already initialized
+        # or simulated (backend is None).
+        if self.backend is not None and not self.initialized:
+            self.initialize()
+
     def set_position(self, position: int) -> None:
         # Position numbers map directly to the protocol tokens P01/P02. Their
         # physical routing is intentionally not inferred here.
         if position not in (1, 2):
             raise ValueError(f"Unsupported valve position: {position}")
+        self._ensure_connected()
         # M2 (instruments.py line-by-line review): self.position is now only
         # assigned after backend.write() returns without raising -- assigning
         # it first (the old order) meant a raised exception from write() left

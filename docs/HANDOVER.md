@@ -89,8 +89,8 @@ Instrument status:
 - Hamamatsu camera: real DCAM backend is implemented against the uploaded
   `dcamsdk4/samples/python/dcam.py` wrapper. Sequence saving now writes TIFF
   files named `frame_00000.tiff`, `frame_00001.tiff`, etc.
-- Camera smoke test: `tools/test_hamamatsu_camera.py` opens the real camera,
-  captures a snapshot, and saves `hamamatsu_snapshot.tiff`.
+- Camera smoke test: `tools/legacy_hamamatsu_camera_probe.py` opens the real
+  camera, captures a snapshot, and saves `hamamatsu_snapshot.tiff`.
 - Pump: simulated API exists and `QmixPumpBackend` provides the real
   Cetoni/Qmix SDK adapter. It opens the Qmix bus, looks up a pump by name or
   index, starts communication, refuses a pre-existing fault without clearing
@@ -167,7 +167,7 @@ Do not expose or commit the private key.
 
 1. Run `python -m pytest -q` after pulling the handover repo.
 2. Run `python tools\run_ui.py` with all simulate toggles enabled.
-3. Validate Hamamatsu real camera with `python tools\test_hamamatsu_camera.py`.
+3. Validate Hamamatsu real camera with `python tools\legacy_hamamatsu_camera_probe.py`.
 4. Validate TIFF output bit depth and metadata expectations against downstream
    analysis.
 5. Run MSO hardware tests across all trigger-source options.

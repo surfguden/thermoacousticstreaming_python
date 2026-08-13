@@ -61,8 +61,18 @@ hardware_tests/manual_ppc001_piezo_probe.py
 # Real-hardware verification run artifacts (TIFF frames, TDMS files, dated
 # run folders) -- multiple prior sessions (piezo Z-scan Session 48, camera/
 # AD2/full-workflow smoke runs, this session's Priority 1 hardware
-# verification) have written here; despite being referenced as "gitignored"
+# verification) used to write here; despite being referenced as "gitignored"
 # in earlier changelog entries, no rule for it actually existed until now
 # (found while cleaning up after Session 51's real-hardware pass) -- these
-# are throwaway verification outputs, never meant to be committed.
+# are throwaway verification outputs, never meant to be committed. Superseded
+# by runs/ below (file/structure audit cleanup); rule kept in case anything
+# still writes here.
 hardware_tests/output/
+
+# Real-hardware verification run artifacts and stray real-hardware output
+# files (e.g. a loose data.tdms) now live under this top-level directory
+# instead of hardware_tests/output/ or the repo root -- one obvious place for
+# "real hardware run evidence" (file/structure audit cleanup). Same rationale
+# as hardware_tests/output/ above: throwaway/reproducible verification
+# outputs, never meant to be committed.
+runs/

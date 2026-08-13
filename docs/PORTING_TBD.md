@@ -7,7 +7,7 @@
 > `docs/known_open_items.md` for live status.
 
 This file is generated from `labview_manifest.json` and records a historical
-semantic-porting snapshot for every documented VI in `main_html/main`. The
+semantic-porting snapshot for every documented VI in `main_html/main.html`. The
 generator's counts are coverage labels, not evidence of live runtime behavior,
 hardware validation, or exact LabVIEW equivalence. The checklist below is
 historical and may contain work superseded by current code; do not use it as a
@@ -28,7 +28,7 @@ These are retained historical follow-ups. Some are superseded (for example, a
 Camera preview now exists); unresolved current work belongs only in
 `docs/known_open_items.md`.
 
-- **Hamamatsu real camera validation**: Run `tools/test_hamamatsu_camera.py` against the connected camera and verify open, exposure, ROI/subarray, snapshot, sequence capture, software trigger, and cleanup behavior.
+- **Hamamatsu real camera validation**: Run `tools/legacy_hamamatsu_camera_probe.py` against the connected camera and verify open, exposure, ROI/subarray, snapshot, sequence capture, software trigger, and cleanup behavior.
 - **Camera image handling**: Verify that the Python TIFF output matches the LabVIEW image output needs, including bit depth, frame naming, metadata, and any TDMS sidecar data expected by downstream analysis.
 - **Camera UI preview**: Add a live/snapshot image display in the Camera tab if the operator needs the Python UI to replace LabVIEW's image window behavior.
 - **Cetoni/Qmix real pump backend**: The Qmix/Cetoni backend is implemented through `QmixPumpBackend`, but it still needs to be validated with the installed Qmix/Cetoni stack, real syringe geometry, safe flow limits, and the user's device configuration.

@@ -1,5 +1,5 @@
 {
-  "export_html": "C:\\Users\\Ola\\Documents\\Labview to Python Conversion\\main_html\\main",
+  "export_html": "main_html/main.html",
   "documented_vis": [
     {
       "name": "Main.vi",

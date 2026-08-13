@@ -16,7 +16,7 @@ python -m pytest -q
 On Windows, `launch_gui.bat` (double-click, or run from a terminal) does the
 same thing as `python tools\run_ui.py`, using a fixed Conda environment path
 instead of whatever `python` currently resolves to on your PATH -- see the
-"Launchers" section below for the v1, v2, and v3 variants.
+"Launchers" section below for the tracked v1 and v2 variants.
 
 ## Application Status
 
@@ -44,22 +44,17 @@ hardware-verified and is **not the default launch target** until approved -- it
 must be launched explicitly (see "Launchers" below), never by running
 `tools/run_ui.py`/`launch_gui.bat` alone.
 
-`src/thermo_acoustic/qt_ui_v3.py` (`MainWindowV3`) is the newer transitional
-layout. It subclasses v2 and reuses the same `Application`, hardware objects,
-workers, initialization, and experiment builders. Its changes are limited to
-information hierarchy and manual-panel layout; v2 remains available as the
-rollback/reference path. v3 is also opt-in and not independently hardware-
-verified.
-
-For current v3 layout development, the recommended launch command is
-`launch_gui_v3.bat` on the lab Windows machine, or
-`python tools\run_ui_v3.py` from an already-configured environment. This does
-not change v1's status as the approved default operator entry point.
+Local v3 layout-development files may exist in an individual working tree and
+are the active local layout-development direction, but they are intentionally
+not tracked after commit `d180eea`. A fresh checkout therefore provides no
+supported v3 entry point. Those local files are not independently
+hardware-verified and must not be treated as part of the committed runtime
+boundary. v2 remains the tracked transitional and rollback/reference UI.
 
 ## Environment Setup
 
 Production (real hardware) runs use a dedicated Conda environment named
-`exp_ctrl` -- `launch_gui.bat`/`launch_gui_v2.bat`/`launch_gui_v3.bat` and this project's
+`exp_ctrl` -- `launch_gui.bat`/`launch_gui_v2.bat` and this project's
 own real-hardware verification scripts (`hardware_tests/`) point at it. It
 is hand-assembled, not created fresh from a manifest each time, so it can
 drift from what the code actually needs -- this happened once already
@@ -97,15 +92,15 @@ covered by either file -- see the comments at the top of
 
 ## Launchers
 
-Three clearly-separated launchers exist for the three UIs, on purpose -- never a
-single script with a mode switch, so there's no way to launch the wrong one
-by mistake:
+Two tracked, clearly-separated launchers exist for the supported repository UIs:
 
 | Launches | Windows batch file (double-click) | Dev command |
 | --- | --- | --- |
 | v1 (`qt_ui.py`, `MainWindow`) -- default operator UI | `launch_gui.bat` | `python tools\run_ui.py` |
 | v2 (`qt_ui_v2.py`, `MainWindowV2`) -- older transitional layout and rollback/reference path | `launch_gui_v2.bat` | `python tools\run_ui_v2.py` |
-| v3 (`qt_ui_v3.py`, `MainWindowV3`) -- active layout-development direction; opt-in and not hardware-verified | **`launch_gui_v3.bat` (recommended for v3 work)** | `python tools\run_ui_v3.py` |
+
+Local untracked v3 development files are outside this launcher contract and are
+not available from a fresh checkout.
 
 The `.bat` files use a fixed Conda environment path (edit `PYTHON_EXE` at the
 top of either script if that path changes); the `tools/run_ui*.py` scripts

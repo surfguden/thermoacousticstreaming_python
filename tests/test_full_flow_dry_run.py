@@ -447,7 +447,15 @@ def test_run_experiment2_ignores_disabled_do_clock_channel_for_fps_budget(tmp_pa
     assert ("camera", "start_capture") in calls
 
 
-def test_initialize_rolls_back_already_initialized_devices_when_later_device_fails(tmp_path):
+def test_initialize_lets_every_device_attempt_independently_when_one_fails(tmp_path):
+    # Architecture fix (2026-08-13): devices are confirmed functionally
+    # independent (no device's initialize() reads another's state), so one
+    # device failing must not stop the others from getting their own
+    # attempt, and devices that succeed must not be torn back down just
+    # because a later, unrelated device failed. Replaces the old
+    # "stop at the first failure and roll back everything already-
+    # succeeded" behavior this same test used to assert -- see
+    # docs/hardware_repair_plan.md's "Initialization And Failure Recovery".
     calls = []
 
     class FailingValve(FakeValve):
@@ -467,22 +475,138 @@ def test_initialize_rolls_back_already_initialized_devices_when_later_device_fai
     try:
         app.initialize()
     except RuntimeError as exc:
-        assert "valve initialize failed" in str(exc)
+        assert "Valve initialize failed" in str(exc)
     else:
         raise AssertionError("partial initialization failure should be reported")
 
-    assert calls[:4] == [
+    # Every device gets its own attempt, in the existing reporting order --
+    # Z-stage (after Valve in that order) is NOT skipped just because Valve
+    # failed.
+    assert calls == [
         ("ad2", "initialize"),
         ("camera", "initialize"),
         ("pump", "initialize"),
         ("valve", "initialize"),
+        ("z_stage", "initialize"),
     ]
-    assert ("z_stage", "initialize") not in calls
-    assert calls[-3:] == [
-        ("ad2", "cleanup"),
-        ("camera", "cleanup"),
-        ("pump", "cleanup"),
+    # No cleanup() call anywhere: AD2/Camera/Pump succeeded and must stay
+    # connected/usable, not be rolled back because Valve (a later, unrelated
+    # device) failed.
+    assert not any(call[1] == "cleanup" for call in calls)
+
+
+def test_initialize_pump_failure_does_not_block_ad2_camera_valve_z_stage(tmp_path):
+    # Directly covers the user-reported scenario: a pump fault must not
+    # prevent AD2/Camera/Valve/Z-stage from each getting their own real
+    # initialize() attempt, and must not roll back the ones that already
+    # succeeded before Pump's turn in the reporting order.
+    calls = []
+
+    class FailingPump(FakePump):
+        def initialize(self):
+            self.calls.append(("pump", "initialize"))
+            raise RuntimeError("pump is in a fault state")
+
+    app = Application(
+        ad2=FakeAD2(calls),
+        camera=FakeCamera(calls),
+        pump=FailingPump(calls),
+        valve=FakeValve(calls),
+        z_motor=FakeZStage(calls),
+        experiment_series=ExperimentSeries2(series_path=tmp_path),
+    )
+
+    with pytest.raises(RuntimeError, match="Pump initialize failed"):
+        app.initialize()
+
+    assert calls == [
+        ("ad2", "initialize"),
+        ("camera", "initialize"),
+        ("pump", "initialize"),
+        ("valve", "initialize"),
+        ("z_stage", "initialize"),
     ]
+    assert not any(call[1] == "cleanup" for call in calls)
+
+
+def test_initialize_reports_every_independent_failure_not_just_the_first(tmp_path):
+    calls = []
+
+    class FailingPump(FakePump):
+        def initialize(self):
+            self.calls.append(("pump", "initialize"))
+            raise RuntimeError("pump is in a fault state")
+
+    class FailingValve(FakeValve):
+        def initialize(self):
+            self.calls.append(("valve", "initialize"))
+            raise RuntimeError("valve did not respond")
+
+    app = Application(
+        ad2=FakeAD2(calls),
+        camera=FakeCamera(calls),
+        pump=FailingPump(calls),
+        valve=FailingValve(calls),
+        z_motor=FakeZStage(calls),
+        experiment_series=ExperimentSeries2(series_path=tmp_path),
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        app.initialize()
+
+    # Both independent failures are named, not just the first one hit --
+    # a caller inspecting the exception can tell which devices need
+    # attention without re-running initialize() device by device.
+    assert "Pump initialize failed" in str(excinfo.value)
+    assert "Valve initialize failed" in str(excinfo.value)
+    # AD2/Camera still got attempted and are not rolled back; Z-stage
+    # (last in the order) still got its own attempt too.
+    assert calls == [
+        ("ad2", "initialize"),
+        ("camera", "initialize"),
+        ("pump", "initialize"),
+        ("valve", "initialize"),
+        ("z_stage", "initialize"),
+    ]
+    assert not any(call[1] == "cleanup" for call in calls)
+
+
+def test_initialize_reports_per_device_progress_independently_on_partial_failure(tmp_path):
+    calls = []
+    events = []
+
+    class FailingPump(FakePump):
+        def initialize(self):
+            self.calls.append(("pump", "initialize"))
+            raise RuntimeError("pump is in a fault state")
+
+    app = Application(
+        ad2=FakeAD2(calls),
+        camera=FakeCamera(calls),
+        pump=FailingPump(calls),
+        valve=FakeValve(calls),
+        z_motor=FakeZStage(calls),
+        experiment_series=ExperimentSeries2(series_path=tmp_path),
+    )
+
+    with pytest.raises(RuntimeError):
+        app.initialize(progress=lambda kind, value: events.append((kind, value)))
+
+    final_status = {}
+    for kind, value in events:
+        if kind == "init_device":
+            name, status = value
+            final_status[name] = status
+
+    # Each device's own genuine outcome is reported -- no "Rolled back"
+    # placeholder text for devices that actually succeeded.
+    assert final_status["AD2"] == "Complete"
+    assert final_status["Camera"] == "Complete"
+    assert final_status["Pump"] == "Failed"
+    assert final_status["Valve"] == "Complete"
+    assert final_status["Z-stage"] == "Complete"
+    for status in final_status.values():
+        assert "Rolled back" not in status
 
 
 def test_run_experiment2_stops_capture_when_image_sequence_raises(tmp_path):

@@ -9,8 +9,9 @@ hardware operation.
 > installed `mecom.commands.TEC_PARAMETERS` table and Meerstetter's official
 > TEC-Family protocol (104, 105, 1000, 2010, and 3000). The Session 75-77
 > hardware statements below remain historical, self-reported evidence: they are
-> not independently reproducible from source or fake-only tests, and the client
-> implementation is still uncommitted. Treat real TEC operation as unapproved
+> not independently reproducible from source or fake-only tests. The client
+> implementation is committed in `7c7e19f`, but that is not independent bench
+> authorization. Treat real TEC operation as unapproved
 > and leave the application on its disabled/simulated default until a human
 > review reconciles the implementation with a retained bench record. Also note
 > that `_PyMeComTecClient.write_config()` is intentionally a no-op: it applies
@@ -91,6 +92,48 @@ Number/General Operating Mode, all read-only, done during the Session 76
 channel-2 investigation) has ever been referenced anywhere in this
 repository.
 
+## Model / Firmware / Protocol Compatibility Review (Closed, 2026-08-05)
+
+This closes `docs/hardware_repair_plan.md`'s TEC/MeCom item 2 ("Human-review
+the attached controller model/firmware against the exact official
+communication-protocol revision and the installed pyMeCom table") -- **it
+does not close, and is not evidence for, any other open TEC item** (see
+`docs/known_open_items.md` for what remains open: real-operation
+authorization, the flash-persistence decision, target-readback/readiness
+semantics, and real error-state testing).
+
+- **Device identity confirmed.** A real board photo shows model
+  "TEC-1123-HV", serial number beginning "509..." -- matches the
+  SDK-reported Device Type 1123 and Serial Number 5091 already on record
+  from the earlier real-hardware verification session (Session 75,
+  `docs/claude_code_change_log.md`). Same physical unit, correctly
+  connected -- the "-HV" suffix was not previously reconciled against
+  the reviewed protocol documentation.
+- **Protocol compatibility confirmed.** Per Meerstetter's own
+  documentation, the entire TEC-Family (including the -HV variant)
+  shares one common platform bus, communication protocol, and hardware
+  architecture -- there is no separate "HV protocol." The official
+  Communication Protocol document (5136AF, cross-referenced 5136AU)
+  applies identically to this unit.
+- **HV-specific parameter differences located and confirmed out of
+  scope.** The protocol's HV-specific value-range differences are
+  confined to voltage/current limitation and error-threshold parameters
+  -- 2021 (Set Voltage), 2030 (Current Limitation), 2031 (Voltage
+  Limitation), 2032/2033 (Current/Voltage Error Threshold). None of
+  these are among this integration's 5 whitelisted parameters (104,
+  105, 1000, 2010, 3000). No correction to the existing implementation
+  is needed.
+- **Firmware requirement met.** The TEC-1123 datasheet (5144Y, cross-
+  referenced 5144R) states HV electrical characteristics require
+  firmware >= v4.00. This unit's real SDK-reported firmware is 5.10
+  (on record since Session 75), which satisfies that requirement.
+
+**Sources:** TEC-1123 datasheet (Meerstetter document 5144Y/5144R) and
+the TEC-Family Communication Protocol (Meerstetter document 5136AF),
+both from the same [TEC-Family downloads
+category](https://www.meerstetter.ch/customer-center/downloads/category/35-latest-communication-protocols)
+already cited elsewhere in this document.
+
 ## Historical Protocol-Mapping Inventory
 
 | Required action | Official evidence | Current repository state | Classification |
@@ -118,7 +161,7 @@ The safe default is:
 
 - TEC disabled by default.
 - TEC simulated by default.
-- The shipped factory (`hardware_factory.py`) wires a reviewed Meerstetter
+- The shipped factory (`hardware_factory.py`) wires the current source-limited Meerstetter
   client factory (`_real_tec_client_factory`) into the non-simulated TEC
   path. `MeerstetterTecBackend` without an explicit `client_factory` still
   refuses cleanly before any I/O. **The real path has now been exercised

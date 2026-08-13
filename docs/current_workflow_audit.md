@@ -64,11 +64,14 @@ flowchart TD
     AB --> AE["valve.cleanup()"]
     AB --> AF["z_motor.cleanup()"]
     AB --> AG["ad2.cleanup()"]
+    AB --> AH["tec.cleanup()"]
 ```
 
 Current canonical experiment execution is `Application.run_experiment2()`.
 `Experiment2.flush_enabled` defaults to `False`; direct/manual `flush()` is
-unchanged and can still move pump and valve when real backends are connected.
+available and can still move pump and valve when real backends are connected.
+The current working tree rejects zero or negative flush flow before either
+device is touched; this workflow is a positive-rate dispense operation.
 
 ## UI Runtime Boundary
 
@@ -81,14 +84,32 @@ unchanged and can still move pump and valve when real backends are connected.
   are selected. Its layout has not been independently hardware-verified. Its
   initialization path now delegates to `Application.initialize()` with
   progress reporting rather than maintaining a second device-order loop.
-- `qt_ui_v3.py` (`MainWindowV3`) is the newer opt-in transitional layout. It
-  subclasses `MainWindowV2` and is the active layout-development direction.
-  Connections and progress are first, the primary Run action follows, and setup
-  is divided into AD2 Output, Camera, Fluidics, and Advanced tabs. TEC remains in
-  Advanced, while WFG/MSO/Pump&Valve/Camera manual dialogs use narrower,
-  task-oriented layouts. It shares v2's exact `Application` and hardware
-  objects. It has not been independently hardware-verified; v2 remains the
-  rollback/reference path. Use `launch_gui_v3.bat` for v3 development.
+- In the current working tree, both tracked GUI initialization paths refuse to
+  construct a replacement hardware bundle if cleanup of the existing bundle
+  reports a failure. This is fail-closed reinitialization: a timed-out vendor
+  call may still be alive in its daemon thread, so proceeding to open another
+  handle would not be a safe recovery.
+- Local `qt_ui_v3.py` development files are the active local layout-development
+  direction, but commit `d180eea` intentionally removed them from tracking.
+  They are not part of a fresh checkout's committed runtime boundary and have
+  not been independently hardware-verified. The tracked transitional/rollback
+  path is `qt_ui_v2.py`; local v3 work must be assessed separately from
+  committed repository behavior.
+- Local v3 currently replaces several silent caption-search loops with
+  fail-loud unique-caption adapters that assign stable `objectName` values.
+  Initialization, status, acquisition, and MSO adaptations use those validated
+  adapters. The shared manual-WFG builder now also assigns neutral stable IDs
+  to its carrier/trigger/FM labels and preview description, and local v3
+  addresses those IDs directly instead of rewriting labels by substring or
+  position. V3 remains local despite this improvement.
+- A backend owns cleanup of resources opened during its own `initialize()`
+  before that method returns successfully. Application rollback remains
+  responsible for devices whose initialization already completed. Current
+  local fixes close a successfully opened pump backend if its initial fill
+  readback fails, and stop polling/shut down a piezo channel if post-connect
+  readback fails. TEC failed-initialize and direct cleanup now use the same
+  bounded `run_with_timeout()` utility as the other timeout-guarded cleanup
+  paths; a timeout is reported rather than treated as a successful close.
 - The Camera tab is not wholly independent of experiment setup: its
   master-pulse and trigger-polarity/delay sequence fields are copied into each
   `Experiment2.sequence_settings` record when a series is built. The
@@ -99,7 +120,7 @@ unchanged and can still move pump and valve when real backends are connected.
   connection and reads device state only. It does not authorize or command
   motion. PPC001 movement remains confined to the separately confirmed
   manual Z-Scan calibration workflow.
-- The current working tree contains an executable pyMeCom client path, but
+- Commit `7c7e19f` contains an executable pyMeCom client path, but
   its historical bench-verification claims have not been independently
   reconciled. Its five named parameter IDs do match the installed pyMeCom table
   and official TEC-Family protocol; that source check is not authorization for
@@ -125,11 +146,11 @@ unchanged and can still move pump and valve when real backends are connected.
 | AD2 DO Custom | `config_do_custom()` and custom DO settings | Legacy/nonessential unless later evidence requires it |
 | Qmix/neMESYS pump | `CetoniPump` + `QmixPumpBackend` | Real backend is opt-in and fault-fails-closed; current bench initialization is blocked by a relatching `0x81FF` CAN Tx Queue Overrun; canonical GUI has no separate movement-confirmation gate after initialization |
 | Valve position 1/2 | `Valve.set_position(1/2)` | Mapping unresolved; do not switch yet |
-| Flush | `Application.flush()` | Gated by `flush_enabled`; unsafe with real pump/valve until validated |
+| Flush | `Application.flush()` | Gated by `flush_enabled`; positive dispense rate required before hardware is touched; real pump/valve behavior remains bench-unverified |
 | Legacy Prior Z-stage | Retained migration reference only; no active factory path | Obsolete for current PPC001 hardware |
 | Thorlabs/APT discovery | `thorlabs_apt.py` passive discovery | Discovery-only; no motion |
 | PPC001 manual Z-scan | `qt_ui.py` Z-Scan tab + `thorlabs_piezo.py`/`piezo_zscan.py` | Manual, separately authorized calibration-motion feature; outside the canonical experiment sequence and passive APT discovery |
-| TEC temperature scan | `TecController` + `TemperatureSeries` | Disabled/simulated by default; current uncommitted real-path claims conflict with retained unresolved documentation, so real operation is not independently established |
+| TEC temperature scan | `TecController` + `TemperatureSeries` | Disabled/simulated by default; the committed real-path implementation and retained bench claims are not independent authorization, so real operation is not established by this audit |
 
 ## Active vs Legacy Classification
 
@@ -148,7 +169,7 @@ unchanged and can still move pump and valve when real backends are connected.
 | Prior COM7 Z-stage | Legacy/obsolete | COM7 absent and current hardware is APT USB |
 | Thorlabs/APT passive discovery | Discovery-only | APT Piezo Controller serial `44533854` found by passive enumeration |
 | PPC001 Z-scan calibration | Manual, separately authorized motion | GUI Z-Scan tab can connect to the PPC001 and, after a dedicated motion confirmation, move it for calibration; it is not part of `Application.run_experiment2()` or the passive APT discovery helper |
-| TEC temperature scan | Unresolved, simulated by default | One target per group; an executable uncommitted client and source-checked named mapping exist, but retained bench claims are not independently reproducible, so real operation remains unapproved |
+| TEC temperature scan | Unresolved, simulated by default | One target per group; commit `7c7e19f` contains an executable client and source-checked named mapping, but retained bench claims are not independently reproducible, so real operation remains unapproved |
 
 ## Risk Table
 
@@ -166,7 +187,7 @@ unchanged and can still move pump and valve when real backends are connected.
 | Prior Z | High/invalid | COM7 is not present; do not use for current Z-stage |
 | Thorlabs/APT passive discovery | Medium | Discovery-only helper still does not enable/home/move/jog/poll/settings |
 | PPC001 manual Z-scan | High | Manual GUI feature can poll, switch to ClosedLoop after confirmation, then requires a second explicit motion confirmation before moving the piezo; keep outside canonical experiment workflow |
-| TEC temperature control | Medium/high | Disabled/simulated by default; do not rely on conflicting uncommitted real-client claims without independent review |
+| TEC temperature control | Medium/high | Disabled/simulated by default; commit `7c7e19f` contains a real-client implementation, but retained bench claims still require independent human review (model/firmware compatibility is CLOSED -- see `docs/tec_verification_matrix.md`'s "Model / Firmware / Protocol Compatibility Review") |
 
 ## Historically Reported Hardware Milestones
 
@@ -191,7 +212,7 @@ unchanged and can still move pump and valve when real backends are connected.
   move the stage.
 - TEC temperature-series scaffolding exists as an opt-in path: one target is set
   and stabilized before each experiment group. It remains disabled and simulated
-  by default. The working tree currently contains uncommitted pyMeCom real-path
+  by default. Commit `7c7e19f` contains pyMeCom real-path
   code whose named parameter mapping is source-checked, plus historical
   real-hardware claims that are not independently reproducible from the repo;
   this audit does not treat either as authorization for real use.
@@ -208,9 +229,10 @@ unchanged and can still move pump and valve when real backends are connected.
 - Any Thorlabs/APT or PPC001 motion outside the dedicated manual Z-Scan path,
   its explicit ClosedLoop-switch confirmation when needed, and its separate
   explicit PPC001 motion confirmation.
-- Real TEC operation until the uncommitted executable client, source-checked
-  mapping, attached model/firmware compatibility, and retained bench record
-  receive human review.
+- Real TEC operation until the committed executable client, source-checked
+  mapping, and retained bench record receive human review. Model/firmware
+  compatibility is CLOSED -- see `docs/tec_verification_matrix.md`'s
+  "Model / Firmware / Protocol Compatibility Review".
 - Independent AD2 DO Custom output. DO Clock Special is structurally wired for
   DIO1 LED timing, but its physical timing remains unverified and must not be
   treated as proven synchronization.

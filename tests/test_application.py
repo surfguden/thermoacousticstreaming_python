@@ -46,6 +46,7 @@ from thermo_acoustic.instruments import (
     RegloPumpControl,
     SimulatedAD2Sdk,
     Valve,
+    ValveError,
     ZStage,
 )
 from thermo_acoustic.messages import Message, MessageName
@@ -380,6 +381,27 @@ def test_flush_sets_valve_and_status():
     assert app.valve.position == 2
     assert app.pump.fill_level == 54.0
     assert app.status == "FlushComplete"
+
+
+@pytest.mark.parametrize("flow_rate", [0.0, -1.0, -5000.0])
+def test_flush_rejects_nonpositive_flow_before_valve_or_pump_moves(monkeypatch, flow_rate):
+    app = Application()
+    app.pump.fill_level = 60.0
+    hardware_calls = []
+    monkeypatch.setattr(Valve, "set_position", lambda self, position: hardware_calls.append(("valve", position)))
+    monkeypatch.setattr(
+        CetoniPump,
+        "set_fill_level",
+        lambda self, fill_level, requested_flow=None: hardware_calls.append(
+            ("pump", fill_level, requested_flow)
+        ),
+    )
+
+    with pytest.raises(ValueError, match="must be greater than 0 uL/min"):
+        app.flush(FlushSettings(flush_flowrate=flow_rate, flush_volume_ml=6.0, wait_after_flush_s=0.0))
+
+    assert hardware_calls == []
+    assert app.pump.fill_level == 60.0
 
 
 def test_flush_stops_before_pump_move_when_first_valve_position_is_not_ready(monkeypatch):
@@ -842,6 +864,32 @@ def test_run_experiment2_records_simulated_vs_real_instruments_in_final_tdms(tmp
     assert properties["CameraEnabled"] is True
     assert properties["PumpEnabled"] is True
     assert properties["ValveEnabled"] is True
+    assert properties["PumpFaultManuallyCleared"] is False, (
+        "default session state: no manual pump fault clear happened this session"
+    )
+
+
+def test_run_experiment2_records_pump_fault_manually_cleared_flag_in_final_tdms(tmp_path, monkeypatch):
+    # Session 104: Application.clear_pump_fault_and_retry() (the manual,
+    # operator-initiated fault-clear escape hatch) sets
+    # pump_fault_manually_cleared_this_session -- confirm run_experiment2()
+    # actually carries that onto Experiment2.pump_fault_manually_cleared and
+    # into the real final data.tdms properties, same pattern as the
+    # sim_*/*_enabled flags above, so a run whose pump fault was manually
+    # cleared this session stays traceable in saved data after the fact.
+    writes = install_fake_nptdms(monkeypatch)
+    app = Application()
+    app.pump_fault_manually_cleared_this_session = True
+    experiment = Experiment2(experiment_folder=tmp_path / "experiment-pump-fault-cleared")
+    app.experiment_series.enqueue_experiments([experiment])
+
+    ok = app.run_experiment2()
+
+    assert ok
+    tdms_path = tmp_path / "experiment-pump-fault-cleared" / "data.tdms"
+    objects = writes[str(tdms_path)]
+    experiment_group = next(item for item in objects if getattr(item, "kind", "") == "group" and item.name == "Experiment")
+    assert experiment_group.properties["PumpFaultManuallyCleared"] is True
 
 
 class _PoisonBackend:
@@ -1218,6 +1266,22 @@ class FakeTextBackend:
         self.closed = True
 
 
+class _HandshakeFailingTextBackend(FakeTextBackend):
+    def __init__(self, handshake_error: Exception, close_error: Exception | None = None):
+        super().__init__()
+        self.handshake_error = handshake_error
+        self.close_error = close_error
+
+    def query(self, command):
+        self.commands.append(("query", command))
+        raise self.handshake_error
+
+    def close(self):
+        super().close()
+        if self.close_error is not None:
+            raise self.close_error
+
+
 def test_valve_and_prior_backend_commands():
     valve_backend = FakeTextBackend({"S": "1\r"})
     valve = Valve(backend=valve_backend, command_position_1="P1", command_position_2="P2")
@@ -1283,6 +1347,37 @@ def test_valve_initialize_raises_on_empty_status_response():
         raise AssertionError("expected initialize() to raise when the valve does not respond")
 
     assert not valve.initialized
+    assert valve_backend.closed is True
+
+
+def test_valve_initialize_closes_backend_and_preserves_handshake_error():
+    handshake_error = ValveError("simulated valve handshake failure")
+    valve_backend = _HandshakeFailingTextBackend(handshake_error)
+    valve = Valve(backend=valve_backend, visa_resource="COM5")
+
+    with pytest.raises(ValveError) as exc_info:
+        valve.initialize()
+
+    assert exc_info.value is handshake_error
+    assert valve_backend.closed is True
+    assert valve_backend.commands == [("write", "OPEN COM5"), ("query", "S"), ("close",)]
+    assert valve.initialized is False
+
+
+def test_valve_initialize_reports_handshake_and_cleanup_failures_together():
+    handshake_error = ValveError("simulated valve handshake failure")
+    close_error = RuntimeError("simulated valve close failure")
+    valve_backend = _HandshakeFailingTextBackend(handshake_error, close_error)
+    valve = Valve(backend=valve_backend, visa_resource="COM5")
+
+    with pytest.raises(ValveError) as exc_info:
+        valve.initialize()
+
+    assert "simulated valve handshake failure" in str(exc_info.value)
+    assert "simulated valve close failure" in str(exc_info.value)
+    assert exc_info.value.__cause__ is handshake_error
+    assert valve_backend.closed is True
+    assert valve.initialized is False
 
 
 @pytest.mark.parametrize(("response", "position"), [("01\r", 1), ("2\r", 2), ("P02\r", 2)])
@@ -1321,6 +1416,7 @@ def test_valve_initialize_rejects_unparseable_status_response():
 
     assert not valve.initialized
     assert "unverified" in valve.status_note
+    assert valve_backend.closed is True
 
 
 @pytest.mark.parametrize("response", ["device=1\r", "foo2bar\r"])
@@ -1332,6 +1428,87 @@ def test_valve_initialize_rejects_chatter_that_only_contains_a_position_digit(re
 
     assert not valve.initialized
     assert valve.status_note == f"unverified position response: {response.strip()!r}"
+
+
+class _FlakyOnceTextBackend(FakeTextBackend):
+    """Fails its first status query (empty response -> ValveError "did not
+    respond"), succeeds on every query after that. Simulates a real device
+    that didn't answer on the first handshake attempt but is reachable on a
+    later retry -- distinct from "never initialized at all".
+    """
+
+    def __init__(self, responses=None):
+        super().__init__(responses)
+        self._fail_next_query = True
+
+    def query(self, command):
+        if self._fail_next_query:
+            self._fail_next_query = False
+            self.commands.append(("query", command))
+            return ""
+        return super().query(command)
+
+
+def test_valve_set_position_lazily_reconnects_when_never_initialized():
+    # Architecture fix (2026-08-13): set_position() must not require a
+    # prior, successful Valve.initialize() call -- e.g. Valve was skipped
+    # entirely because Pump failed before Valve's turn under the old
+    # cross-device-abort design, or the operator simply never ran
+    # Initialize Hardware this session. Matches the lazy-reconnect pattern
+    # AD2Sdk.open_and_use_first_device()/HamamatsuDcamBackend.open_camera()
+    # already had -- see docs/hardware_repair_plan.md.
+    valve_backend = FakeTextBackend({"S": "1\r"})
+    valve = Valve(backend=valve_backend, command_position_1="P01", command_position_2="P02")
+    assert valve.initialized is False
+
+    valve.set_position(2)
+
+    assert valve.initialized is True
+    assert valve.position == 2
+    # The real handshake (OPEN + status query) ran first, then the actual
+    # position command -- not a bare write against an unopened port.
+    assert valve_backend.commands == [
+        ("write", "OPEN COM5"),
+        ("query", "S"),
+        ("write", "P02"),
+    ]
+
+
+def test_valve_set_position_does_not_reconnect_when_already_initialized():
+    valve_backend = FakeTextBackend({"S": "1\r"})
+    valve = Valve(backend=valve_backend, command_position_1="P01", command_position_2="P02")
+    valve.initialize()
+    valve_backend.commands.clear()
+
+    valve.set_position(1)
+
+    # Already connected -- no redundant OPEN/handshake, just the position
+    # write, unchanged from before this fix.
+    assert valve_backend.commands == [("write", "P01")]
+
+
+def test_valve_set_position_reconnects_after_a_prior_failed_initialize_attempt():
+    # Distinct from "never initialized": here initialize() genuinely ran and
+    # failed once (a real transient no-response condition), leaving
+    # self.initialized False and the backend closed -- the next real manual
+    # action must still transparently retry the full handshake, not stay
+    # permanently stuck requiring a whole-system re-Initialize.
+    valve_backend = _FlakyOnceTextBackend({"S": "1\r"})
+    valve = Valve(backend=valve_backend, command_position_1="P01", command_position_2="P02")
+    with pytest.raises(ValveError):
+        valve.initialize()
+    assert valve.initialized is False
+    valve_backend.commands.clear()
+
+    valve.set_position(1)
+
+    assert valve.initialized is True
+    assert valve.position == 1
+    assert valve_backend.commands == [
+        ("write", "OPEN COM5"),
+        ("query", "S"),
+        ("write", "P01"),
+    ]
 
 
 def test_valve_wait_until_ready_polls_until_confirmed_and_is_bounded_when_busy():
@@ -1506,6 +1683,49 @@ def test_cetoni_pump_initialize_syncs_fill_level_from_real_backend():
     pump.initialize()
 
     assert pump.fill_level == pytest.approx(0.73)
+
+
+def test_cetoni_pump_initialize_closes_backend_when_post_open_fill_read_fails():
+    class FillReadFailingBackend(FakePumpBackend):
+        def read_fill_level(self):
+            self.calls.append(("read_fill_level",))
+            raise RuntimeError("simulated fill-level read failure")
+
+    backend = FillReadFailingBackend()
+    pump = CetoniPump(simulate=False, backend=backend)
+
+    with pytest.raises(RuntimeError, match="simulated fill-level read failure"):
+        pump.initialize()
+
+    assert backend.calls == [
+        ("initialize", pump.configuration_path),
+        ("read_fill_level",),
+        ("close",),
+    ]
+    assert pump.initialized is False
+
+
+def test_cetoni_pump_initialize_reports_post_open_failure_and_cleanup_failure():
+    class FillReadAndCloseFailingBackend(FakePumpBackend):
+        def read_fill_level(self):
+            self.calls.append(("read_fill_level",))
+            raise RuntimeError("simulated fill-level read failure")
+
+        def close(self):
+            super().close()
+            raise RuntimeError("simulated pump close failure")
+
+    backend = FillReadAndCloseFailingBackend()
+    pump = CetoniPump(simulate=False, backend=backend)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        pump.initialize()
+
+    message = str(exc_info.value)
+    assert "simulated fill-level read failure" in message
+    assert "simulated pump close failure" in message
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
+    assert pump.initialized is False
 
 
 def test_cetoni_pump_initialize_without_backend_leaves_fill_level_untouched():
@@ -1800,17 +2020,267 @@ def test_qmix_initialization_refuses_existing_fault_without_clearing_or_enabling
         with pytest.raises(
             QmixPumpError,
             match="code=0, message='All previous errors have been resolved'",
-        ):
+        ) as error:
             backend.initialize(tmp_path / "qmix-config")
     finally:
         FakeQmixPumpModule.Pump = original_pump
 
+    assert "do not treat this as a recovered connection" in str(error.value)
     pump = FaultedPump.instances[0]
     assert ("read_last_error",) in pump.calls
     assert ("clear_fault",) not in pump.calls
     assert ("enable", True) not in pump.calls
     assert backend.pump is None
     assert backend.bus is None
+
+
+def test_qmix_failed_open_does_not_issue_stop_or_close_on_unopened_bus(tmp_path):
+    class OpenFailingBusModule(FakeQmixBusModule):
+        class Bus(FakeQmixBusModule.Bus):
+            instances = []
+
+            def __init__(self):
+                super().__init__()
+                OpenFailingBusModule.Bus.instances.append(self)
+
+            def open(self, configuration_path, plugin_search_path):
+                super().open(configuration_path, plugin_search_path)
+                raise RuntimeError("simulated LCB_Open failure")
+
+    backend = QmixPumpBackend(qmixbus=OpenFailingBusModule, qmixpump=FakeQmixPumpModule)
+
+    with pytest.raises(RuntimeError, match="simulated LCB_Open failure"):
+        backend.initialize(tmp_path / "qmix-config")
+
+    bus = OpenFailingBusModule.Bus.instances[0]
+    assert bus.calls == [("open", str(tmp_path / "qmix-config"), 0)]
+    assert backend.bus is None
+    assert backend.pump is None
+    assert backend.bus_opened is False
+    assert backend.bus_started is False
+
+
+def test_qmix_failed_start_closes_opened_bus_without_stopping_unstarted_bus(tmp_path):
+    class StartFailingBusModule(FakeQmixBusModule):
+        class Bus(FakeQmixBusModule.Bus):
+            instances = []
+
+            def __init__(self):
+                super().__init__()
+                StartFailingBusModule.Bus.instances.append(self)
+
+            def start(self):
+                super().start()
+                raise RuntimeError("simulated LCB_Start failure")
+
+    backend = QmixPumpBackend(qmixbus=StartFailingBusModule, qmixpump=FakeQmixPumpModule)
+
+    with pytest.raises(RuntimeError, match="simulated LCB_Start failure"):
+        backend.initialize(tmp_path / "qmix-config")
+
+    bus = StartFailingBusModule.Bus.instances[0]
+    assert bus.calls == [
+        ("open", str(tmp_path / "qmix-config"), 0),
+        ("start",),
+        ("close",),
+    ]
+    assert backend.bus is None
+    assert backend.pump is None
+    assert backend.bus_opened is False
+    assert backend.bus_started is False
+
+
+# Session 104: manual, operator-initiated pump fault-clear escape hatch --
+# QmixPumpBackend.clear_fault_and_reinitialize(). A deliberate, scoped
+# exception to the fail-closed rule the test above confirms for initialize()
+# itself, not a reversal of it: initialize() must (and, per the test above,
+# still does) refuse to touch clear_fault() automatically; only this
+# separate, explicitly-named method may call it, and only when an operator
+# invokes it directly (never from initialize() or any other automated path).
+def test_clear_fault_and_reinitialize_clears_fault_and_a_subsequent_initialize_then_succeeds(tmp_path):
+    FakeQmixPumpModule.Pump.instances = []
+    original_pump = FakeQmixPumpModule.Pump
+
+    class PersistentFaultPump(original_pump):
+        # Class-level (not instance-level) fault flag: models the real Qmix
+        # device's fault state persisting across reconnects -- a fresh
+        # bus.open()/Pump() Python wrapper is constructed on every
+        # initialize()/clear_fault_and_reinitialize() call, same as the real
+        # backend, but the underlying hardware fault condition does not
+        # reset just because a new wrapper object was constructed. Unlike
+        # FaultedPump above (deliberately always faulted, to test
+        # initialize()'s refusal), this fixture can actually be cleared.
+        class_fault = True
+
+        def __init__(self):
+            super().__init__()
+            self.fault = PersistentFaultPump.class_fault
+
+        def clear_fault(self):
+            self.calls.append(("clear_fault",))
+            PersistentFaultPump.class_fault = False
+            self.fault = False
+
+    FakeQmixPumpModule.Pump = PersistentFaultPump
+    try:
+        backend = QmixPumpBackend(qmixbus=FakeQmixBusModule, qmixpump=FakeQmixPumpModule)
+        config = tmp_path / "qmix-config"
+
+        # Starting faulted: a bare initialize() must still refuse -- same
+        # fail-closed behavior as every other initialize() call, confirmed
+        # again here (not just assumed) before exercising the new method.
+        with pytest.raises(QmixPumpError):
+            backend.initialize(config)
+        assert PersistentFaultPump.class_fault is True
+
+        # Requirement: the explicit action clears the fault and reconnects.
+        backend.clear_fault_and_reinitialize(config)
+        assert backend.initialized is True
+        assert PersistentFaultPump.class_fault is False
+        assert ("clear_fault",) in backend.pump.calls
+
+        # Requirement 4: a subsequent bare initialize() now succeeds, since
+        # (in this fake) the fault does not relatch -- confirms the new
+        # method's effect is real and durable, not just a one-time bypass.
+        backend.close()
+        backend.initialize(config)
+        assert backend.initialized is True
+    finally:
+        FakeQmixPumpModule.Pump = original_pump
+
+
+def test_clear_fault_and_reinitialize_still_fails_closed_if_fault_relatches(tmp_path):
+    # Even the explicit fault-clear action must not silently succeed if the
+    # fault immediately relatches, matching the real hardware behavior
+    # documented in docs/hardware_repair_plan.md -- _enable_pump() is reused
+    # completely unchanged as the final gate.
+    FakeQmixPumpModule.Pump.instances = []
+    original_pump = FakeQmixPumpModule.Pump
+
+    class RelatchingFaultPump(original_pump):
+        def __init__(self):
+            super().__init__()
+            self.fault = True
+
+        def clear_fault(self):
+            self.calls.append(("clear_fault",))
+            # Deliberately does NOT clear self.fault -- models a fault that
+            # clear_fault() cannot actually resolve (relatches immediately).
+
+    FakeQmixPumpModule.Pump = RelatchingFaultPump
+    try:
+        backend = QmixPumpBackend(qmixbus=FakeQmixBusModule, qmixpump=FakeQmixPumpModule)
+        config = tmp_path / "qmix-config"
+
+        with pytest.raises(QmixPumpError):
+            backend.clear_fault_and_reinitialize(config)
+
+        pump = RelatchingFaultPump.instances[0]
+        assert ("clear_fault",) in pump.calls
+        assert backend.initialized is False
+        assert backend.pump is None, "rollback must fully tear down state, same as initialize()'s own rollback"
+        assert backend.bus is None
+    finally:
+        FakeQmixPumpModule.Pump = original_pump
+
+
+def test_cetoni_pump_clear_fault_and_reinitialize_delegates_to_backend(tmp_path):
+    calls = []
+
+    class FakeFaultClearBackend:
+        def __init__(self):
+            self.initialized = False
+
+        def clear_fault_and_reinitialize(self, configuration_path):
+            calls.append(("clear_fault_and_reinitialize", configuration_path))
+            self.initialized = True
+
+        def read_fill_level(self):
+            return 3.5
+
+        def close(self):
+            calls.append(("close",))
+
+    backend = FakeFaultClearBackend()
+    pump = CetoniPump(enabled=True, simulate=False, configuration_path=tmp_path, backend=backend)
+
+    pump.clear_fault_and_reinitialize()
+
+    assert ("clear_fault_and_reinitialize", tmp_path) in calls
+    assert pump.initialized is True
+    assert pump.fill_level == pytest.approx(3.5)
+
+
+def test_cetoni_pump_clear_fault_and_reinitialize_is_a_noop_when_pump_disabled():
+    class PoisonBackend:
+        def __getattr__(self, name):
+            raise AssertionError(f"disabled pump's backend must not be touched (attempted: {name!r})")
+
+    pump = CetoniPump(enabled=False, simulate=False, backend=PoisonBackend())
+
+    pump.clear_fault_and_reinitialize()
+
+    assert pump.initialized is False
+
+
+def test_cetoni_pump_clear_fault_and_reinitialize_simulated_falls_back_to_plain_initialize():
+    pump = CetoniPump(enabled=True, simulate=True, backend=None, max_volume_ml=2.0)
+
+    pump.clear_fault_and_reinitialize()
+
+    assert pump.initialized is True
+
+
+def test_cetoni_pump_clear_fault_and_reinitialize_raises_if_backend_lacks_support():
+    class NoFaultClearBackend:
+        def close(self):
+            pass
+
+    pump = CetoniPump(enabled=True, simulate=False, backend=NoFaultClearBackend())
+
+    with pytest.raises(RuntimeError, match="does not support"):
+        pump.clear_fault_and_reinitialize()
+
+
+def test_application_clear_pump_fault_and_retry_records_status_and_session_flag():
+    # Requirements 3/4 at the Application level: the manual clear is
+    # recorded in the live status/history log (fire_status_event(), the same
+    # mechanism every other status transition in this file uses), and in
+    # pump_fault_manually_cleared_this_session -- which run_experiment2()
+    # later copies onto Experiment2.pump_fault_manually_cleared for
+    # data.tdms (see test_run_experiment2_records_pump_fault_manually_cleared_flag_in_final_tdms).
+    app = Application()
+    calls = []
+
+    class FakePumpWithFaultClear:
+        def clear_fault_and_reinitialize(self):
+            calls.append("clear_fault_and_reinitialize")
+
+    app.pump = FakePumpWithFaultClear()
+    assert app.pump_fault_manually_cleared_this_session is False
+
+    app.clear_pump_fault_and_retry()
+
+    assert calls == ["clear_fault_and_reinitialize"]
+    assert app.pump_fault_manually_cleared_this_session is True
+    assert "Clearing Pump Fault (manual operator action)" in app.status_events
+    assert "PumpFaultClearedAndReconnected (manual operator action)" in app.status_events
+
+
+def test_application_clear_pump_fault_and_retry_records_failure_and_leaves_session_flag_false():
+    app = Application()
+
+    class FailingPumpFaultClear:
+        def clear_fault_and_reinitialize(self):
+            raise RuntimeError("fault relatched")
+
+    app.pump = FailingPumpFaultClear()
+
+    with pytest.raises(RuntimeError, match="fault relatched"):
+        app.clear_pump_fault_and_retry()
+
+    assert app.pump_fault_manually_cleared_this_session is False
+    assert any("PumpFaultClearFailed" in event for event in app.status_events)
 
 
 def test_qmix_refill_and_empty_target_200_ul_per_s_but_clamp_to_the_syringes_live_max(tmp_path):

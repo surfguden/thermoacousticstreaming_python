@@ -163,6 +163,46 @@ def test_connect_failure_raises_piezo_stage_error_and_leaves_disconnected():
     assert stage.channel is None
 
 
+def test_channel_initialize_failure_stops_polling_and_shuts_down():
+    class FailingReadbackChannel(FakeChannel):
+        def GetMaxTravel(self):
+            raise RuntimeError("simulated piezo readback failure")
+
+    channel = FailingReadbackChannel()
+    stage = make_stage(channel=channel)
+
+    with pytest.raises(PiezoStageError, match="simulated piezo readback failure"):
+        stage.connect()
+
+    assert ("StartPolling", stage.polling_interval_ms) in channel.calls
+    assert ("StopPolling",) in channel.calls
+    assert ("ShutDown",) in FakeDevice.instances[0].calls
+    assert stage.connected is False
+    assert stage.channel is None
+    assert stage.device is None
+
+
+def test_channel_initialize_failure_reports_cleanup_failure_too():
+    class FailingReadbackAndStopChannel(FakeChannel):
+        def GetMaxTravel(self):
+            raise RuntimeError("simulated piezo readback failure")
+
+        def StopPolling(self):
+            self.calls.append(("StopPolling",))
+            raise RuntimeError("simulated stop-polling failure")
+
+    channel = FailingReadbackAndStopChannel()
+    stage = make_stage(channel=channel)
+
+    with pytest.raises(PiezoStageError) as exc_info:
+        stage.connect()
+
+    message = str(exc_info.value)
+    assert "simulated piezo readback failure" in message
+    assert "simulated stop-polling failure" in message
+    assert ("ShutDown",) in FakeDevice.instances[0].calls
+
+
 def test_disconnect_stops_polling_and_shuts_down():
     channel = FakeChannel()
     stage = make_stage(channel=channel)

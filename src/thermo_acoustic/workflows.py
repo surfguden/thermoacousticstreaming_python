@@ -211,6 +211,12 @@ class Experiment2:
     camera_enabled: bool = True
     pump_enabled: bool = True
     valve_enabled: bool = True
+    # Session 104: whether Application.clear_pump_fault_and_retry() -- the
+    # manual, operator-initiated pump fault-clear escape hatch -- had been
+    # used at any point in the session by the time this repeat ran. Set by
+    # Application.run_experiment2() from live Application state, same
+    # pattern as sim_*/*_enabled above. See docs/hardware_repair_plan.md.
+    pump_fault_manually_cleared: bool = False
     _tdms_properties: dict[str, Any] = field(default_factory=dict, init=False)
     _tdms_image_names: list[str] = field(default_factory=list, init=False)
     _tdms_timestamps: list[str] = field(default_factory=list, init=False)
@@ -327,6 +333,7 @@ class Experiment2:
                 "CameraEnabled": self.camera_enabled,
                 "PumpEnabled": self.pump_enabled,
                 "ValveEnabled": self.valve_enabled,
+                "PumpFaultManuallyCleared": self.pump_fault_manually_cleared,
             }
         )
         return properties

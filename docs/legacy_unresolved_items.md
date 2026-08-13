@@ -9,17 +9,18 @@ a human decision, hardware confirmation, or focused implementation resolves them
 
 ## Hardware Integration
 
-- **Real TEC MeCom operation is unresolved pending reconciliation.** The
-  current *uncommitted* `tec.py`/factory/test work contains a pyMeCom client and
+- **Real TEC MeCom operation is unresolved pending reconciliation.** Commit
+  `7c7e19f` contains a pyMeCom client and
   historical real-hardware claims. Independent source review confirms its five
   named parameter IDs against the installed pyMeCom table and official
-  TEC-Family protocol, but does not authenticate those bench claims or establish
-  model/firmware compatibility. Its `write_config()` is deliberately a RAM-only
-  no-op, not the vendor's flash-save operation. Keep TEC disabled/simulated by
-  default and require human review of the implementation, hardware record, and
-  commit state before real operation. See the canonical
-  entry in `docs/known_open_items.md` and the evidence inventory in
-  `docs/tec_verification_matrix.md`.
+  TEC-Family protocol, but does not authenticate those bench claims. Model/
+  firmware compatibility is CLOSED -- see `docs/tec_verification_matrix.md`'s
+  "Model / Firmware / Protocol Compatibility Review". Its `write_config()` is
+  deliberately a RAM-only no-op, not the vendor's flash-save operation. Keep
+  TEC disabled/simulated by default and require human review of the
+  implementation, hardware record, and bench record before real operation.
+  See the canonical entry in `docs/known_open_items.md` and the evidence
+  inventory in `docs/tec_verification_matrix.md`.
 - **Manual PPC001 Z-scan is integrated only as a manual calibration feature.**
   The Qt Z-Scan tab can connect to the PPC001/PFM450(E), query live travel
   range, optionally switch to ClosedLoop after explicit confirmation, and then
@@ -34,7 +35,9 @@ a human decision, hardware confirmation, or focused implementation resolves them
   `test_*.py`, and must not become part of automated pytest collection without a
   separate review.
 - **Legacy action-capable `tools/` scripts remain manual-only.**
-  `tools/test_hamamatsu_camera.py`, `tools/test_qmix_pump.py`, and the two
+  `tools/legacy_hamamatsu_camera_probe.py`, `tools/legacy_qmix_pump_probe.py`
+  (renamed from `tools/test_hamamatsu_camera.py`/`tools/test_qmix_pump.py`,
+  file/structure audit cleanup), and the two
   `tools/capture_ad2_wavegen_scope*.py` scripts sit outside pytest collection
   and are now explicitly marked `__test__ = False`. They can still perform
   real actions without the confirmation gates used by newer hardware tools, so
@@ -47,7 +50,10 @@ a human decision, hardware confirmation, or focused implementation resolves them
   current code is configured around a one-pump Qmix setup, and the UI labels
   the flow-rate sign convention. Real pump flow, reference move,
   syringe-specific geometry, and flush behavior still require deliberate
-  operator confirmation before broad use.
+  operator confirmation before broad use. The software boundary is narrower:
+  automated flush is a positive-rate dispense operation and rejects zero or
+  negative flow before touching the valve or pump; that does not establish its
+  physical tubing outcome.
 - **Current Qmix initialization is hardware-blocked, not software-approved.** A
   fresh bus session relatches SDK error `0x81FF` (`CAN Tx Queue Overrun`) while
   the pump remains stopped and disabled. Initialization correctly refuses the
@@ -95,10 +101,12 @@ a human decision, hardware confirmation, or focused implementation resolves them
   WFG/MSO/PumpValve/Camera buttons reuse the v1 panel builders and
   shared `Application` instance. That reuse is deliberate; v2 should not drift
   into a second hardware-control implementation.
-- **v3 is the active layout-development direction and v2 is its rollback path.**
-  `MainWindowV3` subclasses `MainWindowV2`; it reorganizes layout and manual
-  panels without introducing another hardware runtime. Neither transitional UI
-  is independently hardware-verified, and v1 remains the approved default.
+- **v3 is the active local layout-development direction; v2 is the tracked
+  transitional/rollback path.** Commit `d180eea` intentionally removed the v3
+  files from tracking. A local `MainWindowV3` may still subclass
+  `MainWindowV2`, but it is not part of a fresh checkout or the committed
+  runtime boundary. v2 is not independently hardware-verified, and v1 remains
+  the approved default.
 - **Settings persistence is not comprehensive.** Several manual-tab-only fields
   remain outside the saved settings file by long-standing design ambiguity. Add
   persistence only when the expected operator workflow is explicit.

@@ -8,6 +8,9 @@ must not be treated as proven merely because a historical changelog says so.
 `docs/legacy_unresolved_items.md` is a focused high-risk safety summary, not a
 second canonical list. The historical migration and session documents are useful
 evidence trails, but neither replaces checking the current working tree.
+Concrete evidence requirements and later repair steps for the hardware-blocked
+items are consolidated in `docs/hardware_repair_plan.md`; that plan does not
+authorize hardware actions.
 
 Status legend: **OPEN** (confirmed still true in current code/git history),
 **RESOLVED** (confirmed fixed, cited), **STALE-IN-CHANGELOG** (changelog says
@@ -50,31 +53,144 @@ historical notes. This document is a live issue register, whereas
   **Status: OPEN.**
 - **Staged hardware-test confirmations are not global GUI interlocks.**
   `CONFIRM_REAL_HARDWARE` and timing acknowledgements protect action-capable
-  modes in newer `hardware_tests/` scripts. They do not apply to `qt_ui.py` or
-  `qt_ui_v2.py`: after real backends are initialized, manual WFG, pump, valve,
-  and experiment actions can be invoked without those command-line gates.
+  modes in newer `hardware_tests/` scripts. They do not apply to the tracked
+  `qt_ui.py`/`qt_ui_v2.py` GUIs (or to any local untracked v3 derivative):
+  after real backends are initialized, manual WFG, pump, valve, and experiment
+  actions can be invoked without those command-line gates.
   This is current reachable behavior, not proof that the actions are approved
   or physically verified. **Status: OPEN; needs an explicit operator-policy/
   UI-interlock decision.**
 - **The visible `Abort` action is a graceful series-boundary request, not an
   emergency hardware stop.** It sets the shared stop flag and prevents the next
   repeat (or next TEC temperature point) from starting; the current unit runs
-  through capture, AD2 wait, flush, and save. The v1 button, v2 menu action,
-  and Start-experiment tooltips now state that boundary. **Status: RESOLVED for
-  wording; OPEN if a separate emergency-stop policy is desired.**
+  through capture, AD2 wait, flush, and save. The v1 button, inherited v2 menu
+  action, and Start-experiment tooltips now state that boundary. Local v3 work
+  may inherit the same behavior but is outside the tracked runtime boundary.
+  **Status:
+  RESOLVED for wording; OPEN if a separate emergency-stop policy is desired.**
 - **`qt_ui_v2.py` is an actively maintained transitional UI, not legacy or a
   simulated preview shell.** It remains opt-in and not independently
   hardware-verified, but it shares the real `Application` and hardware
   backends. Its initialization now delegates to `Application.initialize()`
   with progress reporting, removing the duplicate device-order/rollback loop.
   **Status: TRANSITIONAL, not the default launch target.**
-- **`qt_ui_v3.py` is a layout-only evolution of v2, not a new hardware
-  runtime.** It subclasses `MainWindowV2`, reuses the same `Application`,
-  initialization, workers, and hardware objects, and keeps v2 available as the
-  rollback/reference path. It is now the active layout-development direction,
-  with task-oriented setup tabs and narrower manual panels; these changes are
-  offline-tested only. **Status: TRANSITIONAL, opt-in, not independently
-  hardware-verified.**
+- **Local v3 files are the active local layout-development direction, not part
+  of the committed runtime boundary.** Commit
+  `d180eea` intentionally removed `qt_ui_v3.py` and its launcher/test companions
+  from tracking. Copies can remain in a developer working tree, but a fresh
+  checkout does not contain or support a v3 entry point. **Status: LOCAL,
+  UNTRACKED DEVELOPMENT MATERIAL; not independently hardware-verified.**
+- **Local v3 inherited presentation coupling has been reduced without changing
+  hardware behavior.** Initialization, status, acquisition, and MSO caption
+  adaptations validate unique matches and assign stable v3 `objectName`
+  values. The shared manual-WFG builder now assigns neutral stable IDs to its
+  carrier, trigger, and FM labels; local v3 uses those IDs instead of walking
+  the widget tree and rewriting matching substrings; the preview description
+  likewise has a stable shared ID instead of relying on the first label in the
+  group. **Status: RESOLVED FOR CURRENT V3 ADAPTATIONS IN THE LOCAL UNTRACKED
+  WORKTREE; this does not promote v3 into the committed runtime boundary.**
+  **Update (Session 102, 2026-08-06): NOT all v3 caption dependencies use this
+  safer objectName pattern.** `_rename_unique_text_widget()`/
+  `_rename_unique_group()` (still text-matching, by v3's own explicit design
+  choice -- their docstring says "fail visibly if the v2 contract drifts") are
+  still used for "Error Out", "Elapsed Time", "Time Left", "Camera FPS",
+  "Camera Start (s)", "Dynamic Camera Start Time", and "Camera Start Array(s)".
+  Session 102's caption renames of exactly these seven strings (Proposals 2-4)
+  confirmed this mechanism working as designed: `MainWindowV3.__init__()` now
+  raises `RuntimeError` immediately (all 14 `tests/test_qt_ui_v3.py` failures
+  trace to the single "Error Out" case, since that rename is reached first in
+  construction order -- the other six would fail the same way once that one is
+  resolved). **This is not a v1/v2 defect and was not fixed as part of Session
+  102** (out of scope for that pass, `qt_ui_v3.py` not modified there) -- it
+  was confirmed, current, expected fallout of v1/v2 caption changes on v3's
+  own chosen fail-loud contract. **Update (Session 103, 2026-08-06): fixed.**
+  All seven `old_text` search keys updated to match Session 102's new v1/v2
+  captions (`_v2_status_progress_group()`/`_v2_acquisition_group()`/
+  `_global_status_panel()`); `new_text` (v3's own preferred wording) left
+  unchanged in six of seven -- the "Error Out" case's own preferred wording
+  now happens to be identical to v1/v2's new caption, kept as a same-text
+  rename rather than removed, to preserve both the fail-loud check and the
+  stable `objectName` assignment. `tests/test_qt_ui_v3.py`: 15/15 passing,
+  confirmed stable across 3 re-runs. **Status: RESOLVED for this specific
+  drift; the underlying still-text-matching (not objectName) mechanism for
+  these seven remains, so a future v1/v2 caption change will break v3 the
+  same way again** -- migrating them to the safer objectName pattern (like
+  the WFG panel above) was explicitly out of scope for the Session 103 fix
+  and remains open if wanted.
+
+- **v1/v2-to-v3 process and object isolation boundary (Session 102
+  investigation, 2026-08-06).** Established what v3 can and cannot safely do
+  relative to v1/v2, and corrected an imprecise claim from the round-2 v3
+  evaluation.
+  1. **Process isolation: CONFIRMED, by construction, already the enforced
+     boundary.** `launch_gui.bat`/`launch_gui_v2.bat`/`launch_gui_v3.bat` each
+     invoke `"%PYTHON_EXE%" -m thermo_acoustic.qt_ui[_v2/_v3]` as a separate
+     OS process (confirmed reading all three `.bat` files directly); each of
+     `tools/run_ui*.py`/each module's own `main()` constructs exactly one
+     window class. Separate OS processes have categorically no shared live
+     Python/Qt object state -- a mutation in one process's widget cannot be
+     observed by another process, full stop. **No code change is needed to
+     enforce this; it already holds.** The only rule to state explicitly: v3
+     must only ever be launched via its own dedicated launcher, never
+     imported/instantiated in the same Python process as a real v1/v2
+     session outside of this repository's own test suite or a knowing
+     diagnostic script.
+  2. **Correction to the round-2 audit's framing:** that evaluation described
+     v3's `state["enable"].setText(...)` pattern as risking that "v1's own
+     tabs would show the corrupted label afterward, in the same running
+     session" -- **this overstated the risk.** `MainWindow._build_state()`
+     (called exactly once per `__init__()`, confirmed at
+     `qt_ui.py:652`) constructs a brand-new set of field widgets for
+     *every* window instance, including every `QCheckBox` in
+     `self.exp_ad2_channels`/`self.wfg_channels`. Two separate window
+     objects -- even a `MainWindow()` and a `MainWindowV3()` constructed in
+     the same process (e.g., in this repository's own test suite, which
+     legitimately does this) -- never share the same widget instances. The
+     real risk is scoped to *within a single v3 window instance's own
+     lifecycle*: whether that one object's inherited-from-v1 dynamic
+     relabeling logic and v3's own static relabeling logic (both touching
+     the same widget because it genuinely is the same object, referenced by
+     more than one of that instance's own tab-building methods) can disagree
+     with each other over time. This is a v3-internal self-consistency
+     question, not a cross-window-instance or cross-UI-version corruption
+     risk.
+  3. **Settings.json is the only confirmed real cross-process state carrier**
+     (`SETTINGS_PATH` is one fixed path, shared by all three UI versions) --
+     but it only ever persists field *values* (checked state, text/numeric
+     content), never widget caption/label text, and this is the pre-existing,
+     intentional point of a shared settings file (any two of v1/v2/v3 loading
+     each other's saved settings is expected behavior, not a v3-introduced
+     risk). No hidden state-sharing mechanism found beyond this.
+  4. **Real hardware contention** (two processes both trying to control the
+     same physical device) is a genuine risk, but pre-existing, general
+     (applies equally to any two of v1/v2/v3), and already explicitly
+     warned about in the Initialization dialog's own note ("Only one UI
+     window should control real hardware at a time"). Not v3-specific.
+
+  **Enforced boundary going forward:** v3 may only be launched via its own
+  dedicated launcher, in its own process. Within that process, v3's own
+  internal consistency (not fighting itself over a shared widget's caption
+  text across its own construction/refresh methods) is v3's own concern.
+  Settings.json sharing is intentional and value-only. No v1/v2 code
+  protection is needed or was added.
+- **The device whose own `initialize()` call fails is not part of any
+  cross-device rollback.** (Cross-device rollback itself no longer exists as
+  of the 2026-08-13 independent-per-device fix -- see
+  `docs/hardware_repair_plan.md`'s "Initialization And Failure Recovery"
+  section; earlier devices that succeed are never torn down because a
+  later one failed.) Camera/Qmix/Piezo/TEC have varying degrees of local
+  partial-initialize cleanup, but the failed device must clean up its
+  own partial state. The current working tree has narrow local rollback for the
+  confirmed gaps: Valve closes after a failed post-open handshake; CetoniPump
+  closes after a successful backend open followed by failed fill-level
+  readback; PiezoStage stops polling and shuts down after failed post-connect
+  readback. Each preserves the primary error and reports cleanup errors too.
+  AD2 assigns its handle only after its single checked open call succeeds;
+  Hamamatsu and Qmix backends already own their partial-open rollback; TEC owns
+  connect/status rollback and now bounds both that rollback close and direct
+  cleanup through the shared timeout helper. See `docs/hardware_repair_plan.md`.
+  **Status: CONFIRMED LOCAL GAPS RESOLVED IN THE CURRENT UNCOMMITTED WORKTREE;
+  keep the ownership rule as a review requirement for new backends.**
 - **GlobalExposure's disabled (`enabled=False`) DCAM behavior is
   implemented conservatively, not confirmed against real LabVIEW source
   (2026-07-31).** `HamamatsuDcamBackend.configure_trigger_global_exposure()`
@@ -118,21 +234,26 @@ historical notes. This document is a live issue register, whereas
   on real hardware. **Status: OPEN** (false-case behavior only; true case
   is RESOLVED).
 - **TEC real-path evidence remains unapproved, but the protocol mapping is no
-  longer wholly unknown (independent audit 2026-08-05).** The uncommitted
-  `tec.py`, `hardware_factory.py`, `tests/test_tec.py`, and
-  `docs/tec_verification_matrix.md` contain an executable pyMeCom client plus
+  longer wholly unknown (independent audit 2026-08-05).** Commit `7c7e19f`
+  contains an executable pyMeCom client plus
   Sessions 75-77 real-hardware claims, while
   `docs/legacy_unresolved_items.md` and older workflow text still say that no
   reviewed client/register map exists and real selection refuses before I/O.
   Source inspection independently confirms that the installed pyMeCom table
   and Meerstetter's official TEC-Family protocol agree with the five named
   IDs used by this client: 104, 105, 1000, 2010, and 3000. That does not
-  independently establish the historical bench claims, model/firmware fit, or
-  safe real operation. Also, `_PyMeComTecClient.write_config()` is a no-op and
-  does not perform the vendor's separate flash-save operation. Keep TEC
-  disabled/simulated and do not use the historical claims as authorization
-  until a human review reconciles the implementation, commit state, and bench
-  record. **Status: OPEN for real operation; mapping source-checked.**
+  independently establish the historical bench claims or safe real operation.
+  **Model/firmware fit against the official protocol is now
+  CLOSED** -- see `docs/tec_verification_matrix.md`'s "Model / Firmware /
+  Protocol Compatibility Review" entry (TEC-1123-HV confirmed protocol-
+  compatible with the rest of the TEC-Family, HV-specific parameters
+  confirmed out of this integration's scope, firmware 5.10 meets the
+  HV documentation's stated minimum). Also, `_PyMeComTecClient.write_config()`
+  is a no-op and does not perform the vendor's separate flash-save operation.
+  Keep TEC disabled/simulated and do not use the historical claims as
+  authorization until a human review reconciles the implementation and bench
+  record. **Status: OPEN for real operation; mapping source-checked;
+  model/firmware fit CLOSED.**
 - **Historical, unverified Meerstetter TEC session record (Sessions 75-77).**
   The following claim has not been independently verified in this audit and
   must not be read as current authorization for real operation: core path
@@ -214,6 +335,16 @@ historical notes. This document is a live issue register, whereas
   recoverable from exported VI diagrams (compiled block-diagram wiring, not
   text) -- a genuine negative result, not a gap in effort. Needs oscilloscope
   verification, not fixable from software alone. **Status: OPEN.**
+- **The manual Camera sequence controls are low-level operations, not a
+  complete sequence-read workflow.** `start_capture()` starts the DCAM capture
+  session and `sw_trigg()` sends a software trigger, but neither call transfers
+  a resulting frame into the UI's `_last_camera_image_data` save buffer. That
+  buffer is populated by the separate `Capture image` action; the save action
+  writes only that buffer. V3 now says this explicitly and supplies a matching
+  `Stop capture session` action using the existing `camera.stop_capture()` path. V1/v2
+  retain their historical labels. **Status: OPEN as a feature-completeness
+  item if triggered sequence readback is required; resolved for v3 wording and
+  manual capture-stop access.**
 - **DCAM frame timestamp clock domain unverified.** Session 8. Real per-frame
   timestamps are captured when the camera/driver reports support, but which
   clock (camera-internal vs. host-driver) produced them, and the epoch, is
@@ -375,6 +506,14 @@ historical notes. This document is a live issue register, whereas
   Python path. This establishes the software convention; physical tubing
   direction remains setup-dependent. **Status: RESOLVED (software sign
   convention).**
+- **Nonpositive flush flow is not a second routing mode.** `flush()` lowers the
+  target fill level and therefore uses the positive Qmix dispense convention;
+  its timeout formula is defined only for a positive rate. The current working
+  tree rejects zero and negative values before any valve or pump call, while UI
+  spin boxes retain zero only as an unset/default-disabled value. Negative
+  manual pump flow remains available through the separate manual flow control
+  where it means aspiration. **Status: RESOLVED IN SOFTWARE; no hardware action
+  was needed or justified to decide this boundary.**
 - **`CetoniPump.fill_level` has no readback/sync mechanism, so it always
   starts at `0.0` in a fresh process regardless of the real device's actual
   loaded volume.** No method anywhere in the pump path calls the real Qmix
@@ -400,8 +539,8 @@ historical notes. This document is a live issue register, whereas
   succeeds and syncs `self.fill_level` from the real reading (only when a
   real backend is present, never for a simulated pump). Deliberately
   placed inside `CetoniPump.initialize()` rather than
-  `Application.initialize()`, keeping `application.py` -- which still
-  carries TEC's own uncommitted diff -- untouched. Regression tests added
+  `Application.initialize()`, keeping `application.py` -- which at that time
+  carried a separate uncommitted TEC diff -- untouched. Regression tests added
   ([tests/test_application.py](tests/test_application.py)), verified to
   fail against the old code before the fix landed. **Status: RESOLVED,
   hardware-verified (Part C, pending_feedback.md item 5).** Confirmed
@@ -482,7 +621,70 @@ historical notes. This document is a live issue register, whereas
   fault clearing remains prohibited; inspect the CAN adapter/bus and the
   controller event state in QmixElements before treating real pump
   initialization as trustworthy. **Status: OPEN; needs hardware/CAN-bus
-  diagnosis.**
+  diagnosis.** **Session 104 (2026-08-06) added a manual, operator-only
+  escape hatch** (`QmixPumpBackend.clear_fault_and_reinitialize()` ->
+  `CetoniPump.clear_fault_and_reinitialize()` ->
+  `Application.clear_pump_fault_and_retry()` -> qt_ui.py's "Pump Fault
+  Recovery (advanced)" button, gated behind a non-skippable warning
+  dialog) for a deliberate, traceable recovery attempt; it is not evidence
+  that the bus-level fault is resolved or that real pump use is approved.
+  Automatic fault clearing is still prohibited everywhere else;
+  `initialize()` itself is unchanged.
+  Every manual clear is recorded in the live status log and in
+  `data.tdms` (`PumpFaultManuallyCleared`). This does not change the
+  status of the underlying fault itself, which remains OPEN.
+- **Automatic controlled reconnect is not justified by the current Qmix CAN
+  evidence (2026-08-12).** QmixElements reproduces the transient sequence, so
+  an eventual reconnect would not distinguish a healthy Python connection from
+  adapter/bus instability. `QmixPumpBackend.initialize()` receives general SDK
+  exceptions rather than a reliable transport-only classification; retrying
+  them would also retry configuration, lookup, and other unsafe-to-mask failures.
+  A delayed one-shot reopen before enable/motion would be mechanically narrow,
+  but would still conceal an intermittent bus condition without proving it is
+  safe. Keep one fail-closed initialization attempt, no automatic fault clear,
+  and the existing explicit operator action as the only recovery exception.
+  **Status: OPEN; requires CAN/adapter diagnosis and clean repeated evidence
+  before reconsidering an automatic policy.**
+- **Qmix project identity and stored bus settings are now separated from live
+  bus diagnosis (2026-08-12).** `hardware_config.py` selects the one-pump
+  project under `video paper 2\\Paper 2 slow flow\\Configurations`; its XML
+  files are byte-identical to the separately retained
+  `Desktop\\Franzi\\Cetoni_1pump_config_FM` copy. The project records
+  `CANopenBus1`, `1000` kbit/s, a `1000` ms bus heartbeat, node `2`, and
+  configured producer/consumer heartbeat entries. This rules out divergence
+  between those two stored project copies as an explanation, but it does not
+  establish the VCI adapter's live bitrate, bus state, ownership, error
+  counters, or heartbeat traffic. **Status: OPEN, narrowed next evidence:
+  capture QmixElements/VCI diagnostics for the active project and compare
+  their live adapter/bus state with these stored settings before changing
+  Python behavior.**
+- **QmixElements/VCI first-site evidence narrows the fault ordering
+  (2026-08-12).** With no Python, LabVIEW, or QmixElements client running,
+  the host exposed one running automatic service, `VciDevService`, for a
+  `VCI4 USB-to-CAN compact` adapter (HMS signed driver `4.0.131.0`, dated
+  2022-07-11; installed VCI package `4.0.1374.0`). QmixElements' active
+  project is `Paper 2 slow flow`. Its diagnostic log records node `2`
+  emitting `0x8120` (CAN Error Passive), then `0x8130` (Life
+  Guard/Heartbeat Error), then `0x81FF` (CAN Tx Queue Overrun) in the same
+  millisecond; the 2026-08-12 15:25 occurrence logged a clean `0x0000`
+  recovery about 1.25 seconds later. This supports treating `0x81FF` as a
+  downstream result of a transient CAN communication failure, rather than a
+  primary pump-motion fault or a Python cleanup artifact. A QmixElements UI
+  launch alone produced no bus operation. **Status: OPEN, now prioritized as
+  physical CAN link/adapter path or live heartbeat traffic; collect VCI
+  error counters and inspect cable, connector, termination, power, and node
+  traffic before any Python or automatic-recovery change.**
+- **The current VCI driver is present but does not supply live bus evidence
+  (2026-08-12).** Windows reports the identified adapter's Plug-and-Play
+  status as `OK`. The recent System log contains three `vci4109w5.sys`
+  bugchecks immediately before installation of the current VCI device service
+  and signed driver; no later matching VCI/IXXAT event appeared in the
+  60-day query. This makes a *current* repeated driver crash unproven, not a
+  resolution of the CAN fault. `canAnaMini` is installed, and its vendor
+  manual says TX-passive mode is hardware listener-only, but no existing
+  analyzer profile proves that mode is selected. Do not open it with unknown
+  defaults. **Status: OPEN, smallest safe next diagnostic is a manually
+  configured TX-passive trace/counter capture with all other clients closed.**
 - **A disabled-but-real instrument's per-step hardware calls were handled
   inconsistently -- `AD2Sdk` silently skipped them (while falsely reporting
   success), `HamamatsuCamera`/`CetoniPump`/`Valve` attempted them anyway --
@@ -763,6 +965,11 @@ historical notes. This document is a live issue register, whereas
 
 ## Legacy/dead retained code and deliberately out-of-scope items
 
+- **`src/thermo_acoustic/main.py` -- simulation-only message-queue smoke.** It
+  is not an operator GUI launcher. The current working tree explicitly injects
+  `SimulatedAD2Sdk` and guarantees cleanup, so invoking the package smoke cannot
+  silently open the default real AD2 path. **Status: RETAINED TEST/REFERENCE
+  ENTRY POINT, not active hardware control.**
 - **`src/thermo_acoustic/ui.py` -- VERIFIED-DEAD Tkinter UI.** No current
   launcher or production module imports it; the supported UI is PySide6
   (`qt_ui.py`). It is retained as migration reference only and now carries an
@@ -832,8 +1039,10 @@ historical notes. This document is a live issue register, whereas
   mode is operator-gated. Their results must be recorded as hardware evidence,
   not inferred from unit-test results.
 - **Legacy action-capable scripts under `tools/` are manual-only, not pytest
-  coverage.** `test_hamamatsu_camera.py`, `test_qmix_pump.py`, and
-  `capture_ad2_wavegen_scope*.py` are outside `testpaths` and explicitly set
+  coverage.** `legacy_hamamatsu_camera_probe.py`, `legacy_qmix_pump_probe.py`
+  (renamed from `test_hamamatsu_camera.py`/`test_qmix_pump.py`, file/structure
+  audit cleanup, to stop colliding in name with the gated `hardware_tests/
+  test_*.py` scripts), and `capture_ad2_wavegen_scope*.py` are outside `testpaths` and explicitly set
   `__test__ = False`, but can still open/configure hardware without the newer
   confirmation gates. Keep them as historical diagnostics; do not treat them
   as approved procedures or automated evidence. **Status: RETAINED LEGACY,
@@ -976,7 +1185,10 @@ historical notes. This document is a live issue register, whereas
   known mappings or raw integer SDK values and otherwise raises. Focused
   fake-only regression tests cover both boundaries. This entry remains as
   historical rationale, not an open item. **Status: RESOLVED in the working
-  tree, pending review.**
+  tree, pending review.** See the
+  [Session 88 changelog entry](claude_code_change_log.md) for the full
+  writeup (added retroactively during commit preparation -- this note
+  previously had no corresponding changelog entry).
 - **The Experiment tab has no general per-channel FM-modulation
   control (feature-completeness note, not a bug; found during the
   targeted `qt_ui.py`/`qt_ui_v2.py` UI audit, Session 69).**
@@ -1149,20 +1361,15 @@ historical notes. This document is a live issue register, whereas
   (device-level orchestration around the shared per-step timeout guard,
   not a competing implementation of it) remain their own shapes by
   design, not by omission.
-  **New gap found by the same review: `TecController.cleanup()`
-  (`tec.py`) has no timeout guard of any kind** -- added after the
-  original Session 57 audit, and didn't pick up the documented template
-  despite the doc's explicit instruction to use it for new modules. Not
-  fixed in this pass (`tec.py` is part of the still-uncommitted TEC
-  integration, out of scope here) -- low real-world urgency today since
-  `MeerstetterTecBackend` has no real client wired yet, so `close()`
-  can't actually hang against real hardware, but worth applying
-  `run_with_timeout()` there once TEC gets a real backend.
+  **The later TEC gap is now closed in the current worktree:**
+  `TecController.cleanup()` and the failed-initialize rollback close both use
+  `run_with_timeout()` with a local bounded timeout. A stuck call is reported
+  as a `TecError`; the daemon call may still be alive, so this is bounded
+  caller behavior rather than a claim that the vendor call was cancelled.
   **Status: RESOLVED for the shared timeout mechanism
-  (`QmixPumpBackend`/`PiezoStage`/`Application` now share one
-  implementation); OPEN for `TecController.cleanup()` (no guard at all)
-  and for `HamamatsuDcamBackend`'s deliberately-different shape (a
-  design decision, not a gap).**
+  (`QmixPumpBackend`/`PiezoStage`/`Application`/`TecController` share one
+  implementation). `HamamatsuDcamBackend`'s deliberately-different shape is a
+  design decision, not an open gap.**
 - **STALE, corrected Session 78: `Valve.wait_until_ready()` has no
   abort-awareness (fixed timeout only).** Originally flagged (2026-08-02
   cross-module architecture review) as an inconsistency against the

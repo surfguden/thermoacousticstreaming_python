@@ -1,9 +1,11 @@
 @echo off
 setlocal
 
-rem Launch the tracked transitional / rollback-reference Qt GUI v2.
-rem v2 (MainWindowV2) is not the default UI and has not been independently
-rem hardware-verified. Use launch_gui.bat for the validated day-to-day v1 UI.
+rem Launch the local, opt-in Thermo Acoustic Streaming v3 layout preview.
+rem The v3 files are intentionally untracked and not independently hardware-verified.
+rem v2 remains available through
+rem launch_gui_v2.bat as the rollback/reference path; launch_gui.bat remains
+rem the validated day-to-day v1 UI.
 rem Machine-specific settings: edit these if the Conda environment or CETONI SDK moves.
 set "PYTHON_EXE=C:\Users\Lab user\.conda\envs\exp_ctrl\python.exe"
 set "QMIXSDK=C:\Users\Lab user\AppData\Local\CETONI_SDK"
@@ -22,12 +24,12 @@ if not exist "%PYTHON_EXE%" (
     exit /b 1
 )
 
-"%PYTHON_EXE%" -m thermo_acoustic.qt_ui_v2
+"%PYTHON_EXE%" -m thermo_acoustic.qt_ui_v3
 set "EXIT_CODE=%ERRORLEVEL%"
 
 if not "%EXIT_CODE%"=="0" (
     echo.
-    echo GUI v2 exited with error code %EXIT_CODE%.
+    echo GUI v3 exited with error code %EXIT_CODE%.
 )
 
 pause

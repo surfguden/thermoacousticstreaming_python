@@ -78,6 +78,16 @@ def _experiment_ad_settings_group(window: qt_ui.MainWindow) -> QGroupBox:
     )
 
 
+def test_frequency_scan_group_names_the_python_channel_it_actually_changes(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        titles = {group.title() for group in window.findChildren(QGroupBox)}
+        assert "Frequency Scanning (Dynamic Frequency, CH0 only)" in titles
+        assert all("Ch1 only" not in title for title in titles)
+    finally:
+        window.close()
+
+
 def _synthetic_wheel_event(target, dy: int = 120) -> QWheelEvent:
     pos = QPointF(max(target.width(), 1) / 2, max(target.height(), 1) / 2)
     return QWheelEvent(
@@ -445,6 +455,15 @@ def test_pump_tab_reference_move_is_promoted_to_a_leading_setup_group(monkeypatc
     # step that must happen BEFORE Refill/Empty in the real physical
     # sequence. Confirms it now has its own leading "Setup" group and is no
     # longer inside Flow Control.
+    #
+    # v3 design-idea adoption, Proposal D (2026-08-05): Setup is no longer
+    # the first group in the WHOLE tab -- "Operational controls" (touched
+    # every run) now reads first, "Static configuration" (Setup/Syringe,
+    # one-time-per-mount) second, so "Setup" is column-first only within
+    # its own "Static configuration" section. The original ordering intent
+    # this test protects -- Reference move happens before Syringe
+    # selection/loading, not mixed into Flow Control -- still holds and is
+    # checked below.
     window = make_window(monkeypatch, tmp_path)
     pump_tab = None
     for index in range(window.tabs.count()):
@@ -462,10 +481,9 @@ def test_pump_tab_reference_move_is_promoted_to_a_leading_setup_group(monkeypatc
     flow_control_labels = {lbl.text() for lbl in groups["Flow Control"].findChildren(QLabel)}
     assert "Reference move" not in flow_control_labels
 
-    # "Setup" must actually be the FIRST group column-wise (read first,
-    # left-to-right) -- not just present anywhere in the tab.
+    assert "Syringe" in groups
     all_groups_in_order = [g for g in pump_tab.findChildren(QGroupBox)]
-    assert all_groups_in_order[0].title() == "Setup"
+    assert all_groups_in_order.index(groups["Setup"]) < all_groups_in_order.index(groups["Syringe"])
 
 
 def test_refill_and_empty_pass_the_fill_flow_rate_field_value_through(monkeypatch, tmp_path):
@@ -522,7 +540,11 @@ def test_experiment_tab_regroups_global_exposure_and_dynamic_camera_start(monkey
 
     groups = {gb.title(): gb for gb in experiment_tab.findChildren(QGroupBox)}
     assert window.global_exposure in groups["Experiment"].findChildren(QCheckBox)
-    assert window.dynamic_camera_start in groups["Camera Start Array(s)"].findChildren(QCheckBox)
+    # v3 design-idea adoption, Proposal 4 (2026-08-06): title gained a
+    # DIO1-clarifying suffix.
+    assert window.dynamic_camera_start in groups["Camera Start Array(s) (per-repeat DIO1 delays)"].findChildren(
+        QCheckBox
+    )
 
 
 def test_wfg_tab_and_experiment_tab_carry_live_use_labels(monkeypatch, tmp_path):
@@ -589,12 +611,23 @@ def test_camera_sequence_group_flags_live_automated_use_and_dead_capture_mode(mo
     assert "applied to every automated Experiment run" in note_text
     assert "DO affect experiment runs" in note_text
 
+    # capture_mode/sequence_exposure_ms no longer live inside this group's
+    # own settings form -- v3 design-idea adoption, Proposal 6 (2026-08-06)
+    # isolated them into their own "Retained (not used by runtime)" group,
+    # checked separately below, so they're no longer individually
+    # "(unused)"-suffixed inline among this group's genuinely live,
+    # automated-run-affecting fields.
+    settings_layout = grid.itemAtPosition(4, 2).layout()
+    remaining_labels = [
+        settings_layout.itemAt(row, settings_layout.ItemRole.LabelRole).widget().text()
+        for row in range(settings_layout.rowCount())
+        if settings_layout.itemAt(row, settings_layout.ItemRole.LabelRole) is not None
+    ]
+    assert "Capture mode" not in "".join(remaining_labels)
+    assert "ExposureTime(ms)" not in "".join(remaining_labels)
+
     assert not window.capture_mode.isEnabled()
     assert "Not wired to a real backend" in window.capture_mode.toolTip()
-
-    settings_layout = grid.itemAtPosition(4, 2).layout()
-    label_item = settings_layout.itemAt(4, settings_layout.ItemRole.LabelRole)
-    assert label_item.widget().text() == "Capture mode (unused)"
 
     # sequence_exposure_ms: confirmed dead since Session 11 (never included in
     # _camera_sequence_settings(), so never read by configure_sequence()), and
@@ -603,9 +636,15 @@ def test_camera_sequence_group_flags_live_automated_use_and_dead_capture_mode(mo
     # fixed the same way in this pass.
     assert not window.sequence_exposure_ms.isEnabled()
     assert "Not wired to a real backend" in window.sequence_exposure_ms.toolTip()
-    exposure_label_item = settings_layout.itemAt(9, settings_layout.ItemRole.LabelRole)
-    assert exposure_label_item.widget().text() == "ExposureTime(ms) (unused)"
     assert "exposure_ms" not in window._camera_sequence_settings()
+
+    retained_group = build_with_retry(window._camera_retained_fields_group)
+    assert retained_group.title() == "Retained (not used by runtime)"
+    assert window.capture_mode.parent() is not None
+    assert window.sequence_exposure_ms.parent() is not None
+    retained_labels = {label.text() for label in retained_group.findChildren(QLabel)}
+    assert "Capture mode" in retained_labels
+    assert "ExposureTime(ms)" in retained_labels
 
 
 def test_experiment_tab_elapsed_time_and_time_left_are_marked_as_stale_stubs(monkeypatch, tmp_path):
@@ -668,10 +707,13 @@ def test_category_6_grounded_tooltips_added_this_session(monkeypatch, tmp_path):
     # thorlabs_apt_serial, so prior_resource is now itself an unwired stub.
     assert "Not wired to a real backend" in window.prior_resource.toolTip()
 
-    # flush_flowrate (manual tab): grounded in the same uL/min fact Session
-    # 31/32 established for FlushSettings.timeout_s; label also brought in
-    # line with the Experiment-tab twin's "(uL)" suffix.
+    # flush_flowrate (manual tab): both the label and tooltip state the actual
+    # Qmix flow unit rather than presenting a volume-only "uL" label.
     assert "uL/min" in window.flush_flowrate.toolTip()
+    assert "Positive dispense flow rate" in window.flush_flowrate.toolTip()
+    assert window.flush_flowrate.minimum() == 0.0
+    assert "Positive dispense flow rate" in window.exp_flush_flowrate.toolTip()
+    assert window.exp_flush_flowrate.minimum() == 0.0
 
     # conversion_method: grounded in ImagePreviewWindow's own three display
     # methods, traced directly this session.
@@ -692,7 +734,16 @@ def test_category_6_grounded_tooltips_added_this_session(monkeypatch, tmp_path):
     flush_group = build_with_retry(window._flush_group)
     flush_form = flush_group.layout()
     flush_label_item = flush_form.itemAt(0, flush_form.ItemRole.LabelRole)
-    assert flush_label_item.widget().text() == "Flush Flowrate(uL)"
+    assert flush_label_item.widget().text() == "Flush Flow Rate (uL/min)"
+
+    experiment_flush_group = build_with_retry(window._experiment_flush_group)
+    experiment_flush_form = experiment_flush_group.layout()
+    experiment_labels = {
+        item.widget().text()
+        for row in range(experiment_flush_form.rowCount())
+        if (item := experiment_flush_form.itemAt(row, experiment_flush_form.ItemRole.LabelRole)) is not None
+    }
+    assert "Flush Flow Rate (uL/min)" in experiment_labels
 
 
 def test_qt_ui_settings_dict_includes_passive_hardware_fields(monkeypatch, tmp_path):
@@ -2951,6 +3002,81 @@ def test_start_experiment_blocks_on_existing_data_until_confirmed(monkeypatch, t
         monkeypatch.setattr(qt_ui.QMessageBox, "question", staticmethod(lambda *a, **k: qt_ui.QMessageBox.StandardButton.Yes))
         window._start_experiment()
         assert len(run_action_calls) == 1, "confirming the overwrite should proceed as normal"
+    finally:
+        window.close()
+
+
+# Session 104: manual, operator-initiated pump fault-clear escape hatch UI.
+def test_clear_pump_fault_button_shows_warning_and_is_not_skippable(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        run_action_calls = []
+        monkeypatch.setattr(window, "_run_action", lambda *args, **kwargs: run_action_calls.append((args, kwargs)))
+
+        question_calls = []
+
+        def fake_question(*args, **kwargs):
+            question_calls.append((args, kwargs))
+            return qt_ui.QMessageBox.StandardButton.No
+
+        monkeypatch.setattr(qt_ui.QMessageBox, "question", staticmethod(fake_question))
+
+        window._start_clear_pump_fault()
+
+        assert len(question_calls) == 1, "declining must not be reachable without the warning dialog having been shown"
+        warning_text = question_calls[0][0][2]
+        assert "hardware_repair_plan.md" in warning_text
+        assert "does NOT fix the underlying cause" in warning_text
+        assert run_action_calls == [], "declining the warning must not clear the fault or reconnect"
+    finally:
+        window.close()
+
+
+def test_clear_pump_fault_button_proceeds_only_after_explicit_confirmation(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        run_action_calls = []
+        monkeypatch.setattr(window, "_run_action", lambda *args, **kwargs: run_action_calls.append((args, kwargs)))
+        monkeypatch.setattr(
+            qt_ui.QMessageBox, "question", staticmethod(lambda *a, **k: qt_ui.QMessageBox.StandardButton.Yes)
+        )
+
+        window._start_clear_pump_fault()
+
+        assert len(run_action_calls) == 1, "confirming the warning should proceed to clear_pump_fault_and_retry()"
+        action, starting_status = run_action_calls[0][0][:2]
+        assert starting_status == "Clearing Pump Fault"
+        # Confirm the queued action really is Application.clear_pump_fault_and_retry() --
+        # not, e.g., a bare pump.initialize() that would silently skip the fault-clear step.
+        calls = []
+        window.app.pump = type("FakePump", (), {"clear_fault_and_reinitialize": lambda self: calls.append("cleared")})()
+        action(None)
+        assert calls == ["cleared"]
+    finally:
+        window.close()
+
+
+def test_clear_pump_fault_button_never_invoked_by_normal_initialize_flow(monkeypatch, tmp_path):
+    # Requirement 1: clear_fault_and_reinitialize() must never be reachable
+    # except through the explicit button -- confirm the normal Initialize
+    # dialog path never calls Application.clear_pump_fault_and_retry() or
+    # touches pump_fault_manually_cleared_this_session, even when Initialize
+    # itself is exercised.
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        calls = []
+        # Application is a slots dataclass (application.py:97) -- patch the
+        # class, not the instance, same as any other slotted-instance method
+        # override.
+        monkeypatch.setattr(type(window.app), "clear_pump_fault_and_retry", lambda self: calls.append("cleared"))
+        assert window.app.pump_fault_manually_cleared_this_session is False
+
+        run_action_calls = []
+        monkeypatch.setattr(window, "_run_action", lambda *args, **kwargs: run_action_calls.append((args, kwargs)))
+        window._start_initialize()
+
+        assert calls == [], "Initialize must never reach clear_pump_fault_and_retry()"
+        assert window.app.pump_fault_manually_cleared_this_session is False
     finally:
         window.close()
 

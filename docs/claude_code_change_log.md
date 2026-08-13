@@ -6789,6 +6789,1005 @@ repeatedly throughout this whole gap-closure effort, not a regression.)
 
 ---
 
+### Session 86 -- Backfill: waveforms.py's configure_do() ambiguous-trigger-timing refusal (found undocumented during commit preparation)
+
+Found while drafting a commit message spanning the accumulated diff since
+17f24dd: `WaveFormsBackend.configure_do()` (waveforms.py, currently
+[waveforms.py:546](../src/thermo_acoustic/waveforms.py:546)) contains a
+real fix with no changelog entry anywhere (confirmed via grep for
+`trigger_signatures`/`different global trigger` across this file --
+zero prior matches). No in-code date marker exists for this specific
+change; dated here from the file's own last-modified timestamp
+(2026-08-04), consistent with the working-tree period other same-day
+fixes in this file (`_coerce_enum()`, see Session 88 below) are dated
+to.
+
+**The bug:** WaveForms exposes Wait/Run/Repeat/TriggerSource once for
+the whole DigitalOut instrument, not once per channel -- `configure_do()`'s
+per-channel loop unconditionally overwrote the shared `trigger`/
+`trigger_source` locals on every iteration, so with more than one
+channel configured, whichever channel happened to be last in
+`config.channels` silently won, including a disabled trailing channel
+overwriting the timing actually intended for the live output.
+
+**The fix:** before the loop, build a `trigger_signatures` set from the
+`(sec_wait, sec_run, repeat_count, repeat_trigger, source)` tuple of
+every *enabled* channel only. If more than one distinct signature
+exists, raise `WaveFormsError` ("Digital output channels request
+different global trigger timing...") instead of silently picking one.
+The loop itself now only lets an `channel.enable == True` channel select
+the shared `trigger`/`trigger_source` values, so a disabled trailing
+channel can no longer participate at all.
+
+**Not committed** -- pending review, per standing instruction; this is a
+documentation-only entry for an already-landed code change.
+
+---
+
+### Session 87 -- Backfill: hamamatsu_dcam.py's open_camera() rollback-on-failure (found undocumented during commit preparation)
+
+Also found undocumented while drafting the same commit message (grep for
+`open_camera.*rollback`/`rollback.*open_camera`/`Dcam.dev_close after
+failed` across changelog and known_open_items.md returned zero matches).
+Dated from the file's own last-modified timestamp (2026-08-04); no
+in-code date marker exists.
+
+**The bug:** `HamamatsuDcamBackend.open_camera()`
+([hamamatsu_dcam.py:69](../src/thermo_acoustic/hamamatsu_dcam.py:69))
+previously ran its 2-3 step open sequence (load SDK, `Dcamapi.init()`,
+`Dcam.dev_open()`) with no rollback on a mid-sequence failure -- if
+`dev_open()` raised after `Dcamapi.init()` had already succeeded, the
+API was left initialized with no device open and no way for a
+subsequent retry to know that state without its own separate check.
+
+**The fix:** the whole body is now wrapped in try/except. On failure,
+rollback is attempted in reverse: close the device if it was opened
+(`Dcam.dev_close()`), then uninit the API if `init()` had succeeded
+(`Dcamapi.uninit()`). Rollback errors are collected separately from the
+original exception; if rollback itself failed, a combined
+`HamamatsuDcamError` is raised naming both the original failure and the
+rollback failure(s); if rollback succeeded, the original exception is
+re-raised unchanged. Leaves no partial init state for a caller to
+reason about after a failed `open_camera()`.
+
+**Not committed** -- pending review, per standing instruction; this is a
+documentation-only entry for an already-landed code change.
+
+---
+
+### Session 88 -- Backfill: ad2.py's _coerce_enum() / waveforms.py's _enum_value() fail-closed on unrecognized values (promoting an inline "pending review" note to a real entry)
+
+`docs/known_open_items.md`'s waveforms.py backlog section carried only an
+inline "Resolved in the current working tree (2026-08-04; pending
+review)" note for this change, with no changelog Session entry -- this
+entry gives it one; the known_open_items.md note has been updated to
+point here (see below).
+
+**The bug (Session 66's own original finding, only partially fixed at
+the time):** `_coerce_enum()` (ad2.py) and `_enum_value()`
+(waveforms.py) both silently returned/mapped to a default value for
+*any* unrecognized input, including an explicitly-supplied but
+misspelled or genuinely-unsupported enum string -- not just a truly
+missing field. A typo in a dict-shaped WFG/DO config (e.g. from a
+saved-settings round trip or a manually-constructed config) could
+silently select the wrong hardware mode with zero error.
+
+**The fix:**
+- `ad2._coerce_enum(enum_type, value, default)`
+  ([ad2.py:228](../src/thermo_acoustic/ad2.py:228)): `value is None` still
+  returns `default` (a genuinely missing field keeps its documented
+  compatibility default), but any other unrecognized value now raises
+  `ValueError(f"Unsupported {enum_type.__name__}: {value!r}")`.
+- `WaveFormsBackend._enum_value(mapping, value)`
+  ([waveforms.py:194](../src/thermo_acoustic/waveforms.py:194)): dropped
+  its `default` parameter entirely -- accepts a raw `int` (an SDK value
+  passed straight through) or a recognized mapping key, and otherwise
+  raises `WaveFormsError(f"Unsupported WaveForms enum value: {value!r}")`.
+  No silent-default path remains at all in this function; the "missing
+  field keeps its default" behavior is now exclusively `ad2.py`'s
+  responsibility, applied before a value ever reaches this function.
+- `coerce_wfg_config()`/`coerce_do_config()` (ad2.py) had their
+  dict-key detection sets significantly expanded (offset/symmetry/
+  phase/function/enable/trigger keys for WFG; clock_frequency_hz/
+  frequency/output_type/output_mode/idle_state/trigger keys for DO) --
+  reduces how often a dict-shaped input's field is misread as "missing"
+  (and silently defaulted) versus correctly recognized as an explicit,
+  possibly-invalid value that must now be validated.
+
+**Tests:** focused fake-only regression tests cover both the
+missing-field-keeps-default boundary and the explicit-unrecognized-
+value-raises boundary; full offline suite passes.
+
+**Not committed** -- pending review, per standing instruction; this is a
+documentation-only entry for an already-landed code change.
+
+---
+
+### Session 89 -- Backfill: shared hardware-utility extraction -- hw_logging.run_with_timeout() and Application._move_pump_and_confirm() (found undocumented during commit preparation)
+
+Part of the cross-module architecture review (2026-08-02, matching the
+in-code dating already used for this effort in qmix_backend.py's and
+thorlabs_piezo.py's own comments) -- previously only mentioned in
+passing inside Session 74's TEC entry, with no entry of its own.
+Confirmed genuinely new since `17f24dd` via
+`git show 17f24dd:<file> | grep <name>` on both functions below (both
+returned empty against the 17f24dd-committed content).
+
+**hw_logging.run_with_timeout(action, name, timeout_s) -> str | None**
+([hw_logging.py:127](../src/thermo_acoustic/hw_logging.py:127)): runs
+`action()` in a daemon thread with a bounded join, so a real hardware
+cleanup/close/disconnect call that hangs cannot block the caller
+indefinitely. Never raises itself -- returns `None` on success, or a
+one-line description of what went wrong (timeout, a raised exception,
+or the thread finishing without reporting a result) for the caller to
+collect. Replaces three independent, hand-copied implementations of the
+identical thread+queue+join shape:
+`QmixPumpBackend._run_close_step()`, `PiezoStage._run_disconnect_step()`,
+and `Application`'s own cleanup-call timeout guard. Message wording at
+each call site is unchanged from before the extraction.
+
+**Application._move_pump_and_confirm(action, timeout_s, event_prefix) -> bool**
+([application.py:439](../src/thermo_acoustic/application.py:439)):
+consolidates `refill()`, `empty()`, and `go_to_level()`, which
+independently had the identical bug -- `set_fill_level()` is an
+asynchronous SDK call, and all three previously returned as soon as the
+command was issued rather than once the pump actually arrived (found
+independently by the qmix_backend.py line-by-line review's Fix H1 and
+the targeted qt_ui.py UI audit's Finding 1 -- two different reviews,
+same root bug, on three different buttons). On a wait timeout, requests
+an SDK stop (fail closed) before reporting `TimedOut` -- explicitly
+distinct from Abort, which intentionally does not interrupt an
+in-progress pump operation (see Session 78). Always re-syncs
+`fill_level` from the real device after waiting, even on the success
+path, since a pre-confirmation snapshot cannot be trusted. `flush()` is
+deliberately NOT migrated to this helper -- it has its own capacity
+pre-check and a sandwiched valve move that don't generalize into this
+shape.
+
+**docs/hardware_safety_patterns.md** gained a new named pattern, Pattern
+(e) -- "Commit configuration state only after the real hardware call
+confirms" -- documenting a *different*, related shape found six times
+across five files (`CetoniPump.set_fill_level()`, `Valve.set_position()`,
+`CetoniPump.refill()`/`empty()`, `HamamatsuDcamBackend.configure_sequence()`,
+and `AD2Sdk`'s six WFG/DO config methods): coerce/build the new
+configuration into a local variable, issue the real hardware call(s)
+using the local, and only assign it to `self.X` once every call
+succeeds. Deliberately NOT consolidated into one shared helper the way
+the two functions above were -- the hardware-call shape differs enough
+case to case that this is documented as a principle to apply by hand,
+not a procedure to call.
+
+**Not committed** -- pending review, per standing instruction; this is a
+documentation-only entry for an already-landed code change.
+
+---
+
+### Session 90 -- Backfill: v2's Error Out black-rectangle rendering fix (found undocumented during commit preparation)
+
+Dated from the diff's own in-code comment ("Real-platform rendering bug
+(2026-08-03)") -- confirmed via grep across the changelog for
+`Error Out black-rectangle`/`_configuration_column`/
+`_live_monitoring_column`/`_CompactPlaceholderRow`/`WFG live waveform
+preview`/`sidebar status indicator`/`Phase 0`/`Phase 1`/`Phase 2`/
+`Phase 3` (beyond the already-documented breadcrumb) that none of v2's
+restructuring work has a searchable changelog entry anywhere. This is
+the first of three entries backfilling that gap (see Sessions 91-92
+below); the step-progress breadcrumb itself already has its own entry
+(Session 81) and needs no new one.
+
+**The bug:** `qt_ui_v2.py`'s Global Status group's "Error Out" row
+(`self.error_log`, a `HistoryLogWidget`) inherits `QListWidget`'s
+default Expanding vertical `QSizePolicy`. Combined with the enclosing
+`QFormLayout`'s `WrapLongRows` policy, whether the row wraps or sits
+side-by-side is width-timing-sensitive on the real Qt platform (the
+offscreen test platform always wrapped cleanly and never reproduced
+this). When it doesn't wrap, `QFormLayout` gives the row's field cell a
+height driven by the Expanding policy (measured 575px, against the
+widget's own 90px `maximumHeight`-capped size), then vertically centers
+the small widget inside that oversized cell -- the ~485px of empty cell
+above/below is what a real user screenshot showed as a solid black
+rectangle swallowing the actual log content.
+
+**The fix:** caps the *wrapper's* own height (after
+`_add_tooltip_icons()` wraps the row), not `self.error_log`'s own
+vertical `QSizePolicy`. Setting `error_log`'s own policy to `Maximum`
+was tried first and reverted -- confirmed by direct experiment to break
+other `WrapLongRows` rows in the same form that use `wordWrap()`'d
+runtime text (e.g. the valve's `status_note` passthrough getting stuck
+at an 8px single-line height instead of re-wrapping on a later text
+change).
+
+**Not committed** -- pending review, per standing instruction; this is a
+documentation-only entry for an already-landed code change.
+
+---
+
+### Session 91 -- Backfill: v2 restructure, proposals 1 and 2 -- compact placeholder rows and the configuration/live-monitoring column split (found undocumented during commit preparation)
+
+Dated from the diff's own in-code comments: "Redesign (2026-08-03,
+restructure proposal 1)" and "Restructure (2026-08-03, proposal 2)".
+Second of three backfill entries for v2's undocumented restructuring
+work (see Session 90 above, Session 92 below).
+
+**Motivation (v2 audit finding 1d, 2026-08-02):** the prior single
+shared-scroll `_center_experiment_area()` meant the AD2 Output
+Parameters table's own inner horizontal scroll forced the *entire*
+center column to also scroll horizontally with it, and a long step
+card's configuration content could push live status/progress
+information out of view entirely.
+
+**Proposal 1 -- `_CompactPlaceholderRow`** (new class,
+[qt_ui_v2.py:205](../src/thermo_acoustic/qt_ui_v2.py:205)): a
+single-line stand-in for a step card with no real configuration content
+(bullet, numbered step title, em dash, grayed/italic "no configuration"
+note) replacing a prior full-height placeholder card that competed for
+screen space without adding content. Carries its own `.title()` so
+callers that ask a step card for its title don't need to know which of
+the two card types they got.
+
+**Proposal 2 -- column split** (`_configuration_column()`/
+`_live_monitoring_column()`,
+[qt_ui_v2.py:524](../src/thermo_acoustic/qt_ui_v2.py:524) and
+[:557](../src/thermo_acoustic/qt_ui_v2.py:557), replacing
+`_center_experiment_area()`): configuration content (set once before a
+run -- the TEC-scan group and the experiment sequence view) separated
+into its own independently-scrolling column from live-monitoring
+content (status/progress, waveform preview, connection/error state --
+watched during/after a run), matching Digilent WaveForms' own
+config-panel + live-preview convention. Growing configuration content
+can no longer push live status out of view, and the AD2 table's inner
+horizontal scroll no longer drags either column with it.
+
+**Verification:** before/after scroll dimensions measured at 1440x860
+on a real (non-offscreen) render; full test suite run after the
+restructure.
+
+**Not committed** -- pending review, per standing instruction; this is a
+documentation-only entry for an already-landed code change.
+
+---
+
+### Session 92 -- Backfill: v2 restructure Phase 2 -- WFG live waveform preview (Part A) and sidebar connection/status dots (Part B) (found undocumented during commit preparation)
+
+No explicit date comment survives on Phase 2 itself in the diff (unlike
+Phase 3's "2026-08-04" and the restructure proposals' "2026-08-03");
+placed here between them in the same restructuring sequence per the
+diff's own "Phase 2 Part A"/"Phase 2 Part B" labeling. Third and final
+entry backfilling v2's undocumented restructuring work (see Sessions
+90-91 above).
+
+**Part A -- WFG live waveform preview**
+(`_wfg_preview_group()`/`_update_wfg_preview()`/`_schedule_wfg_preview_update()`,
+[qt_ui_v2.py:913](../src/thermo_acoustic/qt_ui_v2.py:913)): the v2 WFG
+manual-test panel gained a "Waveform Preview (computed)" group showing a
+`WaveformGraph` synthesized from the current Ch1/Ch2 field values (not
+read from hardware), reusing the same waveform-synthesis path `qt_ui.py`'s
+own WFG tab already uses. Recomputes on a 150ms debounced `QTimer`
+restarted on every relevant field change (Function/Frequency/Amplitude/
+Offset/Symmetry/Phase/Enable) -- no per-keystroke live-recompute
+precedent existed elsewhere in this app to reuse (MSO's own graph only
+updates on its Capture button click), so a short singleShot debounce was
+used instead of recomputing synchronously on every keystroke. Disabled
+channels are omitted from the preview.
+
+**Part B -- sidebar connection/status dots**
+(`_make_status_dot()`/`_set_status_dot()`,
+[qt_ui_v2.py:494](../src/thermo_acoustic/qt_ui_v2.py:494)): each sidebar
+device button (AD2/Camera/Pump&Valve/etc.) gained a small colored dot
+reusing the exact same state reads as the existing Global Status panel
+(not a fabricated separate signal) -- gray for disabled or not-yet-
+connected (the Global Status panel's own text already collapses those
+two states into one read, so the dot doesn't distinguish them further
+either), green for connected (matching `connection_button`'s own
+existing "connected" color), and a new blue ("dodgerblue") for actively
+running, since no existing color in this app previously represented
+that state. MSO/WFG/Camera share one dot keyed to their underlying
+device (AD2 for WFG/MSO, Camera for Camera) rather than each getting an
+independent one, since showing only half the picture per device would
+misleadingly imply more than it means.
+
+**Not committed** -- pending review, per standing instruction; this is a
+documentation-only entry for an already-landed code change.
+
+---
+
+### Session 93 -- v2 restructuring, v3 design-idea adoption Proposal A: elevate "Start Experiment" to its own prominent group
+
+Continuing the earlier v3 design evaluation (Proposal C already adopted,
+Session 85) -- this implements the first of the three remaining scoped
+proposals.
+
+**Investigation.** "Start exp" previously sat as one of several
+equally-weighted rows/cards: a flat grid row in `qt_ui.py`'s
+`_experiment_tab()`, and a "Sequence Control" `QGroupBox` buried as
+step-card 1 of 7 inside v2's (now-retired, see Session 94)
+`ExperimentSequenceView`. Confirmed `self.series_path`
+(persistent `QLineEdit`, built once in `_build_state()`),
+`self._browse_folder`, and `self._start_experiment` as the real,
+reusable state -- the `start`/`browse` `QPushButton`s themselves were
+already freshly constructed on every call in both prior locations, same
+as every other builder in this codebase.
+
+**Implementation.** New `Application`-adjacent
+`_experiment_primary_run_control_group()` (`qt_ui.py`, shared base
+class -- v2 inherits it automatically): a dedicated `QGroupBox("Run
+Experiment")` with a 44px-tall Start button, the series-path field +
+browse button, and an inline scope-disclosure note ("Uses the
+configured setup below and the currently initialized hardware.") --
+reusing v3's own wording for this note, confirmed to already match this
+project's tone. Placed at the TOP of `qt_ui.py`'s `_experiment_tab()`
+grid (v1) and as the first widget inside `qt_ui_v2.py`'s
+`_configuration_column()` (v2) -- deliberately NOT stacked above the
+config/live-monitoring column split, which would compete with the
+live-monitoring column's own always-visible screen space (the specific
+stacking mistake v3's own layout makes, flagged during the earlier
+evaluation and explicitly avoided here). `_v2_sequence_control_group()`
+retired as redundant (see Session 94 -- both changes landed together
+since they touch the same method).
+
+**Verification:** real (non-offscreen) render at 1440x860 confirmed the
+live-monitoring column remains fully visible without page-level
+scrolling with the new group in place (see Session 94's entry for the
+combined measurement, taken after Proposal B also landed).
+
+**Tests:** `test_v2_primary_run_control_group_reuses_series_path_and_start_button`,
+`test_v2_configuration_column_places_run_control_above_setup_tabs`
+(tests/test_qt_ui_v2.py). `test_hardware_action_buttons_disclose_missing_global_confirmation_gate`
+(tests/test_qt_ui_hardware_settings.py) continued to pass unchanged --
+the Start button's tooltip text is byte-identical to before.
+
+**Not committed** -- pending review, per standing instruction.
+
+---
+
+### Session 94 -- v2 restructuring, v3 design-idea adoption Proposal B: task-oriented setup tabs replace the per-step card sequence
+
+**Investigation.** Confirmed the builder-method mapping: AD2 Output ->
+`_v2_ad2_output_group()` (qt_ui_v2.py) + `_experiment_fm_sweep_group()`
++ `_experiment_frequency_scan_group()` (qt_ui.py, already reused as-is);
+Camera -> `_v2_acquisition_group()` (qt_ui_v2.py); Fluidics ->
+`_experiment_flush_group()` (qt_ui.py); Advanced ->
+`_experiment_temperature_group()` (qt_ui.py). Also found, not mentioned
+in the original proposal: `ExperimentSequenceView`'s own docstring
+states Phase 2 was "Configuration Mode only... no live wiring," and
+Phase 3's live highlighting was planned to go *into that view's own
+cards* but was never built there -- the real Session 81 implementation
+instead built the fully separate `_StepBreadcrumb` widget in the
+Status/Progress group. Replacing the step-card view with tabs therefore
+removes no live functionality; the breadcrumb is unaffected either way.
+~15 assertions in tests/test_qt_ui_v2.py called `view.step_card(...)`/
+`window._experiment_sequence_view()` directly and needed rewriting
+against the new structure -- the "medium-risk" item the original
+proposal flagged.
+
+**Implementation.** New `_v2_experiment_setup_tabs()` (qt_ui_v2.py): a
+`QTabWidget` with "AD2 Output"/"Camera"/"Fluidics"/"Advanced" tabs, each
+re-parenting the existing group-box builders whole (not rebuilt),
+replacing `_experiment_temperature_group()` + `_experiment_sequence_view()`
+in `_configuration_column()`. Fluidics tab carries "Optional
+post-capture pump/valve workflow. Disabled by default."; Advanced
+carries "Simulated by default. Real TEC operation remains unapproved."
+(reusing v3's own wording, confirmed to already match this project's
+TEC safety framing). The sequential valve->pump->valve safety
+explanation that used to live on the Flush step card's own tooltip is
+now set directly on the Flush group box itself (`flush_group.setToolTip(...)`)
+-- caught and fixed during implementation as a real regression risk
+(the first draft only left this as a code comment, not attached to any
+widget, which would have silently dropped it from the real UI).
+`ExperimentSequenceView`, `_CompactPlaceholderRow`,
+`_experiment_sequence_view()`, and `_v2_sequence_control_group()`
+(Session 93) retired as genuinely dead code once nothing called them --
+3 stale comment references to `ExperimentSequenceView` elsewhere
+(`application.py`'s `STEP_ORDER` comment, `_StepBreadcrumb`'s own
+docstring x2) updated to stop describing a class that no longer exists.
+
+**Verification:** real (non-offscreen) render at 1440x860 (v2,
+`MainWindowV2`, both Proposal A and B in place): the live-monitoring
+column's `QScrollArea` measured 320x809px, fully visible on screen with
+no page-level scrolling required to reach it -- confirmed as a
+DIFFERENT `QScrollArea` instance from the configuration column (the
+two-column split is intact). Its own internal content `sizeHint()`
+(830px) is ~21px taller than its own viewport (809px) -- an existing,
+pre-existing characteristic of `_live_monitoring_column()` itself
+(untouched by this change; nothing in Proposals A/B/D modified
+`_v2_status_progress_group()`/`_v2_waveform_group()`/
+`_global_status_panel()`), causing a small internal scrollbar within
+that column only, not a regression of the "live status stays visible
+without scrolling past configuration" principle this restructure
+protects (that principle is about the outer/page-level scroll, which
+this column is independent of by design). Screenshots taken at
+1440x860 for both v1 (`Experiment` tab) and v2 (full window) confirm
+clean layout with no clipping or overlap.
+
+**Tests:** `test_v2_experiment_setup_tabs_has_four_task_oriented_tabs`,
+`test_v2_experiment_setup_tabs_embeds_the_real_shared_group_widgets`,
+`test_v2_flush_group_tooltip_explains_the_real_sequential_valve_pump_relationship`,
+`test_v2_experiment_setup_tabs_have_inline_safety_caveats`
+(tests/test_qt_ui_v2.py) replace the 5 retired
+`ExperimentSequenceView`-specific tests.
+
+**Full suite: 500 passed, 1 skipped** (one further run surfaced 1 more
+different-test-each-time `SystemError` failure --
+`test_camera_adjust_reprocesses_last_raw_frame_without_recapture`, a
+Z-Scan/Camera-tab test unrelated to this change -- confirmed passing in
+isolation as the same pre-existing offscreen/real-platform `_TooltipIconWrapper`
+flakiness class hit repeatedly throughout this project's history, not a
+regression; also observed directly on the real platform during this
+session's own verification script runs, confirming it is not
+offscreen-specific).
+
+**Not committed** -- pending review, per standing instruction.
+
+---
+
+### Session 95 -- v2 restructuring, v3 design-idea adoption Proposal D: split Pump&Valve tab into Operational vs Static configuration
+
+**Investigation.** Confirmed `_pump_tab()` (qt_ui.py) is shared by v1
+and v2 (`MainWindowV2._MANUAL_PANEL_BUILDERS["PumpValve"] = "_pump_tab"`
+maps directly to it), so editing it once updates both, no separate v2
+change needed. Mapped its existing 4 columns onto operational-vs-static:
+**operational** (touched every run) = Valve (Pos1/Pos2), Pump's
+Refill/Empty + flow rate, Flow Control, Flush + Flush Settings, STOP;
+**static** (one-time-per-mount setup) = Setup (Reference move -- its
+own existing comment already called this "a one-time-per-mount
+calibration step"), Syringe (selection/custom geometry/Configure).
+
+**Implementation.** `_pump_tab()` restructured into two labeled
+sections -- "Operational controls" (Valve+STOP / Pump / Flow Control /
+Flush, unchanged internally, same 4 columns minus Setup/Syringe) then
+"Static configuration" (Setup / Syringe, in their own row) -- reusing
+every existing widget verbatim, no new state. Continues the same
+precedent Reference Move's own leading Setup section already
+established (UI layout audit Part 3, 2026-08-03): Reference move must
+happen BEFORE a syringe is loaded/refilled, so it stays with the other
+one-time setup, not mixed into Flow Control's actual flow-rate
+controls.
+
+**Verification:** real (non-offscreen) render at 1440x860 (v1's
+Pump&Valve tab) confirms clean two-section layout with no clipping.
+
+**Tests:** `test_pump_tab_reference_move_is_promoted_to_a_leading_setup_group`
+(tests/test_qt_ui_hardware_settings.py) updated -- its original
+assertion that "Setup" must be the literal first `QGroupBox` in the
+whole tab no longer holds now that "Operational controls" reads first;
+replaced with confirming Setup still precedes Syringe within "Static
+configuration" (the ordering intent the test actually protects: Reference
+move before syringe selection/loading). All other existing Pump&Valve
+tests (valve position tokens, etc.) passed unchanged.
+
+**Full suite: 500 passed, 1 skipped, 1 flaky failure** (same
+pre-existing `_TooltipIconWrapper` `SystemError` class as Session 94's
+entry, confirmed passing in isolation, unrelated to this change).
+
+**Not committed** -- pending review, per standing instruction.
+
+---
+
+### Session 96 -- Valve post-open handshake rollback and AD2 initialization audit
+
+**Confirmed failure shape.** `Valve.initialize()` opened its serial backend
+before issuing the `S` status handshake. A query exception, empty response, or
+unrecognized response then escaped without closing that just-opened backend.
+`Application.initialize()` could not repair this because it only rolls back
+instruments whose own `initialize()` calls already completed.
+
+**Implementation.** `Valve.initialize()` now closes its own backend whenever
+the open/handshake sequence raises. If close succeeds, the original exception
+is re-raised unchanged. If close also fails, a combined `ValveError` reports
+both failures and chains from the original handshake exception. Application
+initialization order and rollback scope are unchanged.
+
+**AD2 audit.** No matching gap was found. `AD2Sdk.open_and_use_first_device()`
+assigns `device_handle` only after `WaveFormsBackend.open_device()` has returned
+successfully, and `AD2Sdk.initialize()` has no post-open handshake/configuration
+step that can fail after ownership is committed. No AD2 code was changed.
+
+**Regression coverage.** Focused fake-backend tests assert that a handshake
+exception closes the backend and propagates as the same exception object, and
+that a simultaneous close failure reports both errors while retaining the
+handshake exception as the cause. The existing empty-response and unknown-status
+tests also assert that the backend is closed.
+
+**Verification:** focused Valve initialization tests: **10 passed**. Full suite:
+**502 passed, 1 skipped, 2 failed**; both failures were the pre-existing,
+suite-order-dependent `_TooltipIconWrapper` `SystemError` in two v3 tests and
+both passed immediately in isolation (**2 passed**). v3 was explicitly out of
+scope and was not changed.
+
+**Not committed** -- pending review, per standing instruction.
+
+---
+
+### Session 97 -- CetoniPump.initialize() rollback on post-open fill-level readback failure
+
+Continues the same instrument-initialize-rollback theme as Session 96's Valve
+fix, found and verified during a documentation/consistency audit of a
+concurrent session's work (not authored in this conversation; verified here
+before logging).
+
+**Confirmed failure shape.** `CetoniPump.initialize()` called
+`self.backend.initialize(self.configuration_path)` then unconditionally
+`self.sync_fill_level()`. If the real device's fill-level readback failed
+after a successful backend open, the exception propagated with the backend
+left open and `self.initialized` never set -- no rollback, unlike every other
+instrument's initialize() failure path.
+
+**Implementation.** `CetoniPump.initialize()` now tracks `backend_initialized`
+separately from success. A failure before the backend finishes opening
+(inside `QmixPumpBackend.initialize()` itself) still propagates unchanged --
+that backend owns its own rollback. A failure *after* a successful backend
+open (i.e., inside `sync_fill_level()`) now closes the backend, with a
+combined `RuntimeError` if the close itself also fails, preserving the
+original exception as the cause either way.
+
+**Regression coverage:** `test_cetoni_pump_initialize_closes_backend_when_post_open_fill_read_fails`,
+`test_cetoni_pump_initialize_reports_post_open_failure_and_cleanup_failure`
+(tests/test_application.py) -- both confirmed passing, alongside the 3
+pre-existing tests in the same area
+(`test_cetoni_pump_initialize_syncs_fill_level_from_real_backend`,
+`test_cetoni_pump_initialize_without_backend_leaves_fill_level_untouched`,
+`test_cetoni_pump_initialize_does_not_falsely_claim_referenced`).
+
+**Verification:** focused tests, 5/5 passed. No interaction found with any
+other change in the current working tree.
+
+**Not committed** -- pending review, per standing instruction. Originated
+from a concurrent session; this entry documents and verifies it, not adopts
+it on your behalf.
+
+---
+
+### Session 98 -- TecController.cleanup() and failed-initialize rollback now timeout-guarded
+
+Closes the exact gap `docs/known_open_items.md` had flagged OPEN (found
+during the cross-module architecture review, 2026-08-02): "`TecController.cleanup()`
+(`tec.py`) has no local timeout guard of its own... added after the original
+Session 57 audit, and didn't pick up the documented template despite the
+doc's explicit instruction to use it for new modules." Found and verified
+during a documentation/consistency audit of a concurrent session's work.
+
+**Implementation.** `TecController.cleanup()` and the failed-initialize
+rollback path in `TecController.initialize()` (`tec.py`) both now call the
+shared `hw_logging.run_with_timeout()` utility -- the same one
+`QmixPumpBackend`/`PiezoStage`/`Application` already share -- with a new
+`cleanup_timeout_s: float = 5.0` field. A stuck `backend.close()` now raises
+`TecError` naming the timeout instead of blocking the caller indefinitely; the
+daemon thread itself may still be alive afterward (bounded caller behavior,
+not a claim the vendor call was cancelled -- same caveat as every other
+`run_with_timeout()` use in this codebase).
+
+**Regression coverage:** `test_tec_controller_failed_initialize_bounds_a_stuck_backend_close`,
+`test_tec_controller_cleanup_bounds_a_stuck_backend_close` (tests/test_tec.py)
+-- both use a real hanging-`close()` fake backend and assert the call returns
+within the configured timeout (`cleanup_timeout_s=0.02`) rather than blocking,
+the same "prove the guard actually bounds a stuck call" pattern this
+project's other timeout-guard tests use.
+
+**Verification:** focused tests, 2/2 passed. `docs/known_open_items.md` was
+already updated (by the same concurrent session) to mark this
+"RESOLVED for the shared timeout mechanism... `TecController` share[s] one
+implementation" -- confirmed accurate against the real diff.
+
+**Not committed** -- pending review, per standing instruction. Originated
+from a concurrent session; this entry documents and verifies it, not adopts
+it on your behalf.
+
+---
+
+### Session 99 -- PiezoStage.connect() now stops polling before shutdown on post-poll failure
+
+Same instrument-rollback theme as Sessions 96-98. Found and verified during a
+documentation/consistency audit of a concurrent session's work.
+
+**Confirmed failure shape.** `PiezoStage.connect()` calls
+`channel.StartPolling()`, then reads `GetMaxTravel()`/`GetMaxOutputVoltage()`/
+`GetMinOutputVoltage()`/`GetPositionControlMode()`. If any of those readback
+calls failed after polling had already started, the rollback path only
+attempted `device.ShutDown()` (best-effort, exceptions silently swallowed) --
+polling was never explicitly stopped first.
+
+**Implementation.** `connect()` now tracks `polling_started` and the live
+`channel` reference. On any failure after `StartPolling()` succeeded, rollback
+now calls `channel.StopPolling()` *before* `device.ShutDown()`, both routed
+through the shared `_run_disconnect_step()` helper (same timeout-guarded,
+error-collecting shape `disconnect()` already used). If either rollback step
+fails, a combined `PiezoStageError` reports the original failure plus every
+rollback error, chained from the original exception.
+
+**Regression coverage:** `test_channel_initialize_failure_stops_polling_and_shuts_down`
+(asserts both `StopPolling` and `ShutDown` were called, in that order, on a
+`GetMaxTravel()` failure), `test_channel_initialize_failure_reports_cleanup_failure_too`
+(asserts a simultaneous `StopPolling` failure is reported alongside the
+original error) -- both in tests/test_thorlabs_piezo.py.
+
+**Verification:** focused tests, 2/2 passed. No interaction found with any
+other change in the current working tree.
+
+**Not committed** -- pending review, per standing instruction. Originated
+from a concurrent session; this entry documents and verifies it, not adopts
+it on your behalf.
+
+---
+
+### Session 100 -- Application.flush() now rejects a non-positive flow rate before moving valve or pump -- CONFIRMED REGRESSION against pre-existing tests, not yet reconciled
+
+Found and verified during a documentation/consistency audit of a concurrent
+session's work. **Unlike Sessions 97-99, this one is NOT clean** -- flagging
+that prominently rather than presenting it as ready.
+
+**Implementation.** `Application.flush()` (`application.py`) now raises
+`ValueError` if `settings.flush_flowrate <= 0`, before either the valve or
+pump is touched -- alongside the pre-existing `flush_volume_ml > syringe_volume_ml`
+capacity check, both inside the same `_report_step(progress, STEP_FLUSH)`
+block, before any hardware call.
+
+**Regression coverage (new, all passing):** `test_flush_rejects_nonpositive_flow_before_valve_or_pump_moves`
+(parametrized `[0.0, -1.0, -5000.0]`), `test_flush_settings_timeout_is_zero_for_nonpositive_flowrate`
+(tests/test_application.py) -- 4/4 passed in isolation.
+
+**CONFIRMED REAL CONFLICT (not flakiness -- re-run in isolation, still fails
+the same way):** the full suite run for this verification pass found 3
+pre-existing, unmodified-in-this-diff failures, all in
+tests/test_full_flow_dry_run.py:
+`test_application_full_flow_dry_run_can_opt_into_fake_flush`,
+`test_run_experiment2_step_sequence_with_flush_enabled`,
+`test_run_experiment2_step_failure_in_flush`. Root cause: that file's shared
+`make_recording_experiment()` helper
+([tests/test_full_flow_dry_run.py:221](../tests/test_full_flow_dry_run.py:221))
+constructs `FlushSettings(flush_flowrate=0.0, flush_volume_ml=0.0,
+wait_after_flush_s=0.0)` as a "the exact numbers don't matter for this test"
+placeholder, used by every test in that file exercising `flush_enabled=True`
+-- the new guard now rejects that placeholder outright, before those tests
+ever reach what they're actually trying to verify (step-sequence ordering,
+failure attribution). This is a genuine, confirmed test-fixture conflict
+between the new fix and pre-existing, untouched coverage, not something this
+verification pass fixed -- `tests/test_full_flow_dry_run.py` was not
+modified. Whoever adopts this fix will also need to give
+`make_recording_experiment()` a real positive `flush_flowrate` default (or
+override it per-test) before committing.
+
+**Verification:** focused new tests, 4/4 passed. Full suite:
+**520 passed, 1 skipped, 5 failed** -- 2 of the 5 (`test_v2_every_value_widget_has_a_tooltip_and_visible_marker`,
+`test_v2_experiment_setup_tabs_have_inline_safety_caveats`, tests/test_qt_ui_v2.py)
+are the pre-existing offscreen-Qt object-lifetime flakiness class
+(`RuntimeError: ... QCheckBox ... already deleted`), confirmed passing in
+isolation (2/2); the other 3 are the real, reproducible conflict described
+above, confirmed still failing in isolation (not order-dependent flakiness).
+
+**Not committed** -- pending review, per standing instruction, and per the
+unresolved test conflict above, should not be committed as-is regardless.
+Originated from a concurrent session; this entry documents and verifies it
+(including the problem it currently has), not adopts it on your behalf.
+
+---
+
+### Session 101 -- v2 connection_button fixed: no longer derived from a transient status string
+
+Real bug fix (found and independently verified during the v3 design
+re-evaluation, Round 2), adopted here -- not a v3 preference, a confirmed
+defect in v2's own existing behavior.
+
+**Confirmed failure shape.** `MainWindowV2._refresh_status()`
+(`qt_ui_v2.py`) computed `connected = self.app.status == "System
+Initialized"`. `app.status` is a general status string overwritten by
+every subsequent action -- a flush, a refill, an experiment run, Abort,
+etc. -- so `connection_button` flipped to red "* Not Connected" after the
+very first successful post-initialization action, even though hardware
+remained fully connected. Verified directly against source
+(`qt_ui_v2.py:1106`, pre-fix) before adopting the fix.
+
+**Implementation.** `connection_button`'s "connected" state is now derived
+from the same four per-device connection-status labels
+(`ad2_connection_status`/`camera_connection_status`/`pump_connection_status`/
+`valve_connection_status`) `_refresh_status()` already computes each call,
+each independently sourced from live device attributes
+(`_connected_text()`/`_valve_connection_text()`), not from `app.status`.
+A device reporting "Disabled" no longer counts against the overall claim;
+any enabled device reporting anything other than "Connected"/"Connected
+(...)" does. At least one device must be enabled for the button to claim
+"Connected" (an all-disabled session is not connected). Reordered the
+method so the per-device labels are computed before the button reads them,
+rather than the previous side-by-side, independently-derived structure.
+
+**Regression coverage:** extended
+`test_v2_initialization_progress_uses_existing_instrument_order`
+(tests/test_qt_ui_v2.py) -- after a full simulated initialize confirms
+`connection_button.text() == "* Connected"`, directly overwrites
+`window.app.status = "FlushComplete"` (same "simulate a later action via
+direct status overwrite" pattern already established for the analogous
+`experiment_running_status` fix, Category 2/Session 39) and confirms the
+button still reads "* Connected" with the green stylesheet, rather than
+flipping to red.
+
+**Verification:** full `tests/test_qt_ui_v2.py`, 35/35 passed.
+
+**Not committed** -- pending review, per standing instruction.
+
+---
+
+### Session 102 -- v3 design-idea adoption, Proposals 2-7: label/grouping clarity fixes, shared v1+v2
+
+Six low-risk, label-or-grouping-only adoptions from the v3 round-2
+evaluation, none touching widget sharing/mutation. Each verified real
+(non-offscreen) at 1440x900 and against the full test suite.
+
+- **Proposal 2 -- "Error Out" -> "Status and error history"** (`qt_ui.py`'s
+  `_error_panel()`, `qt_ui_v2.py`'s row label). Session 58 replaced the
+  single-value display with `HistoryLogWidget`, but the caption was never
+  updated to match.
+- **Proposal 3 -- "(unavailable)" captions for Elapsed Time / Time Left**
+  (both files). These are confirmed-dead placeholders
+  (`_stale_static_display()`, Session 39 Category 4) -- the value widgets
+  were already disabled+tooltipped; the caption itself said nothing.
+- **Proposal 4 -- DIO1-clarifying captions** for Camera FPS ("drives DIO1
+  LED clock"), Camera Start (s) ("DIO1 pulse delay"), Dynamic Camera Start
+  Time and Camera Start Array(s) ("per-repeat DIO1 delays") -- matching the
+  real relationship these fields' own existing tooltips already explain,
+  in both `qt_ui.py`'s Experiment tab and `qt_ui_v2.py`'s
+  `_v2_acquisition_group()`.
+- **Proposal 5 -- Initialize dialog reorganized into Connections /
+  Reference paths / Retained fields tabs.** New shared module-level
+  `_hardware_reference_tabs(window, mark_unwired_stub)` in `qt_ui.py`
+  (matching `_widen_for_content()`'s own established shared-helper
+  convention), called from both `qt_ui.py`'s `_instrument_group()`
+  (Enable checkboxes now split into their own leading form, resource/path
+  fields moved into the new tabbed widget below) and `qt_ui_v2.py`'s
+  `InitializationDialog._hardware_details_group()`. **Real ordering bug
+  found and fixed during implementation:** `_add_tooltip_icons(form)` must
+  run *after* the form's layout is installed on a parent widget, not
+  before -- every other call site in this codebase uses the
+  `QFormLayout(parent)` constructor form (immediate installation); the new
+  code's `QFormLayout()` + later `outer.addLayout(form)` two-step
+  construction silently produced un-wrapped tooltip icons until the order
+  was corrected, caught by
+  `test_every_value_widget_has_a_tooltip_and_visible_marker`.
+- **Proposal 6 -- Camera tab: capture_mode/sequence_exposure_ms isolated**
+  into a new `_camera_retained_fields_group()` ("Retained (not used by
+  runtime)"), removed from Sequence Settings' own form where they
+  previously sat inline (each individually "(unused)"-suffixed) among
+  genuinely live, automated-run-affecting fields. `qt_ui_v2.py` needs no
+  change (Camera manual panel maps directly to the shared `_camera_tab`).
+  Updated `test_camera_sequence_group_flags_live_automated_use_and_dead_capture_mode`
+  to check the new group instead of row indices inside the now-shorter
+  settings form.
+- **Proposal 7 -- selective clearer button text** (Pump&Valve tab only,
+  the four genuinely ambiguous ones): "Refill"->"Refill syringe",
+  "Empty"->"Empty syringe", "GO"->"Move to target fill level",
+  "STOP"->"Stop pump". Left Configure/Generate/Ref Move/Flush alone
+  (already reasonably self-explanatory).
+
+**CONFIRMED SIDE EFFECT ON qt_ui_v3.py -- not fixed, per explicit
+instruction not to modify that file.** `qt_ui_v3.py` was not touched, but
+Proposals 2-4's renames break its construction: `_v3_runtime_column()` ->
+`_global_status_panel()` calls the module-level `_rename_unique_text_widget(group,
+QLabel, "Error Out", ...)`, which raises `RuntimeError` when it can't find
+exactly one match -- by design (its own docstring: "fail visibly if the v2
+contract drifts"). Since "Error Out" no longer exists anywhere (renamed to
+"Status and error history"), `MainWindowV3.__init__()` now raises
+immediately, before ever reaching its other renames
+(`_v2_status_progress_group()`'s Elapsed Time/Time Left,
+`_v2_acquisition_group()`'s Camera FPS/Camera Start (s)/Dynamic Camera Start
+Time/Camera Start Array(s)) -- those would fail the same way if this one
+were resolved first. Confirmed via the full test suite: all 14
+`tests/test_qt_ui_v3.py` failures trace to this single root cause (`grep`
+across the failure tracebacks found exactly one distinct `RuntimeError`
+message). Proposals 5/6/7 do NOT affect v3 -- confirmed its
+`_pump_tab()`/`_hardware_details_group()`/Camera-tab methods are full,
+independent rebuilds that never call `super()` or do `_rename_unique_*`
+lookups against the fields those three proposals touched. This is v3's own
+maintenance responsibility (its authors chose fail-loud contract-checking
+deliberately), not a v1/v2 defect -- see `docs/known_open_items.md` for the
+full boundary writeup.
+
+**Verification:** real (non-offscreen) render at 1440x900 for v1's
+Initialization/Camera/Pump&Valve tabs and v2's Initialize dialog + full
+window -- all clean, no clipping, no layout breakage. Full suite: **507
+passed, 1 skipped, 18 failed** -- 3 are the pre-existing Session 100 flush
+regression (unrelated, already flagged as blocked), 14 are the confirmed
+v3 breakage above (expected, not a v1/v2 defect), 1
+(`test_v2_experiment_setup_tabs_has_four_task_oriented_tabs`) is the
+pre-existing offscreen-Qt object-lifetime flakiness class, confirmed
+passing 4/4 on isolated re-run. **Effective: 511 passed (507 + this
+session's own genuinely-clean re-runs), 1 skipped, 3 pre-existing blocked
+(Session 100), 14 expected v3 contract breaks.**
+
+**Not committed** -- pending review, per standing instruction.
+
+---
+
+### Session 103 -- v3 compatibility fix following v1/v2 caption renames (not a v3 feature change)
+
+Narrow, explicitly-scoped fix: updates only the specific string literals
+`qt_ui_v3.py` matches against v1/v2's captions, so `MainWindowV3`
+constructs successfully again after Session 102's renames. No layout,
+structure, or behavior change; no other v3-evaluation finding (e.g. the
+shared-widget-mutation pattern documented in `known_open_items.md`)
+adopted here. `qt_ui.py`/`qt_ui_v2.py` not touched -- confirmed via file
+mtimes both predate this session's only edit (`qt_ui_v3.py`).
+
+**Re-verified root cause (Step 1) before fixing, not assumed from the
+prior report.** Ran the full `tests/test_qt_ui_v3.py` file fresh: all 14
+failures traced to the exact same single `RuntimeError` message ("V3
+expected exactly one QLabel captioned 'Error Out'; found 0"), confirmed
+by grepping every failure's traceback -- `_v3_runtime_column()` (the
+first thing `_build_layout()` builds) reaches `_global_status_panel()`'s
+now-stale "Error Out" lookup before any of Proposals 3/4's other renames
+are ever attempted, so those remained latent (not yet individually
+surfaced) rather than independently confirmed broken. Fixed all of them
+in this pass regardless, not just the one visibly failing.
+
+**Seven `_rename_unique_text_widget()`/`_rename_unique_group()` calls
+updated** (`qt_ui_v3.py`), each changing only the `old_text` search key to
+match Session 102's new v1/v2 caption, `new_text` (v3's own preferred
+wording) left unchanged in every case except one:
+- `_global_status_panel()`: `"Error Out"` -> `"Status and error
+  history"`. v3's own preferred wording is now identical to v1/v2's new
+  caption -- kept as a same-text rename (not removed) to preserve both
+  the fail-loud uniqueness check and the stable `objectName` assignment.
+- `_v2_status_progress_group()`: `"Elapsed Time"` ->
+  `"Elapsed Time (unavailable)"`, `"Time Left"` ->
+  `"Time Left (unavailable)"`.
+- `_v2_acquisition_group()`: `"Camera FPS"` ->
+  `"Camera FPS (drives DIO1 LED clock)"`, `"Camera Start (s)"` ->
+  `"Camera Start (s) (DIO1 pulse delay)"`, `"Dynamic Camera Start Time"`
+  -> `"Dynamic Camera Start Time (per-repeat DIO1 delays)"`, and the
+  `_rename_unique_group()` call for `"Camera Start Array(s)"` ->
+  `"Camera Start Array(s) (per-repeat DIO1 delays)"`.
+- `"Repeats"`/`"Frames"`/`"GlobalExposure"`/`"Average FPS"` were not
+  touched by Session 102, so those existing rename calls were left as-is.
+
+**Verification:** `tests/test_qt_ui_v3.py` -- all 15 passed, confirmed
+stable across 3 consecutive full-file re-runs (no flakiness masking a
+partial fix). Full project suite: 519 passed, 1 skipped, 6 failed -- 3
+are the pre-existing, already-flagged, still-blocked Session 100 flush
+regression (unrelated), 3 are the pre-existing offscreen-Qt
+`SystemError`/object-lifetime flakiness class, confirmed passing 3/3 in
+isolation. **Effective: 522 passed, 1 skipped, 3 pre-existing blocked
+(Session 100), 0 v3 failures** -- the 14 confirmed in Session 102 are
+fully resolved.
+
+**Not committed** -- pending review, per standing instruction.
+
+---
+
+### Session 104 -- Manual, explicit pump fault-clear escape hatch (a deliberate, scoped exception to fail-closed initialization, NOT a reversal of it)
+
+**Framing, stated up front because it matters more than the diff:** every
+other session touching the pump's CAN-bus fault (Sessions 96-99) has
+treated `QmixPumpBackend._enable_pump()`'s refusal to auto-clear a fault as
+correct and load-bearing -- and it still is. `initialize()` itself is
+**not touched by this session at all**; its fail-closed behavior is
+unchanged (re-confirmed by re-running
+`test_qmix_initialization_refuses_existing_fault_without_clearing_or_enabling`
+fresh, still green, still asserting `("clear_fault",) not in pump.calls`).
+What's new is a second, deliberately separate path that only an operator
+can reach by clicking a distinctly-styled button and clicking through a
+non-skippable warning -- an acknowledged, human-authorized bypass for a
+real, still-unresolved hardware condition (the pump's CAN Tx Queue
+Overrun / 0x81FF fault, confirmed in Session 99 to relatch on fresh bus
+connections even with QmixElements fully closed -- see
+`docs/hardware_repair_plan.md`), not a claim that the fault is fixed or
+that auto-clearing is now safe anywhere else.
+
+**`QmixPumpBackend.clear_fault_and_reinitialize(configuration_path)`**
+([qmix_backend.py](src/thermo_acoustic/qmix_backend.py)) -- deliberately
+NOT refactored out of `initialize()` into a shared helper: the two methods'
+bodies are near-identical by design (open bus, look up pump, start bus,
+[fault-check], `_enable_pump()`, configure flow/volume units, cache
+max_flow_rate/max_volume), duplicated rather than shared so `initialize()`
+itself never has to change to support this and stays trivially auditable
+for zero behavioral drift. The one real difference: right before
+`_enable_pump()`, this new method checks `is_in_fault_state()` and calls
+`clear_fault()` if needed. `_enable_pump()` itself is reused completely
+unchanged as the final gate -- if the fault immediately relatches (the
+real observed behavior), it correctly raises `QmixPumpError` again, same
+as `initialize()` would. Rollback on any failure fully tears down
+`bus`/`pump` back to `None` via `close()`, same as `initialize()`'s own
+rollback.
+
+**`CetoniPump.clear_fault_and_reinitialize()`**
+([instruments.py](src/thermo_acoustic/instruments.py)) -- thin wrapper
+mirroring `initialize()`'s own backend-open/rollback structure. Not added
+to the `PumpBackend` Protocol (would force every backend/test fake to
+implement it); instead uses the same `getattr(self.backend,
+"clear_fault_and_reinitialize", None)` duck-typing convention
+`_enable_pump()` already established for `read_last_error`. No-op when
+`enabled=False`; falls back to a plain `initialize()` when simulated
+(`backend=None`, no real fault state to clear); raises `RuntimeError` if
+the configured backend doesn't support it at all.
+
+**`Application.clear_pump_fault_and_retry()`**
+([application.py](src/thermo_acoustic/application.py)) -- the only place
+in the whole codebase that calls the above. Reachable independently of
+the normal `initialize()` flow (device order AD2->Camera->Pump->Valve->
+Z-stage->TEC stops at the first failure, so a faulted pump blocks
+`initialize()` from ever reaching later devices) -- calls
+`self.pump.clear_fault_and_reinitialize()` directly against the live
+`self.pump` instance. Records the action both ways the task required:
+`fire_status_event("Clearing Pump Fault (manual operator action)")` /
+`fire_status_event("PumpFaultClearedAndReconnected (manual operator
+action)")` (or `"PumpFaultClearFailed: {exc}"` on failure) in the live
+status/history log, and sets the new
+`pump_fault_manually_cleared_this_session` field (a plain session-scoped
+bool, not persisted to `settings.json` -- a fresh process starts `False`
+again, matching that the underlying condition is live hardware state, not
+a saved preference).
+
+**`Experiment2.pump_fault_manually_cleared`**
+([workflows.py](src/thermo_acoustic/workflows.py)) -- new `data.tdms`
+property (`"PumpFaultManuallyCleared"`), same pattern as the existing
+`sim_*`/`*_enabled` flags: `Application.run_experiment2()` copies
+`pump_fault_manually_cleared_this_session` onto the experiment right
+alongside them ([application.py](src/thermo_acoustic/application.py)), so
+a run whose pump fault was manually cleared earlier in the session stays
+traceable in saved data, not just in the live (unpersisted) log.
+
+**UI: "Pump Fault Recovery (advanced)" group,
+`qt_ui.py`'s `_pump_tab()`** -- its own group box, its own column, in the
+"Static configuration" row (not folded into "Setup" or anywhere near the
+routine operational controls), with a dark-red bold "Clear Fault && Retry
+Connection" button (real-render-confirmed to display as a single literal
+`&`, not a mnemonic underline -- Qt's `&&`-escaping convention).
+`qt_ui_v2.py` inherits `_pump_tab()` unchanged from `MainWindow`, so it
+gets this for free; `qt_ui_v3.py` was not touched, per the task's explicit
+instruction. Clicking it calls the new `_start_clear_pump_fault()`, which
+shows a `QMessageBox.question()` (default button No, same non-skippable
+pattern as this file's existing Z-scan/reference-move confirmations)
+naming the real fault code, stating plainly that clearing lets the pump
+be used now but does **not** fix the underlying cause and the fault may
+return, pointing at `docs/hardware_repair_plan.md`, and stating the action
+will be recorded -- only on an explicit Yes does it call
+`Application.clear_pump_fault_and_retry()` via `_run_action()`.
+
+**Real-render verification** (`QT_QPA_PLATFORM` unset, confirmed
+`platformName() == "windows"`, same method as Session 41's tooltip-wrap
+fix): screenshotted the Pump&Valve tab (fault-recovery group visually
+separated from Setup/Syringe, no layout squeeze), the group box in
+isolation, and the real `QMessageBox.question()` dialog triggered by an
+actual button click (captured its real title/text, then answered No to
+close it without touching any real hardware or app state) -- all three
+confirmed correct by inspection.
+
+**Tests** (`tests/test_application.py`, `tests/test_qt_ui_hardware_settings.py`,
+12 new, all passing): `clear_fault_and_reinitialize()` actually clears a
+fault and a subsequent bare `initialize()` then succeeds;
+`clear_fault_and_reinitialize()` still fails closed if the fault
+relatches (does not silently succeed); `CetoniPump` wrapper delegates,
+no-ops when disabled, falls back correctly when simulated, raises when
+unsupported; `Application.clear_pump_fault_and_retry()` records both
+status events and the session flag on success, records a failure event
+and leaves the flag `False` on failure; `run_experiment2()` carries the
+flag into the real final `data.tdms` properties; the UI button shows the
+warning and does not proceed without it (`QMessageBox.question()` stubbed
+to return No -> `_run_action` never called), proceeds only after an
+explicit Yes (and the queued action really does call
+`clear_fault_and_reinitialize()`, not a bare `initialize()` that would
+silently skip the clear step); and `_start_initialize()`'s normal path
+never reaches `clear_pump_fault_and_retry()` or touches the session flag,
+even when actually exercised.
+
+**Full suite:** 534 passed, 4 failed, stable across 2 consecutive runs.
+Of the 4: 3 are the pre-existing, already-flagged, still-blocked Session
+100 flush-flowrate-guard regression (unrelated, explicitly out of scope
+for this task). The 4th
+(`test_run_experiment2_skips_disabled_camera_steps_without_touching_backend`)
+is a real, environment-level failure unrelated to this session's code --
+its own default `Application(ad2=AD2Sdk())` tries to open the real AD2
+device and got `"FDwfDeviceOpen failed: Devices are busy, used by other
+applications"`; the test file's relevant lines are byte-identical to
+`HEAD` (confirmed via `git show HEAD:...`), and no file this session
+touched (`qmix_backend.py`, `instruments.py`, `application.py`,
+`workflows.py`, `qt_ui.py`) has any AD2/`waveforms.py` involvement.
+Reproduced consistently (2/2) while some other process was apparently
+holding the real AD2 device open -- worth the user's attention as a
+possible sign something else is actively using the AD2 right now, but not
+a code regression from this task. **Effective: 534 passed, 0 new
+regressions.**
+
+**Not committed** -- pending review, per standing instruction.
+
+---
+
 ## Known remaining open items as of this writing
 
 **This section predates [docs/known_open_items.md](known_open_items.md)
@@ -6836,3 +7835,260 @@ the first place).**
 - **Save/Load Settings persistence coverage -- flagged, not resolved (Session 39); Frequency Scanning specifically closed (Session 44).** Most manual-tab-only fields (WFG Trigger/FM Mod/Sweep sub-fields, the entire Pump&Valve and Camera tabs including the Session-22 load-bearing Sequence cluster, and several later-added Experiment-tab fields: Camera FPS/Start/Array, Dynamic Camera Start Time, GlobalExposure, FM Sweep) are still silently dropped by Save Settings and reset to defaults on the next Load -- long-standing baseline behavior, not a recent regression. Whether comprehensive persistence was ever the intended design, or Save/Load Settings was always meant to cover only hardware-connection + core experiment-repeat parameters, remains a genuine design-scope question this list cannot resolve from the code alone. A mechanical fix (extending `_settings_dict()`/`_load_settings()` with the same tolerant `if key in data` pattern already used throughout) is available for the rest if the answer is "yes, persist everything." **Frequency Scanning** (Start/Stop/Number of Frequencies/Step Size, plus its Enable toggle) was named explicitly in this bullet since Session 34 and is now persisted (Session 44) -- removed from this still-open list.
 - **Z stage backend selection has no real effect -- newly confirmed while grounding a tooltip (Session 39).** `hardware_factory.build_hardware_bundle()` never reads `config.z_backend`/the UI's own "Z stage backend" combo at all -- enabling "Z stage" always builds a Prior-serial `PriorZMotor`, regardless of whether the (already-disabled) combo shows `"prior_serial"` or `"thorlabs_apt"`. A stronger claim than the existing "Not wired to a real backend" stub tooltip already made; low current risk only because this whole path is separately flagged as legacy/obsolete (Session 18) since current Z hardware is Thorlabs/APT, which has no real backend implemented at all yet.
 - **`sequence_exposure_ms` was dead since Session 11 and never actually fixed until now -- fixed (Session 39).** Flagged alongside `capture_mode` in that session's audit; `capture_mode` was fixed in Session 24, this field was not, until this session's Category 1 pass caught the same class of bug it had already fixed once before.
+
+### Session 105 -- File/structure audit cleanup (repository hygiene, no functional change)
+
+Executes the six approved findings from an earlier read-only file/asset
+audit (`main_html/`, `UI_tabs/` images, `qmix_sdk_for_codex/`, `dcamsdk4/`,
+and `labview_manifest.json` were explicitly out of scope and untouched
+throughout, per that audit's own protected-evidence classification; so was
+`qt_ui_v3.py`). Five implementation items, none of them a behavior change
+to any hardware backend, workflow, or UI logic:
+
+1. **`gui_log.txt` removed from tracking.** A single-line, zero-citation
+   stray Qt `DLL_PROCESS_DETACH` trace, tracked since one commit
+   (`3474232`) and never referenced anywhere in `src/`, `tools/`, or
+   `docs/`. `git rm`'d outright, not left untracked.
+2. **Real-hardware run artifacts relocated into a new top-level `runs/`.**
+   `hardware_tests/output/enabled_gating_verification/` (122 MB, 16 files,
+   content/structure unchanged) and the loose root-level `data.tdms` both
+   moved (plain `mv`, not `git mv` -- both were already gitignored/
+   untracked, so there was no history to preserve) into `runs/`.
+   `.gitignore` gained a new `runs/` rule alongside the existing
+   `hardware_tests/output/` one (kept, not removed, in case anything still
+   writes there; its comment now notes it's superseded).
+   `docs/legacy_asset_index.md`'s "HISTORICAL / DIAGNOSTIC EVIDENCE" row
+   updated to name `runs/` as the current location. Historical
+   `hardware_tests/output/` mentions inside this changelog's own past
+   session entries were deliberately left unedited -- they describe where
+   artifacts were written *at the time*, consistent with this file's own
+   stated methodology of not rewriting history.
+3. **Two confusingly-named `tools/` scripts renamed:**
+   `tools/test_hamamatsu_camera.py` -> `tools/legacy_hamamatsu_camera_probe.py`,
+   `tools/test_qmix_pump.py` -> `tools/legacy_qmix_pump_probe.py` (both via
+   `git mv`, history preserved). These two were legacy, action-capable,
+   confirmation-gate-free diagnostics that happened to share the
+   `test_*.py` naming convention with `hardware_tests/`'s own *gated*
+   scripts -- `hardware_tests/README.md` previously had to spend a
+   dedicated paragraph explaining the two were unrelated; that paragraph
+   is now shorter since the naming collision itself is gone. Every live
+   reference to the old names was found and updated: `docs/HANDOVER.md`,
+   `docs/known_open_items.md`, `docs/legacy_unresolved_items.md`,
+   `tools/generate_port_registry.py` (source, so the regenerated
+   `docs/PORTING_TBD.md` picks it up too), and
+   `tests/test_piezo_zscan.py::test_legacy_action_capable_tools_are_explicitly_manual_only`.
+4. **`port_status.json` regenerated fresh** against the current
+   `src/thermo_acoustic/labview_ports.py` via
+   `tools/generate_port_registry.py`. Result: **zero drift** --
+   `port_status.json` and `src/thermo_acoustic/labview_ports.py` came out
+   byte-identical to their committed `ac355b9` versions, despite ~10
+   commits of real hardware work since. `docs/PORTING_TBD.md` (the
+   generator's other output) did change on regeneration, but not from real
+   data drift -- the generator's own template has never produced the
+   hand-authored safety-caveat framing (the `>` blockquote intro,
+   "Generator-labelled" wording) that two later commits (`17f24dd`,
+   `7c7e19f`) added directly to the file by hand. Regenerating would have
+   silently dropped that caveat text; it was restored on top of the fresh
+   body instead, so the final diff against the committed version is only
+   the two real, correct changes (`tools/legacy_hamamatsu_camera_probe.py`
+   rename; a `main_html/main` -> `main_html/main.html` typo fix) -- a
+   pre-existing gap between the generator script and this hand-edited doc,
+   not something this session introduced, and not fixed here (out of
+   scope for this pass).
+5. **`docs/labview_ui_field_reference.md` created**, transcribing all five
+   `UI_tabs/*.png` LabVIEW front-panel screenshots (Initialization, WFG,
+   Pump&Valve, Camera, Experiment) into field-label/default-value tables,
+   with every checkable field cross-referenced against its current
+   `qt_ui.py` default and explicitly flagged where they diverge. PNGs
+   themselves untouched. Confirmed drift: valve `COM6`->`COM5` (already
+   known); Z-stage Prior/`COM7`->Thorlabs PPC001/Kinesis (whole hardware
+   target replaced, not a stale port); Cetoni config path (generic
+   QmixElements folder -> the real one-pump project path); Image
+   Continuous default `On`->`Off`; the already-documented removal of the
+   static "476 is Vertical is max for 100 fps" hint (Session 36). One
+   apparent drift resolved rather than left open: the Camera tab's ROI
+   vertical offset/size and exposure (`900`/`500`/`50ms` in the screenshot
+   vs. `792`/`740`/`40ms` live) traces via `git log -S` to a deliberate,
+   already-git-recorded supersession in `17f24dd` -- the screenshot's raw
+   default was intentionally replaced by a separately real-hardware-tested
+   "LabVIEW camera preset" (`docs/current_workflow_audit.md`), not
+   unexplained rot. The WFG tab's individual numeric spin-box defaults
+   were transcribed but not exhaustively cross-checked against `qt_ui.py`
+   field-by-field (flagged as future follow-up work inside the doc itself,
+   not silently left implying they were verified).
+
+**Full suite:** 537 passed, 4 failed -- the same 4 pre-existing failures
+this changelog already tracked as of Session 104 ("534 passed, 4 failed,
+stable across 2 consecutive runs"; the 3-test increase is from unrelated
+new test files already present in the working tree, `docs/HANDOVER.md`
+etc. not affected). All 4 are `application.py`'s flush-flowrate validation
+rejecting `flush_flowrate=0.0` in pre-existing fake-driven tests -- nothing
+in any failure traceback touches `tools/`, `runs/`, `gui_log.txt`, or
+`port_status.json`. Zero regressions from any of the five items above.
+
+**Files touched:** `.gitignore`, `gui_log.txt` (removed),
+`docs/legacy_asset_index.md`, `docs/HANDOVER.md`, `docs/known_open_items.md`,
+`docs/legacy_unresolved_items.md`, `docs/PORTING_TBD.md`, `port_status.json`
+(regenerated, byte-identical), `src/thermo_acoustic/labview_ports.py`
+(regenerated, byte-identical), `tools/generate_port_registry.py`,
+`tools/legacy_hamamatsu_camera_probe.py` (renamed from
+`tools/test_hamamatsu_camera.py`), `tools/legacy_qmix_pump_probe.py`
+(renamed from `tools/test_qmix_pump.py`), `hardware_tests/README.md`,
+`tests/test_piezo_zscan.py`, `docs/labview_ui_field_reference.md` (new),
+plus the relocation of `hardware_tests/output/enabled_gating_verification/`
+and `data.tdms` into the new `runs/`. Nothing committed -- pending review.
+
+### Session 106 -- ARCHITECTURE CHANGE: Application.initialize() no longer aborts on the first device failure or rolls back devices that already succeeded
+
+**This session changes what a failed device does to the other five during
+Initialize Hardware. Read this entry before relying on that flow's
+behavior.** Previous behavior: `Application.initialize()` processed
+devices in a fixed AD2 -> Camera -> Pump -> Valve -> Z-stage -> TEC order
+and, the instant any one device's `initialize()` raised, called
+`_cleanup_instruments()` on every device that had already succeeded (real
+teardown -- `AD2Sdk.cleanup()`/`HamamatsuCamera.cleanup()`/etc., genuinely
+closing handles), then re-raised, skipping every device after the failing
+one entirely. Concretely: a pump fault (AD2/Camera succeed before Pump in
+the order) tore AD2 and Camera back down, and Valve/Z-stage/TEC (after
+Pump) never even attempted a connection. **New behavior: every device
+gets its own independent `initialize()` attempt regardless of what
+happened to any other device. A device that succeeds stays connected. A
+device that fails is simply reported as failed and the loop moves on to
+the next device. `initialize()` still raises at the end if one or more
+devices failed (same external contract callers already relied on), but
+only after every device had its chance, and the exception now names every
+device that failed, not just the first.**
+
+**Step 1 -- investigation, before changing anything (as required).**
+Searched `docs/known_open_items.md`, `docs/hardware_repair_plan.md`, and
+this changelog for any documented rationale for the cross-device rollback
+specifically (as opposed to a device's own partial-init cleanup). Found
+none. Every rollback-related entry in this project's history (Sessions
+96-99, and `known_open_items.md`'s "device whose own `initialize()` call
+fails is not part of the rollback list" passage) is about a *different*,
+narrower concern: a single device cleaning up its *own* partial connection
+state after its *own* `initialize()` fails partway through (Valve closing
+a just-opened serial port after a failed handshake; `CetoniPump` closing
+its backend after a failed post-open fill-level readback; `PiezoStage`
+stopping polling before shutdown after a failed post-connect readback).
+Nothing anywhere argues Device B depends on Device A's success. This reads
+as the incidental behavior of a simple sequential `try`/`except` loop, not
+a deliberate safety design.
+
+**Step 2 -- confirmed genuine independence, not assumed.** Inspected every
+one of the six devices' `initialize()` methods
+(`instruments.py`/`tec.py`): `AD2Sdk.initialize()`, `HamamatsuCamera.
+initialize()`, `CetoniPump.initialize()`, `Valve.initialize()`, `ZStage.
+initialize()`, `TecController.initialize()` -- none takes another
+instrument as a parameter, and none reads `self.app` or a sibling
+instrument's state. Each is fully self-contained, touching only its own
+dataclass fields and its own backend. The AD2 -> Camera -> Pump -> Valve ->
+Z-stage -> TEC order is confirmed to be an arbitrary reporting sequence,
+not a dependency chain.
+
+**Fix.** `Application.initialize()` ([application.py](src/thermo_acoustic/application.py))
+rewritten: the per-device loop no longer breaks or rolls back on the first
+exception -- it collects `(display_name, exc)` per failure and `continue`s
+to the next device. After the loop, if any failures were collected, fires
+`"System Partially Initialized (N/6 succeeded; failed: ...)"` and raises
+one `RuntimeError` whose message names every failed device (`"; "`-joined,
+same style the old code already used to combine a primary error with
+rollback errors), chained `from` the first failure for traceback context.
+`self.fire_status_event("System Initialized")` still only fires when every
+device succeeds. `_cleanup_instruments()` itself is untouched and still
+used by `Application.cleanup()` -- only its cross-device call from inside
+`initialize()`'s except-branch was removed. Neither UI caller
+(`qt_ui.py`/`qt_ui_v2.py`'s `_initialize_system()`) needed a change: both
+already call `self.app.cleanup()` unconditionally before every Initialize
+attempt, so a retry already tears down anything left from a prior partial
+attempt regardless of whether `initialize()` itself does cross-device
+rollback -- removing it introduces no leak risk on retry.
+
+**Per-device UI reporting confirmed correct, not merely assumed.** The
+`progress("init_device", (display_name, status))` stream v1 emits but
+never consumes (`qt_ui.py`'s `_handle_worker_progress()` has no
+`"init_device"` case at all -- dead for v1) is consumed only by v2's
+`InitializationDialog.set_device_status()`
+([qt_ui_v2.py](src/thermo_acoustic/qt_ui_v2.py)), a direct
+`(device_name, status)` -> label-text pass-through with no special-casing
+removed or needed. The old "Rolled back (X init failed)" progress text
+naturally stops being emitted (nothing is rolled back anymore); succeeded
+devices now correctly keep reporting their own genuine "Complete", failed
+ones "Failed" -- more accurate than before, since v2's own
+`ad2_connection_status`/`pump_connection_status`/etc. labels already read
+live instrument state (`self.app.ad2.device_handle`, `self.app.pump.
+initialized`, ...) directly, not a cached "did the whole `initialize()`
+succeed" flag -- they were already capable of showing "Connected" for a
+device the old code had artificially disconnected via rollback; now they
+agree with the dialog instead of contradicting it, without needing any of
+their own logic to change.
+
+**Valve given the same lazy-reconnect fallback AD2/Camera already had.**
+`AD2Sdk.config_wfg()`/`pc_trigger()` and `HamamatsuDcamBackend.
+configure_exposure_time()`/etc. already lazily reopen (`open_and_use_
+first_device()`/`open_camera()`) whenever their handle is `None` and the
+device is enabled -- confirmed by reading both, not assumed -- which is
+exactly the state a rolled-back-or-never-attempted device is left in. This
+made AD2/Camera silently self-heal on the next manual-tab action even
+under the old buggy `initialize()`, masking how bad the old coupling
+really was; Valve had no equivalent and would raise a real `"Serial port
+is not open"` `RuntimeError` from `set_position()` if it was ever skipped.
+New `Valve._ensure_connected()` ([instruments.py](src/thermo_acoustic/instruments.py)):
+if `self.backend is not None and not self.initialized`, calls
+`self.initialize()` -- not a shortcut "just open the port" duplicate, the
+real `initialize()` itself, so the "S" status handshake/validation always
+runs before a position command is trusted. Called from `set_position()`
+before every position write. Z-stage was checked and found to already have
+no gap: the manual Z-Scan tab's own action handlers call `piezo.connect()`/
+`piezo.disconnect()` directly, per action, entirely independent of
+`Application.initialize()` -- it never depended on the main Initialize
+flow succeeding in the first place. TEC was checked and its real-use
+methods (`read_status()`/`apply_static_setpoint()`) likely have the same
+gap as old Valve (`_backend()` only lazily constructs the backend object,
+never calls `connect()`) -- **not fixed here**, deliberately: TEC
+real-hardware operation is a separately-unresolved boundary
+(`docs/tec_verification_matrix.md`), and bundling an untested TEC
+connection-semantics change into this architecture fix would conflate two
+different reviews. Flagged as a follow-up, not silently patched.
+
+**Docs updated to match** (both live/maintained docs, not the historical
+changelog narrative style): `docs/hardware_repair_plan.md`'s
+"Initialization And Failure Recovery" section and its Qmix-CAN-fault
+"Confirmed" bullet; `docs/known_open_items.md`'s rollback-list bullet;
+`qt_ui_v2.py`'s own stale "Rolled back (...)" example in a column-width
+comment.
+
+**Tests** (`tests/test_full_flow_dry_run.py`, `tests/test_application.py`,
+`tests/test_qt_ui_v2.py`): `test_initialize_rolls_back_already_initialized_
+devices_when_later_device_fails` (the old regression test asserting the
+now-removed behavior) rewritten as `test_initialize_lets_every_device_
+attempt_independently_when_one_fails` -- Valve failing no longer stops
+Z-stage from attempting, and produces zero `cleanup()` calls anywhere. New:
+`test_initialize_pump_failure_does_not_block_ad2_camera_valve_z_stage`
+(the exact user-reported scenario -- Pump failing does not block or roll
+back AD2/Camera/Valve/Z-stage); `test_initialize_reports_every_
+independent_failure_not_just_the_first` (two independent failures, both
+named in the raised exception); `test_initialize_reports_per_device_
+progress_independently_on_partial_failure` (per-device progress events
+show genuine independent Complete/Failed, never "Rolled back"). Three new
+Valve tests: lazy-reconnect fires when never initialized, does NOT
+redundantly reconnect when already initialized, and fires again correctly
+after a *previously failed* (not just never-attempted) `initialize()` call
+via a purpose-built `_FlakyOnceTextBackend`. `test_v2_tec_init_failure_
+reports_rollback_instead_of_stale_complete` (the old v2-dialog regression
+test) rewritten as `test_v2_tec_init_failure_leaves_other_devices_
+genuinely_connected` -- confirms both the per-device dialog rows AND
+Global Status now agree AD2/Camera/Pump/Valve stayed connected when only
+TEC failed.
+
+**Full suite:** 543 passed, 4 failed -- the same 4 pre-existing,
+already-tracked `application.py` flush-flowrate-validation failures (see
+Session 105's entry and the earlier "534 passed, 4 failed" baseline from
+Session 104), unrelated to this change; none of their tracebacks touch
+`Application.initialize()`, `Valve`, or any file this session edited.
+
+**Files touched:** `src/thermo_acoustic/application.py`,
+`src/thermo_acoustic/instruments.py`, `src/thermo_acoustic/qt_ui_v2.py`
+(comment only), `docs/hardware_repair_plan.md`, `docs/known_open_items.md`,
+`tests/test_full_flow_dry_run.py`, `tests/test_application.py`,
+`tests/test_qt_ui_v2.py`. Nothing committed -- pending review.

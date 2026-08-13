@@ -1,13 +1,12 @@
 # Pending user feedback
 
-Authoritative, live tracker of user-reported issues that are not yet
-fully resolved. This is **not** a historical record of completed work
-(that's [claude_code_change_log.md](claude_code_change_log.md)) and
-**not** investigation findings derived from code review
-([known_open_items.md](known_open_items.md)) -- this file exists
-specifically for raw issues the user has personally reported, so "what's
-still pending" can be answered by reading this file instead of relying
-on conversation memory.
+User-reported issue log and feedback history. This is **not** the canonical
+live tracker for all unresolved project work: use
+[known_open_items.md](known_open_items.md) for that, and
+[hardware_repair_plan.md](hardware_repair_plan.md) for evidence requirements
+and repair planning. This file preserves raw issues personally reported by the
+user; [claude_code_change_log.md](claude_code_change_log.md) is historical
+only.
 
 **Convention:** any newly-reported issue gets appended here immediately,
 before any other work happens on it (even mid-task). Status is one of

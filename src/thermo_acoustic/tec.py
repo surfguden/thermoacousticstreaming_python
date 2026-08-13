@@ -5,6 +5,8 @@ import math
 import time
 from typing import Callable, Protocol
 
+from .hw_logging import run_with_timeout
+
 
 TEC_TARGET_MIN_C = 0.0
 TEC_TARGET_MAX_C = 80.0
@@ -375,6 +377,7 @@ class TecController:
     channels: tuple[int, ...] = TEC_CHANNELS
     initialized_via_real_port: bool = False
     last_status: dict[int, TecStatus] = field(default_factory=dict)
+    cleanup_timeout_s: float = 5.0
 
     def _backend(self) -> TecBackend:
         if self.backend is None:
@@ -393,11 +396,11 @@ class TecController:
             status = backend.read_status(self.channels)
         except Exception as exc:
             self.initialized = False
-            try:
-                backend.close()
-            except Exception as cleanup_exc:
+            cleanup_error = run_with_timeout(backend.close, "TEC failed-initialize cleanup", self.cleanup_timeout_s)
+            if cleanup_error is not None:
                 raise TecError(
-                    f"TEC initialize failed, and cleanup after the failed initialize also failed: {cleanup_exc}"
+                    f"TEC initialize failed: {exc}; cleanup after the failed initialize also failed: "
+                    f"{cleanup_error}"
                 ) from exc
             raise
         self.initialized = True
@@ -405,7 +408,9 @@ class TecController:
 
     def cleanup(self) -> None:
         if self.backend is not None:
-            self.backend.close()
+            cleanup_error = run_with_timeout(self.backend.close, "TEC cleanup", self.cleanup_timeout_s)
+            if cleanup_error is not None:
+                raise TecError(cleanup_error)
         self.initialized = False
 
     def read_status(self, channels: tuple[int, ...] | None = None) -> dict[int, TecStatus]:

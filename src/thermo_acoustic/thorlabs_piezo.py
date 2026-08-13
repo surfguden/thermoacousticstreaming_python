@@ -127,10 +127,13 @@ class PiezoStage:
             except Exception as exc:
                 raise PiezoStageError(f"Failed to connect to piezo stage {self.serial_number!r}: {exc}") from exc
 
+            channel = None
+            polling_started = False
             try:
                 channel = device.GetChannel(self.channel_index)
                 channel.WaitForSettingsInitialized(self.settings_timeout_ms)
                 channel.StartPolling(self.polling_interval_ms)
+                polling_started = True
 
                 self.device = device
                 self.channel = channel
@@ -144,10 +147,15 @@ class PiezoStage:
                 self.device = None
                 self.channel = None
                 self.connected = False
-                try:
-                    device.ShutDown()
-                except Exception:
-                    pass
+                rollback_errors: list[str] = []
+                if polling_started and channel is not None:
+                    rollback_errors.extend(self._run_disconnect_step("StopPolling", channel.StopPolling))
+                rollback_errors.extend(self._run_disconnect_step("ShutDown", device.ShutDown))
+                if rollback_errors:
+                    raise PiezoStageError(
+                        f"Failed to initialize piezo stage channel {self.channel_index}: {exc}; "
+                        + "; ".join(rollback_errors)
+                    ) from exc
                 raise PiezoStageError(f"Failed to initialize piezo stage channel {self.channel_index}: {exc}") from exc
 
             result["response"] = (

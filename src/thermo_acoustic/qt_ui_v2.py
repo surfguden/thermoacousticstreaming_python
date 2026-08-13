@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -33,7 +34,13 @@ from .application import (
 )
 from .hardware_factory import HardwareRuntimeConfig, apply_hardware_bundle, build_hardware_bundle
 from .instruments import SimulatedAD2Sdk
-from .qt_ui import HistoryLogWidget, MainWindow, WaveformGraph, _widen_for_content, install_focus_wheel_guard
+from .qt_ui import (
+    HistoryLogWidget,
+    MainWindow,
+    WaveformGraph,
+    _hardware_reference_tabs,
+    install_focus_wheel_guard,
+)
 
 
 def _synthesize_wfg_wave(
@@ -152,8 +159,8 @@ class InitializationDialog(QDialog):
         # _widen_for_content()'d to fit real, long Windows paths (~800px)
         # and force the whole dialog wide; QVBoxLayout then stretches this
         # grid to match. Moving the stretch to the Progress column (whose
-        # variable-length status text -- "Waiting"/"Rolled back (...)" --
-        # can actually use the room) keeps Device/Simulate/Enable snug
+        # variable-length status text -- "Waiting"/"Complete (...)"/"Failed"
+        # -- can actually use the room) keeps Device/Simulate/Enable snug
         # against each other regardless of how wide a sibling group makes
         # the dialog, instead of spreading all four columns out evenly.
         grid.setColumnStretch(3, 1)
@@ -170,19 +177,19 @@ class InitializationDialog(QDialog):
         return checkbox
 
     def _hardware_details_group(self, window: QWidget) -> QGroupBox:
+        # v3 design-idea adoption, Proposal 5 (2026-08-06): was one flat
+        # form mixing live-wired fields (Thorlabs/APT serial, Valve
+        # resource, TEC resource, Cetoni config path) with informational-
+        # only reference paths (Qmix SDK/QMIXSDK paths) and fields retained
+        # purely for migration reference (Z stage backend, Prior VISA
+        # resource, Thorlabs/APT backend, Thorlabs/APT discovery only) --
+        # all disabled the same way regardless of which very different
+        # category they were actually in. Grouped into task-oriented tabs
+        # instead, same shared helper qt_ui.py's own Initialization tab
+        # now also uses.
         group = QGroupBox("Hardware Details")
-        form = QFormLayout(group)
-        form.addRow("Z stage backend", self._mark_unwired_stub(window.z_backend))
-        form.addRow("Prior VISA resource name (legacy, unwired)", self._mark_unwired_stub(window.prior_resource))
-        form.addRow("Thorlabs/APT serial", window.thorlabs_apt_serial)
-        form.addRow("Thorlabs/APT backend", self._mark_unwired_stub(window.thorlabs_apt_backend))
-        form.addRow("Thorlabs/APT discovery only", self._mark_unwired_stub(window.thorlabs_apt_discovery_only))
-        form.addRow("Valve resource", window.valve_resource)
-        form.addRow("TEC resource", window.tec_port)
-        form.addRow("Qmix SDK Python Path", self._mark_unwired_stub(_widen_for_content(window.qmix_sdk_python_path)))
-        form.addRow("Qmix QMIXSDK Path", self._mark_unwired_stub(_widen_for_content(window.qmix_qmixsdk_path)))
-        form.addRow("Cetoni config path", _widen_for_content(window.cetoni_config_path))
-        window._add_tooltip_icons(form)
+        layout = QVBoxLayout(group)
+        layout.addWidget(_hardware_reference_tabs(window, self._mark_unwired_stub))
         return group
 
     @staticmethod
@@ -202,33 +209,13 @@ class InitializationDialog(QDialog):
         label.setText(status)
 
 
-class _CompactPlaceholderRow(QWidget):
-    """Single-line stand-in for a step-card with no real configuration
-    content (restructure proposal 1) -- a bullet + numbered step title,
-    an em dash, and a grayed/italic "no configuration" note, all on one
-    row. Carries its own .title() (mirrors QGroupBox.title()) so callers
-    that ask a step card for its title don't need to know which of the
-    two card types they got."""
-
-    def __init__(self, title: str, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._title = title
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(6, 2, 6, 2)
-        heading = QLabel(f"● {title}")
-        layout.addWidget(heading)
-        reason = QLabel("— no configuration for this step")
-        reason.setStyleSheet("color: gray; font-style: italic;")
-        layout.addWidget(reason)
-        layout.addStretch(1)
-
-    def title(self) -> str:
-        return self._title
-
-
-# Short tooltip labels for _StepBreadcrumb's markers -- same steps/order as
-# ExperimentSequenceView's own numbered card titles just below, without the
-# "N. " prefix (the marker's own position already encodes the number).
+# Short tooltip labels for _StepBreadcrumb's markers -- same run_experiment2()
+# step order application.py's STEP_ORDER defines, without the "N. " prefix
+# (the marker's own position already encodes the number). Previously matched
+# ExperimentSequenceView's own numbered card titles; that card-per-step view
+# was retired when v2's configuration column adopted task-oriented setup tabs
+# (v3 design-idea adoption, Proposal B, 2026-08-05) -- this dict is now the
+# only place these step titles are spelled out for v2.
 _STEP_BREADCRUMB_TITLES: dict[str, str] = {
     STEP_INITIALIZE_EXPERIMENT: "Initialize Experiment",
     STEP_CONFIGURE_WFG: "Configure WFG",
@@ -242,21 +229,23 @@ _STEP_BREADCRUMB_TITLES: dict[str, str] = {
 
 class _StepBreadcrumb(QWidget):
     """Phase 3 (2026-08-04): a horizontal at-a-glance marker row for
-    run_experiment2()'s 7-step sequence -- the live counterpart to
-    ExperimentSequenceView's static Configuration Mode cards below, driven
-    by the exact same progress("step_started"/"step_completed"/
-    "step_failed"/"step_reset", ...) events _report_step() and the explicit
-    reset calls in application.py already fire (see MainWindow._step_states/
+    run_experiment2()'s 7-step sequence, driven by the exact same
+    progress("step_started"/"step_completed"/"step_failed"/"step_reset",
+    ...) events _report_step() and the explicit reset calls in
+    application.py already fire (see MainWindow._step_states/
     _handle_worker_progress() in qt_ui.py -- this widget is a renderer for
-    that shared state, not a second independent listener).
+    that shared state, not a second independent listener). Previously
+    described as the live counterpart to ExperimentSequenceView's static
+    Configuration Mode cards; that view was retired (v3 design-idea
+    adoption, Proposal B, 2026-08-05) in favor of task-oriented setup tabs
+    -- this widget is unaffected, since it never depended on that view.
 
     TEC-scan design decision (recorded alongside application.py's STEP_*
-    constants, same as ExperimentSequenceView above): SetTecTarget/
-    WaitTecStable wrap this same 7-step sequence from outside, once per
-    temperature point -- deliberately not markers here. The current
-    temperature point/target is a separate indicator, out of scope for this
-    widget (flagged as a follow-up candidate, not built here -- see the
-    Phase 3 investigation notes).
+    constants): SetTecTarget/WaitTecStable wrap this same 7-step sequence
+    from outside, once per temperature point -- deliberately not markers
+    here. The current temperature point/target is a separate indicator,
+    out of scope for this widget (flagged as a follow-up candidate, not
+    built here -- see the Phase 3 investigation notes).
 
     Deliberately does NOT show a distinct "stopping" visual during a
     graceful-stop (Session 78/80's "Stopping after this repeat/temperature
@@ -311,71 +300,6 @@ class _StepBreadcrumb(QWidget):
         return self._states.get(step_name, "pending")
 
 
-class ExperimentSequenceView(QWidget):
-    """v2-only, Configuration Mode step-card container for the real
-    per-repeat sequence run_experiment2() executes (application.py's
-    STEP_* constants, grounded in that method's own traced order -- see
-    the v2 sequence-visualization design note recorded there). Each
-    card embeds the existing shared group-box widgets v2
-    already builds for that step's fields, re-parented here rather than
-    rebuilt -- matching this project's established "v2 reuses
-    shared panel builders instead of a second implementation"
-    convention (legacy_unresolved_items.md). Phase 2 (this class) is
-    Configuration Mode only: a static list of cards, no live wiring.
-    Phase 3 will add live highlighting of the in-flight card and
-    per-card failure attribution via the same progress("step_started"/
-    "step_completed"/"step_failed", ...) events _report_step() already
-    fires -- not implemented here.
-
-    TEC-scan design decision (recorded in application.py alongside the
-    STEP_* constants): SetTecTarget/WaitTecStable wrap the per-repeat
-    step list from outside, once per temperature point -- they are
-    deliberately NOT cards in this view. The TEC-scan configuration
-    group is added as its own separate section by the caller, outside
-    this view entirely, matching that same "wraps from outside"
-    relationship even in Configuration Mode.
-    """
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._layout = QVBoxLayout(self)
-        self._layout.setContentsMargins(0, 0, 0, 0)
-        self._step_cards: dict[str, QWidget] = {}
-
-    def add_step_card(
-        self, step_name: str, title: str, content: QWidget | None = None, *, tooltip: str | None = None
-    ) -> QWidget:
-        if content is None:
-            # Redesign (2026-08-03, restructure proposal 1): a step with no
-            # Experiment-tab-specific configuration used to get the SAME
-            # full-width QGroupBox card as a real config step, with nothing
-            # inside but one italic sentence -- three of the seven steps
-            # (CaptureFrames/WaitForAd2Completion/SaveResults) always render
-            # this way and always will, unless/until backing functionality
-            # exists, so that full card treatment was pure dead weight: same
-            # visual weight as "2. Configure WFG"'s 535px of real fields for
-            # a single line of "nothing here." Collapsed to one compact row
-            # instead -- still honest (states plainly there's no
-            # configuration, invents nothing), but no longer competes for
-            # screen space with the steps that actually have content.
-            card = _CompactPlaceholderRow(title)
-        else:
-            card = QGroupBox(title)
-            card_layout = QVBoxLayout(card)
-            card_layout.addWidget(content)
-        if tooltip:
-            card.setToolTip(tooltip)
-        self._layout.addWidget(card)
-        self._step_cards[step_name] = card
-        return card
-
-    def step_card(self, step_name: str) -> QWidget | None:
-        return self._step_cards.get(step_name)
-
-    def step_names(self) -> list[str]:
-        return list(self._step_cards.keys())
-
-
 class MainWindowV2(MainWindow):
     """Opt-in transitional UI that reuses the existing shared hardware runtime."""
 
@@ -406,6 +330,9 @@ class MainWindowV2(MainWindow):
     # inventing new wording; the other three keys are already their own
     # correct display text, so this dict only needs the one entry.
     _PANEL_DISPLAY_NAMES: dict[str, str] = {"PumpValve": "Pump&Valve", "ZScan": "Z-Scan"}
+    # Subclasses can improve presentation terminology without changing the
+    # manual WFG controls or synthesis path they inherit.
+    _WFG_PREVIEW_CHANNEL_LABELS: tuple[str, str] = ("Ch1", "Ch2")
 
     @classmethod
     def _panel_display_name(cls, panel_name: str) -> str:
@@ -433,15 +360,19 @@ class MainWindowV2(MainWindow):
 
     def _build_menu_bar(self) -> None:
         menu = self.menuBar()
-        menu.addAction("Exit", self._exit_app)
+        exit_action = menu.addAction("Exit", self._exit_app)
+        exit_action.setObjectName("menuExitAction")
         stop_action = menu.addAction("Abort", self._abort)
+        stop_action.setObjectName("menuAbortAction")
         stop_action.setToolTip(
             "Stops after the current repeat, or after the current temperature point during a TEC scan. "
             "It does not stop hardware in the middle of an operation."
         )
         stop_action.setStatusTip(stop_action.toolTip())
-        menu.addAction("Save Settings", self._save_settings)
-        menu.addAction("Load Settings", self._load_settings)
+        save_action = menu.addAction("Save Settings", self._save_settings)
+        save_action.setObjectName("menuSaveSettingsAction")
+        load_action = menu.addAction("Load Settings", self._load_settings)
+        load_action.setObjectName("menuLoadSettingsAction")
 
     def _left_navigation(self) -> QWidget:
         panel = QWidget()
@@ -542,14 +473,22 @@ class MainWindowV2(MainWindow):
         layout = QVBoxLayout(content)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        # TEC-scan wraps the per-repeat step sequence from *outside*, once
-        # per temperature point (see application.py's STEP_* design note) --
-        # rendered here as its own section, not one of the sequence view's
-        # per-repeat cards below, matching that relationship even in
-        # Configuration Mode (no live point-in-sequence indicator yet --
-        # that is Phase 3).
-        layout.addWidget(self._experiment_temperature_group())
-        layout.addWidget(self._experiment_sequence_view())
+        # v3 design-idea adoption, Proposal A (2026-08-05): the primary run
+        # control goes first, inside this column -- not stacked above the
+        # config/live-monitoring split (see
+        # _experiment_primary_run_control_group()'s own comment for why
+        # that placement was deliberately avoided).
+        layout.addWidget(self._experiment_primary_run_control_group())
+
+        # v3 design-idea adoption, Proposal B (2026-08-05): task-oriented
+        # setup tabs replace the former per-step card sequence -- see
+        # _v2_experiment_setup_tabs()'s own comment for why this is safe
+        # (no live functionality lived in the retired card view). TEC now
+        # lives inside the "Advanced" tab rather than as its own section
+        # rendered outside the step list -- that "wraps from outside"
+        # relationship was specific to the per-repeat card sequence, which
+        # no longer exists here.
+        layout.addWidget(self._v2_experiment_setup_tabs())
 
         area.setWidget(content)
         return area
@@ -592,38 +531,30 @@ class MainWindowV2(MainWindow):
         area.setWidget(content)
         return area
 
-    def _experiment_sequence_view(self) -> ExperimentSequenceView:
-        # The v2 layout deliberately reuses v1's widget instances rather than
-        # cloning their state. Rebuilding this view would reparent those live
-        # widgets a second time and can delete the first wrapper hierarchy
-        # under Qt, leaving stale Python wrappers behind. This is one logical
-        # view per MainWindowV2, so return the original instance on later
-        # calls (including UI tests that inspect it directly).
-        cached = getattr(self, "_experiment_sequence_view_cache", None)
-        if cached is not None:
-            return cached
+    def _v2_experiment_setup_tabs(self) -> QTabWidget:
+        # v3 design-idea adoption, Proposal B (2026-08-05): replaces the
+        # former ExperimentSequenceView numbered-card-per-step display
+        # (Phase 2, Configuration Mode) with task-oriented tabs -- grouping
+        # by what an operator is actually configuring, not by
+        # run_experiment2()'s internal step order. Safe to retire: that
+        # card view was confirmed static (its own docstring: "Phase 2...
+        # no live wiring"), and the live step-progress feedback Phase 3 was
+        # meant to add there instead went into the fully separate
+        # _StepBreadcrumb widget in the Status/Progress group -- unaffected
+        # by this change. CaptureFrames/WaitForAd2Completion/SaveResults
+        # had no Experiment-tab-specific configuration of their own before
+        # (they got add_step_card()'s honest placeholder), so nothing here
+        # replaces them -- their real behavior is still entirely derived
+        # from the other steps' settings, now organized under the tabs
+        # below. Each existing group-box builder is re-parented whole into
+        # the tab it most directly matches, not split field-by-field, same
+        # discipline the old card mapping used.
+        tabs = QTabWidget()
 
-        # Card-to-group mapping (Phase 2, Configuration Mode): each existing
-        # group-box builder is re-parented whole into the step it most
-        # directly configures -- not split field-by-field, so a group whose
-        # fields genuinely span two steps (e.g. Acquisition Parameters mixes
-        # camera exposure/FPS with Repeats/Frames) stays with the step its
-        # name most directly matches (ConfigureCamera), rather than being
-        # rebuilt as several smaller groups. CaptureFrames/
-        # WaitForAd2Completion/SaveResults currently have no
-        # Experiment-tab-specific configuration of their own (their real
-        # behavior is entirely derived from other steps' settings), so those
-        # cards get add_step_card()'s honest placeholder instead of invented
-        # content. This mapping is a judgment call, not a settled design --
-        # a future finer-grained regroup (splitting Acquisition Parameters,
-        # for instance) is a separate decision, not made here.
-        view = ExperimentSequenceView()
-        view.add_step_card(STEP_INITIALIZE_EXPERIMENT, "1. Initialize Experiment", self._v2_sequence_control_group())
-
-        wfg_content = QWidget()
-        wfg_layout = QVBoxLayout(wfg_content)
-        wfg_layout.setContentsMargins(0, 0, 0, 0)
-        wfg_layout.addWidget(self._v2_ad2_output_group())
+        ad2_content = QWidget()
+        ad2_layout = QVBoxLayout(ad2_content)
+        ad2_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        ad2_layout.addWidget(self._v2_ad2_output_group())
         # Category 7 (Session 39): FM Sweep and Frequency Scanning are both
         # real, fully-wired Experiment-tab features in qt_ui.py -- both bind
         # the exact same self.exp_sweep_*/self.exp_freq_scan_* widgets
@@ -631,26 +562,60 @@ class MainWindowV2(MainWindow):
         fm_freq_row = QHBoxLayout()
         fm_freq_row.addWidget(self._experiment_fm_sweep_group())
         fm_freq_row.addWidget(self._experiment_frequency_scan_group())
-        wfg_layout.addLayout(fm_freq_row)
-        view.add_step_card(STEP_CONFIGURE_WFG, "2. Configure WFG", wfg_content)
+        ad2_layout.addLayout(fm_freq_row)
+        tabs.addTab(self._v2_setup_scroll_page(ad2_content), "AD2 Output")
 
-        view.add_step_card(STEP_CONFIGURE_CAMERA, "3. Configure Camera", self._v2_acquisition_group())
-        view.add_step_card(STEP_CAPTURE_FRAMES, "4. Capture Frames")
-        view.add_step_card(STEP_WAIT_FOR_AD2_COMPLETION, "5. Wait For AD2 Completion")
-        view.add_step_card(
-            STEP_FLUSH,
-            "6. Flush",
-            self._experiment_flush_group(),
-            tooltip=(
-                "Sequential, not concurrent (confirmed against the real LabVIEW source and the "
-                "current Python implementation): valve switches to position 1, THEN the pump "
-                "moves, THEN the valve switches to position 2 -- the pump is idle during each "
-                "switch, not flowing through it."
-            ),
+        camera_content = QWidget()
+        camera_layout = QVBoxLayout(camera_content)
+        camera_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        camera_layout.addWidget(self._v2_acquisition_group())
+        tabs.addTab(self._v2_setup_scroll_page(camera_content), "Camera")
+
+        fluidics_content = QWidget()
+        fluidics_layout = QVBoxLayout(fluidics_content)
+        fluidics_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        fluidics_note = QLabel("Optional post-capture pump/valve workflow. Disabled by default.")
+        fluidics_note.setWordWrap(True)
+        fluidics_note.setMaximumWidth(520)
+        fluidics_layout.addWidget(fluidics_note)
+        flush_group = self._experiment_flush_group()
+        # Sequential, not concurrent (confirmed against the real LabVIEW
+        # source and the current Python implementation): valve switches to
+        # position 1, THEN the pump moves, THEN the valve switches to
+        # position 2 -- the pump is idle during each switch, not flowing
+        # through it. Previously the retired step-card's own tooltip;
+        # moved onto the group box directly so hovering it still surfaces
+        # the same safety-relevant explanation.
+        flush_group.setToolTip(
+            "Sequential, not concurrent (confirmed against the real LabVIEW source and the "
+            "current Python implementation): valve switches to position 1, THEN the pump "
+            "moves, THEN the valve switches to position 2 -- the pump is idle during each "
+            "switch, not flowing through it."
         )
-        view.add_step_card(STEP_SAVE_RESULTS, "7. Save Results")
-        self._experiment_sequence_view_cache = view
-        return view
+        fluidics_layout.addWidget(flush_group)
+        fluidics_layout.addStretch(1)
+        tabs.addTab(self._v2_setup_scroll_page(fluidics_content), "Fluidics")
+
+        advanced_content = QWidget()
+        advanced_layout = QVBoxLayout(advanced_content)
+        advanced_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        advanced_note = QLabel("Simulated by default. Real TEC operation remains unapproved.")
+        advanced_note.setWordWrap(True)
+        advanced_note.setMaximumWidth(520)
+        advanced_layout.addWidget(advanced_note)
+        advanced_layout.addWidget(self._experiment_temperature_group())
+        advanced_layout.addStretch(1)
+        tabs.addTab(self._v2_setup_scroll_page(advanced_content), "Advanced")
+
+        return tabs
+
+    @staticmethod
+    def _v2_setup_scroll_page(content: QWidget) -> QScrollArea:
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        area.setWidget(content)
+        return area
 
     def _v2_status_progress_group(self) -> QGroupBox:
         group = QGroupBox("Status / Progress")
@@ -704,10 +669,11 @@ class MainWindowV2(MainWindow):
         # Elapsed Time / Time Left: confirmed dead (Session 39, Category 4) --
         # a static "00:00:00" placeholder never updated by any code path in
         # either UI, same underlying stub helper qt_ui.py's own Experiment
-        # tab now uses.
-        top_row.addWidget(QLabel("Elapsed Time"), 0, 0)
+        # tab now uses. v3 design-idea adoption, Proposal 3 (2026-08-06):
+        # honest "(unavailable)" caption instead of implying a live value.
+        top_row.addWidget(QLabel("Elapsed Time (unavailable)"), 0, 0)
         top_row.addWidget(self._wrap_with_tooltip_icon(self._elapsed_time_label()), 1, 0)
-        top_row.addWidget(QLabel("Time Left"), 0, 1)
+        top_row.addWidget(QLabel("Time Left (unavailable)"), 0, 1)
         top_row.addWidget(self._wrap_with_tooltip_icon(self._time_left_label()), 1, 1)
         top_row.addWidget(QLabel("# elements in queue"), 0, 2)
         top_row.addWidget(self.queue_count, 1, 2)
@@ -736,28 +702,6 @@ class MainWindowV2(MainWindow):
         # that side effect entirely while still fixing the same growth risk.
         status_wrapper.setMaximumHeight(90)
         outer.addWidget(status_wrapper)
-        return group
-
-    def _v2_sequence_control_group(self) -> QGroupBox:
-        group = QGroupBox("Sequence Control")
-        group.setMinimumHeight(140)
-        grid = QGridLayout(group)
-        start = QPushButton("Start exp")
-        start.setToolTip(
-            "Starts the experiment with the currently initialized backends. Real hardware actions are not "
-            "protected by the staged smoke scripts' command-line confirmations. Abort stops only after the "
-            "current repeat or temperature point finishes."
-        )
-        start.clicked.connect(self._start_experiment)
-        browse = QPushButton("...")
-        browse.clicked.connect(lambda: self._browse_folder(self.series_path))
-
-        grid.addWidget(QLabel("Start Experiment series"), 0, 0)
-        grid.addWidget(start, 1, 0)
-        grid.addWidget(QLabel("Series path"), 2, 0)
-        grid.addWidget(self._wrap_with_tooltip_icon(self.series_path), 3, 0, 1, 4)
-        grid.addWidget(browse, 3, 4)
-        grid.setColumnStretch(3, 1)
         return group
 
     def _v2_ad2_output_group(self) -> QGroupBox:
@@ -846,9 +790,12 @@ class MainWindowV2(MainWindow):
         group = QGroupBox("Acquisition Parameters")
         group.setMinimumHeight(300)
         grid = QGridLayout(group)
+        # v3 design-idea adoption, Proposal 4 (2026-08-06): names the real
+        # DIO1 relationship these fields' own tooltips already explain --
+        # matching qt_ui.py's own equivalent captions.
         acquisition_rows = (
-            ("Camera FPS", self.exp_camera_fps),
-            ("Camera Start (s)", self.exp_camera_start),
+            ("Camera FPS (drives DIO1 LED clock)", self.exp_camera_fps),
+            ("Camera Start (s) (DIO1 pulse delay)", self.exp_camera_start),
             ("Repeats", self.exp_repeats),
             ("Frames", self.exp_frames),
             ("Exposure time (ms)", self.exp_exposure_ms),
@@ -858,7 +805,7 @@ class MainWindowV2(MainWindow):
             grid.addWidget(QLabel(text), row, 0)
             grid.addWidget(self._wrap_with_tooltip_icon(widget), row, 1)
 
-        camera_start = QGroupBox("Camera Start Array(s)")
+        camera_start = QGroupBox("Camera Start Array(s) (per-repeat DIO1 delays)")
         camera_start_layout = QGridLayout(camera_start)
         # Dynamic Camera Start Time moved here from the acquisition grid's own
         # column -- it's the toggle controlling whether this array is used at
@@ -866,7 +813,7 @@ class MainWindowV2(MainWindow):
         # with the array it controls rather than the other, unrelated
         # acquisition params (matching the same regroup applied in qt_ui.py's
         # own _camera_start_group()).
-        camera_start_layout.addWidget(QLabel("Dynamic Camera Start Time"), 0, 0)
+        camera_start_layout.addWidget(QLabel("Dynamic Camera Start Time (per-repeat DIO1 delays)"), 0, 0)
         camera_start_layout.addWidget(self._wrap_with_tooltip_icon(self.dynamic_camera_start), 0, 1)
         for index, widget in enumerate(self.camera_start_array):
             # No adjacent label for these (qt_ui.py's own _camera_start_group()
@@ -918,6 +865,7 @@ class MainWindowV2(MainWindow):
             "hardware -- recalculates as you edit Function/Frequency/Amplitude/"
             "Offset/Symmetry/Phase/Enable below. Disabled channels are omitted."
         )
+        note.setObjectName("manualWfgPreviewDescription")
         note.setWordWrap(True)
         layout.addWidget(note)
         self.wfg_preview_graph = WaveformGraph()
@@ -947,7 +895,11 @@ class MainWindowV2(MainWindow):
     def _update_wfg_preview(self) -> None:
         enabled_channels = [
             (label, state)
-            for label, state in (("Ch1", self.wfg_channels[0]), ("Ch2", self.wfg_channels[1]))
+            for label, state in zip(
+                self._WFG_PREVIEW_CHANNEL_LABELS,
+                self.wfg_channels,
+                strict=True,
+            )
             if state["enable"].isChecked()
         ]
         if not enabled_channels:
@@ -1035,7 +987,11 @@ class MainWindowV2(MainWindow):
             "status='OK', '1' on any caught exception -- not a real DCAM/AD2/Qmix "
             "error code, just a boolean flag (_handle_worker_finished())."
         )
-        form.addRow("Error Out", self.error_log)
+        # v3 design-idea adoption, Proposal 2 (2026-08-06): "Error Out" was
+        # literal LabVIEW-era jargon describing a display mode this widget
+        # no longer has -- shared caption fix with qt_ui.py's own
+        # _error_panel().
+        form.addRow("Status and error history", self.error_log)
 
         # word-wrap: these four can display long runtime text (e.g. the
         # valve's real "Connected (unverified position response: '...')"
@@ -1134,6 +1090,9 @@ class MainWindowV2(MainWindow):
             self.app.cleanup()
         except Exception as exc:
             self.app.check_loop_error(exc)
+            raise RuntimeError(
+                "Existing hardware cleanup failed; refusing to initialize a replacement hardware bundle."
+            ) from exc
 
         apply_hardware_bundle(self.app, build_hardware_bundle(config))
         self.app.initialize(progress=progress)
@@ -1158,10 +1117,6 @@ class MainWindowV2(MainWindow):
 
     def _refresh_status(self) -> None:
         super()._refresh_status()
-        connected = self.app.status == "System Initialized"
-        if hasattr(self, "connection_button"):
-            self.connection_button.setText("* Connected" if connected else "* Not Connected")
-            self.connection_button.setStyleSheet("color: green;" if connected else "color: red;")
         if not hasattr(self, "ad2_connection_status"):
             return
 
@@ -1175,6 +1130,37 @@ class MainWindowV2(MainWindow):
         # concept from basic connectivity.
         self.pump_connection_status.setText("Disabled" if not getattr(self.app.pump, "enabled", True) else ("Connected" if getattr(self.app.pump, "initialized", False) else "Not connected"))
         self.valve_connection_status.setText(self._valve_connection_text())
+
+        if hasattr(self, "connection_button"):
+            # Bug fix (found during v3 design evaluation, verified against
+            # this project's own real hardware-status logic before
+            # adopting): previously `connected = self.app.status ==
+            # "System Initialized"` -- app.status is a general status
+            # string overwritten by every later action (a flush, a
+            # refill, an experiment run...), so the button flipped to red
+            # "* Not Connected" after the first successful action following
+            # initialization, even though hardware was still fully
+            # connected. Now derived from the same per-device connection
+            # labels just computed above (each already "Disabled"/"Not
+            # connected"/"Connected"/"Connected (...)" per their own
+            # _connected_text()/_valve_connection_text() logic) instead of
+            # the transient status string -- a device that is deliberately
+            # disabled does not count against the overall "connected"
+            # claim, but no enabled device may be "Not connected", and at
+            # least one device must be enabled (an all-disabled session is
+            # not "connected").
+            device_texts = (
+                self.ad2_connection_status.text(),
+                self.camera_connection_status.text(),
+                self.pump_connection_status.text(),
+                self.valve_connection_status.text(),
+            )
+            enabled_texts = [text for text in device_texts if text != "Disabled"]
+            connected = bool(enabled_texts) and all(
+                text == "Connected" or text.startswith("Connected") for text in enabled_texts
+            )
+            self.connection_button.setText("* Connected" if connected else "* Not Connected")
+            self.connection_button.setStyleSheet("color: green;" if connected else "color: red;")
 
         wfg_config = getattr(self.app.ad2, "wfg_config", None)
         self.ad2_running_status.setText("Yes" if getattr(wfg_config, "running", False) else "No")

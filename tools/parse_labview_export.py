@@ -9,7 +9,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPORT_DIR = ROOT / "main_html"
-EXPORT_HTML = EXPORT_DIR / "main"
+# The generated LabVIEW export is a tracked HTML file.  It is migration
+# evidence consumed by this offline parser, not part of the Python runtime.
+EXPORT_HTML_PATH = EXPORT_DIR / "main.html"
 OUT_PATH = ROOT / "labview_manifest.json"
 
 
@@ -56,7 +58,7 @@ def _referenced_items(document: str) -> list[ReferencedItem]:
 
 
 def parse_export() -> list[DocumentedVi]:
-    document = EXPORT_HTML.read_text(encoding="utf-8", errors="replace")
+    document = EXPORT_HTML_PATH.read_text(encoding="utf-8", errors="replace")
     paths = {item.name: item.source_path for item in _referenced_items(document)}
     return [
         DocumentedVi(name=name, images=_image_names(section), source_path=paths.get(name))
@@ -65,13 +67,13 @@ def parse_export() -> list[DocumentedVi]:
 
 
 def main() -> None:
-    document = EXPORT_HTML.read_text(encoding="utf-8", errors="replace")
+    document = EXPORT_HTML_PATH.read_text(encoding="utf-8", errors="replace")
     manifest = parse_export()
     references = _referenced_items(document)
     OUT_PATH.write_text(
         json.dumps(
             {
-                "export_html": str(EXPORT_HTML),
+                "export_html": EXPORT_HTML_PATH.relative_to(ROOT).as_posix(),
                 "documented_vis": [asdict(item) for item in manifest],
                 "referenced_items": [asdict(item) for item in references],
             },

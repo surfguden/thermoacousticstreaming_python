@@ -74,17 +74,16 @@ wavegen/digital-output paths.
   `tools/capture_ad2_wavegen_scope_matplotlib.py`: existing AD2 output/capture
   diagnostics. These actively enable wavegen and should not be used as
   first-contact tests.
-- `tools/test_hamamatsu_camera.py`: legacy manual camera open/configure/
+- `tools/legacy_hamamatsu_camera_probe.py`: legacy manual camera open/configure/
   snapshot diagnostic; it captures and writes a TIFF without an operator
   confirmation gate.
-- `tools/test_qmix_pump.py`: legacy manual Qmix diagnostic; initialization can
+- `tools/legacy_qmix_pump_probe.py`: legacy manual Qmix diagnostic; initialization can
   enable the pump and its optional flow argument can move it. It has no
   confirmation gate.
 
 The four legacy `tools/` diagnostics above are marked `__test__ = False` and
-live outside `testpaths = ["tests"]`. They are retained as historical tools,
-not automated evidence or approved first-contact procedures; prefer the
-explicitly gated scripts in `hardware_tests/`.
+live outside `testpaths = ["tests"]`; prefer the gated scripts in
+`hardware_tests/` instead.
 - `README.md`, `docs/current_workflow_audit.md`, and
   `docs/known_open_items.md`: current operator-facing status and safety notes.
   `docs/HANDOVER.md` and `docs/PORTING_TBD.md` are historical/reference
@@ -96,8 +95,10 @@ explicitly gated scripts in `hardware_tests/`.
 
 ## Packages, SDKs, Resources, and Config
 
-- Python packages declared in `pyproject.toml`: `PySide6`, `Pillow`, and
-  `pyserial`.
+- Core Python packages declared in `pyproject.toml`: `PySide6`, `Pillow`,
+  `pyserial`, `npTDMS`, `numpy`, `pythonnet`, and the pinned `pyMeCom` git
+  dependency. Vendor SDK installations remain separate from these Python
+  dependencies.
 - Digilent WaveForms SDK: loaded with `ctypes` from `dwf.dll`. Candidate paths
   include `C:\Windows\System32\dwf.dll`,
   `C:\Windows\SysWOW64\dwf.dll`,
@@ -149,13 +150,42 @@ semantics, and operator confirmation.
   manual, action-capable valve probes despite their historical names. They are
   excluded from normal pytest collection (`testpaths = ["tests"]` and a
   module-level `__test__ = False`) and require `--confirm SEND`. Their
-  historical candidate lists are not protocol documentation; record raw bench
+  lists retain historical alternatives for diagnosis, but the current
+  application/LabVIEW command bytes are `P01\r` and `P02\r`. Record raw bench
   responses rather than treating a successful serial write as physical-routing
   confirmation.
 - `manual_ppc001_piezo_probe.py` is a manual Kinesis/pythonnet probe. It may
   move the piezo only behind its explicit confirmation gate and must never be
   represented as automated coverage. It is intentionally ignored and named
   `manual_*.py`; no historical BPC-named probe is an active project tool.
+
+## Prepared Minimal Bench-Confirmation Group
+
+This is a staged checklist, not evidence that the physical checks have run.
+The offline AD2 plan and valve candidate-list paths were rechecked on
+2026-08-05 without opening hardware. Each action step still needs its own
+operator setup and observation:
+
+1. AD2 start timing: first run
+   `python -B hardware_tests\test_real_workflow_smoke.py --plan-only --ad2-timing-plan`.
+   With a scope connected and the output load confirmed, the corresponding
+   gated action is `--real-ad2-timing-check --pre-trigger-wait-s 2.0 --confirm
+   CONFIRM_REAL_HARDWARE`. This uses the script's low-risk 1 kHz, 0.1 V
+   waveform; it does not prove the full acoustic condition.
+2. Valve routing: use one `P01\r` or `P02\r` action at a time through a
+   `test_valve_command_probe*.py` script with `--confirm SEND`, after confirming
+   COM5/COM6 and the tubing state. A recognized status response confirms the
+   numeric position, not its fluidic meaning.
+3. Qmix motion/stop semantics: do not run while the relatching `0x81FF` CAN
+   transmit-queue fault remains. Resolve that fault in the controller/CAN
+   setup before any movement check.
+4. TEC persistence: do not test until the reviewed real-operation boundary is
+   approved. A flash-writing check is intentionally outside the current
+   simulated-default workflow.
+5. Vendor-call timeout behavior: a Python timeout cannot prove that a blocked
+   vendor call stopped internally. Confirm this only with device-specific
+   instrumentation or a disposable process after vendor review; do not infer
+   cancellation from the UI becoming responsive.
 
 ## Z-Stage Discovery Result
 
