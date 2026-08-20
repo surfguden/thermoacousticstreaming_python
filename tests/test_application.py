@@ -1978,6 +1978,7 @@ def test_qmix_pump_backend_initializes_and_dispatches(tmp_path):
     pump = FakeQmixPumpModule.Pump.instances[0]
     diameter, stroke = SYRINGE_PRESETS["BD 1ml"]
     assert ("lookup_by_name", "Pump A") in pump.calls
+    assert ("clear_fault",) in pump.calls
     assert ("enable", True) in pump.calls
     assert ("set_flow_unit", FakeQmixPumpModule.UnitPrefix.micro, FakeQmixPumpModule.VolumeUnit.litres, FakeQmixPumpModule.TimeUnit.per_minute) in pump.calls
     assert ("set_volume_unit", FakeQmixPumpModule.UnitPrefix.milli, FakeQmixPumpModule.VolumeUnit.litres) in pump.calls
@@ -1995,7 +1996,7 @@ def test_qmix_pump_backend_initializes_and_dispatches(tmp_path):
     assert ("set_fill_level", 10.0, 5000.0) in pump.calls
 
 
-def test_qmix_initialization_refuses_existing_fault_without_clearing_or_enabling(tmp_path):
+def test_qmix_initialization_clears_existing_fault_before_enabling(tmp_path):
     FakeQmixPumpModule.Pump.instances = []
     backend = QmixPumpBackend(qmixbus=FakeQmixBusModule, qmixpump=FakeQmixPumpModule)
 
@@ -2006,32 +2007,17 @@ def test_qmix_initialization_refuses_existing_fault_without_clearing_or_enabling
             super().__init__()
             self.fault = True
 
-        def read_last_error(self):
-            self.calls.append(("read_last_error",))
-
-            class LastError:
-                code = 0
-                message = "All previous errors have been resolved"
-
-            return LastError()
-
     FakeQmixPumpModule.Pump = FaultedPump
     try:
-        with pytest.raises(
-            QmixPumpError,
-            match="code=0, message='All previous errors have been resolved'",
-        ) as error:
-            backend.initialize(tmp_path / "qmix-config")
+        backend.initialize(tmp_path / "qmix-config")
     finally:
         FakeQmixPumpModule.Pump = original_pump
 
-    assert "do not treat this as a recovered connection" in str(error.value)
     pump = FaultedPump.instances[0]
-    assert ("read_last_error",) in pump.calls
-    assert ("clear_fault",) not in pump.calls
-    assert ("enable", True) not in pump.calls
-    assert backend.pump is None
-    assert backend.bus is None
+    assert ("clear_fault",) in pump.calls
+    assert ("enable", True) in pump.calls
+    assert pump.calls.index(("clear_fault",)) < pump.calls.index(("enable", True))
+    assert backend.initialized is True
 
 
 def test_qmix_failed_open_does_not_issue_stop_or_close_on_unopened_bus(tmp_path):
@@ -2090,13 +2076,8 @@ def test_qmix_failed_start_closes_opened_bus_without_stopping_unstarted_bus(tmp_
     assert backend.bus_started is False
 
 
-# Session 104: manual, operator-initiated pump fault-clear escape hatch --
-# QmixPumpBackend.clear_fault_and_reinitialize(). A deliberate, scoped
-# exception to the fail-closed rule the test above confirms for initialize()
-# itself, not a reversal of it: initialize() must (and, per the test above,
-# still does) refuse to touch clear_fault() automatically; only this
-# separate, explicitly-named method may call it, and only when an operator
-# invokes it directly (never from initialize() or any other automated path).
+# The explicit recovery entry point remains for UI/API compatibility even
+# though normal initialization now uses the same clear-before-enable sequence.
 def test_clear_fault_and_reinitialize_clears_fault_and_a_subsequent_initialize_then_succeeds(tmp_path):
     FakeQmixPumpModule.Pump.instances = []
     original_pump = FakeQmixPumpModule.Pump
@@ -2126,22 +2107,14 @@ def test_clear_fault_and_reinitialize_clears_fault_and_a_subsequent_initialize_t
         backend = QmixPumpBackend(qmixbus=FakeQmixBusModule, qmixpump=FakeQmixPumpModule)
         config = tmp_path / "qmix-config"
 
-        # Starting faulted: a bare initialize() must still refuse -- same
-        # fail-closed behavior as every other initialize() call, confirmed
-        # again here (not just assumed) before exercising the new method.
-        with pytest.raises(QmixPumpError):
-            backend.initialize(config)
-        assert PersistentFaultPump.class_fault is True
-
         # Requirement: the explicit action clears the fault and reconnects.
         backend.clear_fault_and_reinitialize(config)
         assert backend.initialized is True
         assert PersistentFaultPump.class_fault is False
         assert ("clear_fault",) in backend.pump.calls
 
-        # Requirement 4: a subsequent bare initialize() now succeeds, since
-        # (in this fake) the fault does not relatch -- confirms the new
-        # method's effect is real and durable, not just a one-time bypass.
+        # A subsequent normal initialize also retains the clear-before-enable
+        # sequence and succeeds.
         backend.close()
         backend.initialize(config)
         assert backend.initialized is True
@@ -2179,6 +2152,35 @@ def test_clear_fault_and_reinitialize_still_fails_closed_if_fault_relatches(tmp_
         assert ("clear_fault",) in pump.calls
         assert backend.initialized is False
         assert backend.pump is None, "rollback must fully tear down state, same as initialize()'s own rollback"
+        assert backend.bus is None
+    finally:
+        FakeQmixPumpModule.Pump = original_pump
+
+
+def test_qmix_initialize_rolls_back_if_fault_remains_after_clear(tmp_path):
+    FakeQmixPumpModule.Pump.instances = []
+    original_pump = FakeQmixPumpModule.Pump
+
+    class RelatchingFaultPump(original_pump):
+        def __init__(self):
+            super().__init__()
+            self.fault = True
+
+        def clear_fault(self):
+            self.calls.append(("clear_fault",))
+
+    FakeQmixPumpModule.Pump = RelatchingFaultPump
+    try:
+        backend = QmixPumpBackend(qmixbus=FakeQmixBusModule, qmixpump=FakeQmixPumpModule)
+
+        with pytest.raises(QmixPumpError, match="fault state"):
+            backend.initialize(tmp_path / "qmix-config")
+
+        pump = RelatchingFaultPump.instances[0]
+        assert ("clear_fault",) in pump.calls
+        assert ("enable", True) not in pump.calls
+        assert backend.initialized is False
+        assert backend.pump is None
         assert backend.bus is None
     finally:
         FakeQmixPumpModule.Pump = original_pump

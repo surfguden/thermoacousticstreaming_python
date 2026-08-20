@@ -149,6 +149,7 @@ class QmixPumpBackend:
                     self.pump.lookup_by_device_index(self.pump_index)
                 self.bus.start()
                 self.bus_started = True
+                self.pump.clear_fault()
                 self._enable_pump()
                 self.configure_flow_unit("ul/min")
                 self.pump.set_volume_unit(self.qmixpump.UnitPrefix.milli, self.qmixpump.VolumeUnit.litres)
@@ -166,27 +167,12 @@ class QmixPumpBackend:
             result["response"] = f"max_flow_rate_ul_min={self.max_flow_rate_ul_min}, max_volume_ml={self.max_volume_ml}"
 
     def clear_fault_and_reinitialize(self, configuration_path: Path) -> None:
-        """Explicit, operator-initiated fault clear followed by a full reconnect.
+        """Compatibility entry point for an explicit reconnect and fault clear.
 
-        This is a deliberate, scoped exception to the fail-closed rule
-        _enable_pump() enforces below -- see docs/hardware_repair_plan.md
-        (Qmix CAN Tx Queue Overrun / 0x81FF, observed to relatch on fresh bus
-        connections) and Session 104 of docs/claude_code_change_log.md. It
-        must NEVER be called from initialize() or any other automated/
-        background path -- only an explicit operator action (the
-        "Clear Fault & Retry Connection" UI action in qt_ui.py/qt_ui_v2.py,
-        itself gated behind a non-skippable warning dialog) may reach this
-        method.
-
-        Deliberately duplicated from initialize() above rather than
-        refactored into a shared helper: initialize()'s own fail-closed
-        behavior must stay verifiably unchanged, and a shared helper would
-        make that harder to audit for zero risk of regression. The only
-        behavioral difference from initialize() is the explicit clear_fault()
-        call below; _enable_pump() itself is reused completely unchanged as
-        the final gate -- if the fault immediately relatches (as it has been
-        observed to do), _enable_pump() correctly raises QmixPumpError again,
-        exactly as initialize() would.
+        Normal initialization now also clears the device fault after starting
+        the bus. Both paths retain _enable_pump() as the final verification
+        gate, so a fault that remains or immediately relatches still prevents
+        the drive from being enabled.
         """
         self._load_sdk()
         self.bus = self.qmixbus.Bus()
@@ -230,10 +216,8 @@ class QmixPumpBackend:
     def _enable_pump(self) -> None:
         pump = self._require_pump()
         if pump.is_in_fault_state():
-            # A fault can represent an interlock, drive problem, or stale
-            # communication state. Clearing it is an actuator command, not a
-            # passive part of connecting, so initialization must fail closed
-            # and leave diagnosis/recovery to an explicit operator action.
+            # initialize() clears the device fault before reaching this gate.
+            # A remaining or relatched fault must still prevent drive enable.
             detail = ""
             read_last_error = getattr(pump, "read_last_error", None)
             if callable(read_last_error):
