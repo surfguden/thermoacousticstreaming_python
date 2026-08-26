@@ -4,19 +4,33 @@ Current triage record for unresolved hardware boundaries. This document records
 evidence and later repair/verification plans only. It does not authorize hardware
 actions, fault clearing, motion, output enable, or configuration writes.
 
-Committed baseline for this repair plan: `7c7e19f` on `junjiebranch`, followed
-by `d180eea` (the v3 tracking correction), inspected 2026-08-06. The current
-working tree also contains uncommitted safety and documentation work. Current
-source and retained hardware logs are evidence; historical session claims are
-not independently verified unless stated otherwise below.
+Committed baseline for this repair plan: the owner-approved Qmix auto-clear
+policy merge of colleague commits `c2e0e0b` and `d750691` into
+`junjiebranch`, inspected 2026-08-26. The working tree was clean immediately
+before that merge; this plan's subsequent documentation and safety-net edits
+are part of the same pending commit. Current source and retained hardware logs
+are evidence; historical session claims are not independently verified unless
+stated otherwise below.
 
 ## Qmix CAN Fault
 
 **Confirmed**
 
-- `QmixPumpBackend._enable_pump()` fails closed when the pump reports a fault. It
-  reads optional error detail, does not call `clear_fault()`, and does not enable
-  the pump.
+- **Owner-approved policy reversal (2026-08-26):** normal
+  `QmixPumpBackend.initialize()` now calls vendor `clear_fault()` after bus
+  start and before `_enable_pump()`. This deliberately replaces the old
+  no-auto-clear policy: it matches QmixElements' connection behavior, and the
+  owner judges the presence of a fault code to be decoupled from whether the
+  pump is operable. The final `_enable_pump()` gate still refuses to enable a
+  pump whose fault remains or immediately relatches. Every automatic clear
+  records before/after fault state in `logs/hardware_transactions.log`; a
+  repeated-fault warning is logged after consecutive fault-present init
+  attempts.
+- **Verification boundary:** the colleague reported a real-hardware pump
+  connection test in which the clear allowed normal initialization and pump
+  operation. This is a verbal/reported account, not a multi-trial logged
+  dataset; it supports the approved policy but does not prove the CAN root
+  cause is eliminated.
 - The retained bench record shows a fault that relatched after reconnect as SDK
   code `33279` (`0x81FF`), `CAN Tx Queue Overrun`. The pump remained disabled,
   stopped, reported position sensing initialized, and stayed at the same reported
@@ -35,18 +49,16 @@ not independently verified unless stated otherwise below.
    CAN adapter state. Record the first error timestamp and any preceding bus,
    power, node, or queue messages.
 2. Confirm only one bus client is active, then verify adapter driver, bus power,
-   topology/termination, configuration project, and node visibility without
-   clearing the fault from Python.
-3. After the CAN layer is clean, use a dedicated read-only SDK session that stops
-   before `QmixPumpBackend._enable_pump()` and record fault, enabled, pumping,
-   position-reference, and fill-level state. Do not use normal application
-   initialization for this check: on a fault-free device it enables the pump.
-4. Only after human review may a separate recovery task authorize a single fault
-   clear. Re-read state immediately afterward and again after a fresh reconnect
-   before authorizing reference or fluid motion.
-
-No Python backend change is indicated unless clean QmixElements evidence later
-shows that the SDK is misreporting or mishandling a healthy bus.
+   topology/termination, configuration project, and node visibility. Review
+   `hardware_transactions.log` for repeated automatic clears or a fault that
+   remains after clear.
+3. Before any reference or fluid motion, record fault, enabled, pumping,
+   position-reference, and fill-level state after normal initialization. The
+   auto-clear policy authorizes connection handling only; it does not itself
+   authorize motion or prove physical CAN root-cause resolution.
+4. The manual recovery button remains for a fault occurring after initialization
+   or an operator-requested fresh reconnect; it is not needed for routine
+   initialization and still records the manual action in status/data.tdms.
 
 ## TEC / MeCom
 

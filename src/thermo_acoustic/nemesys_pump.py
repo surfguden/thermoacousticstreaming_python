@@ -243,8 +243,8 @@ class NemesysPump:
     def _raise_if_faulted(self) -> None:
         if self._pump is not None and self._pump.is_in_fault_state():
             raise NemesysPumpError(
-                "The neMESYS pump reports a fault. Resolve it in QmixElements; "
-                "faults are not cleared automatically."
+                "The neMESYS pump reports a fault during use. Automatic fault clearing "
+                "is performed only while connecting; inspect QmixElements before reconnecting."
             )
 
     def _validate_flow_magnitude(self, flow: float) -> None:

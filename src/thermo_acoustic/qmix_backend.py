@@ -115,6 +115,7 @@ class QmixPumpBackend:
     max_flow_rate_ul_min: float | None = None
     max_volume_ml: float | None = None
     close_timeout_s: float = 5.0
+    consecutive_init_fault_clears: int = 0
 
     def _load_sdk(self) -> None:
         if self.qmixbus is not None and self.qmixpump is not None:
@@ -149,7 +150,7 @@ class QmixPumpBackend:
                     self.pump.lookup_by_device_index(self.pump_index)
                 self.bus.start()
                 self.bus_started = True
-                self.pump.clear_fault()
+                self._auto_clear_fault_on_initialize()
                 self._enable_pump()
                 self.configure_flow_unit("ul/min")
                 self.pump.set_volume_unit(self.qmixpump.UnitPrefix.milli, self.qmixpump.VolumeUnit.litres)
@@ -165,6 +166,52 @@ class QmixPumpBackend:
                     ) from exc
                 raise
             result["response"] = f"max_flow_rate_ul_min={self.max_flow_rate_ul_min}, max_volume_ml={self.max_volume_ml}"
+
+    def _auto_clear_fault_on_initialize(self) -> None:
+        """Clear the vendor fault latch and record the observed state.
+
+        This is the owner-approved normal Qmix connection policy. It records
+        each clear separately from the enclosing initialize transaction so a
+        later hardware-log review can distinguish a healthy connection from a
+        stale/benign fault latch cleared during connection.
+        """
+        pump = self._require_pump()
+        fault_before_clear = bool(pump.is_in_fault_state())
+        if fault_before_clear:
+            self.consecutive_init_fault_clears += 1
+        else:
+            self.consecutive_init_fault_clears = 0
+        try:
+            pump.clear_fault()
+        except Exception as exc:
+            log_transaction(
+                "pump",
+                "auto_clear_fault_on_initialize",
+                command={"fault_before_clear": fault_before_clear},
+                success=False,
+                error=str(exc),
+            )
+            raise
+
+        fault_after_clear = bool(pump.is_in_fault_state())
+        log_transaction(
+            "pump",
+            "auto_clear_fault_on_initialize",
+            command={"fault_before_clear": fault_before_clear},
+            response={
+                "fault_after_clear": fault_after_clear,
+                "consecutive_init_fault_clears": self.consecutive_init_fault_clears,
+            },
+            success=not fault_after_clear,
+            error="fault remained after automatic clear" if fault_after_clear else None,
+        )
+        if self.consecutive_init_fault_clears > 1:
+            log_transaction(
+                "pump",
+                "repeated_init_fault_clear_warning",
+                command={"consecutive_init_fault_clears": self.consecutive_init_fault_clears},
+                response="fault was present on consecutive initialization attempts",
+            )
 
     def clear_fault_and_reinitialize(self, configuration_path: Path) -> None:
         """Compatibility entry point for an explicit reconnect and fault clear.
@@ -234,7 +281,7 @@ class QmixPumpBackend:
                 except Exception as exc:
                     detail = f" Last device error could not be read: {exc}."
             raise QmixPumpError(
-                "Qmix pump is in a fault state; initialization will not clear faults automatically."
+                "Qmix pump remains in a fault state after initialization cleared its fault latch."
                 f"{detail} Inspect and resolve the fault in QmixElements before enabling the pump."
             )
         if not pump.is_enabled():

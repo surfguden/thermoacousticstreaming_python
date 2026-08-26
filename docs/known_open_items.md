@@ -96,15 +96,16 @@ historical notes. This document is a live issue register, whereas
   into the committed runtime boundary has not been decided -- do not read
   this entry as resolved in either direction, and do not act on v3's tracked
   files without that decision.
-- **Local v3 inherited presentation coupling has been reduced without changing
+- **Tracked v3 inherited presentation coupling has been reduced without changing
   hardware behavior.** Initialization, status, acquisition, and MSO caption
   adaptations validate unique matches and assign stable v3 `objectName`
   values. The shared manual-WFG builder now assigns neutral stable IDs to its
   carrier, trigger, and FM labels; local v3 uses those IDs instead of walking
   the widget tree and rewriting matching substrings; the preview description
   likewise has a stable shared ID instead of relying on the first label in the
-  group. **Status: RESOLVED FOR CURRENT V3 ADAPTATIONS IN THE LOCAL UNTRACKED
-  WORKTREE; this does not promote v3 into the committed runtime boundary.**
+  group. **Status: RESOLVED FOR CURRENT V3 ADAPTATIONS IN THE TRACKED WORKTREE;
+  this does not decide whether v3 should remain in the committed runtime
+  boundary.**
   **Update (Session 102, 2026-08-06): NOT all v3 caption dependencies use this
   safer objectName pattern.** `_rename_unique_text_widget()`/
   `_rename_unique_group()` (still text-matching, by v3's own explicit design
@@ -625,42 +626,34 @@ historical notes. This document is a live issue register, whereas
   polls at 20 Hz; the diagnostic scripts used 0.33-2 Hz) -- the crashes
   were a genuine outdated-driver bug, not caused by hammering the bus
   too fast. **Status: RESOLVED.**
-- **Current Qmix initialization is blocked by a relatching CAN transmit
-  queue fault (2026-08-05).** A minimal read-only bus session found
-  `is_in_fault_state=True` while `read_last_error()` initially returned
-  code `0` (all prior errors resolved). One guarded `clear_fault()` was
-  issued only after confirming the pump was disabled and stopped; the
-  fault cleared without movement. On the next read-only bus reconnect it
-  immediately relatched as code `33279` (`0x81FF`), whose Qmix SDK text is
-  `CAN Tx Queue Overrun`. The pump remained disabled, stopped, position
-  sensing initialized, and at the same reported fill level. Automatic
-  fault clearing remains prohibited; inspect the CAN adapter/bus and the
-  controller event state in QmixElements before treating real pump
-  initialization as trustworthy. **Status: OPEN; needs hardware/CAN-bus
-  diagnosis.** **Session 104 (2026-08-06) added a manual, operator-only
-  escape hatch** (`QmixPumpBackend.clear_fault_and_reinitialize()` ->
+- **Qmix automatic fault clear is an owner-approved deliberate policy reversal
+  (2026-08-26), not a silent regression.** A minimal read-only bus session
+  previously found a relatching CAN transmit queue fault:
+  `is_in_fault_state=True` while `read_last_error()` initially returned code
+  `0` (all prior errors resolved). One guarded clear was then issued after
+  confirming the pump was disabled/stopped; a subsequent read-only reconnect
+  relatched as `33279` (`0x81FF`), `CAN Tx Queue Overrun`. The owner has now
+  approved normal `QmixPumpBackend.initialize()` calling vendor `clear_fault()`
+  after bus start and before its final enable gate. The rationale is that this
+  matches QmixElements' standard connection behavior and the owner's domain
+  judgment that fault-code presence is decoupled from actual pump operability.
+  A fault that remains or immediately relatches still fails loudly and is not
+  enabled. Every automatic clear records before/after fault state in the
+  hardware transaction log; repeated fault-present initialization attempts add
+  a soft log warning.
+
+  **Verification boundary:** the colleague reported a real-hardware
+  pump-connection test where clear then allowed normal initialization and
+  operation; this is a verbal/reported account, not a multi-trial logged
+  dataset. **Status: OPEN for CAN root-cause diagnosis; the connection policy
+  is approved.** The Session 104 manual recovery path
+  (`QmixPumpBackend.clear_fault_and_reinitialize()` ->
   `CetoniPump.clear_fault_and_reinitialize()` ->
   `Application.clear_pump_fault_and_retry()` -> qt_ui.py's "Pump Fault
-  Recovery (advanced)" button, gated behind a non-skippable warning
-  dialog) for a deliberate, traceable recovery attempt; it is not evidence
-  that the bus-level fault is resolved or that real pump use is approved.
-  Automatic fault clearing is still prohibited everywhere else;
-  `initialize()` itself is unchanged.
-  Every manual clear is recorded in the live status log and in
-  `data.tdms` (`PumpFaultManuallyCleared`). This does not change the
-  status of the underlying fault itself, which remains OPEN.
-- **Automatic controlled reconnect is not justified by the current Qmix CAN
-  evidence (2026-08-12).** QmixElements reproduces the transient sequence, so
-  an eventual reconnect would not distinguish a healthy Python connection from
-  adapter/bus instability. `QmixPumpBackend.initialize()` receives general SDK
-  exceptions rather than a reliable transport-only classification; retrying
-  them would also retry configuration, lookup, and other unsafe-to-mask failures.
-  A delayed one-shot reopen before enable/motion would be mechanically narrow,
-  but would still conceal an intermittent bus condition without proving it is
-  safe. Keep one fail-closed initialization attempt, no automatic fault clear,
-  and the existing explicit operator action as the only recovery exception.
-  **Status: OPEN; requires CAN/adapter diagnosis and clean repeated evidence
-  before reconsidering an automatic policy.**
+  Recovery (advanced)" button) remains gated and traceable for a fault that
+  occurs after initialization or an operator-requested fresh reconnect. It
+  records the manual action in the live status log and `data.tdms`
+  (`PumpFaultManuallyCleared`); it is no longer required for routine init.
 - **Qmix project identity and stored bus settings are now separated from live
   bus diagnosis (2026-08-12).** `hardware_config.py` selects the one-pump
   project under `video paper 2\\Paper 2 slow flow\\Configurations`; its XML

@@ -833,15 +833,11 @@ class CetoniPump:
         # or raise).
 
     def clear_fault_and_reinitialize(self) -> None:
-        # Deliberate, scoped exception to initialize()'s fail-closed behavior
-        # above -- never called automatically. Only an explicit operator
-        # action (Application.clear_pump_fault_and_retry(), itself only
-        # reachable from the UI's "Clear Fault & Retry Connection" action
-        # behind a non-skippable warning dialog) calls this method. See
-        # docs/hardware_repair_plan.md and Session 104 of
-        # docs/claude_code_change_log.md. Mirrors initialize()'s own
-        # backend-open/rollback structure rather than reusing it directly, so
-        # initialize() itself never has to change to support this.
+        # Normal initialization now performs the owner-approved automatic
+        # fault clear. This explicit operator-only path remains for a fault
+        # observed after initialization or an operator-requested fresh
+        # reconnect. It mirrors initialize()'s backend-open/rollback shape so
+        # its traceable manual-recovery semantics remain separate.
         if not self.enabled:
             return
         if self.backend is None:

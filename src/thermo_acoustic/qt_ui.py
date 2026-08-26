@@ -2291,23 +2291,18 @@ class MainWindow(QMainWindow):
         setup_form.addRow("Reference move", ref)
         self._add_tooltip_icons(setup_form)
 
-        # Session 104: manual, operator-initiated pump fault-clear escape
-        # hatch -- a deliberate, scoped exception to Initialize's fail-closed
-        # pump behavior, not a reversal of it (see
-        # QmixPumpBackend._enable_pump()'s own comment and
-        # docs/hardware_repair_plan.md's Qmix CAN Tx Queue Overrun / 0x81FF
-        # entry). Deliberately its own separate, red-styled group -- visually
-        # and operationally distinct from Setup/Initialize -- and gated
-        # behind a non-skippable QMessageBox.question() in
-        # _start_clear_pump_fault() below; never invoked automatically.
+        # Keep this explicit action separate from normal Initialize: normal
+        # Qmix initialization already clears the vendor fault latch, while
+        # this action is for a fault observed later or an operator-requested
+        # fresh reconnect. It remains gated behind a warning dialog.
         fault_group = QGroupBox("Pump Fault Recovery (advanced)")
         fault_form = QFormLayout(fault_group)
         fault_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         clear_fault = QPushButton("Clear Fault && Retry Connection")
         clear_fault.setStyleSheet("color: darkred; font-weight: bold;")
         clear_fault.setToolTip(
-            "Only use this if the pump reports a fault on Initialize. Shows a warning "
-            "before doing anything -- see docs/hardware_repair_plan.md."
+            "Use after a fault observed during a session, or to request a fresh operator-"
+            "approved reconnect. Normal Initialize already clears the vendor fault latch."
         )
         clear_fault.clicked.connect(self._start_clear_pump_fault)
         fault_form.addRow("Manual fault clear", clear_fault)
@@ -3639,24 +3634,20 @@ class MainWindow(QMainWindow):
         self._run_action(lambda progress: self.app.pump.reference_move(), "Reference move")
 
     def _start_clear_pump_fault(self) -> None:
-        # Session 104: manual, operator-initiated pump fault-clear escape
-        # hatch. This QMessageBox is the "plain-language warning" the task
-        # requires -- non-skippable (defaults to No, requires an explicit
-        # Yes click) and shown before Application.clear_pump_fault_and_retry()
-        # is ever called. See docs/hardware_repair_plan.md's Qmix CAN Tx
-        # Queue Overrun / 0x81FF entry and QmixPumpBackend._enable_pump()'s
-        # own comment on why initialization itself must stay fail-closed.
+        # This QMessageBox is the non-skippable warning for the remaining
+        # manual-recovery scope: a fault observed after initialization or an
+        # operator-requested fresh reconnect. Normal initialization now clears
+        # the vendor fault latch before its final enable gate.
         answer = QMessageBox.question(
             self,
             "Confirm Pump Fault Clear",
-            "The pump has reported a fault (observed as a CAN-bus condition, code 0x81FF "
-            '"CAN Tx Queue Overrun") that has been seen to relatch on fresh bus connections. '
-            "This is a real, documented, UNRESOLVED hardware issue -- see "
+            "Normal initialization clears the vendor fault latch. Use this separate "
+            "manual recovery only for a fault observed later in the session, or when you "
+            "want an explicit fresh reconnect. A fault that remains or relatches still "
+            "blocks drive enable. This does NOT fix the underlying cause; see "
             "docs/hardware_repair_plan.md.\n\n"
-            "Clearing the fault will let the pump be used now, but does NOT fix the "
-            "underlying cause, and the fault may return. This action will be recorded in "
-            "the status/error history below, and in data.tdms if an experiment run "
-            "follows this session.\n\n"
+            "This action is recorded in the status/error history below, and in data.tdms "
+            "if an experiment run follows this session.\n\n"
             "Clear the fault and retry the pump connection now?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,

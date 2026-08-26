@@ -285,23 +285,15 @@ class Application:
         self.fire_status_event("System Initialized")
 
     def clear_pump_fault_and_retry(self) -> None:
-        """Explicit, operator-initiated pump fault clear and reconnect.
+        """Explicitly reconnect after a fault observed outside normal initialization.
 
-        A deliberate, scoped exception to initialize()'s fail-closed pump
-        behavior above -- NOT a reversal of it. See docs/hardware_repair_plan.md
-        (Qmix CAN Tx Queue Overrun / 0x81FF, a real unresolved bus-level fault
-        confirmed to relatch on fresh connections even with QmixElements
-        fully closed) and Session 104 of docs/claude_code_change_log.md.
+        Normal Qmix initialization now clears the vendor fault latch before
+        the final enable gate. This operator-only action remains for a fault
+        that occurs after initialization, or when an operator wants an
+        explicit fresh reconnect. It stays behind the UI warning dialog and
+        still fails loudly if the fault remains or relatches after clearing.
 
-        Only ever called from an explicit UI action (the "Clear Fault & Retry
-        Connection" button in qt_ui.py/qt_ui_v2.py's Pump&Valve area), itself
-        gated behind a non-skippable warning dialog -- never from initialize()
-        or any other automated/background path. The pump's own
-        clear_fault_and_reinitialize() still runs the same fail-closed
-        _enable_pump() gate afterward, so if the fault immediately relatches
-        this correctly raises again rather than silently succeeding.
-
-        Records the manual clear both in the live status/history log
+        Records the manual recovery both in the live status/history log
         (fire_status_event(), same mechanism every other status transition in
         this file uses) and in pump_fault_manually_cleared_this_session, which
         run_experiment2() copies onto Experiment2.pump_fault_manually_cleared

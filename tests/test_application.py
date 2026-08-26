@@ -2020,6 +2020,43 @@ def test_qmix_initialization_clears_existing_fault_before_enabling(tmp_path):
     assert backend.initialized is True
 
 
+def test_qmix_auto_clear_logs_fault_state_and_repeated_fault_warning(tmp_path, monkeypatch):
+    records = []
+    monkeypatch.setattr(
+        "thermo_acoustic.qmix_backend.log_transaction",
+        lambda *args, **kwargs: records.append((args, kwargs)),
+    )
+    FakeQmixPumpModule.Pump.instances = []
+    original_pump = FakeQmixPumpModule.Pump
+
+    class FaultedPump(original_pump):
+        def __init__(self):
+            super().__init__()
+            self.fault = True
+
+    FakeQmixPumpModule.Pump = FaultedPump
+    try:
+        backend = QmixPumpBackend(qmixbus=FakeQmixBusModule, qmixpump=FakeQmixPumpModule)
+        config = tmp_path / "qmix-config"
+        backend.initialize(config)
+        backend.close()
+        backend.initialize(config)
+    finally:
+        FakeQmixPumpModule.Pump = original_pump
+
+    clear_records = [record for record in records if record[0][1] == "auto_clear_fault_on_initialize"]
+    assert len(clear_records) == 2
+    assert clear_records[0][1]["command"] == {"fault_before_clear": True}
+    assert clear_records[0][1]["response"] == {
+        "fault_after_clear": False,
+        "consecutive_init_fault_clears": 1,
+    }
+    assert clear_records[1][1]["response"]["consecutive_init_fault_clears"] == 2
+    warning_records = [record for record in records if record[0][1] == "repeated_init_fault_clear_warning"]
+    assert len(warning_records) == 1
+    assert warning_records[0][1]["command"] == {"consecutive_init_fault_clears": 2}
+
+
 def test_qmix_failed_open_does_not_issue_stop_or_close_on_unopened_bus(tmp_path):
     class OpenFailingBusModule(FakeQmixBusModule):
         class Bus(FakeQmixBusModule.Bus):
