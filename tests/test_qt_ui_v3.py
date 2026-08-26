@@ -112,10 +112,67 @@ def test_v3_reuses_the_supplied_application_and_places_status_first(monkeypatch,
         button_texts = {button.text() for button in window.findChildren(QPushButton)}
         assert "Browse..." in button_texts
         assert "..." not in button_texts
+        graceful_stop = window.findChild(QPushButton, "v3RequestGracefulStopButton")
+        assert graceful_stop is not None
+        assert graceful_stop.text() == "Request graceful stop"
+        assert "current repeat" in graceful_stop.toolTip()
+        assert "current temperature point" in graceful_stop.toolTip()
+        assert "does not stop hardware" in graceful_stop.toolTip()
         window.app.status = "WFG configured"
         window._refresh_status()
         assert window.connection_button.text() == "Initialize hardware"
         assert "device selection" in window.connection_button.toolTip()
+    finally:
+        window.close()
+
+
+def test_v3_field_bound_adapters_survive_inherited_caption_changes(monkeypatch, tmp_path):
+    original_status_builder = qt_ui_v2.MainWindowV2._v2_status_progress_group
+    original_acquisition_builder = qt_ui_v2.MainWindowV2._v2_acquisition_group
+
+    def status_with_changed_captions(self):
+        group = original_status_builder(self)
+        inherited = {
+            "Elapsed Time (unavailable)",
+            "Time Left (unavailable)",
+            "# elements in queue",
+        }
+        for label in group.findChildren(QLabel):
+            if label.text() in inherited:
+                label.setText(f"Changed upstream: {label.text()}")
+        return group
+
+    def acquisition_with_changed_captions(self):
+        group = original_acquisition_builder(self)
+        inherited = {
+            "Camera FPS (drives DIO1 LED clock)",
+            "Camera Start (s) (DIO1 pulse delay)",
+            "Repeats",
+            "Frames",
+            "GlobalExposure",
+            "Dynamic Camera Start Time (per-repeat DIO1 delays)",
+        }
+        for label in group.findChildren(QLabel):
+            if label.text() in inherited:
+                label.setText(f"Changed upstream: {label.text()}")
+        for nested_group in group.findChildren(QGroupBox):
+            if nested_group.title() == "Camera Start Array(s) (per-repeat DIO1 delays)":
+                nested_group.setTitle("Changed upstream camera-start group")
+        return group
+
+    monkeypatch.setattr(qt_ui_v2.MainWindowV2, "_v2_status_progress_group", status_with_changed_captions)
+    monkeypatch.setattr(qt_ui_v2.MainWindowV2, "_v2_acquisition_group", acquisition_with_changed_captions)
+
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        assert window.findChild(QLabel, "v3ElapsedTimeCaption").text() == "Elapsed time (unavailable)"
+        assert window.findChild(QLabel, "v3CameraFrameRateCaption").text() == "DIO1 pulse rate (camera FPS)"
+        assert window.findChild(QLabel, "v3DynamicCameraStartCaption").text() == (
+            "Use per-repeat DIO1 pulse delays"
+        )
+        assert window.findChild(QGroupBox, "v3PerRepeatCameraStartGroup").title() == (
+            "Per-repeat DIO1 pulse delays (s)"
+        )
     finally:
         window.close()
 
@@ -148,6 +205,15 @@ def test_v3_main_ad2_settings_use_channel_tabs_without_horizontal_overflow(monke
         modulation_titles = {group.title() for group in modulation.findChildren(QGroupBox)}
         assert {"FM sweep (channel 0 only)", "Frequency scan (channel 0 only)"} <= modulation_titles
         assert all("Ch1 only" not in title for title in modulation_titles)
+        modulation_labels = {label.text() for label in modulation.findChildren(QLabel)}
+        assert {
+            "Sweep Start Frequency (kHz)",
+            "Sweep Stop Frequency (kHz)",
+            "Sweep Center Frequency (kHz)",
+            "Sweep Width (kHz)",
+            "Number of Frequencies",
+            "Step Size (kHz) (0 = use Number of Frequencies)",
+        } <= modulation_labels
         assert scroll.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         assert scroll.horizontalScrollBar().maximum() == 0
     finally:
@@ -199,12 +265,16 @@ def test_v3_pump_panel_separates_actions_from_static_configuration(monkeypatch, 
             "Valve",
             "Flush",
             "Syringe setup",
+            "Recovery",
         ]
         assert {group.title() for group in tasks.widget(0).findChildren(QGroupBox)} == {"Pump operations"}
         assert {group.title() for group in tasks.widget(1).findChildren(QGroupBox)} == {"Valve position"}
         assert {group.title() for group in tasks.widget(2).findChildren(QGroupBox)} == {"Manual flush"}
         assert {group.title() for group in tasks.widget(3).findChildren(QGroupBox)} == {
             "Syringe setup and calibration"
+        }
+        assert {group.title() for group in tasks.widget(4).findChildren(QGroupBox)} == {
+            "Connection recovery"
         }
         groups = {group.title() for group in dialog.findChildren(QGroupBox)}
         assert {
@@ -225,6 +295,7 @@ def test_v3_pump_panel_separates_actions_from_static_configuration(monkeypatch, 
             "Start flush sequence",
             "Configure syringe",
             "Run reference move",
+            "Clear fault and retry connection",
         } <= button_texts
         assert {
             "Refill",
@@ -239,6 +310,14 @@ def test_v3_pump_panel_separates_actions_from_static_configuration(monkeypatch, 
             "Reference move",
         }.isdisjoint(button_texts)
         assert window.flow_rate in dialog.findChildren(type(window.flow_rate))
+        recovery = dialog.findChild(QGroupBox, "v3PumpConnectionRecovery")
+        clear_fault = dialog.findChild(QPushButton, "v3ClearPumpFaultButton")
+        assert recovery is not None
+        assert clear_fault is not None
+        assert "confirmation-gated" in clear_fault.toolTip()
+        assert "underlying CAN cause" in " ".join(
+            label.text() for label in recovery.findChildren(QLabel)
+        )
     finally:
         window.close()
 
@@ -500,6 +579,7 @@ def test_v3_shell_controls_dispatch_to_shared_v1_v2_callbacks(monkeypatch, tmp_p
         buttons = {button.text(): button for button in window.findChildren(QPushButton)}
         buttons["Initialize hardware"].click()
         buttons["Start experiment"].click()
+        buttons["Request graceful stop"].click()
         for label in ("WFG", "MSO", "Pump & Valve", "Camera", "Z-Scan"):
             buttons[label].click()
 
@@ -512,6 +592,7 @@ def test_v3_shell_controls_dispatch_to_shared_v1_v2_callbacks(monkeypatch, tmp_p
         assert events == [
             "initialize-dialog",
             "experiment",
+            "abort",
             "panel:WFG",
             "panel:MSO",
             "panel:PumpValve",
@@ -552,6 +633,7 @@ def test_v3_rebuilt_manual_panel_buttons_dispatch_without_hardware(monkeypatch, 
         "_start_flush": "flush",
         "_start_configure_syringe": "configure-syringe",
         "_start_reference_move": "reference-move",
+        "_start_clear_pump_fault": "clear-pump-fault",
         "_start_capture_camera_image": "camera-image",
         "_start_save_sequence": "save-last-image",
         "_start_configure_camera": "configure-camera",
@@ -593,6 +675,7 @@ def test_v3_rebuilt_manual_panel_buttons_dispatch_without_hardware(monkeypatch, 
             "Start flush sequence": "flush",
             "Configure syringe": "configure-syringe",
             "Run reference move": "reference-move",
+            "Clear fault and retry connection": "clear-pump-fault",
             "Capture single image": "camera-image",
             "Start camera capture session": "worker:Camera capture started",
             "Stop camera capture session": "worker:Camera capture stopped",

@@ -55,6 +55,69 @@ def _rename_unique_group(
     matches[0].setObjectName(object_name)
 
 
+def _grid_cell_containing(root: QWidget, field: QWidget) -> tuple[QGridLayout, int, int]:
+    """Find the grid cell that owns *field*, including tooltip wrappers."""
+    layouts = []
+    root_layout = root.layout()
+    if isinstance(root_layout, QGridLayout):
+        layouts.append(root_layout)
+    layouts.extend(root.findChildren(QGridLayout))
+    matches: list[tuple[int, QGridLayout, int, int]] = []
+    for layout in layouts:
+        for index in range(layout.count()):
+            item = layout.itemAt(index)
+            widget = item.widget()
+            if widget is not None and (widget is field or widget.isAncestorOf(field)):
+                row, column, _row_span, _column_span = layout.getItemPosition(index)
+                distance = 0
+                candidate: QWidget | None = field
+                while candidate is not None and candidate is not widget:
+                    distance += 1
+                    candidate = candidate.parentWidget()
+                matches.append((distance, layout, row, column))
+    if matches:
+        _distance, layout, row, column = min(matches, key=lambda match: match[0])
+        return layout, row, column
+    raise RuntimeError(f"V3 could not locate the grid cell for {field!r}.")
+
+
+def _adapt_grid_caption(
+    root: QWidget,
+    field: QWidget,
+    new_text: str,
+    object_name: str,
+    *,
+    label_row_offset: int = 0,
+    label_column: int = 0,
+) -> None:
+    """Adapt a caption by its bound field and grid position, not inherited text."""
+    layout, field_row, _field_column = _grid_cell_containing(root, field)
+    item = layout.itemAtPosition(field_row + label_row_offset, label_column)
+    label = item.widget() if item is not None else None
+    if not isinstance(label, QLabel):
+        raise RuntimeError(f"V3 expected a QLabel associated with {field!r}.")
+    label.setText(new_text)
+    label.setObjectName(object_name)
+
+
+def _adapt_form_caption(
+    form: QFormLayout,
+    field: QWidget,
+    new_text: str,
+    object_name: str,
+) -> None:
+    """Adapt a form caption through its field, including an inherited wrapper."""
+    candidate: QWidget | None = field
+    while candidate is not None:
+        label = form.labelForField(candidate)
+        if isinstance(label, QLabel):
+            label.setText(new_text)
+            label.setObjectName(object_name)
+            return
+        candidate = candidate.parentWidget()
+    raise RuntimeError(f"V3 could not locate the form caption for {field!r}.")
+
+
 class InitializationDialogV3(InitializationDialog):
     """Task-grouped v3 presentation of v2's shared initialization state."""
 
@@ -262,24 +325,37 @@ class MainWindowV3(MainWindowV2):
         group.setObjectName("v3PrimaryRunControl")
         grid = QGridLayout(group)
         start = QPushButton("Start experiment")
+        start.setObjectName("v3StartExperimentButton")
         start.setMinimumHeight(44)
         start.setToolTip(
-            "Runs with the currently initialized backends. Abort remains a repeat-boundary request, "
-            "not an emergency hardware stop."
+            "Runs with the currently initialized backends."
         )
         start.clicked.connect(self._start_experiment)
+        stop = QPushButton("Request graceful stop")
+        stop.setObjectName("v3RequestGracefulStopButton")
+        stop.setMinimumHeight(44)
+        stop.setStyleSheet("color: darkred; font-weight: bold;")
+        stop.setToolTip(
+            "Stops after the current repeat, or after the current temperature point during a TEC scan. "
+            "It does not stop hardware in the middle of an operation."
+        )
+        stop.clicked.connect(self._abort)
         browse = QPushButton("Browse...")
         browse.clicked.connect(lambda: self._browse_folder(self.series_path))
-        note = QLabel("Runs the configured series using the currently initialized hardware.")
+        note = QLabel(
+            "Start uses the configured series. Graceful stop finishes the active unit before halting; "
+            "it is not an emergency hardware stop."
+        )
         note.setWordWrap(True)
         note.setMaximumWidth(520)
         grid.addWidget(start, 0, 0, 2, 1)
-        grid.addWidget(QLabel("Series path"), 0, 1)
-        grid.addWidget(self._wrap_with_tooltip_icon(self.series_path), 1, 1)
-        grid.addWidget(browse, 1, 2)
-        grid.addWidget(note, 0, 3, 2, 1)
-        grid.setColumnStretch(1, 1)
-        grid.setColumnStretch(3, 1)
+        grid.addWidget(stop, 0, 1, 2, 1)
+        grid.addWidget(QLabel("Series path"), 0, 2)
+        grid.addWidget(self._wrap_with_tooltip_icon(self.series_path), 1, 2)
+        grid.addWidget(browse, 1, 3)
+        grid.addWidget(note, 0, 4, 2, 1)
+        grid.setColumnStretch(2, 1)
+        grid.setColumnStretch(4, 1)
         return group
 
     def _v3_setup_tabs(self) -> QTabWidget:
@@ -418,49 +494,49 @@ class MainWindowV3(MainWindowV2):
     def _v2_status_progress_group(self) -> QGroupBox:
         group = super()._v2_status_progress_group()
         group.setTitle("Experiment status and progress")
-        # v3 compatibility fix (2026-08-06): v1/v2 gained "(unavailable)"
-        # suffixes on these two captions as of Session 102 -- old_text keys
-        # updated to match; v3's own preferred wording (lowercase "time",
-        # "Remaining" instead of "Time Left") is unchanged.
-        replacements = {
-            "Elapsed Time (unavailable)": ("Elapsed time (unavailable)", "v3ElapsedTimeCaption"),
-            "Time Left (unavailable)": ("Remaining time (unavailable)", "v3RemainingTimeCaption"),
-            "# elements in queue": ("Runs remaining", "v3RunsRemainingCaption"),
-        }
-        for old_text, (new_text, object_name) in replacements.items():
-            _rename_unique_text_widget(group, QLabel, old_text, new_text, object_name)
+        # Bind these inherited display captions to queue_count's stable grid,
+        # not to v2's presentation text. V2 wording can evolve without
+        # breaking construction of this deliberately divergent surface.
+        queue_grid, _row, _column = _grid_cell_containing(group, self.queue_count)
+        captions = (
+            (0, "Elapsed time (unavailable)", "v3ElapsedTimeCaption"),
+            (1, "Remaining time (unavailable)", "v3RemainingTimeCaption"),
+            (2, "Runs remaining", "v3RunsRemainingCaption"),
+        )
+        for column, text, object_name in captions:
+            item = queue_grid.itemAtPosition(0, column)
+            label = item.widget() if item is not None else None
+            if not isinstance(label, QLabel):
+                raise RuntimeError(f"V3 expected the inherited status caption in column {column}.")
+            label.setText(text)
+            label.setObjectName(object_name)
         return group
 
     def _v2_acquisition_group(self) -> QGroupBox:
         group = super()._v2_acquisition_group()
         group.setTitle("Experiment acquisition")
-        # v3 compatibility fix (2026-08-06): v1/v2 gained DIO1-clarifying
-        # caption suffixes as of Session 102 -- old_text keys updated to
-        # match; v3's own preferred wording is unchanged. "Repeats"/
-        # "Frames"/"GlobalExposure" were not touched by that session, so
-        # those three entries are unaffected.
-        replacements = {
-            "Camera FPS (drives DIO1 LED clock)": ("DIO1 pulse rate (camera FPS)", "v3CameraFrameRateCaption"),
-            "Camera Start (s) (DIO1 pulse delay)": (
-                "Fixed DIO1 pulse start delay (s)",
-                "v3CameraStartDelayCaption",
-            ),
-            "Repeats": ("Experiment repeats", "v3ExperimentRepeatsCaption"),
-            "Frames": ("Frames per repeat", "v3FramesPerRepeatCaption"),
-            "GlobalExposure": ("Request global exposure reset", "v3GlobalExposureCaption"),
-            "Dynamic Camera Start Time (per-repeat DIO1 delays)": (
+        # Use the shared field objects as the binding contract. The previous
+        # exact-caption adapter broke whenever v1/v2 clarified their wording.
+        captions = (
+            (self.exp_camera_fps, "DIO1 pulse rate (camera FPS)", "v3CameraFrameRateCaption"),
+            (self.exp_camera_start, "Fixed DIO1 pulse start delay (s)", "v3CameraStartDelayCaption"),
+            (self.exp_repeats, "Experiment repeats", "v3ExperimentRepeatsCaption"),
+            (self.exp_frames, "Frames per repeat", "v3FramesPerRepeatCaption"),
+            (self.global_exposure, "Request global exposure reset", "v3GlobalExposureCaption"),
+            (
+                self.dynamic_camera_start,
                 "Use per-repeat DIO1 pulse delays",
                 "v3DynamicCameraStartCaption",
             ),
-        }
-        for old_text, (new_text, object_name) in replacements.items():
-            _rename_unique_text_widget(group, QLabel, old_text, new_text, object_name)
-        _rename_unique_group(
-            group,
-            "Camera Start Array(s) (per-repeat DIO1 delays)",
-            "Per-repeat DIO1 pulse delays (s)",
-            "v3PerRepeatCameraStartGroup",
         )
+        for field, text, object_name in captions:
+            _adapt_grid_caption(group, field, text, object_name)
+        dynamic_wrapper = self.dynamic_camera_start.parentWidget()
+        camera_start_group = dynamic_wrapper.parentWidget() if dynamic_wrapper is not None else None
+        if not isinstance(camera_start_group, QGroupBox):
+            raise RuntimeError("V3 could not locate the per-repeat camera-start group.")
+        camera_start_group.setTitle("Per-repeat DIO1 pulse delays (s)")
+        camera_start_group.setObjectName("v3PerRepeatCameraStartGroup")
         self.global_exposure.setToolTip(
             "On requests GLOBALRESET. Off leaves the current DCAM property unchanged because the "
             "LabVIEW false-case mapping is unresolved. It may only take effect with compatible "
@@ -487,18 +563,10 @@ class MainWindowV3(MainWindowV2):
 
     def _global_status_panel(self) -> QGroupBox:
         group = super()._global_status_panel()
-        # v3 compatibility fix (2026-08-06): v1/v2's own caption already
-        # reads "Status and error history" as of Session 102 (was "Error
-        # Out") -- v3's own preferred wording is now identical, so this is
-        # a same-text rename, kept only to preserve the stable objectName
-        # assignment and the fail-loud uniqueness check itself.
-        _rename_unique_text_widget(
-            group,
-            QLabel,
-            "Status and error history",
-            "Status and error history",
-            "v3StatusHistoryCaption",
-        )
+        form = group.layout()
+        if not isinstance(form, QFormLayout):
+            raise RuntimeError("V3 expected Global Status to use a form layout.")
+        _adapt_form_caption(form, self.error_log, "Status and error history", "v3StatusHistoryCaption")
         return group
 
     def _refresh_status(self) -> None:
@@ -752,6 +820,27 @@ class MainWindowV3(MainWindowV2):
         syringe_form.addRow(configure)
         self._add_tooltip_icons(syringe_form)
 
+        recovery_group = QGroupBox("Connection recovery")
+        recovery_group.setObjectName("v3PumpConnectionRecovery")
+        recovery_layout = QVBoxLayout(recovery_group)
+        recovery_note = QLabel(
+            "Advanced manual recovery for a pump fault observed after initialization or for an "
+            "operator-requested reconnect. It does not repair the underlying CAN cause."
+        )
+        recovery_note.setWordWrap(True)
+        recovery_note.setMaximumWidth(620)
+        clear_fault = QPushButton("Clear fault and retry connection")
+        clear_fault.setObjectName("v3ClearPumpFaultButton")
+        clear_fault.setStyleSheet("color: darkred; font-weight: bold;")
+        clear_fault.setToolTip(
+            "Uses the shared, confirmation-gated Qmix recovery path. Normal initialization already "
+            "clears the vendor fault latch; use this only for explicit manual recovery."
+        )
+        clear_fault.clicked.connect(self._start_clear_pump_fault)
+        recovery_layout.addWidget(recovery_note)
+        recovery_layout.addWidget(clear_fault, alignment=Qt.AlignmentFlag.AlignLeft)
+        recovery_layout.addStretch(1)
+
         tasks = QTabWidget()
         tasks.setObjectName("v3PumpValveTasks")
 
@@ -779,10 +868,17 @@ class MainWindowV3(MainWindowV2):
         setup_layout.addWidget(syringe_group)
         setup_layout.addStretch(1)
 
+        recovery_page = QWidget()
+        recovery_page_layout = QVBoxLayout(recovery_page)
+        recovery_page_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        recovery_page_layout.addWidget(recovery_group)
+        recovery_page_layout.addStretch(1)
+
         tasks.addTab(pump_page, "Pump")
         tasks.addTab(valve_page, "Valve")
         tasks.addTab(flush_page, "Flush")
         tasks.addTab(setup_page, "Syringe setup")
+        tasks.addTab(recovery_page, "Recovery")
         layout.addWidget(tasks)
 
         scroll.setWidget(content)
