@@ -319,18 +319,27 @@ def test_v2_experiment_running_indicator_reads_explicit_flag_not_status_text(mon
         window.close()
 
 
-def test_v2_elapsed_time_and_time_left_are_marked_as_stale_stubs(monkeypatch, tmp_path):
-    # Category 4 (Session 39): v2's own "Status / Progress" group had the
-    # identical bare QLabel("00:00:00") construction as qt_ui.py's Experiment
-    # tab -- fixed via the same shared _elapsed_time_label()/_time_left_label()
-    # helpers, confirmed here independently for the v2 window.
+def test_v2_inherits_live_elapsed_time_and_estimated_time_remaining(monkeypatch, tmp_path):
+    clock = {"now": 50.0}
+    monkeypatch.setattr(qt_ui.time, "monotonic", lambda: clock["now"])
     window = make_window(monkeypatch, tmp_path)
     try:
-        for label in (window.elapsed_time_label, window.time_left_label):
-            assert label.text() == "00:00:00"
-            assert not label.isEnabled()
-            assert "Not wired to a real backend" in label.toolTip()
+        assert window._refresh_series_timing.__func__ is qt_ui.MainWindow._refresh_series_timing
+        window._handle_worker_progress(
+            "series_timing_started",
+            {"started_at": 50.0, "programmed_remaining_s": 20.0},
+        )
+        window._handle_worker_progress("experiment_series_active", True)
+        clock["now"] = 56.1
+        window._refresh_series_timing()
+
+        assert window.elapsed_time_label.text() == "00:00:06"
+        assert window.time_left_label.text() == "00:00:14"
+        captions = {label.text() for label in window.findChildren(QLabel)}
+        assert "Estimated time remaining" in captions
+        assert "Time Left (unavailable)" not in captions
     finally:
+        window._handle_worker_progress("experiment_series_active", False)
         window.close()
 
 

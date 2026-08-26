@@ -666,14 +666,11 @@ class MainWindowV2(MainWindow):
         # competition entirely -- it can use the group's full width instead
         # of a quarter of it.
         top_row = QGridLayout()
-        # Elapsed Time / Time Left: confirmed dead (Session 39, Category 4) --
-        # a static "00:00:00" placeholder never updated by any code path in
-        # either UI, same underlying stub helper qt_ui.py's own Experiment
-        # tab now uses. v3 design-idea adoption, Proposal 3 (2026-08-06):
-        # honest "(unavailable)" caption instead of implying a live value.
-        top_row.addWidget(QLabel("Elapsed Time (unavailable)"), 0, 0)
+        # Live values and progress handling are inherited from qt_ui.MainWindow;
+        # this surface only supplies its own compact presentation captions.
+        top_row.addWidget(QLabel("Elapsed Time"), 0, 0)
         top_row.addWidget(self._wrap_with_tooltip_icon(self._elapsed_time_label()), 1, 0)
-        top_row.addWidget(QLabel("Time Left (unavailable)"), 0, 1)
+        top_row.addWidget(QLabel("Estimated time remaining"), 0, 1)
         top_row.addWidget(self._wrap_with_tooltip_icon(self._time_left_label()), 1, 1)
         top_row.addWidget(QLabel("# elements in queue"), 0, 2)
         top_row.addWidget(self.queue_count, 1, 2)

@@ -647,20 +647,99 @@ def test_camera_sequence_group_flags_live_automated_use_and_dead_capture_mode(mo
     assert "ExposureTime(ms)" in retained_labels
 
 
-def test_experiment_tab_elapsed_time_and_time_left_are_marked_as_stale_stubs(monkeypatch, tmp_path):
-    # Category 4 (Session 39): "Elapsed Time"/"Time Left" were constructed as
-    # bare QLabel("00:00:00") -- not assigned to any attribute -- so no code
-    # anywhere could ever update them despite rendering exactly like a live
-    # countdown/stopwatch readout. Confirmed still "00:00:00" text but now
-    # disabled + tooltipped as a non-functional stub, matching this
-    # codebase's established convention (capture_mode, sequence_exposure_ms).
+def test_experiment_tab_elapsed_time_and_time_left_are_live_displays(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
 
-    for label in (window.elapsed_time_label, window.time_left_label):
-        assert label.text() == "00:00:00"
-        assert not label.isEnabled()
-        assert "Not wired to a real backend" in label.toolTip()
-        assert "never updated by any code path" in label.toolTip()
+    assert window.elapsed_time_label.text() == "00:00:00"
+    assert window.time_left_label.text() == "00:00:00"
+    assert window.elapsed_time_label.isEnabled()
+    assert window.time_left_label.isEnabled()
+    assert "wall-clock" in window.elapsed_time_label.toolTip()
+    assert "Estimate only" in window.time_left_label.toolTip()
+
+
+def test_programmed_repeat_duration_uses_concurrent_ad2_window_then_flush():
+    from thermo_acoustic.ad2 import (
+        CarrierSettings,
+        DoConfig,
+        DoSingleChannelConfig,
+        TriggerSettings,
+    )
+    from thermo_acoustic.workflows import Experiment2, FlushSettings
+
+    experiment = Experiment2(
+        wfg_config=WfgConfig(
+            running=True,
+            channels=[
+                WfgChannelConfig(
+                    channel_index=0,
+                    carrier=CarrierSettings(enable=True),
+                    trigger=TriggerSettings(sec_run=10.0, sec_wait=2.0),
+                ),
+                WfgChannelConfig(
+                    channel_index=1,
+                    carrier=CarrierSettings(enable=True),
+                    trigger=TriggerSettings(sec_run=20.0, sec_wait=1.0),
+                ),
+            ],
+        ),
+        do_clock_settings=DoConfig(
+            running=True,
+            channels=[
+                DoSingleChannelConfig(
+                    channel_index=1,
+                    enable=True,
+                    trigger=TriggerSettings(sec_run=3.0, sec_wait=5.0),
+                )
+            ],
+        ),
+        flush_enabled=True,
+        flush_settings=FlushSettings(
+            flush_flowrate=200.0,
+            flush_volume_ml=0.05,
+            wait_after_flush_s=3.0,
+        ),
+    )
+
+    # AD2 contributes max(12, 21, 8) = 21s because outputs overlap.
+    # Flush contributes 15s pump travel + 3s programmed post-flush wait.
+    assert qt_ui._programmed_repeat_duration_s(experiment) == pytest.approx(39.0)
+
+
+def test_series_timing_uses_controlled_clock_and_refines_remaining_estimate(monkeypatch, tmp_path):
+    clock = {"now": 100.0}
+    monkeypatch.setattr(qt_ui.time, "monotonic", lambda: clock["now"])
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        window._handle_worker_progress(
+            "series_timing_started",
+            {"started_at": 100.0, "programmed_remaining_s": 30.0},
+        )
+        window._handle_worker_progress("experiment_series_active", True)
+
+        clock["now"] = 112.4
+        window._refresh_series_timing()
+        assert window.elapsed_time_label.text() == "00:00:12"
+        assert window.time_left_label.text() == "00:00:18"
+
+        # One 12-second repeat completed, so the measured estimate becomes
+        # 12 seconds/repeat * 2 remaining repeats, anchored at completion.
+        window._handle_worker_progress(
+            "series_repeat_completed",
+            {
+                "completed_at": 112.0,
+                "elapsed_s": 12.0,
+                "completed_repeats": 1,
+                "total_repeats": 3,
+            },
+        )
+        clock["now"] = 115.2
+        window._refresh_series_timing()
+        assert window.elapsed_time_label.text() == "00:00:15"
+        assert window.time_left_label.text() == "00:00:21"
+    finally:
+        window._handle_worker_progress("experiment_series_active", False)
+        window.close()
 
 
 def test_qt_ui_uses_passive_hardware_config_defaults(monkeypatch, tmp_path):
@@ -2829,6 +2908,11 @@ def test_run_experiment_series_brackets_experiment_series_active_progress(monkey
         active_events = [value for kind, value in events if kind == "experiment_series_active"]
         assert active_events == [True, False]
         assert events.index(("experiment_series_active", True)) < events.index(("experiment_series_active", False))
+        assert len([value for kind, value in events if kind == "series_timing_started"]) == 1
+        repeat_timing = [value for kind, value in events if kind == "series_repeat_completed"]
+        assert len(repeat_timing) == 1
+        assert repeat_timing[0]["completed_repeats"] == 1
+        assert repeat_timing[0]["total_repeats"] == 1
     finally:
         window.close()
 
@@ -2924,7 +3008,7 @@ def test_run_temperature_experiment_series_fires_real_step_reset_per_temperature
     # this test isolates the TEC-path wiring specifically, through the REAL
     # qt_ui.py -> application.py call chain.
     from test_tec import RecordingTecBackend
-    from thermo_acoustic.application import STEP_SET_TEC_TARGET, STEP_WAIT_TEC_STABLE
+    from thermo_acoustic.application import STEP_SAVE_RESULTS, STEP_SET_TEC_TARGET, STEP_WAIT_TEC_STABLE
     from thermo_acoustic.tec import TecController
     from thermo_acoustic.workflows import Experiment2, ExperimentSeries2, TemperatureSeries
 
@@ -2938,6 +3022,8 @@ def test_run_temperature_experiment_series_fires_real_step_reset_per_temperature
 
         def run_experiment2(self, progress=None) -> bool:
             self.experiment_series.dequeue_experiment()
+            if progress:
+                progress("step_completed", STEP_SAVE_RESULTS)
             return True
 
     window = build_with_retry(lambda: qt_ui.MainWindow(app=TemperatureRunApplication()))
@@ -2978,6 +3064,9 @@ def test_run_temperature_experiment_series_fires_real_step_reset_per_temperature
         assert len(stable_started_indices) == 2
         assert reset_indices[0] < target_started_indices[0] < stable_started_indices[0] < reset_indices[1]
         assert reset_indices[1] < target_started_indices[1] < stable_started_indices[1]
+        repeat_timing = [value for kind, value in events if kind == "series_repeat_completed"]
+        assert [value["completed_repeats"] for value in repeat_timing] == [1, 2]
+        assert all(value["total_repeats"] == 2 for value in repeat_timing)
     finally:
         window.close()
 

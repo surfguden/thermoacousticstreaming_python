@@ -54,8 +54,10 @@ from .ad2 import (
     WaveformFunction,
     WfgChannelConfig,
     WfgConfig,
+    coerce_do_config,
+    coerce_wfg_config,
 )
-from .application import STEP_ORDER, Application
+from .application import STEP_ORDER, STEP_SAVE_RESULTS, Application
 from .camera import SubRegion
 from .hardware_factory import HardwareRuntimeConfig, apply_hardware_bundle, build_hardware_bundle
 from .hardware_config import ZStageBackend, default_hardware_config
@@ -69,6 +71,67 @@ logger = logging.getLogger(__name__)
 SETTINGS_PATH = Path(__file__).resolve().parents[2] / ".thermo_acoustic_ui.json"
 WFG_TRIGGER_SOURCE_OPTIONS = ["trigsrcNone", "trigsrcPC", "trigsrcAnalogIn", "trigsrcDigitalIn"]
 CONVERSION_METHOD_OPTIONS = ["Full Dynamic", "90% Dynamic", "Downshift"]
+
+
+def _format_duration_s(seconds: float, *, round_up: bool = False) -> str:
+    """Format a non-negative duration for the experiment stopwatch displays."""
+    bounded = max(float(seconds), 0.0)
+    whole_seconds = math.ceil(bounded) if round_up else math.floor(bounded)
+    hours, remainder = divmod(whole_seconds, 3600)
+    minutes, seconds_part = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds_part:02d}"
+
+
+def _programmed_repeat_duration_s(experiment: Experiment2) -> float:
+    """Return the display-only programmed duration estimate for one repeat.
+
+    WFG and digital outputs share one PC trigger and therefore overlap; the
+    longest enabled wait-plus-run window is the AD2 contribution. A requested
+    flush follows acquisition, so its programmed pump travel and post-flush
+    wait are additive. Invalid/non-finite timing remains Application's concern:
+    this estimator returns a conservative zero contribution instead of changing
+    experiment validation or execution semantics.
+    """
+    ad2_duration_s = 0.0
+    wfg_config = coerce_wfg_config(experiment.wfg_config)
+    if wfg_config.running:
+        for channel in wfg_config.channels:
+            if not channel.carrier.enable:
+                continue
+            sec_run = float(channel.trigger.sec_run)
+            sec_wait = float(channel.trigger.sec_wait)
+            if math.isfinite(sec_run) and math.isfinite(sec_wait):
+                ad2_duration_s = max(ad2_duration_s, max(sec_run, 0.0) + max(sec_wait, 0.0))
+
+    do_config = coerce_do_config(experiment.do_clock_settings)
+    if do_config.running:
+        for channel in do_config.channels:
+            if not channel.enable:
+                continue
+            sec_run = float(channel.trigger.sec_run)
+            sec_wait = float(channel.trigger.sec_wait)
+            if math.isfinite(sec_run) and math.isfinite(sec_wait):
+                ad2_duration_s = max(ad2_duration_s, max(sec_run, 0.0) + max(sec_wait, 0.0))
+
+    flush_duration_s = 0.0
+    settings = experiment.flush_settings
+    if experiment.flush_enabled and settings.flush_flowrate > 0:
+        pump_travel_s = (settings.flush_volume_ml * 1000.0 / settings.flush_flowrate) * 60.0
+        flush_duration_s = max(pump_travel_s, 0.0) + max(settings.wait_after_flush_s, 0.0)
+
+    return ad2_duration_s + flush_duration_s
+
+
+def _programmed_series_duration_s(experiments: list[Experiment2]) -> float:
+    try:
+        return sum(_programmed_repeat_duration_s(experiment) for experiment in experiments)
+    except Exception as exc:
+        # This estimate must never become a new validation gate. The real
+        # Application path remains responsible for rejecting malformed timing;
+        # a display-only calculation failure simply starts from an unknown/zero
+        # estimate and leaves elapsed time fully functional.
+        logger.warning("Could not derive programmed series duration for the UI estimate: %s", exc)
+        return 0.0
 
 
 # A systematic offscreen sweep (Session 38) found nearly every QDoubleSpinBox
@@ -603,6 +666,17 @@ class MainWindow(QMainWindow):
         # point's own repeats -- see Application.run_temperature_series()'s
         # 2026-08-04 abort fix).
         self._temperature_scan_active = False
+        # Display-only series timing state. The start/estimate anchors are
+        # created in the worker from the same monotonic clock used by the
+        # experiment loops, then marshalled to the UI thread via progress.
+        # A UI timer keeps the readout live even while a hardware call emits
+        # no progress events for several seconds.
+        self._series_started_at_monotonic: float | None = None
+        self._series_estimate_anchor_at_monotonic: float | None = None
+        self._series_estimated_remaining_at_anchor_s = 0.0
+        self._series_timing_timer = QTimer(self)
+        self._series_timing_timer.setInterval(250)
+        self._series_timing_timer.timeout.connect(self._refresh_series_timing)
         # Graceful-stop indicator (2026-08-04, Part C follow-up): set True
         # by _abort() while a series is actively running, cleared the
         # instant that series' "experiment_series_active" progress goes
@@ -1766,36 +1840,21 @@ class MainWindow(QMainWindow):
         )
         return widget
 
-    @staticmethod
-    def _stale_static_display(widget: QWidget, description: str) -> QWidget:
-        # Category 4 (Session 39): "Elapsed Time"/"Time Left" were found
-        # constructed as bare QLabel("00:00:00") -- not even assigned to a
-        # `self.` attribute -- in both qt_ui.py and qt_ui_v2.py, meaning no
-        # code anywhere could ever update them even if it tried. They render
-        # exactly like a live countdown/stopwatch readout (mirroring
-        # LabVIEW's own Elapsed Time/Time Left front-panel indicators) but
-        # have been 100% static placeholders for this display's entire
-        # history -- never flagged in any of the 38 prior sessions' audits.
-        # Implementing a real timer is a new feature (out of this pass's
-        # scope); marked as a non-functional stub instead, the same
-        # disabled+tooltip convention already used for every other
-        # confirmed-dead widget in this codebase, so it stops silently
-        # implying a live value that was never wired.
-        widget.setEnabled(False)
-        widget.setToolTip(
-            f"Not wired to a real backend: this {description} display is never updated by any "
-            "code path -- a static placeholder mirroring a LabVIEW front-panel indicator that "
-            "was never ported (confirmed dead, Session 39)."
-        )
-        return widget
-
     def _elapsed_time_label(self) -> QLabel:
         self.elapsed_time_label = QLabel("00:00:00")
-        return self._stale_static_display(self.elapsed_time_label, "Elapsed Time")
+        self.elapsed_time_label.setToolTip(
+            "Live wall-clock time since the current experiment series started."
+        )
+        return self.elapsed_time_label
 
     def _time_left_label(self) -> QLabel:
         self.time_left_label = QLabel("00:00:00")
-        return self._stale_static_display(self.time_left_label, "Time Left")
+        self.time_left_label.setToolTip(
+            "Estimate only. Initially derived from programmed WFG/DIO and flush durations; "
+            "after one repeat completes it uses the measured mean repeat duration. TEC "
+            "stabilization and hardware/acquisition variability can change the actual time."
+        )
+        return self.time_left_label
 
     # Requirement C, revised (Session 41): replaces Session 40's style-based
     # marker (underline + link color applied to the row label itself) with a
@@ -2895,15 +2954,9 @@ class MainWindow(QMainWindow):
         grid = QGridLayout(tab)
         grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         grid.addWidget(self._experiment_primary_run_control_group(), 0, 0, 1, 6)
-        # v3 design-idea adoption, Proposal 3 (2026-08-06): these captions
-        # sit right above the already-disabled, already-tooltipped stale
-        # placeholders (_stale_static_display(), Session 39) -- the caption
-        # itself said nothing about that, so a "00:00:00" reading grayed out
-        # for no apparent reason was the only signal. Honest labeling
-        # instead of implying a live value.
-        grid.addWidget(QLabel("Elapsed Time (unavailable)"), 1, 0)
+        grid.addWidget(QLabel("Elapsed Time"), 1, 0)
         grid.addWidget(self._elapsed_time_label(), 2, 0)
-        grid.addWidget(QLabel("Time Left (unavailable)"), 1, 1)
+        grid.addWidget(QLabel("Estimated time remaining"), 1, 1)
         grid.addWidget(self._time_left_label(), 2, 1)
         grid.addWidget(QLabel("# elements in queue"), 1, 2)
         self.queue_count = QLabel("0")
@@ -4057,6 +4110,9 @@ class MainWindow(QMainWindow):
         config: WfgConfig,
         progress=None,
     ) -> str:
+        started_at = time.monotonic()
+        experiments = list(series.experiments or [])
+        total_repeats = len(experiments)
         # "experiment_series_active" progress kind brackets the entire method
         # body (try/finally, so it clears on every exit path: normal
         # completion, ExperimentSeriesAborted, or a raised RuntimeError) --
@@ -4071,9 +4127,23 @@ class MainWindow(QMainWindow):
         # is the established way this codebase marshals state back to the
         # main/UI thread.
         if progress:
+            progress(
+                "series_timing_started",
+                {
+                    "started_at": started_at,
+                    "programmed_remaining_s": _programmed_series_duration_s(experiments),
+                },
+            )
             progress("experiment_series_active", True)
         try:
-            return self._run_experiment_series_body(series, total_frames, config, progress)
+            return self._run_experiment_series_body(
+                series,
+                total_frames,
+                config,
+                progress,
+                started_at=started_at,
+                total_repeats=total_repeats,
+            )
         finally:
             if progress:
                 progress("experiment_series_active", False)
@@ -4086,19 +4156,55 @@ class MainWindow(QMainWindow):
         config: WfgConfig,
         progress=None,
     ) -> str:
+        started_at = time.monotonic()
+        experiments = [
+            experiment
+            for group in groups
+            for experiment in (group.experiments or [])
+        ]
+        total_repeats = len(experiments)
         if progress:
+            progress(
+                "series_timing_started",
+                {
+                    "started_at": started_at,
+                    "programmed_remaining_s": _programmed_series_duration_s(experiments),
+                },
+            )
             progress("experiment_series_active", True)
             progress("temperature_scan_active", True)
             progress("queue_count", sum(group.see_elements_left() for group in groups))
             progress("waveform", self._preview_points(config))
-        started_at = time.monotonic()
         self.app.create_stop_event()
+        completed_repeats = 0
+
+        def timed_progress(kind: str, value: object) -> None:
+            nonlocal completed_repeats
+            if progress:
+                progress(kind, value)
+            if progress and kind == "step_completed" and value == STEP_SAVE_RESULTS:
+                completed_repeats += 1
+                completed_at = time.monotonic()
+                progress(
+                    "series_repeat_completed",
+                    {
+                        "completed_at": completed_at,
+                        "elapsed_s": max(completed_at - started_at, 0.0),
+                        "completed_repeats": completed_repeats,
+                        "total_repeats": total_repeats,
+                    },
+                )
+
         try:
             # Same fix as _run_experiment_series_body()'s run_experiment2() call
             # just below it in this file: `progress` was previously dropped
             # here too, so a TEC scan never fired step_started/step_completed/
             # step_failed either -- the v2 breadcrumb (2026-08-04) needs this.
-            completed = self.app.run_temperature_series(temperature_series, groups, progress=progress)
+            completed = self.app.run_temperature_series(
+                temperature_series,
+                groups,
+                progress=timed_progress if progress else None,
+            )
             if not completed:
                 message = f"TEC temperature scan stopped before completion (status={self.app.status!r})."
                 logger.error(message)
@@ -4120,8 +4226,10 @@ class MainWindow(QMainWindow):
         total_frames: int,
         config: WfgConfig,
         progress=None,
+        *,
+        started_at: float,
+        total_repeats: int,
     ) -> str:
-        started_at = time.monotonic()
         self.app.set_experiment_series_general(series)
         # Clear any abort flag left over from a previous run before starting
         # this one, so a fresh "Start exp" click isn't immediately treated as
@@ -4170,6 +4278,17 @@ class MainWindow(QMainWindow):
                 )
                 logger.error(message)
                 raise RuntimeError(message)
+            if progress:
+                completed_at = time.monotonic()
+                progress(
+                    "series_repeat_completed",
+                    {
+                        "completed_at": completed_at,
+                        "elapsed_s": max(completed_at - started_at, 0.0),
+                        "completed_repeats": repeat_index,
+                        "total_repeats": total_repeats,
+                    },
+                )
         elapsed = max(time.monotonic() - started_at, 0.001)
         if progress:
             fps = total_frames / elapsed
@@ -4381,11 +4500,35 @@ class MainWindow(QMainWindow):
     def _handle_worker_progress(self, kind: str, value: object) -> None:
         if kind == "status":
             self._set_status(str(value))
+        elif kind == "series_timing_started" and isinstance(value, dict):
+            started_at = float(value["started_at"])
+            self._series_started_at_monotonic = started_at
+            self._series_estimate_anchor_at_monotonic = started_at
+            self._series_estimated_remaining_at_anchor_s = max(
+                float(value.get("programmed_remaining_s", 0.0)), 0.0
+            )
+            self._series_timing_timer.start()
+            self._refresh_series_timing()
+        elif kind == "series_repeat_completed" and isinstance(value, dict):
+            completed_repeats = int(value.get("completed_repeats", 0))
+            total_repeats = int(value.get("total_repeats", 0))
+            elapsed_s = max(float(value.get("elapsed_s", 0.0)), 0.0)
+            if completed_repeats > 0:
+                measured_mean_s = elapsed_s / completed_repeats
+                self._series_estimate_anchor_at_monotonic = float(value["completed_at"])
+                self._series_estimated_remaining_at_anchor_s = (
+                    measured_mean_s * max(total_repeats - completed_repeats, 0)
+                )
+                self._refresh_series_timing()
         elif kind == "temperature_scan_active":
             self._temperature_scan_active = bool(value)
         elif kind == "experiment_series_active":
             self._experiment_series_active = bool(value)
             if not self._experiment_series_active:
+                self._refresh_series_timing()
+                self._series_timing_timer.stop()
+                self._series_estimated_remaining_at_anchor_s = 0.0
+                self.time_left_label.setText("00:00:00")
                 # The series just halted (any reason: completed, aborted,
                 # or a raised error) -- clear the graceful-stop indicator
                 # here, at series-end, rather than waiting for a future
@@ -4436,6 +4579,23 @@ class MainWindow(QMainWindow):
             step_name, _message = value
             self._step_states[str(step_name)] = "failed"
             self._refresh_step_breadcrumb()
+
+    def _refresh_series_timing(self) -> None:
+        if self._series_started_at_monotonic is None:
+            return
+        now = time.monotonic()
+        elapsed_s = max(now - self._series_started_at_monotonic, 0.0)
+        self.elapsed_time_label.setText(_format_duration_s(elapsed_s))
+
+        anchor = self._series_estimate_anchor_at_monotonic
+        if anchor is None:
+            remaining_s = 0.0
+        else:
+            remaining_s = max(
+                self._series_estimated_remaining_at_anchor_s - max(now - anchor, 0.0),
+                0.0,
+            )
+        self.time_left_label.setText(_format_duration_s(remaining_s, round_up=True))
 
     def _refresh_step_breadcrumb(self) -> None:
         # No-op in the base (v1) window -- there is no breadcrumb widget to
