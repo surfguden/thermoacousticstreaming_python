@@ -54,9 +54,12 @@ historical notes. This document is a live issue register, whereas
 - **Staged hardware-test confirmations are not global GUI interlocks.**
   `CONFIRM_REAL_HARDWARE` and timing acknowledgements protect action-capable
   modes in newer `hardware_tests/` scripts. They do not apply to the tracked
-  `qt_ui.py`/`qt_ui_v2.py` GUIs (or to any local untracked v3 derivative):
-  after real backends are initialized, manual WFG, pump, valve, and experiment
-  actions can be invoked without those command-line gates.
+  `qt_ui.py`/`qt_ui_v2.py` GUIs (or to `qt_ui_v3.py`, which -- see the
+  tracking-status entry below -- is itself now tracked in git as of commit
+  `22c68cb`, not an untracked local derivative as earlier versions of this
+  entry assumed): after real backends are initialized, manual WFG, pump,
+  valve, and experiment actions can be invoked without those command-line
+  gates.
   This is current reachable behavior, not proof that the actions are approved
   or physically verified. **Status: OPEN; needs an explicit operator-policy/
   UI-interlock decision.**
@@ -65,7 +68,10 @@ historical notes. This document is a live issue register, whereas
   repeat (or next TEC temperature point) from starting; the current unit runs
   through capture, AD2 wait, flush, and save. The v1 button, inherited v2 menu
   action, and Start-experiment tooltips now state that boundary. Local v3 work
-  may inherit the same behavior but is outside the tracked runtime boundary.
+  may inherit the same behavior; note that "outside the tracked runtime
+  boundary" no longer describes v3's actual status -- `qt_ui_v3.py` has been
+  tracked in git since commit `22c68cb` (2026-08-13; see the tracking-status
+  entry below).
   **Status:
   RESOLVED for wording; OPEN if a separate emergency-stop policy is desired.**
 - **`qt_ui_v2.py` is an actively maintained transitional UI, not legacy or a
@@ -74,12 +80,22 @@ historical notes. This document is a live issue register, whereas
   backends. Its initialization now delegates to `Application.initialize()`
   with progress reporting, removing the duplicate device-order/rollback loop.
   **Status: TRANSITIONAL, not the default launch target.**
-- **Local v3 files are the active local layout-development direction, not part
-  of the committed runtime boundary.** Commit
-  `d180eea` intentionally removed `qt_ui_v3.py` and its launcher/test companions
-  from tracking. Copies can remain in a developer working tree, but a fresh
-  checkout does not contain or support a v3 entry point. **Status: LOCAL,
-  UNTRACKED DEVELOPMENT MATERIAL; not independently hardware-verified.**
+- **Local v3 files are tracked in git as of commit `22c68cb` (2026-08-13), in
+  direct contradiction with this project's standing rule that these files must
+  never be committed.** Commit `d180eea` (2026-08-05) intentionally removed
+  `qt_ui_v3.py` and its launcher/test companions (`tests/test_qt_ui_v3.py`,
+  `launch_gui_v3.bat`, `tools/run_ui_v3.py`) from tracking, correcting an
+  earlier accidental inclusion in `7c7e19f`. `22c68cb` (2026-08-13) re-added
+  all four of the same files to tracking -- confirmed directly via
+  `git ls-files | grep -i v3` (all four listed) and `git show --stat 22c68cb`
+  (all four present in that commit's diff) on 2026-08-26, not assumed from an
+  earlier report. This is the identical failure recurring a second time, and
+  no `.gitignore` rule exists for any of these four paths to prevent a third
+  recurrence. **Status: UNRESOLVED, AWAITING OWNER DECISION.** Whether to
+  remove v3 from tracking again (as `d180eea` did) or to formally accept it
+  into the committed runtime boundary has not been decided -- do not read
+  this entry as resolved in either direction, and do not act on v3's tracked
+  files without that decision.
 - **Local v3 inherited presentation coupling has been reduced without changing
   hardware behavior.** Initialization, status, acquisition, and MSO caption
   adaptations validate unique matches and assign stable v3 `objectName`

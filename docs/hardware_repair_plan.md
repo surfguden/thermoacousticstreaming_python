@@ -207,7 +207,8 @@ token or a successful serial write.
 The instrument whose `initialize()` call raises is not included in Application's
 rollback list. This is observable for Valve: it opens the serial port before the
 status handshake, but a failed/unknown handshake does not close that just-opened
-port. **Implemented, not yet committed (2026-08-05):** `Valve.initialize()` now
+port. **Implemented, committed in `22c68cb` (2026-08-13; originally implemented
+2026-08-05):** `Valve.initialize()` now
 closes its backend on post-open handshake failure (preserving the original
 exception and reporting a combined cleanup failure if close also fails), with
 fake regression tests asserting the port is closed -- see
@@ -219,7 +220,8 @@ handshake step that can fail after ownership is committed) -- no AD2 code was
 changed. Do not broaden Application rollback by blindly calling cleanup on every failed
 instrument unless each backend's partial-state behavior is verified.
 
-**Also implemented, not yet committed (2026-08-05):** the same partial-init
+**Also implemented, committed in `22c68cb` (2026-08-13; originally implemented
+2026-08-05):** the same partial-init
 rollback gap existed for two more instruments and is now closed the same way.
 `CetoniPump.initialize()` now closes its backend if the post-open
 `sync_fill_level()` readback fails (previously left the backend open with no
