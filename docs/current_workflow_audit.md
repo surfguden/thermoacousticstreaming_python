@@ -89,19 +89,25 @@ device is touched; this workflow is a positive-rate dispense operation.
   reports a failure. This is fail-closed reinitialization: a timed-out vendor
   call may still be alive in its daemon thread, so proceeding to open another
   handle would not be a safe recovery.
-- Local `qt_ui_v3.py` development files are the active local layout-development
-  direction, but commit `d180eea` intentionally removed them from tracking.
-  They are not part of a fresh checkout's committed runtime boundary and have
-  not been independently hardware-verified. The tracked transitional/rollback
-  path is `qt_ui_v2.py`; local v3 work must be assessed separately from
-  committed repository behavior.
-- Local v3 currently replaces several silent caption-search loops with
+- `qt_ui_v3.py` and its launcher/tool/test companions are tracked and formally
+  accepted as repository content by explicit owner decision as of the current
+  commit. It is an opt-in layout derivative of v2, not a separate runtime or
+  the default operator UI, and it has not been independently hardware-verified.
+  V1 remains the default; v2 remains the rollback/reference path.
+- V3 replaces several silent caption-search loops with
   fail-loud unique-caption adapters that assign stable `objectName` values.
   Initialization, status, acquisition, and MSO adaptations use those validated
   adapters. The shared manual-WFG builder now also assigns neutral stable IDs
-  to its carrier/trigger/FM labels and preview description, and local v3
+  to its carrier/trigger/FM labels and preview description, and v3
   addresses those IDs directly instead of rewriting labels by substring or
-  position. V3 remains local despite this improvement.
+  position. Other panels are rebuilt in v3 and therefore remain maintenance
+  coupling points when v1/v2 behavior changes.
+- Current assessment: v3 inherits the shared repeat-boundary Abort behavior,
+  live piezo `MaxTravel` bounds, motion confirmations, and Qmix
+  auto-clear-on-initialize/final-fault-gate policy. Its Abort access is menu-only
+  rather than a prominent run-control button, and its rebuilt Pump & Valve panel
+  omits v1/v2's separate manual Qmix fault-recovery action. These are documented
+  divergences, not evidence that v3 has independent hardware validation.
 - A backend owns cleanup of resources opened during its own `initialize()`
   before that method returns successfully. Application rollback remains
   responsible for devices whose initialization already completed. Current

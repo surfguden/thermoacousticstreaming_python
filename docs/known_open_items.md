@@ -54,10 +54,8 @@ historical notes. This document is a live issue register, whereas
 - **Staged hardware-test confirmations are not global GUI interlocks.**
   `CONFIRM_REAL_HARDWARE` and timing acknowledgements protect action-capable
   modes in newer `hardware_tests/` scripts. They do not apply to the tracked
-  `qt_ui.py`/`qt_ui_v2.py` GUIs (or to `qt_ui_v3.py`, which -- see the
-  tracking-status entry below -- is itself now tracked in git as of commit
-  `22c68cb`, not an untracked local derivative as earlier versions of this
-  entry assumed): after real backends are initialized, manual WFG, pump,
+  `qt_ui.py`/`qt_ui_v2.py` GUIs or the formally accepted, tracked
+  `qt_ui_v3.py`: after real backends are initialized, manual WFG, pump,
   valve, and experiment actions can be invoked without those command-line
   gates.
   This is current reachable behavior, not proof that the actions are approved
@@ -66,12 +64,10 @@ historical notes. This document is a live issue register, whereas
 - **The visible `Abort` action is a graceful series-boundary request, not an
   emergency hardware stop.** It sets the shared stop flag and prevents the next
   repeat (or next TEC temperature point) from starting; the current unit runs
-  through capture, AD2 wait, flush, and save. The v1 button, inherited v2 menu
-  action, and Start-experiment tooltips now state that boundary. Local v3 work
-  may inherit the same behavior; note that "outside the tracked runtime
-  boundary" no longer describes v3's actual status -- `qt_ui_v3.py` has been
-  tracked in git since commit `22c68cb` (2026-08-13; see the tracking-status
-  entry below).
+  through capture, AD2 wait, flush, and save. The v1 button and inherited
+  v2/v3 menu action use the same callback. V3's primary run group has no
+  prominent Abort button, so its access is menu-only, although its behavior is
+  unchanged.
   **Status:
   RESOLVED for wording; OPEN if a separate emergency-stop policy is desired.**
 - **`qt_ui_v2.py` is an actively maintained transitional UI, not legacy or a
@@ -80,22 +76,21 @@ historical notes. This document is a live issue register, whereas
   backends. Its initialization now delegates to `Application.initialize()`
   with progress reporting, removing the duplicate device-order/rollback loop.
   **Status: TRANSITIONAL, not the default launch target.**
-- **Local v3 files are tracked in git as of commit `22c68cb` (2026-08-13), in
-  direct contradiction with this project's standing rule that these files must
-  never be committed.** Commit `d180eea` (2026-08-05) intentionally removed
+- **V3 is formally accepted tracked repository content by explicit owner
+  decision as of the current commit.** This supersedes the standing rule that
+  the files must never be committed. The history remains material: commit
+  `d180eea` (2026-08-05) intentionally removed
   `qt_ui_v3.py` and its launcher/test companions (`tests/test_qt_ui_v3.py`,
   `launch_gui_v3.bat`, `tools/run_ui_v3.py`) from tracking, correcting an
   earlier accidental inclusion in `7c7e19f`. `22c68cb` (2026-08-13) re-added
   all four of the same files to tracking -- confirmed directly via
   `git ls-files | grep -i v3` (all four listed) and `git show --stat 22c68cb`
   (all four present in that commit's diff) on 2026-08-26, not assumed from an
-  earlier report. This is the identical failure recurring a second time, and
-  no `.gitignore` rule exists for any of these four paths to prevent a third
-  recurrence. **Status: UNRESOLVED, AWAITING OWNER DECISION.** Whether to
-  remove v3 from tracking again (as `d180eea` did) or to formally accept it
-  into the committed runtime boundary has not been decided -- do not read
-  this entry as resolved in either direction, and do not act on v3's tracked
-  files without that decision.
+  earlier report. This was the identical accidental-tracking failure recurring
+  a second time; acceptance now makes the current tracking intentional rather
+  than retroactively claiming those commits were accurate. **Status: RESOLVED
+  FOR TRACKING POLICY.** Acceptance does not make v3 the default, independently
+  hardware-verified, or fully evaluated.
 - **Tracked v3 inherited presentation coupling has been reduced without changing
   hardware behavior.** Initialization, status, acquisition, and MSO caption
   adaptations validate unique matches and assign stable v3 `objectName`
@@ -103,9 +98,8 @@ historical notes. This document is a live issue register, whereas
   carrier, trigger, and FM labels; local v3 uses those IDs instead of walking
   the widget tree and rewriting matching substrings; the preview description
   likewise has a stable shared ID instead of relying on the first label in the
-  group. **Status: RESOLVED FOR CURRENT V3 ADAPTATIONS IN THE TRACKED WORKTREE;
-  this does not decide whether v3 should remain in the committed runtime
-  boundary.**
+  group. **Status: RESOLVED FOR CURRENT V3 ADAPTATIONS; v3 is now formally
+  accepted in the repository, while the remaining coupling below stays open.**
   **Update (Session 102, 2026-08-06): NOT all v3 caption dependencies use this
   safer objectName pattern.** `_rename_unique_text_widget()`/
   `_rename_unique_group()` (still text-matching, by v3's own explicit design
@@ -134,6 +128,44 @@ historical notes. This document is a live issue register, whereas
   same way again** -- migrating them to the safer objectName pattern (like
   the WFG panel above) was explicitly out of scope for the Session 103 fix
   and remains open if wanted.
+
+- **V3 acceptance records repository status, not completed validation.** A
+  fresh code assessment in the acceptance pass confirmed that `MainWindowV3`
+  subclasses `MainWindowV2` and shares the same `Application`/hardware
+  backends while rebuilding substantial experiment, pump, camera, WFG, MSO,
+  and Z-scan presentation. Its dedicated batch/tool launchers are reachable,
+  and `tests/test_qt_ui_v3.py` provides meaningful fake-only UI wiring and
+  layout coverage, but v3 has not been independently exercised on real
+  hardware. Shared safety behavior is inherited: Abort remains a
+  repeat-boundary request, Z-scan uses live `MaxTravel` bounds and motion
+  confirmations, and normal pump initialization uses the owner-approved Qmix
+  auto-clear followed by the final fault gate. Two presentation divergences
+  remain: experiment Abort is available from the menu rather than a prominent
+  run-control button, and v3's rebuilt Pump & Valve panel omits v1/v2's
+  separate manual Qmix fault-recovery action. **Status: ACCEPTED AND
+  TRACKED; OPEN for independent evaluation and the two explicit UI
+  divergences.**
+
+- **Known intermittent PySide/Shiboken widget-lifetime failures in v2/v3 UI
+  tests.**
+  `tests/test_qt_ui_v2.py::test_v2_experiment_setup_tabs_embeds_the_real_shared_group_widgets`
+  failed with `RuntimeError: Internal C++ object ... already deleted` in 2 of
+  6 isolated three-test invocations across both pre-merge `c5665b3` and
+  post-merge `bcd1634` (approximately one run in three). This empirically
+  classifies it as flaky and proves the failure family predates the pump merge.
+  `tests/test_qt_ui_v2.py::test_v2_sidebar_opening_manual_panel_does_not_initialize_hardware`
+  produced `SystemError: _TooltipIconWrapper returned NULL without setting an
+  exception` in 1 of 6 current-tree runs (one of three isolated, zero of three
+  full-suite) and 2 of 6 clean-`bcd1634` runs (one isolated, one full-suite):
+  3 of 12 combined. The identical baseline reproduction proves this is not
+  introduced by the v3/documentation/fixture changes; variation between
+  isolated and ordered-suite runs places it in the same PySide lifetime family.
+  `tests/test_qt_ui_v3.py::test_v3_dialogs_open_at_usable_sizes_without_full_path_width`
+  has exhibited the same signature in a full-suite run but passed all six
+  isolated cross-commit invocations and the acceptance pass's full v3 module
+  run, suggesting suite-order sensitivity. All three tests carry a non-behavioral
+  `known_flaky` marker: it does not retry, skip, xfail, or otherwise hide a
+  future failure. **Status: OPEN; root cause unidentified.**
 
 - **v1/v2-to-v3 process and object isolation boundary (Session 102
   investigation, 2026-08-06).** Established what v3 can and cannot safely do
@@ -206,8 +238,8 @@ historical notes. This document is a live issue register, whereas
   Hamamatsu and Qmix backends already own their partial-open rollback; TEC owns
   connect/status rollback and now bounds both that rollback close and direct
   cleanup through the shared timeout helper. See `docs/hardware_repair_plan.md`.
-  **Status: CONFIRMED LOCAL GAPS RESOLVED IN THE CURRENT UNCOMMITTED WORKTREE;
-  keep the ownership rule as a review requirement for new backends.**
+  **Status: CONFIRMED LOCAL GAPS RESOLVED, committed in `22c68cb`; keep the
+  ownership rule as a review requirement for new backends.**
 - **GlobalExposure's disabled (`enabled=False`) DCAM behavior is
   implemented conservatively, not confirmed against real LabVIEW source
   (2026-07-31).** `HamamatsuDcamBackend.configure_trigger_global_exposure()`
@@ -1181,20 +1213,19 @@ historical notes. This document is a live issue register, whereas
      corresponding `ad2.py` enums, so the silent-default branch was dead
      code for every valid enum member at review time. That was still unsafe
      for a future enum/configuration mismatch.
-  **Resolved in the current working tree (2026-08-02; pending review):**
+  **Resolved 2026-08-02 and committed in `7c7e19f`:**
   `AD2Sdk.do_configure()` and `AD2Sdk.wfg_start_stop_all_ch()` now use the
   same commit-after-confirmation pattern. The latter configures a copied
   `WfgConfig`, and both retain their last confirmed cached state if the
   backend raises. Focused raising-backend tests and the complete offline suite
   pass. This is not an open-item candidate unless real-hardware verification
   finds a separate issue.
-  **Resolved in the current working tree (2026-08-04; pending review):**
+  **Resolved 2026-08-04 and committed in `7c7e19f`:**
   `ad2._coerce_enum()` preserves defaults only for missing values and rejects
   explicit unknown enum strings; `WaveFormsBackend._enum_value()` accepts only
   known mappings or raw integer SDK values and otherwise raises. Focused
   fake-only regression tests cover both boundaries. This entry remains as
-  historical rationale, not an open item. **Status: RESOLVED in the working
-  tree, pending review.** See the
+  historical rationale, not an open item. **Status: RESOLVED and committed.** See the
   [Session 88 changelog entry](claude_code_change_log.md) for the full
   writeup (added retroactively during commit preparation -- this note
   previously had no corresponding changelog entry).

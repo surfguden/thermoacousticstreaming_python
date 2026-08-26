@@ -13,10 +13,24 @@ python tools\run_ui.py
 python -m pytest -q
 ```
 
+Before committing, compare the drafted commit message with the actual staged
+change:
+
+```powershell
+git diff --cached --stat
+git show --stat --oneline HEAD  # after committing, before pushing
+```
+
+Every changed file must be accounted for, and no message claim may contradict
+the diff. This check is mandatory because `c918eb3` overstated its discovery
+test coverage, `7c7e19f` said the four v3 files were excluded while adding
+them, `4105fa8` retained unfilled message-template placeholders, and `22c68cb`
+re-added the v3 files without disclosing them.
+
 On Windows, `launch_gui.bat` (double-click, or run from a terminal) does the
 same thing as `python tools\run_ui.py`, using a fixed Conda environment path
 instead of whatever `python` currently resolves to on your PATH -- see the
-"Launchers" section below for the tracked v1 and v2 variants.
+"Launchers" section below for the tracked v1, v2, and v3 variants.
 
 ## Application Status
 
@@ -44,12 +58,14 @@ hardware-verified and is **not the default launch target** until approved -- it
 must be launched explicitly (see "Launchers" below), never by running
 `tools/run_ui.py`/`launch_gui.bat` alone.
 
-Local v3 layout-development files may exist in an individual working tree and
-are the active local layout-development direction, but they are intentionally
-not tracked after commit `d180eea`. A fresh checkout therefore provides no
-supported v3 entry point. Those local files are not independently
-hardware-verified and must not be treated as part of the committed runtime
-boundary. v2 remains the tracked transitional and rollback/reference UI.
+`src/thermo_acoustic/qt_ui_v3.py` (`MainWindowV3`) and its launcher, tool, and
+test companions are tracked and formally accepted as repository content by
+explicit owner decision as of this commit. V3 is an opt-in layout derivative:
+it subclasses v2 and shares the same `Application` and hardware backends while
+rebuilding several panels. Acceptance supersedes the prior "never commit v3"
+rule; it does not make v3 the default UI or independently hardware-verified,
+and it does not validate every duplicated panel or safety affordance. V1
+remains the default operator UI, while v2 remains the rollback/reference path.
 
 ## Environment Setup
 
@@ -92,15 +108,17 @@ covered by either file -- see the comments at the top of
 
 ## Launchers
 
-Two tracked, clearly-separated launchers exist for the supported repository UIs:
+Three tracked, clearly-separated launchers exist for the repository UIs:
 
 | Launches | Windows batch file (double-click) | Dev command |
 | --- | --- | --- |
 | v1 (`qt_ui.py`, `MainWindow`) -- default operator UI | `launch_gui.bat` | `python tools\run_ui.py` |
 | v2 (`qt_ui_v2.py`, `MainWindowV2`) -- older transitional layout and rollback/reference path | `launch_gui_v2.bat` | `python tools\run_ui_v2.py` |
+| v3 (`qt_ui_v3.py`, `MainWindowV3`) -- accepted opt-in layout derivative, not independently hardware-verified | `launch_gui_v3.bat` | `python tools\run_ui_v3.py` |
 
-Local untracked v3 development files are outside this launcher contract and are
-not available from a fresh checkout.
+V3 is available from a fresh checkout but is not the default launch target.
+Its acceptance into the repository does not promote it over v1 or establish
+real-hardware validation.
 
 The `.bat` files use a fixed Conda environment path (edit `PYTHON_EXE` at the
 top of either script if that path changes); the `tools/run_ui*.py` scripts

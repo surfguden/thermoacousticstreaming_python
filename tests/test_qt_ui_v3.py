@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
@@ -30,7 +32,7 @@ def test_v3_is_a_layout_evolution_of_v2_and_v2_remains_available(monkeypatch, tm
         assert isinstance(v3, qt_ui_v2.MainWindowV2)
         assert type(v3) is qt_ui_v3.MainWindowV3
         assert type(v2) is qt_ui_v2.MainWindowV2
-        assert v3.windowTitle() == "Thermo Acoustic Streaming - Local UI v3 Preview"
+        assert v3.windowTitle() == "Thermo Acoustic Streaming - UI v3 (shared hardware runtime)"
         assert v2.windowTitle() == "Thermo Acoustic Streaming - Transitional UI (shared hardware runtime)"
         assert any(action.text() == "Abort" for action in v3.menuBar().actions())
     finally:
@@ -172,6 +174,8 @@ def test_v3_launcher_states_opt_in_hardware_and_rollback_boundaries():
     launcher = (Path(__file__).resolve().parents[1] / "launch_gui_v3.bat").read_text(encoding="utf-8")
 
     assert "opt-in" in launcher
+    assert "tracked" in launcher
+    assert "formally accepted repository content" in launcher
     assert "not independently hardware-verified" in launcher
     assert "launch_gui_v2.bat" in launcher
     assert "rollback/reference" in launcher
@@ -388,7 +392,11 @@ def test_v3_mso_stacks_controls_and_preview_without_outer_horizontal_scroll(monk
         window.close()
 
 
+@pytest.mark.known_flaky
 def test_v3_dialogs_open_at_usable_sizes_without_full_path_width(monkeypatch, tmp_path):
+    # Informational marker only: this test has shown the same deleted-C++-
+    # object signature in a full-suite run, while passing isolated repeats.
+    # Do not retry, skip, or xfail it; a future failure must remain visible.
     window = make_window(monkeypatch, tmp_path)
     try:
         expected_sizes = {

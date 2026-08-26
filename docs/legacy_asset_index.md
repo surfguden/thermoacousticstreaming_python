@@ -67,8 +67,10 @@ for that existing policy.
 
 ## Qmix boundary note
 
-The migration index does not alter pump operation.  `QmixPumpBackend` remains
-fail-closed during normal initialization: no automatic reconnect, no automatic
-fault clear, and no motion command during connection.  The explicit
-operator-gated fault-clear path is diagnostic recovery only; it does not show
-that the CAN/interface fault is resolved.
+The migration index does not alter pump operation. Normal
+`QmixPumpBackend.initialize()` now follows the owner-approved policy of clearing
+the vendor fault latch after bus start and before the final enable gate. It
+does not automatically reconnect or command motion, and a fault that remains
+or relatches still blocks enable. The separate operator-gated recovery path
+remains available in v1/v2 for post-init faults; neither policy shows that the
+CAN/interface root cause is resolved.

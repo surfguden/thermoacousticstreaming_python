@@ -36,6 +36,9 @@ thorlabs-apt-discovery = ["pylablib>=0.5"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+    "known_flaky: documented nondeterministic test; informational only (no retry, skip, or xfail)",
+]
 # --basetemp=.pytest_tmp_scratch: this machine's real default tmp_path
 # location (%LOCALAPPDATA%\Temp\pytest-of-<user>) raises a genuine
 # PermissionError (Session 27), so this project has always needed an

@@ -223,7 +223,10 @@ def make_recording_experiment(calls, tmp_path, *, flush_enabled=False):
         calls,
         experiment_folder=tmp_path / "repeat_001",
         flush_settings=FlushSettings(
-            flush_flowrate=0.0,
+            # Match LabviewFlushPreset's retained experiment default. Unlike
+            # the former 0.0 placeholder, this is a valid positive Qmix
+            # uL/min request and lets flush-enabled tests reach the fake pump.
+            flush_flowrate=1000.0,
             flush_volume_ml=0.0,
             wait_after_flush_s=0.0,
         ),
@@ -674,7 +677,7 @@ def test_application_full_flow_dry_run_can_opt_into_fake_flush(tmp_path):
     assert ("camera", "stop_capture") in calls
     assert ("camera", "save_sequence", ("fake-frame-0", "fake-frame-1", "fake-frame-2"), tmp_path / "repeat_001") in calls
     assert ("valve", "set_position", 1) in calls
-    assert ("pump", "set_fill_level", 1.0, 0.0) in calls
+    assert ("pump", "set_fill_level", 1.0, 1000.0) in calls
     assert ("pump", "generate_flow", 0.0) not in calls
     assert ("pump", "read_status") in calls
     assert ("valve", "set_position", 2) in calls

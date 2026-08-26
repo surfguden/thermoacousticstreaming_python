@@ -101,12 +101,14 @@ a human decision, hardware confirmation, or focused implementation resolves them
   WFG/MSO/PumpValve/Camera buttons reuse the v1 panel builders and
   shared `Application` instance. That reuse is deliberate; v2 should not drift
   into a second hardware-control implementation.
-- **v3 is the active local layout-development direction; v2 is the tracked
-  transitional/rollback path.** Commit `d180eea` intentionally removed the v3
-  files from tracking. A local `MainWindowV3` may still subclass
-  `MainWindowV2`, but it is not part of a fresh checkout or the committed
-  runtime boundary. v2 is not independently hardware-verified, and v1 remains
-  the approved default.
+- **v3 is formally accepted tracked repository content; v1 remains the default
+  and v2 remains the rollback/reference path.** The owner decision in the
+  current commit supersedes the earlier "never commit v3" rule. V3 subclasses
+  `MainWindowV2` and shares the real `Application`/backend runtime; it is not an
+  independently hardware-verified replacement. Its rebuilt panels create
+  maintenance coupling, its experiment Abort access is menu-only, and its
+  Pump & Valve panel currently omits v1/v2's separate manual Qmix recovery
+  action. Acceptance does not resolve those evaluation findings.
 - **Settings persistence is not comprehensive.** Several manual-tab-only fields
   remain outside the saved settings file by long-standing design ambiguity. Add
   persistence only when the expected operator workflow is explicit.

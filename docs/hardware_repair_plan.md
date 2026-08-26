@@ -6,11 +6,9 @@ actions, fault clearing, motion, output enable, or configuration writes.
 
 Committed baseline for this repair plan: the owner-approved Qmix auto-clear
 policy merge of colleague commits `c2e0e0b` and `d750691` into
-`junjiebranch`, inspected 2026-08-26. The working tree was clean immediately
-before that merge; this plan's subsequent documentation and safety-net edits
-are part of the same pending commit. Current source and retained hardware logs
-are evidence; historical session claims are not independently verified unless
-stated otherwise below.
+`junjiebranch`, followed by policy/documentation commit `bcd1634`, inspected
+2026-08-26. Current source and retained hardware logs are evidence; historical
+session claims are not independently verified unless stated otherwise below.
 
 ## Qmix CAN Fault
 
@@ -56,9 +54,12 @@ stated otherwise below.
    position-reference, and fill-level state after normal initialization. The
    auto-clear policy authorizes connection handling only; it does not itself
    authorize motion or prove physical CAN root-cause resolution.
-4. The manual recovery button remains for a fault occurring after initialization
-   or an operator-requested fresh reconnect; it is not needed for routine
-   initialization and still records the manual action in status/data.tdms.
+4. The v1/v2 manual recovery button remains for a fault occurring after
+   initialization or an operator-requested fresh reconnect; it is not needed
+   for routine initialization and still records the manual action in
+   status/data.tdms. The formally accepted v3 UI currently omits this separate
+   control; that presentation divergence is documented in
+   `docs/known_open_items.md` and is not repaired by this plan.
 
 ## TEC / MeCom
 

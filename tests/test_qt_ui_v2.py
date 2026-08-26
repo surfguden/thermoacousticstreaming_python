@@ -198,7 +198,11 @@ def test_v2_start_experiment_discloses_shared_real_hardware_boundary(monkeypatch
         window.close()
 
 
+@pytest.mark.known_flaky
 def test_v2_sidebar_opening_manual_panel_does_not_initialize_hardware(monkeypatch, tmp_path):
+    # Informational marker only: this test produced the same PySide
+    # _TooltipIconWrapper NULL-without-exception failure both before and after
+    # the v3-acceptance changes. It is intentionally not retried or hidden.
     window = make_window(monkeypatch, tmp_path)
     try:
         window._open_manual_panel("WFG")
@@ -850,7 +854,11 @@ def test_v2_experiment_setup_tabs_has_four_task_oriented_tabs(monkeypatch, tmp_p
         window.close()
 
 
+@pytest.mark.known_flaky
 def test_v2_experiment_setup_tabs_embeds_the_real_shared_group_widgets(monkeypatch, tmp_path):
+    # Informational marker only: this test produced a Shiboken "Internal C++
+    # object ... already deleted" failure in 2/6 isolated runs across c5665b3
+    # and bcd1634. It is intentionally not retried, skipped, or xfailed.
     # Each tab re-parents v2's existing shared group-box builders whole (not
     # rebuilt) -- confirm identity, matching this file's established
     # reuse-verification convention (e.g.

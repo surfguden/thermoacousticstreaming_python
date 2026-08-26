@@ -1,8 +1,8 @@
-"""Launch the local, opt-in v3 layout preview.
+"""Launch the tracked, opt-in v3 layout.
 
 V3 reuses the v2 runtime and is not independently hardware-verified. The v3
-files are intentionally local/untracked at the current repository state; v2 is
-the tracked rollback/reference UI.
+files are formally accepted repository content; v2 remains the
+rollback/reference UI and v1 remains the default operator entry point.
 """
 
 from __future__ import annotations

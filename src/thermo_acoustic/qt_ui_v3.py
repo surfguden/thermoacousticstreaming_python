@@ -117,7 +117,7 @@ class InitializationDialogV3(InitializationDialog):
 
 
 class MainWindowV3(MainWindowV2):
-    """Local, opt-in layout evolution of v2 using the same application runtime."""
+    """Tracked, opt-in layout evolution of v2 using the same application runtime."""
 
     _PANEL_DISPLAY_NAMES: dict[str, str] = {"PumpValve": "Pump & Valve", "ZScan": "Z-Scan"}
     _WFG_PREVIEW_CHANNEL_LABELS: tuple[str, str] = ("AD2 channel 0", "AD2 channel 1")
@@ -138,7 +138,7 @@ class MainWindowV3(MainWindowV2):
 
     def __init__(self, app: Application | None = None) -> None:
         super().__init__(app=app)
-        self.setWindowTitle("Thermo Acoustic Streaming - Local UI v3 Preview")
+        self.setWindowTitle("Thermo Acoustic Streaming - UI v3 (shared hardware runtime)")
         self.connection_button.setText("Initialize hardware")
         self.connection_button.setStyleSheet("")
         self.connection_button.setToolTip(
