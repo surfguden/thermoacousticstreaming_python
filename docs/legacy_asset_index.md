@@ -72,5 +72,5 @@ The migration index does not alter pump operation. Normal
 the vendor fault latch after bus start and before the final enable gate. It
 does not automatically reconnect or command motion, and a fault that remains
 or relatches still blocks enable. The separate operator-gated recovery path
-remains available in v1/v2 for post-init faults; neither policy shows that the
-CAN/interface root cause is resolved.
+remains available in all three UI surfaces for post-init faults; neither policy
+shows that the CAN/interface root cause is resolved.

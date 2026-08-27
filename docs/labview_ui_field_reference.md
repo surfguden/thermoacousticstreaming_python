@@ -16,18 +16,18 @@ equivalent was checked.
 | Field | LabVIEW-era default | Current Python default | Status |
 | --- | --- | --- | --- |
 | Tab Control | Initialization, WFG, Pump&Valve, Camera, DOCustom, DOClock, Experiment, Zstack | same seven-tab layout (`qt_ui.py`) | match |
-| Analog Discovery 3 (Off/On) | On (checked) | `ad2_enabled` defaults `True` (`qt_ui.py:683`) | match |
+| Analog Discovery 3 (Off/On) | On (checked) | `ad2_enabled` defaults `True` (`qt_ui.py:757-759`) | match |
 | Z stage (Off/On) | Off (unchecked, greyed) | no single equivalent toggle; current Z-stage path is the separate PPC001/Kinesis backend, not gated the same way | not directly comparable |
-| Prior Visa resource name | `COM7` | **Not used at all.** Code comments explicitly call this "the legacy Prior-serial/COM7 path this used to build" (`qt_ui.py:691`) and "Not wired to a real backend" (`qt_ui.py:740`). The real Z-stage today is a Thorlabs PPC001 over Kinesis/pythonnet, serial `44533854` -- a different vendor/protocol entirely, not just a different port. | **DRIFT** -- whole hardware target replaced, not merely a superseded port number |
-| Hamamatsu (Off/On) | On (checked) | `camera_enabled` defaults `True` (`qt_ui.py:699`) | match |
-| Cetoni Pump (Off/On) | On (checked) | `pump_enabled` defaults `True` (`qt_ui.py:702`) | match |
-| Cetoni Device Configuration Path | `C:\Users\Public\Documents\QmixElements\Projects\` | `C:\Users\Lab user\Desktop\Franzi\video paper 2\Paper 2 slow flow\Configurations\Cetoni_1pump_config_FM` (`ONE_PUMP_QMIX_CONFIG_PATH`, `hardware_config.py:8-10`, wired into the UI field at `qt_ui.py:770`) | **DRIFT** -- generic install-projects folder replaced by a specific named one-pump project config; expected evolution, but the literal string no longer matches |
-| MX Valve 2 (Off/On) | On (checked) | `valve_enabled` defaults `True` (`qt_ui.py:705`) | match |
-| Valve VISA resource name | `COM6` | `COM5` (`qt_ui.py:756`, comment: "Current application default; confirm physical wiring at the bench.") | **DRIFT** (previously found) |
-| Simulate Camera (Off/On) | On (checked) | `sim_camera` defaults `True` (`qt_ui.py:717`) | match |
-| Simulate Pump (Off/On) | On (checked) | `sim_pump` defaults `True` (`qt_ui.py:720`) | match |
-| Simulate Valve (Off/On) | On (checked) | `sim_valve` defaults `True` (`qt_ui.py:723`) | match |
-| (no TEC control exists in this LabVIEW panel) | -- | `tec_enabled` defaults `False`, `sim_tec` defaults `True` (`qt_ui.py:708,729`) | **new in Python** -- TEC has no LabVIEW-era equivalent at all, not a drifted value |
+| Prior Visa resource name | `COM7` | **Not used at all.** Code comments explicitly call this "the legacy Prior-serial/COM7 path this used to build" (`qt_ui.py:766-770`) and "Not wired to a real backend" (`qt_ui.py:815-817`). The real Z-stage today is a Thorlabs PPC001 over Kinesis/pythonnet, serial `44533854` -- a different vendor/protocol entirely, not just a different port. | **DRIFT** -- whole hardware target replaced, not merely a superseded port number |
+| Hamamatsu (Off/On) | On (checked) | `camera_enabled` defaults `True` (`qt_ui.py:773-775`) | match |
+| Cetoni Pump (Off/On) | On (checked) | `pump_enabled` defaults `True` (`qt_ui.py:776-778`) | match |
+| Cetoni Device Configuration Path | `C:\Users\Public\Documents\QmixElements\Projects\` | `C:\Users\Lab user\Desktop\Franzi\video paper 2\Paper 2 slow flow\Configurations\Cetoni_1pump_config_FM` (`ONE_PUMP_QMIX_CONFIG_PATH`, `hardware_config.py:8-10`, wired into the UI field at `qt_ui.py:845-848`) | **DRIFT** -- generic install-projects folder replaced by a specific named one-pump project config; expected evolution, but the literal string no longer matches |
+| MX Valve 2 (Off/On) | On (checked) | `valve_enabled` defaults `True` (`qt_ui.py:779-781`) | match |
+| Valve VISA resource name | `COM6` | `COM5` (`qt_ui.py:831`, comment: "Current application default; confirm physical wiring at the bench.") | **DRIFT** (previously found) |
+| Simulate Camera (Off/On) | On (checked) | `sim_camera` defaults `True` (`qt_ui.py:791-793`) | match |
+| Simulate Pump (Off/On) | On (checked) | `sim_pump` defaults `True` (`qt_ui.py:794-796`) | match |
+| Simulate Valve (Off/On) | On (checked) | `sim_valve` defaults `True` (`qt_ui.py:797-799`) | match |
+| (no TEC control exists in this LabVIEW panel) | -- | `tec_enabled` defaults `False`, `sim_tec` defaults `True` (`qt_ui.py:782-784,803-805`) | **new in Python** -- TEC has no LabVIEW-era equivalent at all, not a drifted value |
 | Status | "System Not Initialized" | same startup string used | match |
 | Error Out (status/code/source) | green / `0` / empty | same cluster shape reused in Python's own status/error display | match |
 
@@ -53,7 +53,7 @@ equivalent was checked.
 | Trigger: secWait | 0 | not checked | not checked |
 | Trigger: cRepeat(0=inf) | 0 | not checked | not checked |
 | Trigger: Repeat Trigger | Off (red) | not checked | not checked |
-| Trigger: TrigrSrc | `trigrsrcNone` | `exp_ch1_trigger_source` default is `"trigsrcNone"` (`qt_ui.py:1162`, Experiment-tab field, not this WFG-tab field directly) | consistent naming, not a confirmed same-field comparison |
+| Trigger: TrigrSrc | `trigrsrcNone` | `exp_ch1_trigger_source` default is `"trigsrcNone"` (`qt_ui.py:1237-1238`, Experiment-tab field, not this WFG-tab field directly) | consistent naming, not a confirmed same-field comparison |
 | FM Mod (Ch1 & Ch2) Frequency (Hz) | 1000 | not checked | not checked |
 | FM Mod Amplitude (%) | 1 | not checked | not checked |
 | FM Mod Offset(V) / Symmetry(%) / Phase(Deg) | 0 / 50 / 0 | not checked | not checked |
@@ -73,16 +73,16 @@ field before treating any of these as confirmed current values.
 
 | Field | LabVIEW-era default | Current Python default | Status |
 | --- | --- | --- | --- |
-| Valve Pos1 / ValvePos2 buttons | labelled "Pos1" / "Pos2" | current buttons send the protocol-confirmed `P01`/`P02` commands (`qt_ui.py:2241,2244` tooltips) | consistent (button labels differ cosmetically; underlying protocol tokens match project's confirmed `P01`/`P02`) |
+| Valve Pos1 / ValvePos2 buttons | labelled "Pos1" / "Pos2" | current buttons send the protocol-confirmed `P01`/`P02` commands (`qt_ui.py:2305,2308` tooltips) | consistent (button labels differ cosmetically; underlying protocol tokens match project's confirmed `P01`/`P02`) |
 | Refill / Empty | buttons present, "These Go MAX flow!" label | `refill()`/`empty()` still exist; the "MAX flow" behavior is documented in `qmix_backend.py`'s flow-rate clamp comments | consistent, not independently re-verified value-for-value |
-| Syringe | `BD 1ml` (dropdown default) | `self.syringe = _combo(["BD 1ml", "BD 5ml", "BD 10ml", "Custom"], "BD 1ml")` (`qt_ui.py:838`) | match on the UI dropdown's own default text. Separate note: the pump's real, currently-configured device-side syringe geometry (`nemesys.xml`'s own default, reported live as `inner_diameter_mm=5.0, volume_max≈1.18 mL`) is recorded elsewhere as `"1 ml Glass"` -- a CETONI-library name, not the same naming scheme as this UI dropdown's BD presets. Not a code drift, just two different naming conventions for a similar-sized syringe; do not conflate the two. |
+| Syringe | `BD 1ml` (dropdown default) | `self.syringe = _combo(["BD 1ml", "BD 5ml", "BD 10ml", "Custom"], "BD 1ml")` (`qt_ui.py:913`) | match on the UI dropdown's own default text. Separate note: the pump's real, currently-configured device-side syringe geometry (`nemesys.xml`'s own default, reported live as `inner_diameter_mm=5.0, volume_max≈1.18 mL`) is recorded elsewhere as `"1 ml Glass"` -- a CETONI-library name, not the same naming scheme as this UI dropdown's BD presets. Not a code drift, just two different naming conventions for a similar-sized syringe; do not conflate the two. |
 | ConfigureSyringe button | "Configure" | `configure_syringe()` exists, gated behind this same explicit button per `known_open_items.md`'s documented "dropdown looks live-selected but has no real effect until Configure is clicked" trap | match (and the trap itself is already tracked as a separate open item, not new) |
 | Flow Rate | `-5000` | not independently checked against a Python spin-box default | not checked |
 | Generate Flow button | "Generate" | present | match |
 | Level (ml) | 0 | not checked | not checked |
 | Go to Level button | "GO" | present | match |
 | Stop Syringe button | "STOP" | present | match |
-| Number of flushes | 1 | `flush_count = _int_spin(1, minimum=1)` (`qt_ui.py:973`) | match |
+| Number of flushes | 1 | `flush_count = _int_spin(1, minimum=1)` (`qt_ui.py:1048`) | match |
 | Reference move button | "Ref Move" | present | match |
 | Flush button | "Flush" | present | match |
 | Flush Settings: Flush Flowrate | 0 | not checked | not checked |
@@ -94,16 +94,16 @@ field before treating any of these as confirmed current values.
 
 | Field | LabVIEW-era default | Current Python default | Status |
 | --- | --- | --- | --- |
-| Image / Image Continuous (Off/On) | On (checked) | `self.image_continuous.setChecked(False)` (`qt_ui.py:1005`, also reset to `False` at two other call sites) | **DRIFT** -- LabVIEW defaulted this On, current Python defaults it Off |
+| Image / Image Continuous (Off/On) | On (checked) | `self.image_continuous.setChecked(False)` (`qt_ui.py:1079-1080`, also reset to `False` at two other call sites) | **DRIFT** -- LabVIEW defaulted this On, current Python defaults it Off |
 | Hint: "If the button is grayed out, press the configure camera button" | present | not independently checked whether an equivalent hint string still exists | not checked |
-| ROI Horizontal Offset | 0 | `roi_h_offset = _int_spin(0, minimum=0)` (`qt_ui.py:975`) | match |
-| ROI Vertical Offset | 900 | `roi_v_offset = _int_spin(792, minimum=0)` (`qt_ui.py:976`) | **drift, but deliberate/resolved** -- see note below |
-| ROI Horizontal Size | 2304 | `roi_h_size = _int_spin(2304, minimum=0)` (`qt_ui.py:986`) | match |
-| ROI Vertical Size | 500 | `roi_v_size = _int_spin(740, minimum=0)` (`qt_ui.py:987`) | **drift, but deliberate/resolved** -- see note below |
-| ExposureTime (ms) | 50 | `exposure_ms = _spin(40.0, decimals=3, minimum=0.0)` (`qt_ui.py:989`) | **drift, but deliberate/resolved** -- see note below |
+| ROI Horizontal Offset | 0 | `roi_h_offset = _int_spin(0, minimum=0)` (`qt_ui.py:1050`) | match |
+| ROI Vertical Offset | 900 | `roi_v_offset = _int_spin(792, minimum=0)` (`qt_ui.py:1051`) | **drift, but deliberate/resolved** -- see note below |
+| ROI Horizontal Size | 2304 | `roi_h_size = _int_spin(2304, minimum=0)` (`qt_ui.py:1061`) | match |
+| ROI Vertical Size | 500 | `roi_v_size = _int_spin(740, minimum=0)` (`qt_ui.py:1062`) | **drift, but deliberate/resolved** -- see note below |
+| ExposureTime (ms) | 50 | `exposure_ms = _spin(40.0, decimals=3, minimum=0.0)` (`qt_ui.py:1064`) | **drift, but deliberate/resolved** -- see note below |
 | Configure Camera button | "Configure" | present | match |
-| Center ROI (Off/On) | On (checked) | `self.center_roi.setChecked(True)` (`qt_ui.py:998`) | match |
-| Static hint: "476 is Vertical is max for 100 fps" | present | **explicitly removed.** Code comment: "Removed (Session 36): a static '476 is Vertical is max for 100 fps'..." (`qt_ui.py:2533`) -- this was found and documented as hardcoded LabVIEW-screenshot text never wired to a real computation (`claude_code_change_log.md` Session-36-area entry) | **DRIFT (deliberate removal)** -- confirmed via code comment and prior session's own finding, not new here |
+| Center ROI (Off/On) | On (checked) | `self.center_roi.setChecked(True)` (`qt_ui.py:1072-1074`) | match |
+| Static hint: "476 is Vertical is max for 100 fps" | present | **explicitly removed.** Code comment: "Removed (Session 36): a static '476 is Vertical is max for 100 fps'..." (`qt_ui.py:2593`) -- this was found and documented as hardcoded LabVIEW-screenshot text never wired to a real computation (`claude_code_change_log.md` Session-36-area entry) | **DRIFT (deliberate removal)** -- confirmed via code comment and prior session's own finding, not new here |
 | Conversion Policy: Conversion Method | Default | not checked | not checked |
 | Conversion Policy: Minimum/Maximum Value, # Shifts | 0 / 0 / 0 | not checked | not checked |
 | Adjust Intensity in image button | "Adjust" | present | match |
@@ -112,18 +112,18 @@ field before treating any of these as confirmed current values.
 | Sequence path | empty | not checked | not checked |
 | SaveSequence button | "Save" | present | match |
 | Master Pulse Settings: Mode | Continuous | not checked | not checked |
-| Master Pulse Settings: Source | External | `self.sequence_source = _combo(["External", "Software"], "External")` (`qt_ui.py:1041`) | match (same "External" default), though this is the AD2 master-pulse trigger source, a different field from "Dcam Trigger Source" below -- do not conflate the two |
+| Master Pulse Settings: Source | External | `self.sequence_source = _combo(["External", "Software"], "External")` (`qt_ui.py:1116`) | match (same "External" default), though this is the AD2 master-pulse trigger source, a different field from "Dcam Trigger Source" below -- do not conflate the two |
 | Master Pulse Settings: Interval / Burst | 1 / 0 | not checked | not checked |
 | Capture mode | Snap | not checked | not checked |
 | Frames | 0 | not checked | not checked |
-| Dcam Trigger Source | Internal | `self.dcam_source = _combo([...], "Internal")` (`qt_ui.py:1068`) -- deliberately hardcoded, per comment, "to remove undefined leftover-state risk" | match |
+| Dcam Trigger Source | Internal | `self.dcam_source = _combo([...], "Internal")` (`qt_ui.py:1143-1144`) -- deliberately hardcoded, per comment, "to remove undefined leftover-state risk" | match |
 | External Options: Polarity | Negative | not checked | not checked |
 | External Options: Delay | 0 | not checked | not checked |
-| ExposureTime (ms) [sequence block] | 0 | `sequence_exposure_ms = _spin(0.0, ...)` (`qt_ui.py:1100`) | match |
+| ExposureTime (ms) [sequence block] | 0 | `sequence_exposure_ms = _spin(0.0, ...)` (`qt_ui.py:1175`) | match |
 | Frame Index 2 / Frame Count 2 | 0 / 0 | not checked | not checked |
 
 **The ROI/exposure block's apparent discrepancy is resolved, not open.**
-`qt_ui.py:977-985`'s tooltip says these defaults "follow the retained
+`qt_ui.py:1052-1060`'s tooltip says these defaults "follow the retained
 LabVIEW screenshot candidate (vertical_offset=792, vertical_size=740,
 exposure=40.0ms...)" -- confusingly worded, since the values actually
 visible in `UI_tabs/04-Camera.png` are `900`/`500`/`50.0ms`. Traced via
@@ -150,7 +150,7 @@ kept.
 | Elapsed Time / Time Left | `00:00:00` / `00:00:00` | not checked (runtime display fields, not meaningfully "defaulted") | not applicable |
 | # elements in queue | 0 | not checked | not applicable |
 | Start Experiment series button | "Start exp" | present | match |
-| SeriesPath 2 | `C:\test\firstrunpulsed` | `self.series_path = QLineEdit(r"C:\test\firstrunpulsed")` (`qt_ui.py:1110`) | **exact match** -- deliberately preserved placeholder path |
+| SeriesPath 2 | `C:\test\firstrunpulsed` | `self.series_path = QLineEdit(r"C:\test\firstrunpulsed")` (`qt_ui.py:1185`) | **exact match** -- deliberately preserved placeholder path |
 | Camera FPS | 0 | not checked | not checked |
 | Camera Start (s) | 0 | not checked | not checked |
 | Ch1 Frequency (Hz) | 0 | not checked | not checked |
@@ -160,9 +160,9 @@ kept.
 | Ch2 Start (s) / Ch2 Run (s) (0=Cont) | 0 / 0 | not checked | not checked |
 | Repeats | 1 | not checked | not checked |
 | Frames | 1 | not checked | not checked |
-| ExposureTime(ms) 2 | 0 | `exp_exposure_ms = _spin(0.0, decimals=3, minimum=0.0)` (`qt_ui.py:1290`) | match |
+| ExposureTime(ms) 2 | 0 | `exp_exposure_ms = _spin(0.0, decimals=3, minimum=0.0)` (`qt_ui.py:1365`) | match |
 | Camera Start Array(s) | ten `0` entries | not checked | not checked |
-| GlobalExposure (Off/On) | Off (unchecked) | `self.global_exposure = QCheckBox("Off/On")` with no explicit `setChecked()` call (`qt_ui.py:1327`), so it defaults to Qt's own unchecked state | match |
+| GlobalExposure (Off/On) | Off (unchecked) | `self.global_exposure = QCheckBox("Off/On")` with no explicit `setChecked()` call (`qt_ui.py:1402`), so it defaults to Qt's own unchecked state | match |
 | Dyamic Camera Start Time (Off/On) | Off (unchecked) | not checked | not checked |
 | Flush Settings 2: Flush Flowrate(uL) / flush volume(ml) / WaitAfterFlush | 0 / 0 / 0 | not checked | not checked |
 | Average FPS | 0 | not checked (runtime display field) | not applicable |

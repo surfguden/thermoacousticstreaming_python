@@ -84,7 +84,8 @@ device is touched; this workflow is a positive-rate dispense operation.
   are selected. Its layout has not been independently hardware-verified. Its
   initialization path now delegates to `Application.initialize()` with
   progress reporting rather than maintaining a second device-order loop.
-- In the current working tree, both tracked GUI initialization paths refuse to
+- In the current source, both distinct GUI initialization implementations
+  (v1 and the v2 implementation inherited by v3) refuse to
   construct a replacement hardware bundle if cleanup of the existing bundle
   reports a failure. This is fail-closed reinitialization: a timed-out vendor
   call may still be alive in its daemon thread, so proceeding to open another
@@ -104,10 +105,11 @@ device is touched; this workflow is a positive-rate dispense operation.
   coupling points when v1/v2 behavior changes.
 - Current assessment: v3 inherits the shared repeat-boundary Abort behavior,
   live piezo `MaxTravel` bounds, motion confirmations, and Qmix
-  auto-clear-on-initialize/final-fault-gate policy. Its Abort access is menu-only
-  rather than a prominent run-control button, and its rebuilt Pump & Valve panel
-  omits v1/v2's separate manual Qmix fault-recovery action. These are documented
-  divergences, not evidence that v3 has independent hardware validation.
+  auto-clear-on-initialize/final-fault-gate policy. Commit `2c0ffc6` closed its
+  two operator-capability gaps by adding a prominent graceful-stop button and a
+  v3 presentation of the shared manual Qmix recovery action. Their presentation
+  remains intentionally different from v1/v2; neither closure is evidence that
+  v3 has independent hardware validation.
 - A backend owns cleanup of resources opened during its own `initialize()`
   before that method returns successfully. Application rollback remains
   responsible for devices whose initialization already completed. Current
@@ -150,7 +152,7 @@ device is touched; this workflow is a positive-rate dispense operation.
 | AD2 PC trigger | `AD2Sdk.pc_trigger()` | Present in run path; interaction with `trigsrcNone` needs confirmation |
 | AD2 DO Clock Special | `config_do_clock_special()` and DO settings | Active migrated DIO1 LED timing path; staged scripts are gated, canonical GUI is not confirmation-gated |
 | AD2 DO Custom | `config_do_custom()` and custom DO settings | Legacy/nonessential unless later evidence requires it |
-| Qmix/neMESYS pump | `CetoniPump` + `QmixPumpBackend` | Real backend is opt-in and fault-fails-closed; current bench initialization is blocked by a relatching `0x81FF` CAN Tx Queue Overrun; canonical GUI has no separate movement-confirmation gate after initialization |
+| Qmix/neMESYS pump | `CetoniPump` + `QmixPumpBackend` | Real backend is opt-in; normal initialization now clears the vendor fault latch and retains a final fail-closed fault gate. A colleague reported successful real initialization/operation under this policy, but the `0x81FF` CAN root cause remains unresolved and the canonical GUI has no separate movement-confirmation gate after initialization. |
 | Valve position 1/2 | `Valve.set_position(1/2)` | Mapping unresolved; do not switch yet |
 | Flush | `Application.flush()` | Gated by `flush_enabled`; positive dispense rate required before hardware is touched; real pump/valve behavior remains bench-unverified |
 | Legacy Prior Z-stage | Retained migration reference only; no active factory path | Obsolete for current PPC001 hardware |
@@ -168,7 +170,7 @@ device is touched; this workflow is a positive-rate dispense operation.
 | AD2 PC trigger | Active in workflow, unresolved semantics | `trigsrcNone` may start output during WFG config instead of PC trigger |
 | AD2 DO Clock Special | Active | Migrated as the DIO1 LED timing path derived from Camera FPS / Camera Start / Frames; no independent GUI confirmation gate |
 | AD2 DO Custom | Legacy/nonessential | Do not run unless later evidence shows it is required |
-| Qmix pump discovery | Historically validated standalone; currently blocked | One-pump config previously passed discovery/readback, but the current controller state relatches `0x81FF` on a fresh bus session |
+| Qmix pump discovery | Owner-approved connection policy, root cause unresolved | One-pump discovery/readback passed historically; a colleague reported successful initialization/operation after the approved automatic latch clear. This does not prove the previously observed `0x81FF` CAN condition is eliminated. |
 | Qmix pump flow | Active manual capability, unresolved operational boundary | Real flow is reachable after real initialization; no separate GUI confirmation gate protects ordinary movement controls |
 | Valve COM/position mapping | COM port confirmed | Valve confirmed on COM5 (real-hardware status-query response, corroborated by an earlier session too -- COM6 was a standing documentation error, not this session's own artifact); position 1/2 effects not confirmed |
 | Flush | Disabled by default | Can move pump and switch valve when enabled |
@@ -186,7 +188,7 @@ device is touched; this workflow is a positive-rate dispense operation.
 | AD2 PC trigger | Medium | WFG start timing vs `pc_trigger()` is not fully confirmed |
 | AD2 DO clock | Medium/high | Active DIO1 LED timing path; timing should still be checked against the physical setup before broad use |
 | AD2 DO custom | Unknown/high | Legacy/nonessential; remains disabled unless separately justified |
-| Pump/Qmix initialize | Medium/high while current fault remains | Real backend selection is opt-in and pre-existing faults fail closed; the current controller relatches `0x81FF` and must be diagnosed in the CAN/QmixElements layer before initialization is trusted |
+| Pump/Qmix initialize | Medium/high while CAN root cause remains | Real backend selection is opt-in. Initialization automatically clears the vendor latch, records before/after state, and still fails closed if a fault remains or relatches; reported recovery does not replace CAN/QmixElements diagnosis. |
 | Pump flow | High | Real movement is reachable from the GUI after initialization and has no separate confirmation gate |
 | Valve position 1/2 | High | Do not switch until COM/position mapping is verified |
 | Flush | High | Disabled by default; can move pump and valve when enabled |
@@ -226,8 +228,10 @@ device is touched; this workflow is a positive-rate dispense operation.
 ## Do Not Run Yet
 
 - Full LabVIEW acoustic output: CH0 `1.975 MHz`, `2 V`, `60 s`.
-- Pump/Qmix active initialization in the main workflow.
-- Pump flow, aspirate, dispense, dosing, reference, calibration, or fault-clear.
+- Unsupervised or broad Pump/Qmix initialization beyond the owner-approved
+  connection policy and its final fault gate.
+- Pump flow, aspirate, dispense, dosing, reference, calibration, or any
+  fault-clear outside the approved initialization/manual-recovery paths.
 - Valve switching on real hardware.
 - `Application.flush()` with real pump and valve.
 - Prior COM7 Z-stage path.

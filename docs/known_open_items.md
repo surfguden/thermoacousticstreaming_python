@@ -77,7 +77,7 @@ historical notes. This document is a live issue register, whereas
   with progress reporting, removing the duplicate device-order/rollback loop.
   **Status: TRANSITIONAL, not the default launch target.**
 - **V3 is formally accepted tracked repository content by explicit owner
-  decision as of the current commit.** This supersedes the standing rule that
+  decision in commit `8433ba0`.** This supersedes the standing rule that
   the files must never be committed. The history remains material: commit
   `d180eea` (2026-08-05) intentionally removed
   `qt_ui_v3.py` and its launcher/test companions (`tests/test_qt_ui_v3.py`,
@@ -160,8 +160,8 @@ historical notes. This document is a live issue register, whereas
 
   Correction (2026-08-27 audit): `_zscan_control_group()` was missing from the
   original list, which named only the first three. It is a fourth v1 method
-  (`qt_ui.py:2754`) that v3 overrides at `qt_ui_v3.py:1392` without `super()`,
-  and it is live — v3's own `_zscan_tab()` calls it at `qt_ui_v3.py:1423`. The
+  (`qt_ui.py:2754`) that v3 overrides at `qt_ui_v3.py:1483` without `super()`,
+  and it is live — v3's own `_zscan_tab()` calls it at `qt_ui_v3.py:1519`. The
   complete no-super set was re-derived by AST inspection of every
   `MainWindowV3` method that shadows a `MainWindow` method: `_build_layout`
   (intentional, whole-surface replacement), plus the four panel builders
@@ -171,7 +171,7 @@ historical notes. This document is a live issue register, whereas
   `_build_layout`, `_wfg_channel_group`, `_mso_tab`, `_pump_tab`,
   `_camera_tab`, and `_zscan_tab` only. Commit `3898e93` closed that gap from
   the v3 side, documenting the no-super boundary on the override itself at
-  `qt_ui_v3.py:1392` rather than on the v1 base method; `qt_ui.py`'s own
+  `qt_ui_v3.py:1483` rather than on the v1 base method; `qt_ui.py`'s own
   `_zscan_control_group()` still has no counterpart docstring.
 
 - **Known intermittent PySide/Shiboken widget-lifetime failures in v2/v3 UI
@@ -195,7 +195,7 @@ historical notes. This document is a live issue register, whereas
   `tests/test_qt_ui_v2.py::test_v2_experiment_setup_tabs_has_four_task_oriented_tabs`
   was added to this family by the 2026-08-27 audit: it produces the identical
   `RuntimeError: Internal C++ object ... already deleted` signature (raised at
-  `qt_ui_v2.py:784` and in `closeEvent` at `qt_ui.py:4854`), and failed 2 of 3
+  `qt_ui_v2.py:784` and in `closeEvent` at `qt_ui.py:5234`), and failed 2 of 3
   hang-protected full-suite runs at `60d8b8c`. An earlier 40-run isolated
   measurement had already recorded it failing intermittently at both `2c0ffc6`
   and `085c06a` (4 of 40 isolated `test_qt_ui_v2.py` runs across the two
@@ -342,7 +342,7 @@ historical notes. This document is a live issue register, whereas
      tabs would show the corrupted label afterward, in the same running
      session" -- **this overstated the risk.** `MainWindow._build_state()`
      (called exactly once per `__init__()`, confirmed at
-     `qt_ui.py:652`) constructs a brand-new set of field widgets for
+     `qt_ui.py:731`) constructs a brand-new set of field widgets for
      *every* window instance, including every `QCheckBox` in
      `self.exp_ad2_channels`/`self.wfg_channels`. Two separate window
      objects -- even a `MainWindow()` and a `MainWindowV3()` constructed in
@@ -618,7 +618,7 @@ historical notes. This document is a live issue register, whereas
   read/write timeouts remain fake-tested only (not attempted this pass,
   time-boxed). **Status: OPEN** (serial timeouts, TDMS content
   comparison).
-- **"Analog Discovery 3" row label** (`qt_ui.py:504`, `qt_ui.py:1395`,
+- **"Analog Discovery 3" row label** (`qt_ui.py:802`, `qt_ui.py:1807`,
   confirmed still present in current code) is the only place calling this
   device generation "3" -- everywhere else says "2". `docs/PORTING_TBD.md`
   separately references real "AD2/AD3" validation hardware, so this may be
@@ -1104,7 +1104,7 @@ historical notes. This document is a live issue register, whereas
   `AD2_DO_SDK_class` member VIs, `TDMSlogg_class`, the `REGLO Digital`
   peristaltic pump driver (referenced in `Main.vi`'s front panel, with a
   corresponding but entirely unwired `RegloPumpControl` dataclass already in
-  `instruments.py:142-146`), and `Application.lvclass:SaveData.vi` are all
+  `instruments.py:137-145`), and `Application.lvclass:SaveData.vi` are all
   undocumented in the registry. **Status: OPEN.**
 - **FM Sweep's three unverified assumptions remain uncited against real
   LabVIEW binary or source literature.** Session 16: (1) Sweep-Type ->
@@ -1250,38 +1250,38 @@ historical notes. This document is a live issue register, whereas
   Session 63 changelog entry).** Left as a backlog list rather than five
   separate entries, since none is a live, currently-reachable bug:
   1. `SerialTextCommandBackend.query()` has an unreachable defensive
-     `if self.port is None: raise` check ([instruments.py:94](../src/thermo_acoustic/instruments.py:94))
+     `if self.port is None: raise` check ([instruments.py:92-105](../src/thermo_acoustic/instruments.py:92))
      -- `_send()` (called first) already guarantees this. Dead code.
   2. `SerialTextCommandBackend._send()` writes the unstripped `command`
      to the wire, while routing decisions use the stripped `text`
-     ([instruments.py:71-78](../src/thermo_acoustic/instruments.py:71)) --
+     ([instruments.py:72-80](../src/thermo_acoustic/instruments.py:72)) --
      only matters if a caller ever passes incidental whitespace; none does.
   3. `HamamatsuCamera.center_roi()`'s `self.roi is None` branch builds a
      `{"centered": True}` dict that `HamamatsuDcamBackend.configure_roi()`
      doesn't actually interpret -- it silently becomes "offset (0,0), size
      untouched," the opposite of centering
-     ([instruments.py:629-637](../src/thermo_acoustic/instruments.py:629)).
+     ([instruments.py:693-701](../src/thermo_acoustic/instruments.py:693)).
      Confirmed unreachable today: the only real call site
      (`qt_ui.py`'s `_configure_camera()`) always sets a real `SubRegion`
      immediately before calling `center_roi()`. Real bug if ever called
      independently; dead code as currently wired.
   4. `SimulatedAD2Sdk.capture_scope()` marks its own parameters unused
      (`_ = channel_index` etc.) then uses every one of them
-     ([instruments.py:502-513](../src/thermo_acoustic/instruments.py:502)) --
+     ([instruments.py:557-576](../src/thermo_acoustic/instruments.py:557)) --
      no functional effect, just misleading to a reader.
   5. `Valve.wait_until_ready()` checks for a `status_note` value
      (`"ready"`) that `_apply_status_response()` never actually produces
-     ([instruments.py:891](../src/thermo_acoustic/instruments.py:891)) --
+     ([instruments.py:1065-1083](../src/thermo_acoustic/instruments.py:1065)) --
      harmless, the `"confirmed"` half of the `or` still fires correctly.
   6. `AD2Sdk.wfg_configure_carrier_single_ch()` indexes
      `config.channels[channel_index]` with no bounds check
-     ([instruments.py:275-277](../src/thermo_acoustic/instruments.py:275))
+     ([instruments.py:295-297](../src/thermo_acoustic/instruments.py:295))
      -- `WfgConfig.channels` defaults to exactly 2 elements; any call with
      `channel_index >= 2` raises `IndexError`. No current caller passes
      anything but 0/1.
   7. `CetoniPump.generate_flow()`'s dosing-flag logic
      (`self.dosing = True` then back to `False` if `self.simulate`,
-     [instruments.py:758-763](../src/thermo_acoustic/instruments.py:758))
+     [instruments.py:897-903](../src/thermo_acoustic/instruments.py:897))
      is only correct because the real factory
      (`hardware_factory.build_hardware_bundle()`) never constructs
      `simulate=False, backend=None` -- a combination the dataclass itself
@@ -1298,19 +1298,19 @@ historical notes. This document is a live issue register, whereas
   1. `configure_flow_unit()`'s unit-matching set has a redundant,
      almost-certainly-a-typo entry --
      `{"ul/s", "uL/s".lower(), "microlitre/s", "microliter/s"}`
-     ([qmix_backend.py:290](../src/thermo_acoustic/qmix_backend.py:290)) --
+     ([qmix_backend.py:420-433](../src/thermo_acoustic/qmix_backend.py:420)) --
      `"uL/s".lower()` duplicates the literal `"ul/s"` already in the same
      set. Harmless (sets de-duplicate), reads like a leftover from an
      intended different case-variant that was never written.
   2. `configure_syringe()`'s key-fallback chains use `or`
-     ([qmix_backend.py:240-251](../src/thermo_acoustic/qmix_backend.py:240)),
+     ([qmix_backend.py:373-386](../src/thermo_acoustic/qmix_backend.py:373)),
      which would silently skip an explicitly-provided but falsy `0.0` in
      favor of a later fallback key. Not practically exploitable: `0.0` is
      already an invalid syringe dimension and gets caught by the
      `MIN_SYRINGE_INNER_DIAMETER_MM` bounds check regardless of which key
      ends up used.
   3. `_load_sdk()`'s `from qmixsdk import ...`
-     ([qmix_backend.py:107-122](../src/thermo_acoustic/qmix_backend.py:107))
+     ([qmix_backend.py:120-135](../src/thermo_acoustic/qmix_backend.py:120))
      is resolved through Python's global `sys.modules` cache -- a second
      `QmixPumpBackend` instance constructed with a *different*
      `sdk_python_path` in the same process would silently receive the
@@ -1318,7 +1318,7 @@ historical notes. This document is a live issue register, whereas
      no error. Not reachable in this project's normal single-pump,
      single-path-per-process usage.
   4. `initialize()` unconditionally constructs a new `Bus()`
-     ([qmix_backend.py:124-126](../src/thermo_acoustic/qmix_backend.py:124))
+     ([qmix_backend.py:137-141](../src/thermo_acoustic/qmix_backend.py:137))
      with no guard against being called twice on an already-successfully-
      initialized instance -- a second call would silently overwrite
      `self.bus`, potentially leaking a real, still-open bus handle. Not
@@ -1344,7 +1344,7 @@ historical notes. This document is a live issue register, whereas
   1. `_stop_capture_if_active()` clears `self.capture_active = False` in a
      `finally` block regardless of whether the real `self.dcam.cap_stop()`
      call succeeded or raised
-     ([hamamatsu_dcam.py:515-523](../src/thermo_acoustic/hamamatsu_dcam.py:515))
+     ([hamamatsu_dcam.py:573-581](../src/thermo_acoustic/hamamatsu_dcam.py:573))
      -- the inverse of the optimistic-update-before-confirmation shape
      (marks state "inactive" before a real stop is confirmed, rather than
      marking it "active" before a real start is confirmed). Not fixed:
@@ -1360,7 +1360,7 @@ historical notes. This document is a live issue register, whereas
   low-priority item, beyond the findings fixed the same day -- see the
   Session 66 changelog entry.**
   1. `WaveFormsBackend._enum_value()`'s silent default-value fallback
-     ([waveforms.py:193-198](../src/thermo_acoustic/waveforms.py:193))
+     ([waveforms.py:194-200](../src/thermo_acoustic/waveforms.py:194))
      -- backs `_FUNCTIONS`/`_TRIGGER_SOURCES`/`_DO_TYPES`/`_DO_IDLE`.
      Checked: all four are currently exhaustive 1:1 matches of their
      corresponding `ad2.py` enums, so the silent-default branch was dead
@@ -1386,7 +1386,7 @@ historical notes. This document is a live issue register, whereas
   control (feature-completeness note, not a bug; found during the
   targeted `qt_ui.py`/`qt_ui_v2.py` UI audit, Session 69).**
   `_experiment_channel_config()`
-  ([qt_ui.py:2833-2841](../src/thermo_acoustic/qt_ui.py:2833)) hardcodes
+  ([qt_ui.py:3408-3463](../src/thermo_acoustic/qt_ui.py:3408)) hardcodes
   `fm_mod = CarrierSettings(..., enable=False)` for both channels,
   only overridden for Ch1 when the separate "FM Sweep" feature is
   enabled. Independently confirmed this is not a "looks editable but
@@ -1407,7 +1407,7 @@ historical notes. This document is a live issue register, whereas
   -- both correctly assessed as currently-unreachable/inherited
   limitations, not live bugs.**
   1. `handle_message()`'s `CETONI_REFILL`/`CETONI_EMPTY` branches
-     ([application.py:770-773](../src/thermo_acoustic/application.py:770))
+     ([application.py:953-956](../src/thermo_acoustic/application.py:953))
      still call `self.pump.refill()`/`self.pump.empty()` directly,
      bypassing the `Application.refill()`/`empty()` wait-for-completion
      fix from the same day (Session 64's H1 fix, extended to `qt_ui.py`'s
@@ -1420,7 +1420,7 @@ historical notes. This document is a live issue register, whereas
      message-queue dispatch path is ever revived as a real caller, these
      two branches need the same fix `qt_ui.py`'s buttons got.
   2. `wait_for_pump()`'s single boolean return
-     ([application.py:394-403](../src/thermo_acoustic/application.py:394))
+     ([application.py:461-474](../src/thermo_acoustic/application.py:461))
      can't distinguish "aborted" from "timed out," so `refill()`/`empty()`
      (added the same day) fire `"RefillTimedOut"`/`"EmptyTimedOut"` status
      events even when the real cause was an abort. Not a new bug --
@@ -1434,7 +1434,7 @@ historical notes. This document is a live issue register, whereas
   -- all correctly assessed as currently-unreachable/inherited
   limitations, not live bugs.**
   1. `_settings_properties()`'s `"FlushCompleted": ""` default
-     ([workflows.py:233-237](../src/thermo_acoustic/workflows.py:233))
+     ([workflows.py:280-304](../src/thermo_acoustic/workflows.py:280))
      is only correct because `save_settings()` is never called after
      `flush()`/`save_flush_result()` in the real `run_experiment2()`
      call order -- verified true today, but unenforced by any test. If
@@ -1442,14 +1442,14 @@ historical notes. This document is a live issue register, whereas
      runs, it would silently overwrite the real `True`/`False` flush
      outcome back to `""`.
   2. `_git_commit_hash()`'s `@lru_cache(maxsize=1)`
-     ([workflows.py:22-49](../src/thermo_acoustic/workflows.py:22))
+     ([workflows.py:23-50](../src/thermo_acoustic/workflows.py:23))
      caches the commit hash/dirty-state for the life of the process --
      every experiment repeat within one long-running app session
      records whatever `GitCommitHash` was true at the *first* call, not
      necessarily the current state if the working tree changes
      mid-session. Low real-world likelihood.
   3. `_settings_properties()`'s DO-channel selection
-     ([workflows.py:223-225](../src/thermo_acoustic/workflows.py:223))
+     ([workflows.py:280-290](../src/thermo_acoustic/workflows.py:280))
      -- `next((channel for channel in do_clock.channels if
      channel.enable), None)` -- only records the *first* enabled DO
      channel's `DORun`/`DOWait`/`DOFreq`/`DOFreqActual`
@@ -1604,7 +1604,7 @@ historical notes. This document is a live issue register, whereas
   effect until "ConfigureSyringe" is clicked -- a real operator-confusion
   trap, found investigating the Refill/Empty flow-rate rejection
   (2026-08-03).** Selecting a different syringe in the dropdown
-  (`self.syringe`, [qt_ui.py:2119](../src/thermo_acoustic/qt_ui.py:2119)-area
+  (`self.syringe`, [qt_ui.py:2395](../src/thermo_acoustic/qt_ui.py:2395)-area
   `syringe_form`) only updates the widget's own displayed selection --
   the real pump's configured geometry (and therefore its real live
   `max_flow_rate_ul_min`/`max_volume_ml`) does not change until the

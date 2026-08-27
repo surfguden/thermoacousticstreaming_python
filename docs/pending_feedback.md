@@ -14,6 +14,10 @@ before any other work happens on it (even mid-task). Status is one of
 resolved -- they're marked resolved in place, so this file also serves
 as a short audit trail of what was reported and when.
 
+File-and-line references inside an entry identify the source snapshot that was
+reviewed when that entry was written. They are historical evidence, not stable
+current-code anchors; use the named symbol and current source before acting.
+
 ---
 
 ## 1. Scroll wheel over a spin box changes its value on hover alone
@@ -254,7 +258,9 @@ as a short audit trail of what was reported and when.
 ## 5. Global hardware feedback logging (Part A) + Z-stage repoint, legacy sweep, real-hardware verification (Parts B/C)
 
 - **Date raised:** 2026-07-30
-- **Status:** in-progress -- Part A resolved, Part B/C underway
+- **Status:** resolved for the recorded Parts A-C (2026-07-30). The embedded
+  "Not committed" notes describe the session-time state; the implementation
+  later landed across `17f24dd`, `7c7e19f`, and `22c68cb`.
 
 ### Part A -- shared hardware transaction logging module
 
@@ -489,7 +495,10 @@ as a short audit trail of what was reported and when.
 ## 6. Three approved follow-ups from item 5's evidence-gathering pass
 
 - **Date raised:** 2026-07-30
-- **Status:** in-progress -- Task 1 resolved, Tasks 2/3 underway
+- **Status:** resolved for all three recorded tasks and the pump-stall
+  investigation. The residual reason for the pump's approximately 0.1873 ml
+  stop remains explicitly open below; the parent task itself is no longer
+  underway.
 
 ### Task 1 -- instrument the 9 reachable-but-unlogged AD2 methods
 

@@ -54,11 +54,13 @@ a human decision, hardware confirmation, or focused implementation resolves them
   automated flush is a positive-rate dispense operation and rejects zero or
   negative flow before touching the valve or pump; that does not establish its
   physical tubing outcome.
-- **Current Qmix initialization is hardware-blocked, not software-approved.** A
-  fresh bus session relatches SDK error `0x81FF` (`CAN Tx Queue Overrun`) while
-  the pump remains stopped and disabled. Initialization correctly refuses the
-  fault and does not clear it automatically. Diagnose the CAN adapter/bus and
-  controller event state in QmixElements before further real pump use.
+- **Qmix connection policy is approved; the CAN root cause is not resolved.**
+  Normal initialization now clears the vendor fault latch after bus start,
+  records before/after state, and retains a final gate that refuses enable if a
+  fault remains or immediately relatches. A colleague reported successful real
+  initialization and operation under this policy, but the earlier `0x81FF`
+  (`CAN Tx Queue Overrun`) sequence still requires adapter/bus/controller
+  diagnosis; recovery is not proof that the transport issue is solved.
 - **Valve physical routing remains hardware-dependent.** The code sends Rheodyne
   position commands `P01\r` and `P02\r` and rejects unknown initialization
   responses. The physical meaning of position 1 vs. position 2 and COM-port
@@ -91,24 +93,31 @@ a human decision, hardware confirmation, or focused implementation resolves them
 
 ## UI and Settings
 
-- **Initialization fields for future backends are intentionally stub-marked.**
-  Z backend selection, Thorlabs/APT fields, Qmix SDK Python Path, and Qmix
-  QMIXSDK Path are visible for continuity but are disabled/marked as not wired
-  unless future backend work makes them operational.
-- **Elapsed Time and Time Left are display stubs.** They are marked as not wired
-  because no current timing update path drives them.
+- **Some Initialization reference fields are intentionally stub-marked.** Z
+  backend selection, legacy Prior VISA, Thorlabs/APT backend/discovery-only,
+  and the Qmix SDK Python/QMIXSDK path fields remain visible for continuity but
+  are disabled as unwired. The Thorlabs device serial is different: it is live
+  input to the real PPC001/Kinesis connection when Z stage is enabled. Do not
+  generalize the stub label to every Thorlabs field.
+- **Elapsed Time and estimated Time Left are live, display-only indicators.**
+  Commit `66016bd` wired a monotonic elapsed clock and a remaining-time estimate
+  based first on programmed WFG/DIO/flush duration, then on measured mean repeat
+  duration. They do not change experiment validation or hardware behavior, and
+  the estimate deliberately excludes unpredictable TEC stabilization and other
+  hardware/acquisition variability.
 - **v2 is an opt-in transitional UI, not a separate implementation.** Its manual
   WFG/MSO/PumpValve/Camera buttons reuse the v1 panel builders and
   shared `Application` instance. That reuse is deliberate; v2 should not drift
   into a second hardware-control implementation.
 - **v3 is formally accepted tracked repository content; v1 remains the default
   and v2 remains the rollback/reference path.** The owner decision in the
-  current commit supersedes the earlier "never commit v3" rule. V3 subclasses
+  commit `8433ba0` supersedes the earlier "never commit v3" rule. V3 subclasses
   `MainWindowV2` and shares the real `Application`/backend runtime; it is not an
-  independently hardware-verified replacement. Its rebuilt panels create
-  maintenance coupling, its experiment Abort access is menu-only, and its
-  Pump & Valve panel currently omits v1/v2's separate manual Qmix recovery
-  action. Acceptance does not resolve those evaluation findings.
+  independently hardware-verified replacement. Its rebuilt panels still create
+  maintenance coupling. Commit `2c0ffc6` closed the earlier menu-only Abort and
+  missing-manual-Qmix-recovery capability gaps with v3-specific presentations
+  that reuse the shared behavior; acceptance and those closures do not provide
+  independent hardware validation.
 - **Settings persistence is not comprehensive.** Several manual-tab-only fields
   remain outside the saved settings file by long-standing design ambiguity. Add
   persistence only when the expected operator workflow is explicit.

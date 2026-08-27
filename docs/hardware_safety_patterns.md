@@ -86,8 +86,8 @@ class DeviceStage:
 
 **Worked example:** `src/thermo_acoustic/thorlabs_piezo.py`'s `PiezoStage` --
 `max_travel_um`/`max_output_voltage_v`/`min_output_voltage_v` are all read
-live in `connect()` (`thorlabs_piezo.py:133`); `set_position()`
-(`thorlabs_piezo.py:200-215`) clamps to `[0, max_travel_um]` and returns the
+live in `connect()` (`thorlabs_piezo.py:113-165`); `set_position()`
+(`thorlabs_piezo.py:239-250`) clamps to `[0, max_travel_um]` and returns the
 clamped value. Note this pattern is *also* mirrored one layer up, in the
 UI: the Z-scan tab's `Z Start`/`Z End` `QDoubleSpinBox` fields apply the
 exact same live-read range as their real-time input range (not just
@@ -141,10 +141,10 @@ metadata["OutOfRange"] = channel.out_of_range  # logged with the experiment
 ```
 
 **Worked example:** `src/thermo_acoustic/waveforms.py`'s
-`_configure_analog_node()` (`waveforms.py:426`) reads the device's real
+`_configure_analog_node()` (`waveforms.py:484`) reads the device's real
 `FDwfAnalogOutNodeFrequencyInfo`/`AmplitudeInfo` range before every `Set`
 call, clamps in software, and returns whether it had to; `configure_wfg()`
-(`waveforms.py:389`) sets `WfgChannelConfig.out_of_range` per channel. This
+(`waveforms.py:445`) sets `WfgChannelConfig.out_of_range` per channel. This
 flag existed as a *dataclass field* and a *dead check method*
 (`WfgConfig.check_valid()`) for a long time before anything actually set
 it -- confirm the whole chain (something sets the flag -> something reads
@@ -193,9 +193,9 @@ def _validate_against_limits(self, roi, limits, current) -> None:
 ```
 
 **Worked example:** `src/thermo_acoustic/hamamatsu_dcam.py`'s
-`configure_roi()` (`hamamatsu_dcam.py:86`) now calls
+`configure_roi()` (`hamamatsu_dcam.py:117`) now calls
 `read_subregion_limits_and_value()` and a new `_validate_roi_against_limits()`
-(`hamamatsu_dcam.py:118`) before any `SUBARRAYHSIZE`/`HPOS`/`MODE` write.
+(`hamamatsu_dcam.py:151`) before any `SUBARRAYHSIZE`/`HPOS`/`MODE` write.
 Confirmed against real hardware that DCAM's own `INVALIDSUBARRAY` error
 (`0x8000082b`) only actually fires at the final `SUBARRAYMODE ON` call --
 the individual `SUBARRAYHSIZE`/`HPOS` writes succeed even with an invalid
@@ -259,13 +259,13 @@ def configure_syringe(self, inner_diameter_mm: float, stroke_mm: float) -> None:
 ```
 
 **Worked example:** `src/thermo_acoustic/qmix_backend.py`'s
-`MAX_SYRINGE_STROKE_MM = 65.0` (`qmix_backend.py:76`), enforced in
-`configure_syringe()` (`qmix_backend.py:204`) before `set_syringe_param()`
+`MAX_SYRINGE_STROKE_MM = 65.0` (`qmix_backend.py:86`), enforced in
+`configure_syringe()` (`qmix_backend.py:373-418`) before `set_syringe_param()`
 is ever called -- confirmed with hardware-level proof (not just "an
 exception was raised"): reading `pump.get_syringe_param()` back from the
 real device before and after a rejected attempt showed the device's own
 stored geometry was completely unchanged. `MIN_SYRINGE_INNER_DIAMETER_MM`/
-`MAX_SYRINGE_INNER_DIAMETER_MM` (`qmix_backend.py:73-74`) are a related but
+`MAX_SYRINGE_INNER_DIAMETER_MM` (`qmix_backend.py:83-84`) are a related but
 distinct case -- a *plausible-range* backstop against data-entry errors
 (unit mixups, transposed digits) derived from BD's published syringe
 product-line range, not a single hardware component's own physical
@@ -274,7 +274,7 @@ to each other in the same file (this is exactly the distinction the stroke
 mistake above blurred).
 
 **Also note:** `generate_flow()`'s rejection of a flow rate exceeding
-`max_flow_rate_ul_min` (`qmix_backend.py:172`) looks similar to this
+`max_flow_rate_ul_min` (`qmix_backend.py:329-352`) looks similar to this
 pattern but is actually closer to Pattern (a)/(b)'s territory -- that
 ceiling *is* read back live from the device (`get_flow_rate_max()`, right
 after `set_syringe_param()` succeeds), it's simply enforced at a different
@@ -328,7 +328,7 @@ def configure(self, settings: dict | None) -> None:
 ```
 
 **Worked examples:** `HamamatsuDcamBackend.configure_sequence()`
-(`hamamatsu_dcam.py:186`) and `AD2Sdk`'s `config_wfg()`/`wfg_configure()`/
+(`hamamatsu_dcam.py:205`) and `AD2Sdk`'s `config_wfg()`/`wfg_configure()`/
 `wfg_start_stop_all_ch()`/`config_do_custom()`/`config_do_clock_special()`/
 `do_configure()` (`instruments.py:266`/`311`/`326`/`344`/`358`/`400`).
 Each differs in what's being coerced and which backend call confirms
@@ -363,17 +363,15 @@ longer independent implementations.** They now share one utility,
 `hw_logging.run_with_timeout(action, name, timeout_s) -> str | None`
 -- direct evidence the "just document a copyable template" approach
 below wasn't enough on its own: a fourth hardware module
-(`TecController.cleanup()`, `tec.py`) was added since the original
-audit and did **not** pick up the pattern at all (no timeout guard of
-any kind) despite this note's own explicit instruction to use it for
-new modules -- flagged in `docs/known_open_items.md`, not fixed here
-(that file is part of the still-uncommitted TEC integration, out of
-scope for this pass). `HamamatsuDcamBackend.close()` remains
+(`TecController.cleanup()`, `tec.py`) was added after the original audit and did
+**not** initially pick up the pattern. That propagation gap is now closed:
+failed-initialize rollback and direct TEC cleanup both call the shared
+`run_with_timeout()` helper with a local bound. `HamamatsuDcamBackend.close()` remains
 deliberately different by design (best-effort swallow, not raise --
 see Finding F's own reasoning), not an inconsistency to unify.
 
-**For any NEW hardware module added to this project (or `TecController.
-cleanup()` once it needs one), call `hw_logging.run_with_timeout()`
+**For any NEW hardware module added to this project, call
+`hw_logging.run_with_timeout()`
 directly -- do not hand-copy the thread/queue implementation.** It
 already logs nothing on its own (fire-and-forget style, matching
 `log_transaction()`'s own contract), so pair it with your own
@@ -421,11 +419,11 @@ class NewDeviceBackend:
 
 **Worked examples:** `src/thermo_acoustic/hw_logging.py`'s
 `run_with_timeout()` for the shared timeout-guard itself; any of
-`QmixPumpBackend.close()`/`_run_close_step()` (`qmix_backend.py:319`/
-`338`), `PiezoStage.disconnect()`/`_run_disconnect_step()`
-(`thorlabs_piezo.py:159`/`181`), or
+`QmixPumpBackend.close()`/`_run_close_step()` (`qmix_backend.py:458`/
+`481`), `PiezoStage.disconnect()`/`_run_disconnect_step()`
+(`thorlabs_piezo.py:167`/`189`), or
 `Application._cleanup_instruments()`/`_run_cleanup_call_with_timeout()`
-(`application.py:240`/`259`) for the collect-errors + timeout-wrap +
+(`application.py:328`/`347`) for the collect-errors + timeout-wrap +
 combined-raise shape built on top of it -- these three now differ only
 in their own error-message prefix and where the collected errors get
 logged/raised, not in the underlying timeout mechanism.
