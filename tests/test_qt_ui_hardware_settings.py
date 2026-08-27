@@ -372,10 +372,14 @@ def test_representative_fields_have_grounded_tooltips(monkeypatch, tmp_path):
     assert "positive values dispense/infuse" in window.flow_rate.toolTip()
     assert "unverifiable" not in window.flow_rate.toolTip()
 
-    # TEC: the current uncommitted adapter can attempt real I/O, so the UI
+    # TEC: the integrated real adapter can attempt real I/O, so the UI
     # must not incorrectly promise that unchecked Simulate always refuses.
     assert "may attempt real I/O" in window.tec_enabled.toolTip()
     assert "may attempt real I/O" in window.sim_tec.toolTip()
+    assert "integrated real MeCom adapter" in window.tec_enabled.toolTip()
+    assert "integrated real MeCom adapter" in window.sim_tec.toolTip()
+    assert "uncommitted" not in window.tec_enabled.toolTip()
+    assert "uncommitted" not in window.sim_tec.toolTip()
     assert "not independently approved" in window.tec_port.toolTip()
 
     # Camera tab: DCAM Trigger Source unresolved status.

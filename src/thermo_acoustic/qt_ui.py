@@ -783,7 +783,7 @@ class MainWindow(QMainWindow):
         self.tec_enabled.setChecked(False)
         self.tec_enabled.setToolTip(
             "Includes the Meerstetter TEC when Initialize is clicked. With Simulate checked it uses "
-            "the safe in-memory backend. With Simulate unchecked, the current uncommitted MeCom adapter "
+            "the safe in-memory backend. With Simulate unchecked, the integrated real MeCom adapter "
             "may attempt real I/O. Its named parameter mapping is source-checked, but the historical "
             "bench evidence is not independently verified. Leave TEC simulated unless a human review "
             "explicitly authorizes real operation."
@@ -804,7 +804,7 @@ class MainWindow(QMainWindow):
         self.sim_tec.setChecked(True)
         self.sim_tec.setToolTip(
             "Only matters when Meerstetter TEC above is On. Checked = safe in-memory fake backend, "
-            "no real hardware touched. Unchecked selects the current uncommitted MeCom adapter, which "
+            "no real hardware touched. Unchecked selects the integrated real MeCom adapter, which "
             "may attempt real I/O; leave this checked unless its code and retained bench record have been "
             "independently reviewed and approved."
         )
