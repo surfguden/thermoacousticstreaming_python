@@ -9,7 +9,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QGroupBox, QLabel, QPushButton, QScrollArea, QTabWidget
+from PySide6.QtWidgets import QApplication, QComboBox, QGroupBox, QLabel, QPushButton, QScrollArea, QTabWidget
 
 from thermo_acoustic import qt_ui, qt_ui_v2, qt_ui_v3
 from thermo_acoustic.application import Application
@@ -323,9 +323,18 @@ def test_v3_relationship_panels_use_shared_requested_timing_builders(monkeypatch
         assert window.findChild(QLabel, "v3TimingCh1Delta").text() == "2.000"
         assert window.findChild(QLabel, "v3TimingDio1Run").text() == "3.000"
         assert window.findChild(QLabel, "v3TimingDio1Delta").text() == "-1.500"
+        assert window.findChild(QLabel, "v3TimingDeltaHeader").text() == "End delta vs CH0 (s)"
         assert window.findChild(QLabel, "v3Ad2CompletionBudget").text().startswith(
             "Shared AD2 completion budget: 7.000 s"
         )
+
+        ch0["enable"].setChecked(False)
+        assert window.findChild(QLabel, "v3TimingDeltaHeader").text() == (
+            "End delta vs completion driver (s)"
+        )
+        assert window.findChild(QLabel, "v3TimingCh1Delta").text() == "0.000"
+        assert window.findChild(QLabel, "v3TimingDio1Delta").text() == "-3.500"
+        assert "CH0 is disabled" in window.findChild(QLabel, "v3TimingAnchorNote").text()
 
         window.exp_repeats.setValue(11)
         window.dynamic_camera_start.setChecked(True)
@@ -338,6 +347,60 @@ def test_v3_relationship_panels_use_shared_requested_timing_builders(monkeypatch
         uncertainty = window.findChild(QLabel, "v3SyncUncertaintyBanner")
         assert "camera trigger is Internal" in uncertainty.text()
         assert "not been bench verified" in uncertainty.text()
+    finally:
+        window.close()
+
+
+def test_v3_frequency_scan_warns_on_repeat_mismatch_like_dio_slot_budget(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        mode = window.findChild(QComboBox, "v3FrequencyScanInputMode")
+        mode.setCurrentIndex(0)
+        window.exp_freq_scan_count.setValue(5)
+        window.exp_repeats.setValue(11)
+        window.exp_freq_scan_enable.setChecked(True)
+        scan_summary = window._v3_series_relationship_summary
+        assert "frequency scan 5/11 repeats" in scan_summary.text()
+        assert "run will reject" in scan_summary.text()
+        assert "darkorange" in scan_summary.styleSheet()
+
+        window.dynamic_camera_start.setChecked(True)
+        assert "run will reject" in window._v3_dio_slot_budget.text()
+        assert window._v3_dio_slot_budget.styleSheet() == scan_summary.styleSheet()
+
+        window.dynamic_camera_start.setChecked(False)
+        window.exp_repeats.setValue(5)
+        assert "counts match" in scan_summary.text()
+        assert scan_summary.styleSheet() == ""
+    finally:
+        window.close()
+
+
+def test_v3_frequency_scan_count_and_step_modes_are_exclusive_and_preserve_values(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        mode = window.findChild(QComboBox, "v3FrequencyScanInputMode")
+        assert mode.currentText() == "Number of Frequencies"
+        assert window.exp_freq_scan_count.isEnabled()
+        assert not window.exp_freq_scan_step_khz.isEnabled()
+
+        window.exp_freq_scan_count.setValue(5)
+        mode.setCurrentText("Step Size")
+        assert not window.exp_freq_scan_count.isEnabled()
+        assert window.exp_freq_scan_step_khz.isEnabled()
+        assert window.exp_freq_scan_step_khz.value() > 0
+        window.exp_freq_scan_step_khz.setValue(12.5)
+
+        mode.setCurrentText("Number of Frequencies")
+        assert window.exp_freq_scan_count.isEnabled()
+        assert not window.exp_freq_scan_step_khz.isEnabled()
+        assert window.exp_freq_scan_count.value() == 5
+        assert window.exp_freq_scan_step_khz.value() == 0.0
+
+        mode.setCurrentText("Step Size")
+        assert not window.exp_freq_scan_count.isEnabled()
+        assert window.exp_freq_scan_step_khz.isEnabled()
+        assert window.exp_freq_scan_step_khz.value() == 12.5
     finally:
         window.close()
 

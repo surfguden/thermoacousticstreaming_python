@@ -5,6 +5,7 @@ import sys
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QFormLayout,
     QGridLayout,
     QGroupBox,
@@ -528,6 +529,25 @@ class MainWindowV3(MainWindowV2):
             "Step size (kHz) [0 = Count]",
             "v3FrequencyScanStepCaption",
         )
+        self._v3_frequency_scan_input_mode = QComboBox()
+        self._v3_frequency_scan_input_mode.setObjectName("v3FrequencyScanInputMode")
+        self._v3_frequency_scan_input_mode.addItems(("Number of Frequencies", "Step Size"))
+        self._v3_frequency_scan_input_mode.setToolTip(
+            "Select which frequency-scan input drives the point count. Switching modes preserves "
+            "the inactive mode's last value; Step Size remains the existing Python-only alternative."
+        )
+        self._v3_frequency_scan_saved_count = self.exp_freq_scan_count.value()
+        self._v3_frequency_scan_saved_step_khz = self.exp_freq_scan_step_khz.value()
+        self._v3_frequency_scan_input_mode.setCurrentIndex(
+            1 if self.exp_freq_scan_step_khz.value() > 0 else 0
+        )
+        scan_form.insertRow(3, "Point-count input", self._v3_frequency_scan_input_mode)
+        self._v3_frequency_scan_input_mode.currentIndexChanged.connect(
+            self._switch_v3_frequency_scan_input_mode
+        )
+        self.exp_freq_scan_count.valueChanged.connect(self._remember_v3_frequency_scan_count)
+        self.exp_freq_scan_step_khz.valueChanged.connect(self._remember_v3_frequency_scan_step)
+        self._apply_v3_frequency_scan_input_mode()
         scan_layout.addWidget(frequency_scan)
         modulation.addTab(fm_page, "FM sweep")
         modulation.addTab(scan_page, "Frequency scan")
@@ -538,8 +558,11 @@ class MainWindowV3(MainWindowV2):
         group = QGroupBox("One-repeat AD2 timing plan (requested)")
         group.setObjectName("v3OneRepeatTimingPlan")
         grid = QGridLayout(group)
-        for column, text in enumerate(("Output", "Start (s)", "Run (s)", "End (s)", "End delta vs CH0 (s)")):
+        for column, text in enumerate(("Output", "Start (s)", "Run (s)", "End (s)")):
             grid.addWidget(QLabel(text), 0, column)
+        self._v3_timing_delta_header = QLabel("End delta vs CH0 (s)")
+        self._v3_timing_delta_header.setObjectName("v3TimingDeltaHeader")
+        grid.addWidget(self._v3_timing_delta_header, 0, 4)
         self._v3_timing_labels: dict[str, dict[str, QLabel]] = {}
         rows = (
             ("ch0", "WFG channel 0"),
@@ -559,13 +582,54 @@ class MainWindowV3(MainWindowV2):
         self._v3_completion_budget.setObjectName("v3Ad2CompletionBudget")
         self._v3_completion_budget.setWordWrap(True)
         grid.addWidget(self._v3_completion_budget, 4, 0, 1, 5)
-        note = QLabel(
-            "End deltas are neutral comparisons, not validation or automatic linking. The completion budget "
-            "uses the same shared finite-window calculation as experiment execution."
-        )
-        note.setWordWrap(True)
-        grid.addWidget(note, 5, 0, 1, 5)
+        self._v3_timing_anchor_note = QLabel()
+        self._v3_timing_anchor_note.setObjectName("v3TimingAnchorNote")
+        self._v3_timing_anchor_note.setWordWrap(True)
+        grid.addWidget(self._v3_timing_anchor_note, 5, 0, 1, 5)
         return group
+
+    def _derived_v3_frequency_scan_step_khz(self) -> float:
+        count = max(int(self._v3_frequency_scan_saved_count), 1)
+        span_khz = abs(
+            float(self.exp_freq_scan_stop_khz.value()) - float(self.exp_freq_scan_start_khz.value())
+        )
+        if count > 1 and span_khz > 0:
+            return span_khz / (count - 1)
+        return max(span_khz * 2.0 + self.exp_freq_scan_step_khz.singleStep(),
+                   self.exp_freq_scan_step_khz.singleStep())
+
+    def _apply_v3_frequency_scan_input_mode(self) -> None:
+        use_step_size = self._v3_frequency_scan_input_mode.currentIndex() == 1
+        self.exp_freq_scan_count.setEnabled(not use_step_size)
+        self.exp_freq_scan_step_khz.setEnabled(use_step_size)
+
+    def _switch_v3_frequency_scan_input_mode(self, index: int) -> None:
+        use_step_size = index == 1
+        if use_step_size:
+            self._v3_frequency_scan_saved_count = self.exp_freq_scan_count.value()
+            step_khz = float(self._v3_frequency_scan_saved_step_khz)
+            if step_khz <= 0:
+                step_khz = self._derived_v3_frequency_scan_step_khz()
+            self.exp_freq_scan_step_khz.setValue(step_khz)
+        else:
+            current_step = self.exp_freq_scan_step_khz.value()
+            if current_step > 0:
+                self._v3_frequency_scan_saved_step_khz = current_step
+            self.exp_freq_scan_step_khz.setValue(0.0)
+            self.exp_freq_scan_count.setValue(self._v3_frequency_scan_saved_count)
+        self._apply_v3_frequency_scan_input_mode()
+
+    def _remember_v3_frequency_scan_count(self, value: int) -> None:
+        if self._v3_frequency_scan_input_mode.currentIndex() == 0:
+            self._v3_frequency_scan_saved_count = value
+
+    def _remember_v3_frequency_scan_step(self, value: float) -> None:
+        if value > 0:
+            self._v3_frequency_scan_saved_step_khz = value
+            if self._v3_frequency_scan_input_mode.currentIndex() == 0:
+                self._v3_frequency_scan_input_mode.setCurrentIndex(1)
+        elif self._v3_frequency_scan_input_mode.currentIndex() == 1:
+            self._v3_frequency_scan_input_mode.setCurrentIndex(0)
 
     def _v3_flush_summary_group(self) -> QGroupBox:
         group = QGroupBox("Derived flush plan")
@@ -770,18 +834,32 @@ class MainWindowV3(MainWindowV2):
                     float(do_config.channels[0].trigger.sec_run),
                 ),
             }
-            ch0_end = rows["ch0"][1] + rows["ch0"][2]
+            preview = Experiment2(wfg_config=wfg, do_clock_settings=do_config)
+            completion = self.app._ad2_completion_wait_seconds(preview)
+            ch0_enabled, ch0_start, ch0_run = rows["ch0"]
+            if ch0_enabled:
+                anchor_end = ch0_start + ch0_run
+                self._v3_timing_delta_header.setText("End delta vs CH0 (s)")
+                self._v3_timing_anchor_note.setText(
+                    "CH0 is enabled, so end deltas use CH0's requested end. Deltas are neutral "
+                    "comparisons, not validation or automatic linking."
+                )
+            else:
+                anchor_end = completion
+                self._v3_timing_delta_header.setText("End delta vs completion driver (s)")
+                self._v3_timing_anchor_note.setText(
+                    "CH0 is disabled; end deltas are anchored to the shared completion budget "
+                    "(the maximum enabled analog/digital end) used by experiment execution."
+                )
             for key, (enabled, start, run) in rows.items():
                 end = start + run
                 values = self._v3_timing_labels[key]
                 values["start"].setText(self._v3_seconds(start))
                 values["run"].setText(self._v3_seconds(run))
                 values["end"].setText(self._v3_seconds(end))
-                values["delta"].setText(self._v3_seconds(end - ch0_end))
+                values["delta"].setText(self._v3_seconds(end - anchor_end))
                 for label in values.values():
                     label.setEnabled(enabled)
-            preview = Experiment2(wfg_config=wfg, do_clock_settings=do_config)
-            completion = self.app._ad2_completion_wait_seconds(preview)
             self._v3_completion_budget.setText(
                 f"Shared AD2 completion budget: {completion:.3f} s (maximum enabled analog/digital end)."
             )
@@ -790,17 +868,25 @@ class MainWindowV3(MainWindowV2):
 
         repeats = self.exp_repeats.value()
         scan_count = len(self._experiment_frequency_scan_list_hz())
-        scan_text = (
-            f"frequency scan {scan_count}/{repeats} repeats"
-            if self.exp_freq_scan_enable.isChecked()
-            else "frequency scan off"
-        )
+        scan_enabled = self.exp_freq_scan_enable.isChecked()
+        scan_mismatch = scan_enabled and scan_count != repeats
+        if scan_mismatch:
+            scan_text = (
+                f"frequency scan {scan_count}/{repeats} repeats; mismatch — run will reject until counts match"
+            )
+        elif scan_enabled:
+            scan_text = f"frequency scan {scan_count}/{repeats} repeats; counts match"
+        else:
+            scan_text = "frequency scan off"
         dynamic_text = (
             f"DIO1 start slots {min(repeats, len(self.camera_start_array))}/{repeats}"
             if self.dynamic_camera_start.isChecked()
             else "fixed DIO1 start"
         )
         self._v3_series_relationship_summary.setText(f"Relationship checks: {scan_text}; {dynamic_text}.")
+        self._v3_series_relationship_summary.setStyleSheet(
+            "color: darkorange; font-weight: bold;" if scan_mismatch else ""
+        )
 
         fm = self.exp_sweep_enable.isChecked()
         scan = self.exp_freq_scan_enable.isChecked()
@@ -831,10 +917,15 @@ class MainWindowV3(MainWindowV2):
             self._v3_dio_start_source.setText("Unavailable")
         if dynamic:
             slots = len(self.camera_start_array)
-            suffix = "available" if repeats <= slots else "insufficient — run will reject beyond slot 10"
+            slot_mismatch = repeats > slots
+            suffix = "available" if not slot_mismatch else "insufficient — run will reject beyond slot 10"
             self._v3_dio_slot_budget.setText(f"{min(repeats, slots)}/{repeats} repeats; {slots} slots {suffix}")
+            self._v3_dio_slot_budget.setStyleSheet(
+                "color: darkorange; font-weight: bold;" if slot_mismatch else ""
+            )
         else:
             self._v3_dio_slot_budget.setText("Not used; fixed start applies to every repeat")
+            self._v3_dio_slot_budget.setStyleSheet("")
         self._v3_camera_feasibility.setText(
             "Application._check_camera_timing_budget() validates requested FPS against applied exposure plus "
             "live DCAM readout at run start. Preview unavailable without querying hardware."

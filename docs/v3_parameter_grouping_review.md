@@ -1,9 +1,12 @@
 # V3 Experiment-Parameter Relationship and Grouping Review
 
-**Status:** implementation follow-up. Commit `085c06a` implemented six of the
-seven UI recommendations in Sections 4.1 and 4.2. The Channel 1/“Ch2” identity,
-DIO1 synchronization, and related behavior-policy questions in Section 4.3
-remain unresolved; the implementation is not hardware verification.
+**Status:** implementation follow-up. Commit `085c06a` implemented the six
+recommendations in Sections 4.1 and 4.2 that required UI work. Recommendation 7
+(keep Temperature scan and manual panels separate) was already satisfied by
+construction and required no implementation. What remains open is the soft
+“matching durations” marker within recommendation 2, deferred pending the
+owner's Channel 1/“Ch2” clarification, plus the four behavior and hardware
+questions in Section 4.3. The implementation is not hardware verification.
 
 **Scope:** the parameters inherited from the LabVIEW `Experiment` tab and their
 current presentation in `src/thermo_acoustic/qt_ui_v3.py`. Manual diagnostic
@@ -43,7 +46,7 @@ single panel proves historical proximity, not causal equivalence.
 The current automated path builds one experiment object per repeat, then
 configures WFG and DIO, configures the camera, starts capture, issues one shared
 AD2 PC trigger, waits for capture and outstanding AD2 duration, optionally
-flushes, and saves the repeat (`src/thermo_acoustic/qt_ui.py:3880-3955`;
+flushes, and saves the repeat (`src/thermo_acoustic/qt_ui.py:3940-4015`;
 `src/thermo_acoustic/application.py:670-740,744-803`). This yields the following
 software-grounded map:
 
@@ -83,7 +86,7 @@ Within each repeat
 ```
 
 Evidence for the DIO formula and channel is
-`src/thermo_acoustic/qt_ui.py:4020-4051`. Evidence for the maximum completion
+`src/thermo_acoustic/qt_ui.py:4080-4111`. Evidence for the maximum completion
 gate and finite-duration requirement is
 `src/thermo_acoustic/application.py:371-400,450-459`. Evidence for the camera
 timing budget is `src/thermo_acoustic/application.py:409-448`. Evidence for the
@@ -94,11 +97,11 @@ flush sequence is `src/thermo_acoustic/application.py:530-615`; its timeout is
 
 | Stated relationship | Verdict | Evidence and qualification |
 | --- | --- | --- |
-| Ch1 WFG Run and “Ch2 camera-related” Run are normally equal and are two aspects of one timed event. | **QUALIFIED; not established as current hardware semantics.** | **[HISTORICAL EVIDENCE]** The retained working preset gives both LabVIEW Ch1 and Ch2 a 60 s run (`src/thermo_acoustic/experiment_presets.py:38-52,67-79`). **[PROJECT FACT]** Current code maps those controls to two independent analog WFG channels, index 0 and index 1 (`src/thermo_acoustic/qt_ui.py:3348-3403,4179-4195`); v3 explicitly labels the historical mapping (`src/thermo_acoustic/qt_ui_v3.py:637-638`). Channel 1's purpose is explicitly unknown in the real-hardware smoke path (`hardware_tests/test_real_workflow_smoke.py:31-38`). No equality link, warning, or validation exists. The camera-related digital timing is a separate DIO1 configuration. **[OWNER CONVENTION]** Equal values may still be a valid bench practice, but it must not be encoded as a hardware fact until “Ch2” is disambiguated. |
-| Frames is normally less than FPS × Ch2 Run. | **NOT IMPLEMENTED, and the current naming makes the claim ambiguous.** | If “Ch2 Run” means analog WFG index 1, current code has no such rule. If it means the camera-related DIO run, current code derives `DIO run = Frames / FPS`, hence `Frames = FPS × DIO run` algebraically, not strictly less (`src/thermo_acoustic/qt_ui.py:4020-4041`). No warning, clamp, or rejection compares Frames with either analog WFG run. **[OWNER CONVENTION]** A strict-less-than margin could be an intentional acquisition policy, but the intended reference duration must be clarified before implementation. |
+| Ch1 WFG Run and “Ch2 camera-related” Run are normally equal and are two aspects of one timed event. | **QUALIFIED; not established as current hardware semantics.** | **[HISTORICAL EVIDENCE]** The retained working preset gives both LabVIEW Ch1 and Ch2 a 60 s run (`src/thermo_acoustic/experiment_presets.py:38-52,67-79`). **[PROJECT FACT]** Current code maps those controls to two independent analog WFG channels, index 0 and index 1 (`src/thermo_acoustic/qt_ui.py:3408-3463,4305-4321`); v3 explicitly labels the historical mapping (`src/thermo_acoustic/qt_ui_v3.py:637-638`). Channel 1's purpose is explicitly unknown in the real-hardware smoke path (`hardware_tests/test_real_workflow_smoke.py:31-38`). No equality link, warning, or validation exists. The camera-related digital timing is a separate DIO1 configuration. **[OWNER CONVENTION]** Equal values may still be a valid bench practice, but it must not be encoded as a hardware fact until “Ch2” is disambiguated. |
+| Frames is normally less than FPS × Ch2 Run. | **NOT IMPLEMENTED, and the current naming makes the claim ambiguous.** | If “Ch2 Run” means analog WFG index 1, current code has no such rule. If it means the camera-related DIO run, current code derives `DIO run = Frames / FPS`, hence `Frames = FPS × DIO run` algebraically, not strictly less (`src/thermo_acoustic/qt_ui.py:4080-4093`). No warning, clamp, or rejection compares Frames with either analog WFG run. **[OWNER CONVENTION]** A strict-less-than margin could be an intentional acquisition policy, but the intended reference duration must be clarified before implementation. |
 | Flush Flowrate, Volume, and WaitAfterFlush are one coupled physical sequence. | **CONFIRMED.** | Flowrate must be positive; Volume is bounded by capacity and current fill; Flowrate and Volume determine the pump timeout; WaitAfterFlush occurs after confirmed P02 (`src/thermo_acoustic/application.py:530-615`; `src/thermo_acoustic/workflows.py:52-71`). They should remain one conceptual group. |
-| Dynamic Frequency / Frequency List and FM Sweep affect the same channel as static Frequency/Amplitude. | **CONFIRMED, with a mode-combination qualification.** | Both affect channel 0 only. FM sweep replaces the base carrier with its center and enables FM; the per-repeat scan override is applied afterward, so its carrier value wins if both are enabled (`src/thermo_acoustic/qt_ui.py:3372-3391`). Scan is discrete across repeats; FM is continuous within a repeat (`src/thermo_acoustic/qt_ui.py:1176-1183,1348-1356`). They are related programs of the same output, but current code permits them to be layered rather than enforcing mutually exclusive modes. Amplitude remains the channel-0 carrier amplitude. |
-| Dynamic Camera Start and GlobalExposure belong to camera/AD2 timing and touch an unresolved synchronization question. | **CONFIRMED as a software coupling; synchronization remains unverified.** | Fixed or dynamic Camera Start selects DIO1 `sec_wait`; Frames/FPS supplies DIO1 `sec_run` (`src/thermo_acoustic/qt_ui.py:4020-4051`). GlobalExposure is passed to the camera (`src/thermo_acoustic/application.py:735-740`). Automated capture forces DCAM `Internal`, and the repository explicitly says DIO1/exposure coincidence and the physical trigger cable are not proven (`src/thermo_acoustic/qt_ui.py:3929-3948`; `docs/hardware_repair_plan.md:97-129`). |
+| Dynamic Frequency / Frequency List and FM Sweep affect the same channel as static Frequency/Amplitude. | **CONFIRMED, with a mode-combination qualification.** | Both affect channel 0 only. FM sweep replaces the base carrier with its center and enables FM; the per-repeat scan override is applied afterward, so its carrier value wins if both are enabled (`src/thermo_acoustic/qt_ui.py:3432-3451`). Scan is discrete across repeats; FM is continuous within a repeat (`src/thermo_acoustic/qt_ui.py:1251-1258,1423-1431`). They are related programs of the same output, but current code permits them to be layered rather than enforcing mutually exclusive modes. Amplitude remains the channel-0 carrier amplitude. |
+| Dynamic Camera Start and GlobalExposure belong to camera/AD2 timing and touch an unresolved synchronization question. | **CONFIRMED as a software coupling; synchronization remains unverified.** | Fixed or dynamic Camera Start selects DIO1 `sec_wait`; Frames/FPS supplies DIO1 `sec_run` (`src/thermo_acoustic/qt_ui.py:4080-4111`). GlobalExposure is passed to the camera (`src/thermo_acoustic/application.py:735-740`). Automated capture forces DCAM `Internal`, and the repository explicitly says DIO1/exposure coincidence and the physical trigger cable are not proven (`src/thermo_acoustic/qt_ui.py:3997-4010`; `docs/hardware_repair_plan.md:97-129`). |
 
 The 2026 channel-caption clarification in commit `3474232` changed displayed
 LabVIEW-style names from Ch1/Ch2 to zero-based CH0/CH1; the execution mapping was
@@ -109,25 +112,25 @@ that analog channel 1 is a camera trigger.
 
 | LabVIEW Experiment parameter | Causal dependencies and constraints | Software-independent from | Mode or alternative relationship | Grounding |
 | --- | --- | --- | --- | --- |
-| Camera FPS | Must be positive to build DIO1. With Frames, determines nominal DIO1 duration. Exposure plus live camera readout time limits achievable FPS. | No current formula links it to analog WFG frequency, amplitude, or either WFG duration. | Base requested DIO1 pulse rate; not a camera-trigger guarantee while DCAM is Internal. | `qt_ui.py:4020-4041`; `application.py:409-448`; `hardware_repair_plan.md:97-129` |
-| Camera Start (s) | Supplies DIO1 `sec_wait` for every repeat when dynamic start is off. Contributes to AD2 completion time. | No current derivation from exposure, FPS, or analog WFG start. | Mutually selected with the current repeat's Camera Start Array value. | `qt_ui.py:4025-4033`; `application.py:387-400` |
-| Ch1 Frequency (current WFG channel 0) | Sets channel-0 carrier frequency unless FM sweep and/or per-repeat scan overrides it. | No current formula derives it from acquisition counts or fluidics. | Static base value; FM center and scan point are alternate/overlaid effective values on the same channel. | `qt_ui.py:3348-3391` |
-| Ch1 Amplitude (current WFG channel 0) | Sets the analog drive amplitude and is subject to backend hardware bounds. It remains the carrier amplitude under current scan/FM construction. | Independent in current orchestration from Frames, FPS, start/run durations, and flush. | Base channel property, not a separate scan mode. | `qt_ui.py:3348-3379`; `hardware_safety_patterns.md:1-44` |
-| Ch1 Start (s) | Supplies WFG channel-0 `sec_wait`; with Run, determines channel-0 completion. | Not derived from Camera Start or channel-1 start. | Fixed timing for that output. | `qt_ui.py:3392-3401`; `application.py:371-385` |
-| Ch1 Run (s) | Supplies WFG channel-0 `sec_run`; zero/continuous is rejected for automated completion. Participates in the maximum AD2 completion budget. | No current equality constraint with channel 1 or DIO1. | Fixed timing for that output. | `qt_ui.py:3392-3401`; `application.py:371-400,450-459` |
-| Ch2 Start (s) (current WFG channel 1) | Supplies analog WFG channel-1 `sec_wait`; with Run, determines that channel's completion. | Not derived from camera start or channel-0 start. | Fixed timing for independent SDK channel 1. Physical purpose is unverified. | `qt_ui.py:3348-3403,4179-4195`; `hardware_tests/test_real_workflow_smoke.py:31-38` |
-| Ch2 Run (s) (current WFG channel 1) | Supplies analog WFG channel-1 `sec_run`; zero/continuous is rejected if enabled. Participates in maximum AD2 completion. | No current equality or Frames/FPS constraint. | Fixed timing for independent SDK channel 1. Do not relabel it as camera duration without bench evidence. | `qt_ui.py:3392-3403`; `application.py:371-400,450-459` |
-| Repeats | Determines queued units and repeat folders. Must equal frequency-scan point count. Dynamic-start mode has only 10 slots. Optional flush is repeated once per unit. | Does not alter each repeat's amplitude, exposure, or flush values. | Series cardinality and the indexing axis for scan/dynamic-start alternatives. | `qt_ui.py:1274-1281,3880-3955,4025-4028` |
-| Frames | Passed to camera acquisition. With FPS, derives DIO1 run duration. Total progress frame count is Frames × Repeats. | No current comparison against either WFG run duration. | Count input and duration numerator, not an independent camera-timing island. | `qt_ui.py:1283-1288,3937-3955,4020-4041`; `application.py:767-775` |
+| Camera FPS | Must be positive to build DIO1. With Frames, determines nominal DIO1 duration. Exposure plus live camera readout time limits achievable FPS. | No current formula links it to analog WFG frequency, amplitude, or either WFG duration. | Base requested DIO1 pulse rate; not a camera-trigger guarantee while DCAM is Internal. | `qt_ui.py:4080-4093`; `application.py:409-448`; `hardware_repair_plan.md:97-129` |
+| Camera Start (s) | Supplies DIO1 `sec_wait` for every repeat when dynamic start is off. Contributes to AD2 completion time. | No current derivation from exposure, FPS, or analog WFG start. | Mutually selected with the current repeat's Camera Start Array value. | `qt_ui.py:4085-4093`; `application.py:387-400` |
+| Ch1 Frequency (current WFG channel 0) | Sets channel-0 carrier frequency unless FM sweep and/or per-repeat scan overrides it. | No current formula derives it from acquisition counts or fluidics. | Static base value; FM center and scan point are alternate/overlaid effective values on the same channel. | `qt_ui.py:3408-3451` |
+| Ch1 Amplitude (current WFG channel 0) | Sets the analog drive amplitude and is subject to backend hardware bounds. It remains the carrier amplitude under current scan/FM construction. | Independent in current orchestration from Frames, FPS, start/run durations, and flush. | Base channel property, not a separate scan mode. | `qt_ui.py:3414-3452`; `hardware_safety_patterns.md:1-44` |
+| Ch1 Start (s) | Supplies WFG channel-0 `sec_wait`; with Run, determines channel-0 completion. | Not derived from Camera Start or channel-1 start. | Fixed timing for that output. | `qt_ui.py:3452-3462`; `application.py:371-385` |
+| Ch1 Run (s) | Supplies WFG channel-0 `sec_run`; zero/continuous is rejected for automated completion. Participates in the maximum AD2 completion budget. | No current equality constraint with channel 1 or DIO1. | Fixed timing for that output. | `qt_ui.py:3452-3462`; `application.py:371-400,450-459` |
+| Ch2 Start (s) (current WFG channel 1) | Supplies analog WFG channel-1 `sec_wait`; with Run, determines that channel's completion. | Not derived from camera start or channel-0 start. | Fixed timing for independent SDK channel 1. Physical purpose is unverified. | `qt_ui.py:3408-3463,4305-4321`; `hardware_tests/test_real_workflow_smoke.py:31-38` |
+| Ch2 Run (s) (current WFG channel 1) | Supplies analog WFG channel-1 `sec_run`; zero/continuous is rejected if enabled. Participates in maximum AD2 completion. | No current equality or Frames/FPS constraint. | Fixed timing for independent SDK channel 1. Do not relabel it as camera duration without bench evidence. | `qt_ui.py:3452-3462`; `application.py:371-400,450-459` |
+| Repeats | Determines queued units and repeat folders. Must equal frequency-scan point count. Dynamic-start mode has only 10 slots. Optional flush is repeated once per unit. | Does not alter each repeat's amplitude, exposure, or flush values. | Series cardinality and the indexing axis for scan/dynamic-start alternatives. | `qt_ui.py:1349-1356,3940-4015,4085-4088` |
+| Frames | Passed to camera acquisition. With FPS, derives DIO1 run duration. Total progress frame count is Frames × Repeats. | No current comparison against either WFG run duration. | Count input and duration numerator, not an independent camera-timing island. | `qt_ui.py:1358-1363,3940-4015,4080-4093`; `application.py:767-775` |
 | ExposureTime (ms) | Applied to real camera. Together with ROI readout time, limits sustainable FPS. | No current formula links it to WFG amplitude/frequency/timing or fluidics. | Camera exposure property; distinct from `GlobalExposure`. | `application.py:715-740,409-448` |
 | Flush Flowrate | Must be positive. With Volume, determines commanded movement and timeout. | Does not configure acquisition or WFG; flush is after capture/completion. | One field of the optional post-capture flush operation. | `application.py:530-582,794-803`; `workflows.py:52-71` |
 | Flush Volume | Bounded by syringe capacity and current fill. With Flowrate, determines movement duration/timeout and new fill level. | Does not configure camera or WFG. | One field of the optional post-capture flush operation. | `application.py:530-580`; `workflows.py:52-71` |
 | WaitAfterFlush | Delay after confirmed P02 and before the final fill-level command/completion status. | Does not change the calculated pump movement duration. | Final phase of the same flush operation, not a generic experiment delay. | `application.py:606-615` |
-| Dynamic Frequency + Frequency List | Enabled scan creates a linear per-repeat channel-0 frequency list. Count comes from Number of Frequencies or Step Size and must equal Repeats. Linear LabVIEW fidelity remains documented as inferred. | Does not alter analog channel 1 or camera timing. | Per-repeat channel-0 carrier override. Step Size and Number of Frequencies are alternative list-generation inputs. | `qt_ui.py:1348-1387,3405-3427,3884-3917` |
-| FM Sweep | Sets channel-0 FM modulation and effective center; Start/Stop and Center/Width are two synchronized input conventions for the same range. | Does not affect channel 1 or fluidics. | Continuous within-repeat channel-0 mode. It can currently coexist with scan; scan carrier override wins after FM setup. | `qt_ui.py:1176-1215,3180-3218,3372-3391` |
-| Dynamic Camera Start Time | Selects per-repeat array value instead of fixed Camera Start. Repeats cannot exceed ten slots. | Does not change FPS, Frames, or exposure. | Boolean selector between two DIO1-delay sources. | `qt_ui.py:1318-1337,4025-4033` |
+| Dynamic Frequency + Frequency List | Enabled scan creates a linear per-repeat channel-0 frequency list. Count comes from Number of Frequencies or Step Size and must equal Repeats. Linear LabVIEW fidelity remains documented as inferred. | Does not alter analog channel 1 or camera timing. | Per-repeat channel-0 carrier override. Step Size and Number of Frequencies are alternative list-generation inputs. | `qt_ui.py:1423-1462,3465-3487,3944-3977` |
+| FM Sweep | Sets channel-0 FM modulation and effective center; Start/Stop and Center/Width are two synchronized input conventions for the same range. | Does not affect channel 1 or fluidics. | Continuous within-repeat channel-0 mode. It can currently coexist with scan; scan carrier override wins after FM setup. | `qt_ui.py:1251-1290,3240-3279,3432-3451` |
+| Dynamic Camera Start Time | Selects per-repeat array value instead of fixed Camera Start. Repeats cannot exceed ten slots. | Does not change FPS, Frames, or exposure. | Boolean selector between two DIO1-delay sources. | `qt_ui.py:1393-1412,4085-4090` |
 | GlobalExposure | Requests the camera `GLOBALRESET` behavior; may require a compatible trigger source. False deliberately leaves the property unchanged. | Not the numerical exposure time and not a DIO duration. | Camera trigger/exposure behavior option with unresolved applicability. | `qt_ui_v3.py:540-548`; `application.py:735-740` |
-| Camera Start Array(s) | Provides ten repeat-indexed DIO1 wait values; selected only by Dynamic Camera Start. | Does not itself set repeat count or FPS. | Alternative source to the fixed Camera Start field. | `qt_ui.py:1318-1325,4025-4033` |
+| Camera Start Array(s) | Provides ten repeat-indexed DIO1 wait values; selected only by Dynamic Camera Start. | Does not itself set repeat count or FPS. | Alternative source to the fixed Camera Start field. | `qt_ui.py:1393-1412,4085-4090` |
 
 ### 1.4 What the reference publication does and does not establish
 
@@ -160,30 +163,35 @@ causally dependent timing values; and expose calculated limits. None of these
 sources authorizes claiming DIO1/camera synchronization before the repository's
 bench question is closed.
 
-## 3. Audit of v3's current organization
+## 3. Historical audit of v3's pre-implementation organization
 
-### 3.1 Current structure
+### 3.1 Pre-`085c06a` structure snapshot
 
-V3 builds a stable hardware-status strip, experiment status, run controls, setup
+This section intentionally preserves the layout assessment made before
+`085c06a`. Its present-tense statements and `qt_ui_v3.py` line citations describe
+that historical source snapshot, not current HEAD; Section 4 records what was
+subsequently implemented.
+
+At that snapshot, v3 built a stable hardware-status strip, experiment status, run controls, setup
 tabs, and a runtime monitoring column (`qt_ui_v3.py:222-253`). The experiment
 setup tabs are AD2 Output, Camera, Fluidics, and Temperature scan
 (`qt_ui_v3.py:361-410`). Manual WFG, camera, pump/valve, and other diagnostic
 surfaces live in separate sidebar dialogs; this audit does not propose merging
 manual and automated state.
 
-| Current grouping decision | Assessment against the relationship framework |
+| Pre-implementation grouping decision | Assessment against the relationship framework |
 | --- | --- |
 | **Experiment run** holds Start, graceful stop, Series path, and an execution-semantics note (`qt_ui_v3.py:323-359`). | **Sound.** These are series-level actions/storage, not device parameters. Repeats is the missing series-level companion. |
 | **AD2 Output** contains a channel tab set, then sibling FM Sweep and Frequency Scan tabs (`qt_ui_v3.py:365-378`). | **Directionally sound but incomplete.** The frequency programs are near channel 0, yet the visual hierarchy does not say “base carrier → within-repeat FM and/or per-repeat override,” nor show what happens when both enables are on. |
 | Each AD2 channel page groups **Carrier waveform**, **Timing and trigger**, and **Waveform shape** (`qt_ui_v3.py:412-457`). | **Sound for an independently configurable SDK channel.** It keeps each output's carrier and trigger fields together. It also reinforces that current channel 1 is an analog WFG output, not a camera duration. |
 | Channel 0 and channel 1 live on separate tabs (`qt_ui_v3.py:416-420`). | **Potential workflow mismatch, not a proven physical mismatch.** The owner's equal-duration convention is invisible, but current code does not establish equality. A forced link would be premature; a neutral comparison/timeline is justified. |
-| FM Sweep presents Start/Stop and Center/Width simultaneously through the inherited group (`qt_ui_v3.py:369-376`; builder at `qt_ui.py:3180-3218`). | **Controls are correctly colocated, but equivalence is mostly tooltip-dependent.** Both pairs are synchronized views of one range. A persistent “equivalent entry forms” label and computed effective range would prevent them reading as four independent frequencies. |
+| FM Sweep presents Start/Stop and Center/Width simultaneously through the inherited group (`qt_ui_v3.py:369-376`; builder at `qt_ui.py:3240-3279`). | **Controls are correctly colocated, but equivalence is mostly tooltip-dependent.** Both pairs are synchronized views of one range. A persistent “equivalent entry forms” label and computed effective range would prevent them reading as four independent frequencies. |
 | Frequency Scan is a separate modulation tab (`qt_ui_v3.py:369-376`). | **Same-channel relationship is named in the title but cross-series dependency is hidden.** The list count must equal Repeats, which is in Camera. Number of Frequencies versus Step Size precedence is also primarily tooltip/error knowledge. |
 | **Experiment acquisition** contains DIO1 FPS, fixed DIO1 delay, Repeats, Frames, Exposure, GlobalExposure, dynamic-delay selector, and ten delays (`qt_ui_v3.py:515-550`; inherited layout `qt_ui_v2.py:789-824`). | **Mixed.** FPS, Frames, Exposure, GlobalExposure, and fixed/dynamic DIO timing belong in one acquisition/timing context. Repeats is series cardinality, not a camera property, even though it indexes scan and dynamic delays. The group shows no `Frames/FPS` duration, no exposure/readout FPS budget, and no active-mode disabling. |
 | V3 deliberately captions Camera FPS/Start/array as DIO1 pulse rate/delay (`qt_ui_v3.py:520-539`). | **Accurate and commendably cautious.** The dynamic-start tooltip says physical alignment with exposure remains bench-unverified (`qt_ui_v3.py:545-548`). However, that critical boundary is hidden behind a tooltip while the enclosing tab is simply “Camera,” which can still imply synchronization. |
 | GlobalExposure is beside acquisition timing and carries a compatibility warning (`qt_ui_v3.py:525,540-544`). | **Correct neighborhood; insufficient state visibility.** It is distinct from numeric exposure and may be ineffective under the forced Internal trigger. Enabling it should surface that unresolved applicability inline. |
 | Fixed and per-repeat DIO1 start values are in the same acquisition group (`qt_ui_v2.py:797-822`; adapted at `qt_ui_v3.py:521-539`). | **Good causal grouping.** The selector chooses one source, but both modes remain visually live; the active alternative is not obvious without knowing the code. |
-| **Fluidics** contains an optional-sequence note and the complete inherited Flush group (`qt_ui_v3.py:386-402`; builder `qt_ui.py:3108-3116`). | **Sound and should remain intact.** Flowrate, Volume, and WaitAfterFlush stay together. The current layout does not expose derived move time, timeout, capacity, or current-fill margin, but it does not falsely separate them. |
+| **Fluidics** contains an optional-sequence note and the complete inherited Flush group (`qt_ui_v3.py:386-402`; builder `qt_ui.py:3168-3176`). | **Sound and should remain intact.** Flowrate, Volume, and WaitAfterFlush stay together. The current layout does not expose derived move time, timeout, capacity, or current-fill margin, but it does not falsely separate them. |
 | **Temperature scan** has its own setup page (`qt_ui_v3.py:404-409`). | **Sound and outside this review's parameter set.** It is a structurally different series dimension and explicitly marked simulated/unapproved in v3 (`qt_ui_v3.py:483-492`). |
 | Runtime waveform/rate and global status form the monitoring column (`qt_ui_v3.py:468-481,552-570`). | **Sound separation of configuration from live feedback.** A future timing-plan summary should be configuration feedback, not mixed into measured live rate. |
 
@@ -192,13 +200,13 @@ manual and automated state.
 1. **Series cardinality is mislabeled as acquisition-local.** `Experiment repeats`
    appears in the Camera acquisition group (`qt_ui_v3.py:515-533`), but it builds
    all repeat objects and folders, must equal scan count, indexes dynamic delays,
-   and repeats the optional flush (`qt_ui.py:3880-3955`). This makes the scan
+   and repeats the optional flush (`qt_ui.py:3940-4015`). This makes the scan
    relationship invisible until validation fails.
 
 2. **The acquisition duration is available but not shown.** V3 places FPS and
    Frames together (`qt_ui_v3.py:520-525`) but presents no read-only
    `Frames / FPS` duration, even though that exact value becomes DIO1 run time
-   (`qt_ui.py:4020-4041`). The operator cannot compare that window with either
+   (`qt_ui.py:4080-4093`). The operator cannot compare that window with either
    WFG channel's start/run window without manual arithmetic across tabs.
 
 3. **The owner timing convention is entirely implicit.** Channel run durations
@@ -211,19 +219,19 @@ manual and automated state.
    channel-0 Carrier group (`qt_ui_v3.py:428-436`); FM and scan are separate
    sibling tabs (`qt_ui_v3.py:369-377`). If both are enabled, FM first sets the
    center and scan then overwrites the carrier frequency
-   (`qt_ui.py:3372-3391`). V3 offers no effective-frequency summary or explicit
+   (`qt_ui.py:3432-3451`). V3 offers no effective-frequency summary or explicit
    combined-mode explanation.
 
 5. **Alternative entry forms can look like extra degrees of freedom.** FM
    Start/Stop and Center/Width are synchronized representations of the same
-   range (`qt_ui.py:1203-1210,3214-3217`), while scan Count and Step Size are
-   precedence-based alternatives (`qt_ui.py:1370-1387,3405-3427`). V3 renders
+   range (`qt_ui.py:1265-1285,2136-2175`), while scan Count and Step Size are
+   precedence-based alternatives (`qt_ui.py:1433-1462,3465-3487`). V3 renders
    each pair together but does not visibly distinguish “equivalent” from
    “overrides”; that knowledge resides in tooltips.
 
 6. **The Camera tab can imply more synchronization than exists.** Its captions
    accurately say DIO1 (`qt_ui_v3.py:520-539`), yet automated DCAM is forced
-   Internal (`qt_ui.py:3929-3948`). The persistent page has no inline statement
+   Internal (`qt_ui.py:3997-4010`). The persistent page has no inline statement
    that DIO1-to-exposure alignment is unverified. This is exactly the boundary
    left open in `docs/hardware_repair_plan.md:97-129`.
 
@@ -239,7 +247,12 @@ manual and automated state.
    five-second timeout margin, or capacity/current-fill budget is displayed.
    This is a discoverability improvement, not a reason to split Fluidics.
 
-## 4. Reorganization proposal (six of seven recommendations implemented in `085c06a`)
+## 4. Reorganization proposal and implementation status
+
+Commit `085c06a` implemented recommendations 1-6 except for the explicitly
+deferred matching-durations marker within recommendation 2. Recommendation 7
+was already satisfied by construction, so it was a no-op rather than a deferred
+seventh implementation item.
 
 ### 4.1 Information architecture
 
@@ -263,6 +276,9 @@ manual and automated state.
    window” or “synchronized.” A soft informational marker may say that a saved
    operating convention expects matching durations only after the owner clarifies
    which duration is intended.
+
+   **Implementation status:** the timing plan was added in `085c06a`; only that
+   soft matching-durations marker remains deferred.
 
 3. **Acoustic / primary analog output (AD2 channel 0, LabVIEW Ch1)** — keep base
    carrier and its start/run together. Nest a **Frequency program** directly
@@ -307,6 +323,8 @@ manual and automated state.
    explicitly says its settings do not affect experiment runs
    (`qt_ui_v3.py:605-625`). **[PROJECT FACT + JUDGMENT]** Combining these surfaces
    would imply state sharing that v3 explicitly denies for that panel.
+   **Implementation status:** satisfied by construction before `085c06a`; no
+   code change was required.
 
 ### 4.2 Link and warning behavior
 
@@ -329,7 +347,7 @@ This follows the repository safety principle that consequential limits and
 unknowns should be surfaced and that validation should not silently clamp or
 invent a value (`docs/hardware_safety_patterns.md:1-44`).
 
-### 4.3 Required clarifications before a UI implementation
+### 4.3 Clarifications still required before further behavior changes
 
 1. Trace what physical apparatus, if any, is driven by analog WFG channel 1.
 2. Ask whether the owner's “Ch2 Run” in `Frames < FPS × Ch2 Run` means analog WFG
