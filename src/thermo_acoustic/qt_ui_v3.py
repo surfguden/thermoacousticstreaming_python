@@ -1390,6 +1390,11 @@ class MainWindowV3(MainWindowV2):
         return group
 
     def _zscan_control_group(self) -> QGroupBox:
+        """Build v3 Z-scan controls, replacing v1 without calling its base method.
+
+        Future additions to v1's method of the same name do not appear here
+        automatically and require an explicit v3 review.
+        """
         group = QGroupBox("Z-Scan actions")
         layout = QVBoxLayout(group)
         query_range = QPushButton("Read piezo travel range")
