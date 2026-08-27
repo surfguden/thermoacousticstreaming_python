@@ -853,10 +853,11 @@ def test_v2_experiment_setup_tabs_has_four_task_oriented_tabs(monkeypatch, tmp_p
     # and intermittently at both 2c0ffc6 and 085c06a in an earlier 40-run
     # measurement. It is intentionally not retried, skipped, or xfailed.
     # The marked tests are the confirmed instances of an open-ended family, not
-    # a complete set: the same signature has been seen in roughly ten further
+    # a complete set: the same signature has been seen in eleven further
     # unmarked tests across this file, test_qt_ui_hardware_settings.py, and
-    # test_qt_ui_v3.py. See docs/known_open_items.md, "Open-ended PySide/
-    # Shiboken object-lifetime failure family".
+    # test_qt_ui_v3.py -- fifteen members in total as of 2026-08-27. See
+    # docs/known_open_items.md, "Open-ended PySide/Shiboken object-lifetime
+    # failure family".
     # v3 design-idea adoption, Proposal B (2026-08-05): replaces the former
     # per-step card sequence (Phase 2) with task-oriented setup tabs,
     # grouping by what an operator is configuring rather than

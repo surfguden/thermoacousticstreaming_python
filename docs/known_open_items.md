@@ -230,14 +230,20 @@ historical notes. This document is a live issue register, whereas
   `qt_ui_v2.py:784`, or as `RuntimeError: Error calling Python override of
   QMainWindow::closeEvent()` when `closeEvent` reaches `_settings_dict()` in
   `qt_ui.py` and touches an already-deleted child. A second form,
-  `SystemError: <class 'PySide6.QtWidgets.Xxx'> returned NULL without setting
-  an exception`, appears during widget construction and is treated as the same
-  family (`conftest.build_with_retry()` exists specifically for it).
+  `SystemError: <class '...'> returned NULL without setting an exception`,
+  appears during widget construction and is treated as the same family
+  (`conftest.build_with_retry()` exists specifically for it). The class named
+  in that second form is usually a `PySide6.QtWidgets` type but not always:
+  `thermo_acoustic.qt_ui._TooltipIconWrapper`, this project's own `QWidget`
+  subclass, has been observed twice. `build_with_retry()` reduces but does not
+  eliminate the second form — a 2026-08-27 reproduction exhausted all eight of
+  its attempts.
 
-  *Members observed so far.* Pooled across every measurement in the 2026-08-26
-  and 2026-08-27 sessions (isolated repeats, ordered full-suite runs, and
-  cross-commit comparisons at `c5665b3`, `bcd1634`, `2c0ffc6`, `085c06a`, and
-  `60d8b8c`):
+  *Members observed so far — fifteen tests across three files, of which four
+  carry the marker and eleven do not.* Pooled across every measurement in the
+  2026-08-26 and 2026-08-27 sessions (isolated repeats, ordered full-suite
+  runs, and cross-commit comparisons at `c5665b3`, `bcd1634`, `2c0ffc6`,
+  `085c06a`, `60d8b8c`, and `5b397b5`):
 
   - `tests/test_qt_ui_v2.py` — `test_v2_experiment_setup_tabs_has_four_task_oriented_tabs`,
     `test_v2_flush_group_tooltip_explains_the_real_sequential_valve_pump_relationship`,
@@ -251,11 +257,38 @@ historical notes. This document is a live issue register, whereas
     `test_clear_pump_fault_button_shows_warning_and_is_not_skippable`,
     `test_apply_wfg_reports_no_warning_when_in_range`,
     `test_camera_sequence_group_flags_live_automated_use_and_dead_capture_mode`,
-    `test_frequency_scanning_number_of_frequencies_display_tracks_step_size`
+    `test_frequency_scanning_number_of_frequencies_display_tracks_step_size`,
+    `test_abort_control_explains_its_graceful_not_mid_operation_behavior`
+    (added 2026-08-27; first reported by an independent Codex review of
+    `5b397b5`, then **independently reproduced here** — see the reproduction
+    note below)
   - `tests/test_qt_ui_v3.py` — `test_v3_dialogs_open_at_usable_sizes_without_full_path_width`
 
   This list is a record of what has been seen, not a boundary. Any test that
   constructs a full `MainWindow`/`MainWindowV2`/`MainWindowV3` may join it.
+
+  *Reproduction note for the fifteenth member (2026-08-27).* An independent
+  Codex review of `5b397b5` reported
+  `test_abort_control_explains_its_graceful_not_mid_operation_behavior` failing
+  with the `SystemError` form. Per the standing evidence rule, that report was
+  not recorded as fact until reproduced separately. Three hang-protected
+  full-suite runs at `5b397b5` did **not** reproduce it (the failures those
+  runs did produce were three already-listed members:
+  `test_v2_no_group_box_is_squeezed_below_its_minimum_size_hint`,
+  `test_v2_configuration_column_places_run_control_above_setup_tabs`, and
+  `test_v2_flush_group_tooltip_explains_the_real_sequential_valve_pump_relationship`).
+  It was then reproduced in **1 of 30 isolated invocations** of that test alone,
+  a rate low enough that three full-suite runs were not expected to surface it.
+  The reproduction is therefore confirmed but rare in this environment; the
+  independent report stands. The captured failure is
+  `SystemError: <class 'thermo_acoustic.qt_ui._TooltipIconWrapper'> returned
+  NULL without setting an exception` at `qt_ui.py:1900`, raised inside
+  `MainWindow.__init__()` → `_build_layout()` → `_wfg_tab()` →
+  `_wfg_channel_group("Ch2")` → `_add_tooltip_icons()` →
+  `_wrap_with_tooltip_icon()`. Note that it surfaced through
+  `conftest.py:66` (`raise last_exc`), meaning
+  `build_with_retry()` had already exhausted all eight construction attempts —
+  the existing mitigation does not always absorb this form.
 
   *Why it is not a per-test defect.* Membership tracks "builds a full v2/v3
   window under the offscreen Qt platform," not any behavior the individual
@@ -276,9 +309,9 @@ historical notes. This document is a live issue register, whereas
   *Deliberately not attempted here.* Marking the remaining members individually
   was considered and rejected for this pass: each existing marker required its
   own cross-commit confirmation that the failure predates the change it appears
-  alongside, and doing that for roughly ten more tests is a separate piece of
-  work. Marking them without that confirmation would risk labelling a genuine
-  regression as a known flake.
+  alongside, and doing that for the eleven remaining members is a separate
+  piece of work. Marking them without that confirmation would risk labelling a
+  genuine regression as a known flake.
 
   **Status: OPEN. Root-cause investigation is a separate, not-yet-scheduled
   future item. It should not be attempted as a side effect of another task —
