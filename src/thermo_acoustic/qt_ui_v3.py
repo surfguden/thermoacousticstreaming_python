@@ -22,6 +22,7 @@ from .application import Application
 from .instruments import SimulatedAD2Sdk
 from .qt_ui import install_focus_wheel_guard
 from .qt_ui_v2 import InitializationDialog, MainWindowV2
+from .workflows import Experiment2
 
 
 def _rename_unique_text_widget(
@@ -246,11 +247,18 @@ class MainWindowV3(MainWindowV2):
         operational = QWidget()
         operational_layout = QHBoxLayout(operational)
         operational_layout.setContentsMargins(0, 0, 0, 0)
-        operational_layout.addWidget(self._v3_setup_tabs(), 1)
+        setup = QWidget()
+        setup_layout = QVBoxLayout(setup)
+        setup_layout.setContentsMargins(0, 0, 0, 0)
+        setup_layout.addWidget(self._v3_one_repeat_timing_plan(), 0)
+        setup_layout.addWidget(self._v3_setup_tabs(), 1)
+        operational_layout.addWidget(setup, 1)
         operational_layout.addWidget(runtime, 0)
         workspace_layout.addWidget(operational, 1)
 
         root_layout.addWidget(workspace, 1)
+        self._connect_v3_relationship_refresh()
+        self._refresh_v3_relationships()
 
     def _build_menu_bar(self) -> None:
         super()._build_menu_bar()
@@ -348,12 +356,24 @@ class MainWindowV3(MainWindowV2):
         )
         note.setWordWrap(True)
         note.setMaximumWidth(520)
+        repeats_host = QWidget()
+        repeats_layout = QHBoxLayout(repeats_host)
+        repeats_layout.setContentsMargins(0, 0, 0, 0)
+        self._v3_repeats_layout = repeats_layout
+        self._v3_series_relationship_summary = QLabel()
+        self._v3_series_relationship_summary.setObjectName("v3SeriesRelationshipSummary")
+        self._v3_series_relationship_summary.setWordWrap(True)
         grid.addWidget(start, 0, 0, 2, 1)
         grid.addWidget(stop, 0, 1, 2, 1)
         grid.addWidget(QLabel("Series path"), 0, 2)
         grid.addWidget(self._wrap_with_tooltip_icon(self.series_path), 1, 2)
         grid.addWidget(browse, 1, 3)
         grid.addWidget(note, 0, 4, 2, 1)
+        repeats_caption = QLabel("Series repeats")
+        repeats_caption.setObjectName("v3ExperimentRepeatsCaption")
+        grid.addWidget(repeats_caption, 2, 0)
+        grid.addWidget(repeats_host, 2, 1)
+        grid.addWidget(self._v3_series_relationship_summary, 2, 2, 1, 3)
         grid.setColumnStretch(2, 1)
         grid.setColumnStretch(4, 1)
         return group
@@ -366,15 +386,6 @@ class MainWindowV3(MainWindowV2):
         ad2_layout = QVBoxLayout(ad2_content)
         ad2_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         ad2_layout.addWidget(self._v3_ad2_output_group())
-        modulation = QTabWidget()
-        modulation.setObjectName("v3ModulationTabs")
-        fm_sweep = self._experiment_fm_sweep_group()
-        fm_sweep.setTitle("FM sweep (channel 0 only)")
-        frequency_scan = self._experiment_frequency_scan_group()
-        frequency_scan.setTitle("Frequency scan (channel 0 only)")
-        modulation.addTab(fm_sweep, "FM sweep")
-        modulation.addTab(frequency_scan, "Frequency scan")
-        ad2_layout.addWidget(modulation)
         tabs.addTab(self._v3_scroll_page(ad2_content, "v3Ad2SetupScroll"), "AD2 Output")
 
         camera_content = QWidget()
@@ -398,6 +409,7 @@ class MainWindowV3(MainWindowV2):
             "then the valve switches to position 2. The pump is idle during each valve switch."
         )
         fluidics_layout.addWidget(flush_group)
+        fluidics_layout.addWidget(self._v3_flush_summary_group())
         fluidics_layout.addStretch(1)
         tabs.addTab(self._v3_scroll_page(fluidics_content, "v3FluidicsSetupScroll"), "Fluidics")
 
@@ -416,16 +428,17 @@ class MainWindowV3(MainWindowV2):
         channels = QTabWidget()
         channels.setObjectName("v3ExperimentAd2Channels")
         for index, state in enumerate(self.exp_ad2_channels):
-            channels.addTab(self._v3_ad2_channel_page(state), f"Channel {index}")
+            title = "Channel 0" if index == 0 else "Channel 1 — role unverified"
+            channels.addTab(self._v3_ad2_channel_page(state, index), title)
         layout.addWidget(channels)
         return group
 
-    def _v3_ad2_channel_page(self, state: dict[str, object]) -> QWidget:
+    def _v3_ad2_channel_page(self, state: dict[str, object], index: int) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        carrier = QGroupBox("Carrier waveform")
+        carrier = QGroupBox("Base carrier waveform" if index == 0 else "Carrier waveform")
         carrier_form = QFormLayout(carrier)
         state["enable"].setText("Enabled")
         carrier_form.addRow("Channel output", state["enable"])
@@ -454,7 +467,119 @@ class MainWindowV3(MainWindowV2):
         layout.addWidget(carrier)
         layout.addWidget(timing)
         layout.addWidget(detail)
+        if index == 0:
+            layout.addWidget(self._v3_frequency_program_group())
+        else:
+            role = QLabel(
+                "AD2 analog channel 1 (LabVIEW Ch2). Independent analog output; physical apparatus "
+                "role unverified. Timing is intentionally not linked to channel 0 or DIO1."
+            )
+            role.setObjectName("v3Channel1RoleNote")
+            role.setWordWrap(True)
+            layout.insertWidget(0, role)
         return page
+
+    def _v3_frequency_program_group(self) -> QGroupBox:
+        group = QGroupBox("Frequency program — channel 0")
+        group.setObjectName("v3FrequencyProgram")
+        layout = QVBoxLayout(group)
+        hierarchy = QLabel(
+            "Hierarchy: base carrier → optional FM sweep within each repeat → optional frequency-scan "
+            "base-carrier override for each repeat."
+        )
+        hierarchy.setObjectName("v3FrequencyProgramHierarchy")
+        hierarchy.setWordWrap(True)
+        layout.addWidget(hierarchy)
+        self._v3_frequency_program_summary = QLabel()
+        self._v3_frequency_program_summary.setObjectName("v3FrequencyProgramSummary")
+        self._v3_frequency_program_summary.setWordWrap(True)
+        layout.addWidget(self._v3_frequency_program_summary)
+
+        modulation = QTabWidget()
+        modulation.setObjectName("v3ModulationTabs")
+        fm_page = QWidget()
+        fm_layout = QVBoxLayout(fm_page)
+        fm_note = QLabel(
+            "Equivalent inputs: Start / Stop ↔ Center / Width. Editing either pair synchronizes the other."
+        )
+        fm_note.setObjectName("v3FmEquivalentInputsNote")
+        fm_note.setWordWrap(True)
+        fm_layout.addWidget(fm_note)
+        fm_sweep = self._experiment_fm_sweep_group()
+        fm_sweep.setTitle("FM sweep within a repeat")
+        fm_layout.addWidget(fm_sweep)
+        scan_page = QWidget()
+        scan_layout = QVBoxLayout(scan_page)
+        scan_note = QLabel(
+            "Alternative inputs: Step Size > 0 derives Number of Frequencies; Step Size = 0 uses "
+            "Number of Frequencies directly."
+        )
+        scan_note.setObjectName("v3ScanAlternativeInputsNote")
+        scan_note.setWordWrap(True)
+        scan_layout.addWidget(scan_note)
+        frequency_scan = self._experiment_frequency_scan_group()
+        frequency_scan.setTitle("Frequency scan across repeats")
+        scan_form = frequency_scan.layout()
+        if not isinstance(scan_form, QFormLayout):
+            raise RuntimeError("V3 expected Frequency scan to use a form layout.")
+        _adapt_form_caption(
+            scan_form,
+            self.exp_freq_scan_step_khz,
+            "Step size (kHz) [0 = Count]",
+            "v3FrequencyScanStepCaption",
+        )
+        scan_layout.addWidget(frequency_scan)
+        modulation.addTab(fm_page, "FM sweep")
+        modulation.addTab(scan_page, "Frequency scan")
+        layout.addWidget(modulation)
+        return group
+
+    def _v3_one_repeat_timing_plan(self) -> QGroupBox:
+        group = QGroupBox("One-repeat AD2 timing plan (requested)")
+        group.setObjectName("v3OneRepeatTimingPlan")
+        grid = QGridLayout(group)
+        for column, text in enumerate(("Output", "Start (s)", "Run (s)", "End (s)", "End delta vs CH0 (s)")):
+            grid.addWidget(QLabel(text), 0, column)
+        self._v3_timing_labels: dict[str, dict[str, QLabel]] = {}
+        rows = (
+            ("ch0", "WFG channel 0"),
+            ("ch1", "WFG channel 1 (role unverified)"),
+            ("dio1", "DIO1 request"),
+        )
+        for row, (key, title) in enumerate(rows, start=1):
+            grid.addWidget(QLabel(title), row, 0)
+            values: dict[str, QLabel] = {}
+            for column, field in enumerate(("start", "run", "end", "delta"), start=1):
+                label = QLabel("—")
+                label.setObjectName(f"v3Timing{key.title()}{field.title()}")
+                grid.addWidget(label, row, column)
+                values[field] = label
+            self._v3_timing_labels[key] = values
+        self._v3_completion_budget = QLabel()
+        self._v3_completion_budget.setObjectName("v3Ad2CompletionBudget")
+        self._v3_completion_budget.setWordWrap(True)
+        grid.addWidget(self._v3_completion_budget, 4, 0, 1, 5)
+        note = QLabel(
+            "End deltas are neutral comparisons, not validation or automatic linking. The completion budget "
+            "uses the same shared finite-window calculation as experiment execution."
+        )
+        note.setWordWrap(True)
+        grid.addWidget(note, 5, 0, 1, 5)
+        return group
+
+    def _v3_flush_summary_group(self) -> QGroupBox:
+        group = QGroupBox("Derived flush plan")
+        group.setObjectName("v3FlushDerivedSummary")
+        form = QFormLayout(group)
+        self._v3_flush_movement = QLabel()
+        self._v3_flush_timeout = QLabel()
+        self._v3_flush_capacity = QLabel()
+        self._v3_flush_fill_margin = QLabel()
+        form.addRow("Requested pump movement", self._v3_flush_movement)
+        form.addRow("Centralized movement timeout", self._v3_flush_timeout)
+        form.addRow("Selected syringe capacity", self._v3_flush_capacity)
+        form.addRow("Tracked fill after dispense", self._v3_flush_fill_margin)
+        return group
 
     @staticmethod
     def _v3_scroll_page(content: QWidget, object_name: str) -> QScrollArea:
@@ -499,8 +624,8 @@ class MainWindowV3(MainWindowV2):
         # breaking construction of this deliberately divergent surface.
         queue_grid, _row, _column = _grid_cell_containing(group, self.queue_count)
         captions = (
-            (0, "Elapsed time (unavailable)", "v3ElapsedTimeCaption"),
-            (1, "Remaining time (unavailable)", "v3RemainingTimeCaption"),
+            (0, "Elapsed time", "v3ElapsedTimeCaption"),
+            (1, "Estimated time remaining", "v3RemainingTimeCaption"),
             (2, "Runs remaining", "v3RunsRemainingCaption"),
         )
         for column, text, object_name in captions:
@@ -520,7 +645,6 @@ class MainWindowV3(MainWindowV2):
         captions = (
             (self.exp_camera_fps, "DIO1 pulse rate (camera FPS)", "v3CameraFrameRateCaption"),
             (self.exp_camera_start, "Fixed DIO1 pulse start delay (s)", "v3CameraStartDelayCaption"),
-            (self.exp_repeats, "Experiment repeats", "v3ExperimentRepeatsCaption"),
             (self.exp_frames, "Frames per repeat", "v3FramesPerRepeatCaption"),
             (self.global_exposure, "Request global exposure reset", "v3GlobalExposureCaption"),
             (
@@ -531,6 +655,22 @@ class MainWindowV3(MainWindowV2):
         )
         for field, text, object_name in captions:
             _adapt_grid_caption(group, field, text, object_name)
+
+        repeats_grid, repeats_row, repeats_column = _grid_cell_containing(group, self.exp_repeats)
+        repeats_item = repeats_grid.itemAtPosition(repeats_row, repeats_column)
+        repeats_container = repeats_item.widget() if repeats_item is not None else None
+        repeats_caption_item = repeats_grid.itemAtPosition(repeats_row, 0)
+        repeats_caption = repeats_caption_item.widget() if repeats_caption_item is not None else None
+        if repeats_container is None or not isinstance(repeats_caption, QLabel):
+            raise RuntimeError("V3 could not move the inherited Repeats field into series controls.")
+        repeats_grid.removeWidget(repeats_container)
+        repeats_grid.removeWidget(repeats_caption)
+        self.exp_repeats.setParent(None)
+        if repeats_container is not self.exp_repeats:
+            repeats_container.deleteLater()
+        repeats_caption.deleteLater()
+        self._v3_repeats_layout.addWidget(self._wrap_with_tooltip_icon(self.exp_repeats))
+
         dynamic_wrapper = self.dynamic_camera_start.parentWidget()
         camera_start_group = dynamic_wrapper.parentWidget() if dynamic_wrapper is not None else None
         if not isinstance(camera_start_group, QGroupBox):
@@ -547,7 +687,170 @@ class MainWindowV3(MainWindowV2):
             "value instead of the fixed delay. The list has 10 slots; its physical alignment with "
             "camera exposure remains bench-unverified."
         )
+        summary = QGroupBox("DIO1 timing request and camera feasibility")
+        summary.setObjectName("v3DioTimingSummary")
+        summary_form = QFormLayout(summary)
+        self._v3_dio_duration = QLabel()
+        self._v3_dio_start_source = QLabel()
+        self._v3_dio_slot_budget = QLabel()
+        self._v3_camera_feasibility = QLabel()
+        self._v3_camera_feasibility.setWordWrap(True)
+        summary_form.addRow("Derived DIO1 run duration", self._v3_dio_duration)
+        summary_form.addRow("Active start source", self._v3_dio_start_source)
+        summary_form.addRow("Per-repeat slot budget", self._v3_dio_slot_budget)
+        summary_form.addRow("Existing run-start check", self._v3_camera_feasibility)
+        acquisition_grid = group.layout()
+        if not isinstance(acquisition_grid, QGridLayout):
+            raise RuntimeError("V3 expected Experiment acquisition to use a grid layout.")
+        acquisition_grid.addWidget(summary, 6, 0, 1, 3)
+        self._v3_sync_uncertainty = QLabel(
+            "Synchronization uncertainty: automated camera trigger is Internal. DIO1-to-exposure timing "
+            "has not been bench verified; this panel shows the requested DIO1 window, not confirmed exposure timing."
+        )
+        self._v3_sync_uncertainty.setObjectName("v3SyncUncertaintyBanner")
+        self._v3_sync_uncertainty.setWordWrap(True)
+        self._v3_sync_uncertainty.setStyleSheet("color: darkorange; font-weight: bold;")
+        acquisition_grid.addWidget(self._v3_sync_uncertainty, 7, 0, 1, 3)
         return group
+
+    def _connect_v3_relationship_refresh(self) -> None:
+        value_widgets = [
+            self.exp_repeats,
+            self.exp_frames,
+            self.exp_camera_fps,
+            self.exp_camera_start,
+            self.exp_freq_scan_count,
+            self.exp_freq_scan_step_khz,
+            self.exp_freq_scan_start_khz,
+            self.exp_freq_scan_stop_khz,
+            self.exp_flush_flowrate,
+            self.exp_flush_volume,
+            self.exp_wait_after_flush,
+            self.custom_syringe_volume_ml,
+            *self.camera_start_array,
+        ]
+        for state in self.exp_ad2_channels:
+            value_widgets.extend((state["sec_wait"], state["sec_run"]))
+        for widget in value_widgets:
+            widget.valueChanged.connect(self._refresh_v3_relationships)
+        for checkbox in (
+            self.dynamic_camera_start,
+            self.exp_freq_scan_enable,
+            self.exp_sweep_enable,
+            self.exp_flush_enabled,
+            *(state["enable"] for state in self.exp_ad2_channels),
+        ):
+            checkbox.toggled.connect(self._refresh_v3_relationships)
+        self.syringe.currentTextChanged.connect(self._refresh_v3_relationships)
+
+    @staticmethod
+    def _v3_seconds(value: float) -> str:
+        return f"{value:.3f}"
+
+    def _refresh_v3_relationships(self, _value=None) -> None:
+        if not hasattr(self, "_v3_timing_labels"):
+            return
+        try:
+            wfg = self._experiment_wfg_config()
+            do_config = self._experiment_do_clock_config(0)
+            rows = {
+                "ch0": (
+                    bool(wfg.running and wfg.channels[0].carrier.enable),
+                    float(wfg.channels[0].trigger.sec_wait),
+                    float(wfg.channels[0].trigger.sec_run),
+                ),
+                "ch1": (
+                    bool(wfg.running and wfg.channels[1].carrier.enable),
+                    float(wfg.channels[1].trigger.sec_wait),
+                    float(wfg.channels[1].trigger.sec_run),
+                ),
+                "dio1": (
+                    bool(do_config.running and do_config.channels[0].enable),
+                    float(do_config.channels[0].trigger.sec_wait),
+                    float(do_config.channels[0].trigger.sec_run),
+                ),
+            }
+            ch0_end = rows["ch0"][1] + rows["ch0"][2]
+            for key, (enabled, start, run) in rows.items():
+                end = start + run
+                values = self._v3_timing_labels[key]
+                values["start"].setText(self._v3_seconds(start))
+                values["run"].setText(self._v3_seconds(run))
+                values["end"].setText(self._v3_seconds(end))
+                values["delta"].setText(self._v3_seconds(end - ch0_end))
+                for label in values.values():
+                    label.setEnabled(enabled)
+            preview = Experiment2(wfg_config=wfg, do_clock_settings=do_config)
+            completion = self.app._ad2_completion_wait_seconds(preview)
+            self._v3_completion_budget.setText(
+                f"Shared AD2 completion budget: {completion:.3f} s (maximum enabled analog/digital end)."
+            )
+        except (IndexError, TypeError, ValueError) as exc:
+            self._v3_completion_budget.setText(f"Shared AD2 completion budget unavailable: {exc}")
+
+        repeats = self.exp_repeats.value()
+        scan_count = len(self._experiment_frequency_scan_list_hz())
+        scan_text = (
+            f"frequency scan {scan_count}/{repeats} repeats"
+            if self.exp_freq_scan_enable.isChecked()
+            else "frequency scan off"
+        )
+        dynamic_text = (
+            f"DIO1 start slots {min(repeats, len(self.camera_start_array))}/{repeats}"
+            if self.dynamic_camera_start.isChecked()
+            else "fixed DIO1 start"
+        )
+        self._v3_series_relationship_summary.setText(f"Relationship checks: {scan_text}; {dynamic_text}.")
+
+        fm = self.exp_sweep_enable.isChecked()
+        scan = self.exp_freq_scan_enable.isChecked()
+        if fm and scan:
+            program = "Scan selects each repeat's base carrier; FM sweep remains active within that repeat."
+        elif fm:
+            program = "FM sweep active within each repeat; frequency scan off."
+        elif scan:
+            program = "Frequency scan overrides the base carrier once per repeat; FM sweep off."
+        else:
+            program = "Static base carrier only."
+        self._v3_frequency_program_summary.setText(f"Active program: {program}")
+
+        dynamic = self.dynamic_camera_start.isChecked()
+        self.exp_camera_start.setEnabled(not dynamic)
+        for widget in self.camera_start_array:
+            widget.setEnabled(dynamic)
+        try:
+            do_config = self._experiment_do_clock_config(0)
+            trigger = do_config.channels[0].trigger
+            self._v3_dio_duration.setText(
+                f"{trigger.sec_run:.3f} s = {self.exp_frames.value()} frames / {self.exp_camera_fps.value():.3f} fps"
+            )
+            source = "per-repeat slot 1" if dynamic else "fixed DIO1 start"
+            self._v3_dio_start_source.setText(f"{source}: {trigger.sec_wait:.3f} s")
+        except (IndexError, ValueError) as exc:
+            self._v3_dio_duration.setText(f"Unavailable: {exc}")
+            self._v3_dio_start_source.setText("Unavailable")
+        if dynamic:
+            slots = len(self.camera_start_array)
+            suffix = "available" if repeats <= slots else "insufficient — run will reject beyond slot 10"
+            self._v3_dio_slot_budget.setText(f"{min(repeats, slots)}/{repeats} repeats; {slots} slots {suffix}")
+        else:
+            self._v3_dio_slot_budget.setText("Not used; fixed start applies to every repeat")
+        self._v3_camera_feasibility.setText(
+            "Application._check_camera_timing_budget() validates requested FPS against applied exposure plus "
+            "live DCAM readout at run start. Preview unavailable without querying hardware."
+        )
+
+        settings = self._flush_settings(experiment=True)
+        movement_s = max(settings.timeout_s - 5.0, 0.0) if settings.flush_flowrate > 0 else 0.0
+        self._v3_flush_movement.setText(f"{movement_s:.3f} s")
+        self._v3_flush_timeout.setText(f"{settings.timeout_s:.3f} s (movement + 5.000 s margin)")
+        capacity_status = "within capacity" if settings.flush_volume_ml <= settings.syringe_volume_ml else "exceeds capacity"
+        self._v3_flush_capacity.setText(f"{settings.syringe_volume_ml:.3f} ml; {capacity_status}")
+        tracked_fill = float(self.app.pump.fill_level)
+        remaining = tracked_fill - settings.flush_volume_ml
+        self._v3_flush_fill_margin.setText(
+            f"{remaining:.3f} ml = tracked {tracked_fill:.3f} ml − requested {settings.flush_volume_ml:.3f} ml"
+        )
 
     def _v2_waveform_group(self) -> QGroupBox:
         group = super()._v2_waveform_group()
@@ -571,6 +874,8 @@ class MainWindowV3(MainWindowV2):
 
     def _refresh_status(self) -> None:
         super()._refresh_status()
+        if hasattr(self, "_v3_timing_labels"):
+            self._refresh_v3_relationships()
         if hasattr(self, "connection_button"):
             # In v2 this action's text is derived from app.status being exactly
             # "System Initialized". Any later successful action changes that

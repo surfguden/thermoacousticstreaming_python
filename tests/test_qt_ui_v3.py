@@ -77,24 +77,26 @@ def test_v3_reuses_the_supplied_application_and_places_status_first(monkeypatch,
         assert window._v3_connection_values["Valve"].text() == window.valve_connection_status.text()
         labels = {label.text() for label in window.findChildren(QLabel)}
         assert {
-            "Elapsed time (unavailable)",
-            "Remaining time (unavailable)",
+            "Elapsed time",
+            "Estimated time remaining",
             "Runs remaining",
             "Status and error history",
             "DIO1 pulse rate (camera FPS)",
             "Fixed DIO1 pulse start delay (s)",
-            "Experiment repeats",
+            "Series repeats",
             "Frames per repeat",
             "Request global exposure reset",
             "Use per-repeat DIO1 pulse delays",
             "Measured camera rate (fps)",
         } <= labels
-        assert window.findChild(QLabel, "v3ElapsedTimeCaption").text() == "Elapsed time (unavailable)"
+        assert window.findChild(QLabel, "v3ElapsedTimeCaption").text() == "Elapsed time"
         assert window.findChild(QLabel, "v3CameraFrameRateCaption").text() == "DIO1 pulse rate (camera FPS)"
         assert window.findChild(QLabel, "v3StatusHistoryCaption").text() == "Status and error history"
         assert {
             "Elapsed Time",
             "Time Left",
+            "Elapsed time (unavailable)",
+            "Remaining time (unavailable)",
             "# elements in queue",
             "Error Out",
             "Camera FPS",
@@ -109,6 +111,11 @@ def test_v3_reuses_the_supplied_application_and_places_status_first(monkeypatch,
         assert "bench-unverified" in window.dynamic_camera_start.toolTip()
         assert "unchanged" in window.global_exposure.toolTip()
         assert "unresolved" in window.global_exposure.toolTip()
+        acquisition = next(
+            group for group in window.findChildren(QGroupBox) if group.title() == "Experiment acquisition"
+        )
+        assert run_control.isAncestorOf(window.exp_repeats)
+        assert not acquisition.isAncestorOf(window.exp_repeats)
         button_texts = {button.text() for button in window.findChildren(QPushButton)}
         assert "Browse..." in button_texts
         assert "..." not in button_texts
@@ -133,8 +140,8 @@ def test_v3_field_bound_adapters_survive_inherited_caption_changes(monkeypatch, 
     def status_with_changed_captions(self):
         group = original_status_builder(self)
         inherited = {
-            "Elapsed Time (unavailable)",
-            "Time Left (unavailable)",
+            "Elapsed Time",
+            "Estimated time remaining",
             "# elements in queue",
         }
         for label in group.findChildren(QLabel):
@@ -165,7 +172,7 @@ def test_v3_field_bound_adapters_survive_inherited_caption_changes(monkeypatch, 
 
     window = make_window(monkeypatch, tmp_path)
     try:
-        assert window.findChild(QLabel, "v3ElapsedTimeCaption").text() == "Elapsed time (unavailable)"
+        assert window.findChild(QLabel, "v3ElapsedTimeCaption").text() == "Elapsed time"
         assert window.findChild(QLabel, "v3CameraFrameRateCaption").text() == "DIO1 pulse rate (camera FPS)"
         assert window.findChild(QLabel, "v3DynamicCameraStartCaption").text() == (
             "Use per-repeat DIO1 pulse delays"
@@ -188,7 +195,10 @@ def test_v3_main_ad2_settings_use_channel_tabs_without_horizontal_overflow(monke
         assert group is not None
         assert channels is not None
         assert scroll is not None
-        assert [channels.tabText(index) for index in range(channels.count())] == ["Channel 0", "Channel 1"]
+        assert [channels.tabText(index) for index in range(channels.count())] == [
+            "Channel 0",
+            "Channel 1 — role unverified",
+        ]
         assert window.exp_ch1_freq in channels.findChildren(type(window.exp_ch1_freq))
         assert window.exp_ch2_freq in channels.findChildren(type(window.exp_ch2_freq))
         labels = {label.text() for label in group.findChildren(QLabel)}
@@ -202,8 +212,11 @@ def test_v3_main_ad2_settings_use_channel_tabs_without_horizontal_overflow(monke
         assert {"Enable", "Function", "Start (s)", "Repeat count", "Repeat trigger"}.isdisjoint(labels)
         modulation = window.findChild(QTabWidget, "v3ModulationTabs")
         assert modulation is not None
+        frequency_program = window.findChild(QGroupBox, "v3FrequencyProgram")
+        assert frequency_program is not None
+        assert channels.widget(0).isAncestorOf(frequency_program)
         modulation_titles = {group.title() for group in modulation.findChildren(QGroupBox)}
-        assert {"FM sweep (channel 0 only)", "Frequency scan (channel 0 only)"} <= modulation_titles
+        assert {"FM sweep within a repeat", "Frequency scan across repeats"} <= modulation_titles
         assert all("Ch1 only" not in title for title in modulation_titles)
         modulation_labels = {label.text() for label in modulation.findChildren(QLabel)}
         assert {
@@ -212,8 +225,23 @@ def test_v3_main_ad2_settings_use_channel_tabs_without_horizontal_overflow(monke
             "Sweep Center Frequency (kHz)",
             "Sweep Width (kHz)",
             "Number of Frequencies",
-            "Step Size (kHz) (0 = use Number of Frequencies)",
+            "Step size (kHz) [0 = Count]",
         } <= modulation_labels
+        assert "Equivalent inputs: Start / Stop ↔ Center / Width" in window.findChild(
+            QLabel, "v3FmEquivalentInputsNote"
+        ).text()
+        assert "Step Size > 0 derives Number of Frequencies" in window.findChild(
+            QLabel, "v3ScanAlternativeInputsNote"
+        ).text()
+        channel1_note = window.findChild(QLabel, "v3Channel1RoleNote")
+        assert "Independent analog output" in channel1_note.text()
+        assert "role unverified" in channel1_note.text()
+        assert "camera" not in channel1_note.text().lower()
+        window.exp_sweep_enable.setChecked(True)
+        window.exp_freq_scan_enable.setChecked(True)
+        assert "Scan selects each repeat's base carrier" in window.findChild(
+            QLabel, "v3FrequencyProgramSummary"
+        ).text()
         assert scroll.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         assert scroll.horizontalScrollBar().maximum() == 0
     finally:
@@ -232,6 +260,84 @@ def test_v3_preserves_v2_flush_sequence_safety_context(monkeypatch, tmp_path):
         assert "position 2" in tooltip
         assert "idle" in tooltip
         assert "sequential" in tooltip
+        summary = window.findChild(QGroupBox, "v3FlushDerivedSummary")
+        assert summary is not None
+        window.syringe.setCurrentText("BD 1ml")
+        window.app.pump.fill_level = 0.75
+        window.exp_flush_flowrate.setValue(200.0)
+        window.exp_flush_volume.setValue(0.05)
+        assert window._v3_flush_movement.text() == "15.000 s"
+        assert window._v3_flush_timeout.text().startswith("20.000 s")
+        assert window._v3_flush_capacity.text() == "1.000 ml; within capacity"
+        assert window._v3_flush_fill_margin.text().startswith("0.700 ml")
+    finally:
+        window.close()
+
+
+def test_v3_inherits_live_timing_for_ordinary_and_tec_series(monkeypatch, tmp_path):
+    clock = {"now": 100.0}
+    monkeypatch.setattr(qt_ui.time, "monotonic", lambda: clock["now"])
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        assert window._refresh_series_timing.__func__ is qt_ui.MainWindow._refresh_series_timing
+        assert window._handle_worker_progress.__func__ is qt_ui_v2.MainWindowV2._handle_worker_progress
+        assert window._run_experiment_series.__func__ is qt_ui.MainWindow._run_experiment_series
+        assert window._run_temperature_experiment_series.__func__ is qt_ui.MainWindow._run_temperature_experiment_series
+        window._handle_worker_progress(
+            "series_timing_started",
+            {"started_at": 100.0, "programmed_remaining_s": 30.0},
+        )
+        window._handle_worker_progress("experiment_series_active", True)
+        clock["now"] = 107.2
+        window._refresh_series_timing()
+        assert window.elapsed_time_label.text() == "00:00:07"
+        assert window.time_left_label.text() == "00:00:23"
+        assert window.findChild(QLabel, "v3ElapsedTimeCaption").text() == "Elapsed time"
+        assert window.findChild(QLabel, "v3RemainingTimeCaption").text() == "Estimated time remaining"
+    finally:
+        window._handle_worker_progress("experiment_series_active", False)
+        window.close()
+
+
+def test_v3_relationship_panels_use_shared_requested_timing_builders(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        ch0, ch1 = window.exp_ad2_channels
+        ch0["enable"].setChecked(True)
+        ch0["sec_wait"].setValue(1.0)
+        ch0["sec_run"].setValue(4.0)
+        ch1["enable"].setChecked(True)
+        ch1["sec_wait"].setValue(2.0)
+        ch1["sec_run"].setValue(5.0)
+        ch1_before = (ch1["sec_wait"].value(), ch1["sec_run"].value())
+        ch0["sec_wait"].setValue(1.5)
+        ch0["sec_wait"].setValue(1.0)
+        assert (ch1["sec_wait"].value(), ch1["sec_run"].value()) == ch1_before
+        window.exp_camera_fps.setValue(10.0)
+        window.exp_frames.setValue(30)
+        window.exp_camera_start.setValue(0.5)
+
+        assert window.findChild(QGroupBox, "v3OneRepeatTimingPlan") is not None
+        assert window.findChild(QLabel, "v3TimingCh0End").text() == "5.000"
+        assert window.findChild(QLabel, "v3TimingCh1End").text() == "7.000"
+        assert window.findChild(QLabel, "v3TimingCh1Delta").text() == "2.000"
+        assert window.findChild(QLabel, "v3TimingDio1Run").text() == "3.000"
+        assert window.findChild(QLabel, "v3TimingDio1Delta").text() == "-1.500"
+        assert window.findChild(QLabel, "v3Ad2CompletionBudget").text().startswith(
+            "Shared AD2 completion budget: 7.000 s"
+        )
+
+        window.exp_repeats.setValue(11)
+        window.dynamic_camera_start.setChecked(True)
+        assert not window.exp_camera_start.isEnabled()
+        assert all(widget.isEnabled() for widget in window.camera_start_array)
+        assert "per-repeat slot 1" in window._v3_dio_start_source.text()
+        assert "10/11 repeats" in window._v3_dio_slot_budget.text()
+        assert "run will reject" in window._v3_dio_slot_budget.text()
+        assert "live DCAM readout" in window._v3_camera_feasibility.text()
+        uncertainty = window.findChild(QLabel, "v3SyncUncertaintyBanner")
+        assert "camera trigger is Internal" in uncertainty.text()
+        assert "not been bench verified" in uncertainty.text()
     finally:
         window.close()
 
