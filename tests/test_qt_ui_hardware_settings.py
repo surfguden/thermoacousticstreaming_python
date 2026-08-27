@@ -12,10 +12,10 @@ import numpy as np
 import pytest
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QWheelEvent
-from PySide6.QtWidgets import QAbstractSpinBox, QCheckBox, QComboBox, QDoubleSpinBox, QGroupBox, QLabel, QLineEdit, QPushButton, QScrollArea, QSpinBox
+from PySide6.QtWidgets import QAbstractSpinBox, QCheckBox, QComboBox, QDoubleSpinBox, QGroupBox, QLabel, QLineEdit, QMainWindow, QPushButton, QScrollArea, QSpinBox, QWidget
 from PySide6.QtWidgets import QApplication
 
-from thermo_acoustic import qt_ui
+from thermo_acoustic import qt_ui, qt_ui_v2, qt_ui_v3
 from thermo_acoustic.ad2 import WfgChannelConfig, WfgConfig
 from thermo_acoustic.camera import SubRegion
 from thermo_acoustic.hardware_config import ZStageBackend, default_hardware_config
@@ -32,6 +32,48 @@ def make_window(monkeypatch, tmp_path, settings: dict | None = None) -> qt_ui.Ma
     monkeypatch.setattr(qt_ui, "SETTINGS_PATH", settings_path)
     QApplication.instance() or QApplication([])
     return build_with_retry(qt_ui.MainWindow)
+
+
+def test_build_state_is_one_shared_widget_contract_across_all_ui_surfaces():
+    assert "_build_state" not in qt_ui_v2.MainWindowV2.__dict__
+    assert "_build_state" not in qt_ui_v3.MainWindowV3.__dict__
+    assert qt_ui_v2.MainWindowV2._build_state is qt_ui.MainWindow._build_state
+    assert qt_ui_v3.MainWindowV3._build_state is qt_ui.MainWindow._build_state
+
+    QApplication.instance() or QApplication([])
+
+    snapshots: dict[type, tuple[frozenset[str], frozenset[str]]] = {}
+
+    def contains_widget(value) -> bool:
+        if isinstance(value, QWidget):
+            return True
+        if isinstance(value, dict):
+            return any(contains_widget(item) for item in value.values())
+        if isinstance(value, (list, tuple)):
+            return any(contains_widget(item) for item in value)
+        return False
+
+    state_holders = []
+    for window_class in (qt_ui.MainWindow, qt_ui_v2.MainWindowV2, qt_ui_v3.MainWindowV3):
+        # Exercise the inherited method on each real subclass type without
+        # constructing any layout. Full v2/v3 layouts re-parent these shared
+        # widgets and are intentionally outside this state-contract test.
+        holder = window_class.__new__(window_class)
+        QMainWindow.__init__(holder)
+        before = set(holder.__dict__)
+        holder._build_state()
+        added = frozenset(set(holder.__dict__) - before)
+        widget_attributes = frozenset(
+            name for name in added if contains_widget(holder.__dict__[name])
+        )
+        snapshots[window_class] = (added, widget_attributes)
+        state_holders.append(holder)
+
+    expected_attributes, expected_widget_attributes = snapshots[qt_ui.MainWindow]
+    assert len(expected_widget_attributes) > 100, "sanity check: capture the real shared widget state"
+    for window_class in (qt_ui_v2.MainWindowV2, qt_ui_v3.MainWindowV3):
+        assert snapshots[window_class][0] == expected_attributes
+        assert snapshots[window_class][1] == expected_widget_attributes
 
 
 def combo_items(widget) -> list[str]:

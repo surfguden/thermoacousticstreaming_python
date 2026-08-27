@@ -65,9 +65,9 @@ historical notes. This document is a live issue register, whereas
   emergency hardware stop.** It sets the shared stop flag and prevents the next
   repeat (or next TEC temperature point) from starting; the current unit runs
   through capture, AD2 wait, flush, and save. The v1 button and inherited
-  v2/v3 menu action use the same callback. V3's primary run group has no
-  prominent Abort button, so its access is menu-only, although its behavior is
-  unchanged.
+  v2/v3 menu action use the same callback. Since `2c0ffc6`, v3 also exposes the
+  same callback as a prominent `Request graceful stop` run-control button; this
+  changes presentation, not the safe-boundary semantics.
   **Status:
   RESOLVED for wording; OPEN if a separate emergency-stop policy is desired.**
 - **`qt_ui_v2.py` is an actively maintained transitional UI, not legacy or a
@@ -139,12 +139,24 @@ historical notes. This document is a live issue register, whereas
   hardware. Shared safety behavior is inherited: Abort remains a
   repeat-boundary request, Z-scan uses live `MaxTravel` bounds and motion
   confirmations, and normal pump initialization uses the owner-approved Qmix
-  auto-clear followed by the final fault gate. Two presentation divergences
-  remain: experiment Abort is available from the menu rather than a prominent
-  run-control button, and v3's rebuilt Pump & Valve panel omits v1/v2's
-  separate manual Qmix fault-recovery action. **Status: ACCEPTED AND
-  TRACKED; OPEN for independent evaluation and the two explicit UI
-  divergences.**
+  auto-clear followed by the final fault gate. Commit `2c0ffc6` closed the two
+  previously recorded capability gaps by adding a prominent v3 graceful-stop
+  control and a v3 presentation of the shared manual Qmix recovery action.
+  **Status: ACCEPTED AND TRACKED; OPEN for independent real-hardware
+  evaluation.**
+
+- **V3 tab-builder propagation gap.** `MainWindowV3._pump_tab()`,
+  `_camera_tab()`, and `_zscan_tab()` replace the v1/v2 base builders without
+  calling `super()`. A future safety or operator-control addition to those
+  base builders therefore does not reach v3 automatically; the missing manual
+  Qmix recovery control before `2c0ffc6` is the concrete prior incident. V3
+  also owns `_mso_tab()` and `_wfg_channel_group()` overrides, but those two do
+  call `super()` and adapt the inherited result, so they are not the same
+  no-super omission pattern. They can still require coordinated v3 updates if
+  the inherited structure or adaptation contract changes. **Status: OPEN
+  structural review risk; every future change to these v1 builders must be
+  cross-checked with the v3 owner. Do not assume inheritance alone propagates
+  it.**
 
 - **Known intermittent PySide/Shiboken widget-lifetime failures in v2/v3 UI
   tests.**
@@ -165,7 +177,14 @@ historical notes. This document is a live issue register, whereas
   isolated cross-commit invocations and the acceptance pass's full v3 module
   run, suggesting suite-order sensitivity. All three tests carry a non-behavioral
   `known_flaky` marker: it does not retry, skip, xfail, or otherwise hide a
-  future failure. **Status: OPEN; root cause unidentified.**
+  future failure. Two independent investigation passes have also observed the
+  complete unfiltered suite occasionally stop making progress without a crash
+  or reported failure, at roughly one in five to one in ten runs. The hang form
+  is suspected to share the same offscreen-Qt/Shiboken cause, but that has not
+  been proven. Future full-suite runs should therefore use an explicit elapsed
+  timeout and terminate the stuck pytest process instead of treating silence as
+  useful progress. **Status: OPEN; root cause unidentified for both the
+  lifetime exceptions and intermittent hang.**
 
 - **v1/v2-to-v3 process and object isolation boundary (Session 102
   investigation, 2026-08-06).** Established what v3 can and cannot safely do

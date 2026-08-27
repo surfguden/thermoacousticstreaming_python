@@ -7784,6 +7784,15 @@ possible sign something else is actively using the AD2 right now, but not
 a code regression from this task. **Effective: 534 passed, 0 new
 regressions.**
 
+**Correction (2026-08-27):** the environment-only classification above was
+wrong. This test omitted the fake-AD2 fixture used by its neighboring workflow
+tests, so its default `Application()` legitimately tried to open physical AD2
+hardware. The same isolation defect was present in
+`test_run_experiment2_records_pump_fault_manually_cleared_flag_in_final_tdms`.
+Both tests now pass `ad2=SimulatedAD2Sdk()` explicitly. These two test names
+must no longer be counted as expected AD2 `Devices are busy` environment
+failures; the production AD2 behavior was not changed.
+
 **Not committed** -- pending review, per standing instruction.
 
 ---

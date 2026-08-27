@@ -878,7 +878,7 @@ def test_run_experiment2_records_pump_fault_manually_cleared_flag_in_final_tdms(
     # sim_*/*_enabled flags above, so a run whose pump fault was manually
     # cleared this session stays traceable in saved data after the fact.
     writes = install_fake_nptdms(monkeypatch)
-    app = Application()
+    app = Application(ad2=SimulatedAD2Sdk())
     app.pump_fault_manually_cleared_this_session = True
     experiment = Experiment2(experiment_folder=tmp_path / "experiment-pump-fault-cleared")
     app.experiment_series.enqueue_experiments([experiment])
@@ -924,7 +924,10 @@ def test_run_experiment2_skips_disabled_ad2_steps_without_touching_backend(tmp_p
 
 def test_run_experiment2_skips_disabled_camera_steps_without_touching_backend(tmp_path, monkeypatch):
     writes = install_fake_nptdms(monkeypatch)
-    app = Application(camera=HamamatsuCamera(enabled=False, simulate=False, backend=_PoisonBackend()))
+    app = Application(
+        ad2=SimulatedAD2Sdk(),
+        camera=HamamatsuCamera(enabled=False, simulate=False, backend=_PoisonBackend()),
+    )
     experiment = Experiment2(experiment_folder=tmp_path / "experiment-camera-disabled")
     app.experiment_series.enqueue_experiments([experiment])
 

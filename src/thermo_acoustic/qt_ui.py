@@ -729,6 +729,7 @@ class MainWindow(QMainWindow):
         self._refresh_status()
 
     def _build_state(self) -> None:
+        """Build shared widget state inherited unchanged by the v2 and v3 surfaces."""
         hardware_defaults = default_hardware_config()
         # Enable/Simulate pairing (Session 40, Category B): traced
         # hardware_factory.build_hardware_bundle() -- each instrument's own
@@ -1680,6 +1681,7 @@ class MainWindow(QMainWindow):
         return state
 
     def _build_layout(self) -> None:
+        """Build the v1-specific presentation; v2 and v3 replace this wholesale."""
         root = QWidget()
         self.setCentralWidget(root)
         layout = QVBoxLayout(root)
@@ -1977,6 +1979,7 @@ class MainWindow(QMainWindow):
         return tab
 
     def _wfg_channel_group(self, title: str, state: dict[str, object]) -> QGroupBox:
+        """Build the v1/v2 WFG group; v3 calls this base then adapts its result."""
         # Live-use labeling: the Experiment tab seeds its own separate CH0/CH1
         # widgets from these ONCE (on first tab switch) and is independent of
         # this tab after that -- confirmed by tracing _experiment_channel_config()
@@ -2186,6 +2189,7 @@ class MainWindow(QMainWindow):
         )
 
     def _mso_tab(self) -> QWidget:
+        """Build the v1/v2 MSO tab; v3 calls this base then repackages its groups."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
         # v3 design-idea adoption, Proposal C (2026-08-05): one-line
@@ -2250,6 +2254,7 @@ class MainWindow(QMainWindow):
         return tab
 
     def _pump_tab(self) -> QWidget:
+        """Build the shared v1/v2 pump tab; v3 replaces it without calling this base."""
         # Restructured from a sparse QGridLayout with individual widgets
         # scattered at hand-picked row/col coordinates (which left large,
         # uneven dead-space regions -- rows/columns with nothing in them --
@@ -2485,6 +2490,7 @@ class MainWindow(QMainWindow):
         return group
 
     def _camera_tab(self) -> QWidget:
+        """Build the shared v1/v2 camera tab; v3 replaces it without calling this base."""
         tab = QWidget()
         grid = QGridLayout(tab)
         grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
@@ -2703,6 +2709,7 @@ class MainWindow(QMainWindow):
     # --- Z-scan calibration tab (Phase 4) ---
 
     def _zscan_tab(self) -> QWidget:
+        """Build the shared v1/v2 Z-scan tab; v3 replaces it without calling this base."""
         tab = QWidget()
         grid = QGridLayout(tab)
         grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
