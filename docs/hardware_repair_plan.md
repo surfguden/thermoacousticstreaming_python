@@ -57,9 +57,15 @@ session claims are not independently verified unless stated otherwise below.
 4. The v1/v2 manual recovery button remains for a fault occurring after
    initialization or an operator-requested fresh reconnect; it is not needed
    for routine initialization and still records the manual action in
-   status/data.tdms. The formally accepted v3 UI currently omits this separate
-   control; that presentation divergence is documented in
-   `docs/known_open_items.md` and is not repaired by this plan.
+   status/data.tdms. The formally accepted v3 UI omitted this separate control
+   when it was first tracked; commit `2c0ffc6` closed that gap by adding a v3
+   presentation of the same shared manual Qmix recovery action, so all three
+   surfaces now expose it. V3 reaches it through the shared, confirmation-gated
+   `_start_clear_pump_fault()` path rather than any v3-specific hardware route.
+   The presentation still differs — v1/v2 place the control in their Pump&Valve
+   tab, v3 in a "Recovery" sub-tab of its Pump & Valve manual panel — and that
+   remaining divergence is recorded in `docs/known_open_items.md`. Neither the
+   original gap nor its closure is repaired or validated by this plan.
 
 ## TEC / MeCom
 

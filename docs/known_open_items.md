@@ -146,17 +146,33 @@ historical notes. This document is a live issue register, whereas
   evaluation.**
 
 - **V3 tab-builder propagation gap.** `MainWindowV3._pump_tab()`,
-  `_camera_tab()`, and `_zscan_tab()` replace the v1/v2 base builders without
-  calling `super()`. A future safety or operator-control addition to those
-  base builders therefore does not reach v3 automatically; the missing manual
-  Qmix recovery control before `2c0ffc6` is the concrete prior incident. V3
-  also owns `_mso_tab()` and `_wfg_channel_group()` overrides, but those two do
-  call `super()` and adapt the inherited result, so they are not the same
-  no-super omission pattern. They can still require coordinated v3 updates if
-  the inherited structure or adaptation contract changes. **Status: OPEN
-  structural review risk; every future change to these v1 builders must be
-  cross-checked with the v3 owner. Do not assume inheritance alone propagates
-  it.**
+  `_camera_tab()`, `_zscan_tab()`, and `_zscan_control_group()` replace the
+  v1/v2 base builders without calling `super()`. A future safety or
+  operator-control addition to those base builders therefore does not reach v3
+  automatically; the missing manual Qmix recovery control before `2c0ffc6` is
+  the concrete prior incident. V3 also owns `_mso_tab()` and
+  `_wfg_channel_group()` overrides, but those two do call `super()` and adapt
+  the inherited result, so they are not the same no-super omission pattern.
+  They can still require coordinated v3 updates if the inherited structure or
+  adaptation contract changes. **Status: OPEN structural review risk; every
+  future change to these v1 builders must be cross-checked with the v3 owner.
+  Do not assume inheritance alone propagates it.**
+
+  Correction (2026-08-27 audit): `_zscan_control_group()` was missing from the
+  original list, which named only the first three. It is a fourth v1 method
+  (`qt_ui.py:2754`) that v3 overrides at `qt_ui_v3.py:1392` without `super()`,
+  and it is live — v3's own `_zscan_tab()` calls it at `qt_ui_v3.py:1423`. The
+  complete no-super set was re-derived by AST inspection of every
+  `MainWindowV3` method that shadows a `MainWindow` method: `_build_layout`
+  (intentional, whole-surface replacement), plus the four panel builders
+  `_pump_tab`, `_camera_tab`, `_zscan_tab`, and `_zscan_control_group`.
+  `_zscan_control_group()` was also the only one of those four carrying no
+  boundary docstring: the seven added in `60d8b8c` cover `_build_state`,
+  `_build_layout`, `_wfg_channel_group`, `_mso_tab`, `_pump_tab`,
+  `_camera_tab`, and `_zscan_tab` only. Commit `3898e93` closed that gap from
+  the v3 side, documenting the no-super boundary on the override itself at
+  `qt_ui_v3.py:1392` rather than on the v1 base method; `qt_ui.py`'s own
+  `_zscan_control_group()` still has no counterpart docstring.
 
 - **Known intermittent PySide/Shiboken widget-lifetime failures in v2/v3 UI
   tests.**
@@ -175,16 +191,101 @@ historical notes. This document is a live issue register, whereas
   `tests/test_qt_ui_v3.py::test_v3_dialogs_open_at_usable_sizes_without_full_path_width`
   has exhibited the same signature in a full-suite run but passed all six
   isolated cross-commit invocations and the acceptance pass's full v3 module
-  run, suggesting suite-order sensitivity. All three tests carry a non-behavioral
-  `known_flaky` marker: it does not retry, skip, xfail, or otherwise hide a
-  future failure. Two independent investigation passes have also observed the
-  complete unfiltered suite occasionally stop making progress without a crash
+  run, suggesting suite-order sensitivity.
+  `tests/test_qt_ui_v2.py::test_v2_experiment_setup_tabs_has_four_task_oriented_tabs`
+  was added to this family by the 2026-08-27 audit: it produces the identical
+  `RuntimeError: Internal C++ object ... already deleted` signature (raised at
+  `qt_ui_v2.py:784` and in `closeEvent` at `qt_ui.py:4854`), and failed 2 of 3
+  hang-protected full-suite runs at `60d8b8c`. An earlier 40-run isolated
+  measurement had already recorded it failing intermittently at both `2c0ffc6`
+  and `085c06a` (4 of 40 isolated `test_qt_ui_v2.py` runs across the two
+  commits), so it too predates the changes it appears alongside. It was
+  unmarked until this entry was written. These four tests carry a
+  non-behavioral `known_flaky` marker: it does not retry, skip, xfail, or
+  otherwise hide a future failure. **They are the currently-marked instances of
+  an open-ended PySide/Shiboken object-lifetime family, not a complete set.**
+  The family is not fully enumerated, and new members may surface on any given
+  run; a failure with this signature in an unmarked test is therefore not by
+  itself evidence of a new regression. See the dedicated family entry below for
+  the full list of members observed so far and for why marking each one
+  individually is not the closure path. Two independent investigation passes
+  have also observed the complete unfiltered suite occasionally stop making
+  progress without a crash
   or reported failure, at roughly one in five to one in ten runs. The hang form
   is suspected to share the same offscreen-Qt/Shiboken cause, but that has not
   been proven. Future full-suite runs should therefore use an explicit elapsed
   timeout and terminate the stuck pytest process instead of treating silence as
   useful progress. **Status: OPEN; root cause unidentified for both the
   lifetime exceptions and intermittent hang.**
+
+- **Open-ended PySide/Shiboken object-lifetime failure family (2026-08-27).**
+  The entry above records the four tests that carry the `known_flaky` marker.
+  This entry records the family itself, which is larger than those four and is
+  not fully enumerated.
+
+  *Signature.* `RuntimeError: Internal C++ object (PySide6.QtWidgets.<Widget>)
+  already deleted`, where `<Widget>` varies run to run (`QCheckBox`,
+  `QSpinBox`, `QDoubleSpinBox`, `QComboBox`, `QLineEdit` all observed). It is
+  raised either directly in a widget-walking helper such as
+  `qt_ui_v2.py:784`, or as `RuntimeError: Error calling Python override of
+  QMainWindow::closeEvent()` when `closeEvent` reaches `_settings_dict()` in
+  `qt_ui.py` and touches an already-deleted child. A second form,
+  `SystemError: <class 'PySide6.QtWidgets.Xxx'> returned NULL without setting
+  an exception`, appears during widget construction and is treated as the same
+  family (`conftest.build_with_retry()` exists specifically for it).
+
+  *Members observed so far.* Pooled across every measurement in the 2026-08-26
+  and 2026-08-27 sessions (isolated repeats, ordered full-suite runs, and
+  cross-commit comparisons at `c5665b3`, `bcd1634`, `2c0ffc6`, `085c06a`, and
+  `60d8b8c`):
+
+  - `tests/test_qt_ui_v2.py` — `test_v2_experiment_setup_tabs_has_four_task_oriented_tabs`,
+    `test_v2_flush_group_tooltip_explains_the_real_sequential_valve_pump_relationship`,
+    `test_v2_experiment_setup_tabs_embeds_the_real_shared_group_widgets`,
+    `test_v2_experiment_setup_tabs_have_inline_safety_caveats`,
+    `test_v2_configuration_column_places_run_control_above_setup_tabs`,
+    `test_wheel_guard_completeness_on_both_window_types_independently`,
+    `test_v2_sidebar_opening_manual_panel_does_not_initialize_hardware`,
+    `test_v2_no_group_box_is_squeezed_below_its_minimum_size_hint`
+  - `tests/test_qt_ui_hardware_settings.py` — `test_configure_syringe_sends_real_geometry_for_custom_not_presets`,
+    `test_clear_pump_fault_button_shows_warning_and_is_not_skippable`,
+    `test_apply_wfg_reports_no_warning_when_in_range`,
+    `test_camera_sequence_group_flags_live_automated_use_and_dead_capture_mode`,
+    `test_frequency_scanning_number_of_frequencies_display_tracks_step_size`
+  - `tests/test_qt_ui_v3.py` — `test_v3_dialogs_open_at_usable_sizes_without_full_path_width`
+
+  This list is a record of what has been seen, not a boundary. Any test that
+  constructs a full `MainWindow`/`MainWindowV2`/`MainWindowV3` may join it.
+
+  *Why it is not a per-test defect.* Membership tracks "builds a full v2/v3
+  window under the offscreen Qt platform," not any behavior the individual
+  tests assert. The failing widget class is random per run; the same test
+  passes and fails across identical commits; and `conftest.build_with_retry()`
+  already documents that a fresh first-ever `MainWindow()` fails roughly 30-40%
+  of the time under `QT_QPA_PLATFORM=offscreen` while reproducing zero times in
+  five runs under the real `windows` platform. The best current reading is a
+  property of this widget count and allocation rate under offscreen Qt, not a
+  production reliability problem and not a defect in any one test.
+
+  *Prior attempts, none of which closed it.* `conftest.build_with_retry()`
+  (construction-time retry); per-test `window.close()` in `finally` blocks; the
+  `known_flaky` marker convention; and repeated cross-commit bisection passes
+  that each concluded "predates this change" without identifying a cause. The
+  project has now hit this family across many sessions without closing it.
+
+  *Deliberately not attempted here.* Marking the remaining members individually
+  was considered and rejected for this pass: each existing marker required its
+  own cross-commit confirmation that the failure predates the change it appears
+  alongside, and doing that for roughly ten more tests is a separate piece of
+  work. Marking them without that confirmation would risk labelling a genuine
+  regression as a known flake.
+
+  **Status: OPEN. Root-cause investigation is a separate, not-yet-scheduled
+  future item. It should not be attempted as a side effect of another task —
+  neither this task nor the next one should open it. Until it is scheduled and
+  owner-approved, treat an unmarked failure carrying this exact signature as a
+  probable family member rather than a regression, but confirm it against a
+  prior commit before concluding that.**
 
 - **v1/v2-to-v3 process and object isolation boundary (Session 102
   investigation, 2026-08-06).** Established what v3 can and cannot safely do
