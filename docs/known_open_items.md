@@ -26,10 +26,10 @@ below; the table does not replace their history.
 
 | ID | Status | Domain | Blocking impact | Evidence | Next action / review point | Closure criterion |
 | --- | --- | --- | --- | --- | --- | --- |
-| HW-TIMING-001 | OPEN | Camera / AD2 / DIO | Physical trigger and exposure timing cannot be claimed | A 2026-08-28 follow-up restored PnP/vendor/backend visibility and a clean read-only open/close for `C15440-20UP` / `S/N: 500478`; no acquisition, output, or timing measurement occurred | Confirm scope wiring, then run the prepared bounded low-output diagnostic | Retained scope data identifies AnalogOut, DIO1, trigger reference, and accessible exposure timing with uncertainty |
+| HW-TIMING-001 | OPEN | Camera / AD2 / DIO | Physical trigger and exposure timing cannot be claimed | A 2026-08-28 follow-up restored PnP/vendor/backend visibility and a clean read-only open/close for `C15440-20UP` / `S/N: 500478`. Vendor documents identify AD2 `W1`/`DIO1` and camera SMA `TIMING 1/2/3`; a later read-only probe found all three camera outputs fixed `LOW`. No acquisition, AD2 output, trigger change, or timing measurement occurred | Confirm scope wiring/load and approve a temporary camera exposure-output setting plus restoration, then run the prepared bounded low-output diagnostic | Retained scope data identifies AnalogOut, DIO1, trigger reference, and accessible exposure timing with uncertainty |
 | HW-VALVE-001 | OPEN | Valve / fluidics | P01/P02 cannot be given physical route names | No command was sent on 2026-08-28 because harmless routing could not be established | Run the pump-disabled P01/S and P02/S procedure with visible harmless routing | Both positions have separate requested, protocol-confirmed, and physically observed route records |
-| HW-QMIX-CAN-001 | OPEN | Qmix / CAN | Pump connection is not fault-free or motion-ready | Three no-motion trials retained `fault=True` in 3/3; a later passive check found the adapter/service healthy and no client owner, but did not open an analyzer or obtain counters | Review a non-competing analyzer/counter procedure and inspect the physical CAN path | Repeated reviewed no-motion trials are fault-free and ownership cleanup remains clean |
-| HW-PUMP-MOTION-001 | OPEN | Qmix pump | Reference, fill truth, and bounded motion remain unsafe to infer | No recovery/reference/motion occurred in the 2026-08-28 baseline | Review syringe and fluid route only after HW-QMIX-CAN-001 | Reference, fill-level meaning, stop, and minimal motion are separately physically verified |
+| HW-QMIX-CAN-001 | OPEN | Qmix / CAN | Pump connection is not fault-free or motion-ready | Three no-motion trials retained `fault=True` in 3/3; the adapter/service was healthy with no client owner. The installed canAnalyser manual proves controller-wide TX-passive behavior and shared regular access, but does not prove that one adapter can remain Qmix-active/ACK-capable while a second client observes without changing that controller mode | Prefer QmixElements/VCI counters or a second independently TX-passive interface; do not attach canAnalyser to the one active adapter under an inferred per-client passive mode | Live evidence identifies bus/controller state and heartbeat traffic, repeated reviewed no-motion trials are fault-free, and ownership cleanup remains clean |
+| HW-PUMP-MOTION-001 | OPEN | Qmix pump | Reference, fill truth, and bounded motion remain unsafe to infer | No recovery/reference/motion occurred in the 2026-08-28 baseline | Advance only after the explicit Qmix progression gate below is satisfied and reviewed | Single-client transport is fault-free; syringe/loading/route and motion bounds are physically known; operator recovery, reference, fill truth, stop latency, and one minimal motion are separately authorized and verified in that order |
 | HW-TEC-001 | RESOLVED | Meerstetter TEC | OFF-only real-operation gate closed; broader write scope remains separate | On 2026-08-28 the authorized shared path wrote only parameter 2010 value 0 to channels 1 and 2, read both back OFF, and closed cleanly | Keep ON, target, PID/calibration, raw, and persistence operations outside this closure | Per-channel OFF and cleanup behavior are retained from a safe real-device check; broader ON/target approval remains separate |
 | ARCH-PREFLIGHT-001 | OPEN | Experiment planning | `BuildResult` cannot yet replace the production builder | Normalized shadow cases pass, but v1/v2 do not consume `BuildResult` and validation equivalence is incomplete | Extend blocking/metadata comparison without changing Start | One shared result preserves every builder semantic and is consumed by v1/v2/v3 with regression evidence |
 | ARCH-PERSISTENCE-001 | OPEN | Settings architecture | Hardware identity and experiment protocol remain mixed | The Hardware Profile / Experiment Protocol split in `runtime_truth_and_bench_preparation.md` is proposal-only | Revisit after shared planning contracts stabilize | Versioned split round-trips legacy settings without applying stale hardware state or changing run semantics |
@@ -93,6 +93,18 @@ historical notes. This document is a live issue register, whereas
   trigger change, or AD2 output occurred. Camera visibility is therefore
   restored, but physical timing remains **OPEN** pending scope wiring and the
   bounded measurement.
+  **Later connector/output review:** the installed Digilent WaveForms manual
+  identifies `W1` as the channel-0 waveform output (recommended range
+  +/-5 V, 10 mA) and `DIO1` as 3.3 V LVCMOS with 4 mA drive. Hamamatsu's
+  C15440-20UP/-20UP01 instruction manual identifies three SMA `TIMING` outputs
+  at 3.3 V LVCMOS with 33 ohm output impedance. A bounded live read-only DCAM
+  query confirmed three connectors on camera `S/N: 500478`, all currently
+  configured `LOW` (negative polarity; inactive readout-end settings retained
+  underneath). `configure_trigger_global_exposure()` changes the camera exposure
+  mode, not these physical output connectors. Therefore no camera exposure edge
+  is presently available without a deliberate temporary output-property write
+  and subsequent restoration. No such write, acquisition, or AD2 output was
+  issued. **Status remains OPEN.**
 - **Staged hardware-test confirmations are not global GUI interlocks.**
   `CONFIRM_REAL_HARDWARE` and timing acknowledgements protect action-capable
   modes in newer `hardware_tests/` scripts. They do not apply to the tracked
@@ -928,16 +940,39 @@ historical notes. This document is a live issue register, whereas
   error counters and inspect cable, connector, termination, power, and node
   traffic before any Python or automatic-recovery change.**
 - **The current VCI driver is present but does not supply live bus evidence
-  (2026-08-12).** Windows reports the identified adapter's Plug-and-Play
+  (2026-08-12; vendor-manual boundary rechecked 2026-08-28).** Windows reports the identified adapter's Plug-and-Play
   status as `OK`. The recent System log contains three `vci4109w5.sys`
   bugchecks immediately before installation of the current VCI device service
   and signed driver; no later matching VCI/IXXAT event appeared in the
   60-day query. This makes a *current* repeated driver crash unproven, not a
   resolution of the CAN fault. `canAnaMini` is installed, and its vendor
-  manual says TX-passive mode is hardware listener-only, but no existing
-  analyzer profile proves that mode is selected. Do not open it with unknown
-  defaults. **Status: OPEN, smallest safe next diagnostic is a manually
-  configured TX-passive trace/counter capture with all other clients closed.**
+  manual says TX-passive mode is hardware-enforced listener-only: it sends no
+  acknowledgements or error frames. The same manual says canAnalyser may have
+  regular message access while another application holds privileged controller
+  access, but then canAnalyser cannot set communication parameters. These are
+  controller-access statements, not proof of a per-client passive mode: with
+  one physical adapter, TX-passive ownership could remove the ACK behavior the
+  live Qmix bus needs, while regular shared access inherits the privileged
+  client's controller mode. No existing analyzer profile proves a safe combined
+  state. Do not open or activate it under unknown defaults. **Status: OPEN;
+  prefer counters/event evidence from the privileged QmixElements/VCI client or
+  a second physically independent interface whose TX-passive mode is verified.**
+
+- **Qmix progression gate from CAN diagnosis to motion is explicit
+  (2026-08-28).** `HW-PUMP-MOTION-001` may not begin until all of the following
+  are reviewed and retained: (1) one intended privileged client and clean
+  release are demonstrated; (2) repeated no-motion open/start/status/stop/close
+  trials are fault-free, not merely followed by recovery or last-error zero;
+  (3) the active project, node 2, 1 Mbit/s bus, heartbeat/life-guard settings,
+  and any observed counters/traffic agree; (4) the installed syringe identity,
+  geometry, loading, available travel, and harmless fluid route are physically
+  confirmed; and (5) a separate action plan defines conservative flow/volume,
+  an independent stop, a stop-latency bound, and abort/cleanup observation.
+  After that gate, actions remain separate approvals in this order: intentional
+  operator fault recovery if still needed, reference verification, fill-level
+  truth verification, stop-latency verification, then one minimal motion. No
+  gate item authorizes automatic retries, unobserved fault clearing, reference,
+  or motion. **Status: DEFINED; prerequisites not satisfied.**
 - **A disabled-but-real instrument's per-step hardware calls were handled
   inconsistently -- `AD2Sdk` silently skipped them (while falsely reporting
   success), `HamamatsuCamera`/`CetoniPump`/`Valve` attempted them anyway --

@@ -217,6 +217,30 @@ camera close and DCAM uninitialization. This closes the visibility blocker that
 produced `DCAMERR_NOCAMERA`; it does not establish trigger timing. Scope wiring
 and the prepared bounded physical capture remain required under HW-TIMING-001.
 
+At HEAD `93f7134`, the physical-signal review found the following without
+enabling an output:
+
+- the installed Digilent WaveForms device manual identifies AD2 `W1` as
+  waveform-generator channel 1/channel index 0, with a recommended +/-5 V,
+  10 mA range, and `DIO1` as a 3.3 V LVCMOS digital I/O with 4 mA drive;
+- Hamamatsu's official *C15440-20UP/C15440-20UP01 Instruction manual*, version
+  1.5, identifies three SMA `TIMING 1/2/3` outputs, each 3.3 V LVCMOS with
+  33 ohm output impedance and cable-dependent termination;
+- a bounded read-only DCAM query on `C15440-20UP` / `S/N: 500478` reported
+  exactly three output connectors and found `TIMING 1`, `TIMING 2`, and
+  `TIMING 3` all configured as fixed `LOW`; the retained but ineffective
+  settings were negative polarity, readout-end source, edge mode, zero delay,
+  and 1 ms period.
+
+The repository's `configure_trigger_global_exposure()` call does not configure
+those physical `TIMING` outputs. Consequently, the proposed camera scope lead
+would see a fixed low level unless a separate temporary diagnostic property
+write selects an exposure output. That write and its restoration require
+operator approval together with confirmation of the SMA cable/termination,
+scope grounding, AD2 `W1` load or disconnected transducer, and physical probe
+points. No camera property was written, no acquisition was started, and no AD2
+output was enabled in this review. HW-TIMING-001 remains open.
+
 ### Valve routing — UNCHANGED / UNVERIFIED
 
 No safe operator-visible physical route was available, so no `P01`, `P02`, or
@@ -230,10 +254,31 @@ running. Windows reported the `VCI4 USB-to-CAN compact` present and OK, and
 was not opened because doing so could claim adapter ownership without a
 reviewed non-competing counter procedure.
 
+The installed canAnalyser3 Mini 4.09 manual was then reviewed without launching
+the application. It documents a controller-level `Tx passive` setting in which
+hardware listens but sends neither acknowledgements nor error frames. It also
+documents regular access when another application holds privileged controller
+access, in which case canAnalyser cannot set communication parameters. The
+manual does not establish that TX-passive is per client. With this single
+adapter, making the controller TX-passive could remove ACK behavior needed by
+the live Qmix bus, while regular shared access would inherit the privileged
+client's controller mode. A non-interfering simultaneous capture is therefore
+not proven. No analyzer, bus, counter, fault clear, reference, or motion action
+was issued.
+
 The active project still specifies node 2, 1000 kbit/s, 10 ms read timeout,
 500 ms write timeout, and 1000 ms heartbeat. No bus was opened, no counter was
 read, and the prior persistent `fault=True` result was not retested without a
 new question. HW-QMIX-CAN-001 and HW-PUMP-MOTION-001 remain separate and open.
+
+Advancement to HW-PUMP-MOTION-001 now requires all of: reviewed single-client
+ownership and clean release; repeated fault-free no-motion lifecycle trials;
+agreement among live bus/node/heartbeat evidence and the stored project; known
+physical syringe identity, geometry, loading, travel, and harmless fluid route;
+and a separately reviewed conservative flow/volume plus independent-stop and
+stop-latency plan. Even then, operator fault recovery, reference, fill-level
+truth, stop latency, and one minimal motion are separate approvals in that
+order. None was authorized or performed here.
 
 ### TEC Static OFF — PROTOCOL-CONFIRMED
 

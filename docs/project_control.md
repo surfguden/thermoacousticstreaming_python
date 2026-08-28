@@ -30,15 +30,23 @@ Current operator surfaces:
 
 - **HW-TIMING-001:** Windows PnP, the vendor sample, and the repository backend
   now see camera `C15440-20UP` / `S/N: 500478`; a clean read-only open/close
-  succeeded. The later low-output capture is ready only after an operator
-  confirms the exact scope wiring and load.
+  succeeded. Vendor documentation now identifies AD2 `W1`, AD2 `DIO1`, and the
+  camera's SMA `TIMING 1/2/3` outputs and their electrical levels. A bounded
+  read-only camera probe found all three timing outputs configured as fixed
+  `LOW`; none is currently an exposure monitor. The later low-output capture is
+  ready only after an operator confirms the exact scope wiring/load and approves
+  a temporary camera timing-output configuration that will be restored after
+  the capture.
 
 ## BLOCKED
 
 - **HW-VALVE-001:** physical routing awaits a safe, operator-visible harmless
   observation path.
 - **HW-PUMP-MOTION-001:** reference, fill, and motion remain blocked by
-  **HW-QMIX-CAN-001**.
+  **HW-QMIX-CAN-001**. Advancement requires reviewed single-client ownership,
+  fault-free no-motion transport trials, known physical syringe/loading and
+  fluid-route state, and a separately approved stop-latency/reference/fill
+  verification plan before any bounded motion.
 
 ## VERIFYING
 
@@ -63,6 +71,7 @@ Current operator surfaces:
 ## NEXT CHECKPOINT
 
 The next technical checkpoint is **HW-TIMING-001**: operator-confirmed scope
-wiring followed by the already-prepared bounded timing capture. Do not infer a
-timing result from restored camera visibility, and do not enable AD2 output
+wiring/load and approval of the temporary camera timing-output observation
+setting, followed by the already-prepared bounded timing capture. Do not infer
+a timing result from restored camera visibility, and do not enable AD2 output
 without that physical setup confirmation.
