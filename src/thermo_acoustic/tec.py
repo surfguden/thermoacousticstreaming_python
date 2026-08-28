@@ -87,6 +87,8 @@ class TecBackend(Protocol):
 
     def set_output_stage_static_on(self, channel: int) -> None: ...
 
+    def set_output_stage_static_off(self, channel: int) -> None: ...
+
     def set_target_temperature(self, channel: int, temperature_c: float) -> None: ...
 
     def write_config(self) -> None: ...
@@ -151,6 +153,9 @@ class SimulatedTecBackend:
 
     def set_output_stage_static_on(self, channel: int) -> None:
         self._output_stage_static_on[channel] = True
+
+    def set_output_stage_static_off(self, channel: int) -> None:
+        self._output_stage_static_on[channel] = False
 
     def set_target_temperature(self, channel: int, temperature_c: float) -> None:
         self._target_temperature_c[channel] = float(temperature_c)
@@ -229,6 +234,12 @@ class MeerstetterTecBackend:
             raise TecError("Configured Meerstetter TEC client has no set_output_stage_static_on() method.")
         action(channel)
 
+    def set_output_stage_static_off(self, channel: int) -> None:
+        action = getattr(self._client(), "set_output_stage_static_off", None)
+        if not callable(action):
+            raise TecError("Configured Meerstetter TEC client has no set_output_stage_static_off() method.")
+        action(channel)
+
     def set_target_temperature(self, channel: int, temperature_c: float) -> None:
         action = getattr(self._client(), "set_target_temperature", None)
         if not callable(action):
@@ -253,7 +264,8 @@ class _PyMeComTecClient:
     pyproject.toml/requirements-exp_ctrl.txt).
 
     Scope, enforced by construction (updated 2026-08-04): this class's own
-    read_status()/set_output_stage_static_on()/set_target_temperature()
+    read_status()/set_output_stage_static_on()/set_output_stage_static_off()/
+    set_target_temperature()
     call ONLY get_parameter()/set_parameter() by name, for exactly the 4
     parameter names this class currently reads -- 2010 Output Enable
     Status, 1000 Object Temperature, 104 Device Status, 105 Error Number
@@ -343,6 +355,12 @@ class _PyMeComTecClient:
     def set_output_stage_static_on(self, channel: int) -> None:
         mc = self._require_client()
         mc.set_parameter(value=1, parameter_name=_MECOM_PARAM_OUTPUT_ENABLE, parameter_instance=channel)
+
+    def set_output_stage_static_off(self, channel: int) -> None:
+        """Select protocol-defined Static OFF (parameter 2010 value 0)."""
+
+        mc = self._require_client()
+        mc.set_parameter(value=0, parameter_name=_MECOM_PARAM_OUTPUT_ENABLE, parameter_instance=channel)
 
     def set_target_temperature(self, channel: int, temperature_c: float) -> None:
         mc = self._require_client()
@@ -436,9 +454,71 @@ class TecController:
         channels = self._channels_or_default(channels)
         if not self.enabled:
             self.last_status = {channel: TecStatus(channel=channel) for channel in channels}
+            self.last_status_at_utc = datetime.now(timezone.utc)
             return self.last_status
         backend = self._backend()
         self.last_status = backend.read_status(channels)
+        self.last_status_at_utc = datetime.now(timezone.utc)
+        return self.last_status
+
+    def set_output_stage_static_off(
+        self,
+        channels: tuple[int, ...] | None = None,
+        *,
+        timeout_s: float | None = None,
+    ) -> dict[int, TecStatus]:
+        """Turn requested channels Static OFF and confirm protocol readback.
+
+        Each channel command and the final readback are time-bounded. An
+        ordinary per-channel exception does not prevent an OFF attempt on the
+        remaining channels. A timeout stops immediately because the timed-out
+        serial call may still be executing in its daemon thread; issuing a
+        concurrent command on the same client would be unsafe.
+        """
+
+        channels = self._channels_or_default(channels)
+        if not self.enabled:
+            self.last_status = {
+                channel: TecStatus(channel=channel, output_stage_static_on=False)
+                for channel in channels
+            }
+            self.last_status_at_utc = datetime.now(timezone.utc)
+            return self.last_status
+        backend = self._backend()
+        effective_timeout = self.operation_timeout_s if timeout_s is None else max(timeout_s, 0.0)
+        errors: list[str] = []
+        timed_out = False
+        for channel in channels:
+            error = run_with_timeout(
+                lambda channel=channel: backend.set_output_stage_static_off(channel),
+                f"TEC channel {channel} Static OFF",
+                effective_timeout,
+            )
+            if error is not None:
+                errors.append(error)
+                if " timed out after " in error:
+                    timed_out = True
+                    break
+        if timed_out:
+            raise TecError("; ".join(errors) + " No readback attempted while the timed-out command may still be active.")
+
+        status_box: dict[str, dict[int, TecStatus]] = {}
+        readback_error = run_with_timeout(
+            lambda: status_box.setdefault("status", backend.read_status(channels)),
+            "TEC Static OFF readback",
+            effective_timeout,
+        )
+        if readback_error is not None:
+            errors.append(readback_error)
+        else:
+            status = status_box["status"]
+            self.last_status = status
+            self.last_status_at_utc = datetime.now(timezone.utc)
+            still_on = [channel for channel, value in status.items() if value.output_stage_static_on]
+            if still_on:
+                errors.append(f"TEC Static OFF readback still reports ON for channels {still_on}.")
+        if errors:
+            raise TecError("; ".join(errors))
         return self.last_status
 
     def apply_static_setpoint(
@@ -461,17 +541,42 @@ class TecController:
             self.last_status = result
             return result
         backend = self._backend()
-        for channel in channels:
-            backend.set_output_stage_static_on(channel)
-            backend.set_target_temperature(channel, targets[channel])
-        backend.write_config()
-        result = backend.read_status(channels)
+        on_attempted: list[int] = []
+        try:
+            for channel in channels:
+                # Include the channel before the call: a transport exception
+                # can mean the command applied but its response was lost.
+                on_attempted.append(channel)
+                backend.set_output_stage_static_on(channel)
+                backend.set_target_temperature(channel, targets[channel])
+            backend.write_config()
+            result = backend.read_status(channels)
+            for channel, status in result.items():
+                if status.error_state:
+                    raise TecError(
+                        f"TEC channel {channel} reported error after setting "
+                        f"{targets[channel]:.3f} C: {status.error_state}"
+                    )
+        except Exception as exc:
+            cleanup_error: str | None = None
+            if on_attempted:
+                try:
+                    self.set_output_stage_static_off(tuple(on_attempted))
+                except Exception as off_exc:
+                    cleanup_error = str(off_exc)
+            detail = (
+                f"TEC sequential setpoint apply failed after ON may have been requested for "
+                f"channels {on_attempted}: {exc}. Target values were not rolled back."
+            )
+            if cleanup_error is not None:
+                detail += f" Static OFF cleanup also failed: {cleanup_error}"
+            raise TecPartialApplicationError(
+                detail,
+                attempted_channels=tuple(on_attempted),
+                off_cleanup_error=cleanup_error,
+            ) from exc
         self.last_status = result
-        for channel, status in result.items():
-            if status.error_state:
-                raise TecError(
-                    f"TEC channel {channel} reported error after setting {targets[channel]:.3f} C: {status.error_state}"
-                )
+        self.last_status_at_utc = datetime.now(timezone.utc)
         return result
 
     def _resolve_targets(

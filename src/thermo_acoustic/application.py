@@ -377,6 +377,40 @@ class Application:
     def set_tec_controller(self, tec: TecController) -> None:
         self.tec = tec
 
+    def set_tec_output_stage_static_off(
+        self,
+        channels: tuple[int, ...] | None = None,
+    ):
+        """Explicit shared Static OFF path with structured failure evidence."""
+
+        try:
+            result = self.tec.set_output_stage_static_off(channels)
+        except Exception as exc:
+            self.emit_event(
+                RuntimeEvent.create(
+                    severity=RuntimeEventSeverity.HARDWARE_FAULT,
+                    subsystem="tec",
+                    operation="static_off",
+                    message=f"TEC Static OFF failed: {exc}",
+                    may_continue=False,
+                    operator_next_action="Verify both output stages are OFF in TEC Service Software before continuing.",
+                ),
+                update_legacy_status=False,
+            )
+            raise
+        self.emit_event(
+            RuntimeEvent.create(
+                severity=RuntimeEventSeverity.INFO,
+                subsystem="tec",
+                operation="static_off",
+                message="TEC Static OFF confirmed by protocol readback.",
+                may_continue=True,
+                evidence_refs=("runtime_snapshot.tec.status",),
+            ),
+            update_legacy_status=False,
+        )
+        return result
+
     def get_experiment_series_general(self) -> ExperimentSeries2:
         return self.experiment_series
 
@@ -846,6 +880,7 @@ class Application:
             experiment.sim_camera = self.camera.simulate
             experiment.sim_pump = self.pump.simulate
             experiment.sim_valve = self.valve.simulate
+            experiment.sim_tec = self.tec.simulate
 
             # Full-project audit finding (2026-07-31): a real (non-simulated)
             # instrument left disabled for this run previously had its
@@ -860,6 +895,7 @@ class Application:
             experiment.camera_enabled = self.camera.enabled
             experiment.pump_enabled = self.pump.enabled
             experiment.valve_enabled = self.valve.enabled
+            experiment.tec_enabled = self.tec.enabled
 
             # Session 104: whether clear_pump_fault_and_retry() (the manual,
             # operator-initiated fault-clear escape hatch) has been used at
@@ -1067,6 +1103,23 @@ class Application:
                 "Temperature series group count must match the number of temperature points "
                 f"({len(experiment_groups)} groups, {len(temperature_series.temperature_points_c)} points)."
             )
+        if not self.tec.enabled or self.tec.simulate:
+            self.emit_event(
+                RuntimeEvent.create(
+                    severity=RuntimeEventSeverity.WARNING,
+                    subsystem="tec",
+                    operation="run_temperature_series",
+                    message=(
+                        "TEC temperature series requested with the TEC "
+                        + ("disabled" if not self.tec.enabled else "simulated")
+                        + "; no real temperature-control evidence will be produced."
+                    ),
+                    may_continue=True,
+                    operator_next_action="Treat TDMS TEC values as requested/simulated, not physically applied.",
+                    evidence_refs=("tec.enabled", "tec.simulated"),
+                ),
+                update_legacy_status=False,
+            )
         for group_index, group in enumerate(experiment_groups, start=1):
             # Safety-behavior change (2026-08-04, closing a gap Session 78's
             # non-TEC abort fix didn't reach): self.stop_fired is the ONLY
@@ -1110,16 +1163,48 @@ class Application:
             )
             self.fire_status_event(f"Setting TEC {target_label}")
             with _report_step(progress, STEP_SET_TEC_TARGET):
-                self.tec.apply_static_setpoint(target)
+                try:
+                    self.tec.apply_static_setpoint(target)
+                except TecPartialApplicationError as exc:
+                    self.emit_event(
+                        RuntimeEvent.create(
+                            severity=RuntimeEventSeverity.HARDWARE_FAULT,
+                            subsystem="tec",
+                            operation="apply_static_setpoint_partial",
+                            message=str(exc),
+                            may_continue=False,
+                            operator_next_action=(
+                                "Verify both TEC output stages are OFF before retrying; do not infer target rollback."
+                            ),
+                            evidence_refs=("runtime_snapshot.tec.status",),
+                        ),
+                        update_legacy_status=False,
+                    )
+                    raise
             self.fire_status_event(f"Waiting for TEC {target_label}")
             with _report_step(progress, STEP_WAIT_TEC_STABLE):
-                self.tec.wait_until_stable(
-                    target,
-                    tolerance_c=temperature_series.tolerance_c,
-                    min_settle_s=temperature_series.min_settle_s,
-                    max_wait_s=temperature_series.max_wait_s,
-                    poll_interval_s=temperature_series.poll_interval_s,
-                )
+                try:
+                    self.tec.wait_until_stable(
+                        target,
+                        tolerance_c=temperature_series.tolerance_c,
+                        min_settle_s=temperature_series.min_settle_s,
+                        max_wait_s=temperature_series.max_wait_s,
+                        poll_interval_s=temperature_series.poll_interval_s,
+                    )
+                except Exception as exc:
+                    self.emit_event(
+                        RuntimeEvent.create(
+                            severity=RuntimeEventSeverity.HARDWARE_FAULT,
+                            subsystem="tec",
+                            operation="wait_until_stable",
+                            message=f"TEC status/stability verification failed: {exc}",
+                            may_continue=False,
+                            operator_next_action="Inspect TEC status and confirm both output stages before continuing.",
+                            evidence_refs=("runtime_snapshot.tec.status",),
+                        ),
+                        update_legacy_status=False,
+                    )
+                    raise
             # post_stable_hold_s is deliberately separate from min_settle_s
             # above: min_settle_s is part of HOW wait_until_stable() itself
             # decides the TEC's own sensor reading is "stable" (continuous

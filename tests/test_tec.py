@@ -7,6 +7,7 @@ import pytest
 
 from thermo_acoustic.application import Application
 from thermo_acoustic.hardware_factory import HardwareRuntimeConfig, build_hardware_bundle
+from thermo_acoustic.runtime_truth import RuntimeEventSeverity
 from thermo_acoustic.tec import (
     TEC_TARGET_MAX_C,
     TEC_TARGET_MIN_C,
@@ -15,6 +16,7 @@ from thermo_acoustic.tec import (
     TecAbortedError,
     TecController,
     TecError,
+    TecPartialApplicationError,
     TecStatus,
     _MECOM_PARAM_DEVICE_STATUS,
     _MECOM_PARAM_ERROR_NUMBER,
@@ -67,6 +69,15 @@ class RecordingTecBackend:
             ready=True,
         )
 
+    def set_output_stage_static_off(self, channel: int) -> None:
+        self.calls.append(("set_output_stage_static_off", channel))
+        self.status = TecStatus(
+            current_temperature_c=self.status.current_temperature_c,
+            target_temperature_c=self.status.target_temperature_c,
+            output_stage_static_on=False,
+            ready=False,
+        )
+
     def set_target_temperature(self, channel: int, temperature_c: float) -> None:
         self.calls.append(("set_target_temperature", channel, temperature_c))
         self.status = TecStatus(
@@ -117,6 +128,10 @@ class ChannelAwareRecordingTecBackend:
     def set_output_stage_static_on(self, channel: int) -> None:
         self.calls.append(("set_output_stage_static_on", channel))
         self.output_stage_static_on[channel] = True
+
+    def set_output_stage_static_off(self, channel: int) -> None:
+        self.calls.append(("set_output_stage_static_off", channel))
+        self.output_stage_static_on[channel] = False
 
     def set_target_temperature(self, channel: int, temperature_c: float) -> None:
         self.calls.append(("set_target_temperature", channel, temperature_c))
@@ -315,6 +330,130 @@ def test_tec_controller_applies_static_setpoint_and_writes_config():
         ("write_config",),
         ("read_status", (1,)),
     ]
+
+
+def test_tec_controller_static_off_is_per_channel_bounded_and_readback_confirmed():
+    backend = ChannelAwareRecordingTecBackend()
+    backend.output_stage_static_on = {1: True, 2: True}
+    controller = TecController(enabled=True, simulate=True, backend=backend, channels=(1, 2))
+
+    result = controller.set_output_stage_static_off()
+
+    assert result[1].output_stage_static_on is False
+    assert result[2].output_stage_static_on is False
+    assert backend.calls == [
+        ("set_output_stage_static_off", 1),
+        ("set_output_stage_static_off", 2),
+        ("read_status", (1, 2)),
+    ]
+    assert controller.last_status_at_utc is not None
+
+
+def test_tec_controller_static_off_timeout_stops_before_concurrent_command_or_readback():
+    started = threading.Event()
+
+    class HangingOffBackend(ChannelAwareRecordingTecBackend):
+        def set_output_stage_static_off(self, channel: int) -> None:
+            self.calls.append(("set_output_stage_static_off", channel))
+            started.set()
+            threading.Event().wait()
+
+    backend = HangingOffBackend()
+    controller = TecController(
+        enabled=True,
+        simulate=True,
+        backend=backend,
+        channels=(1, 2),
+        operation_timeout_s=0.02,
+    )
+
+    with pytest.raises(TecError, match="timed out.*No readback attempted"):
+        controller.set_output_stage_static_off()
+
+    assert started.is_set()
+    assert backend.calls == [("set_output_stage_static_off", 1)]
+
+
+def test_tec_controller_static_off_continues_after_non_timeout_channel_error():
+    class FailingFirstOffBackend(ChannelAwareRecordingTecBackend):
+        def set_output_stage_static_off(self, channel: int) -> None:
+            self.calls.append(("set_output_stage_static_off", channel))
+            if channel == 1:
+                raise TecError("channel 1 OFF rejected")
+            self.output_stage_static_on[channel] = False
+
+    backend = FailingFirstOffBackend()
+    backend.output_stage_static_on = {1: True, 2: True}
+    controller = TecController(enabled=True, simulate=True, backend=backend, channels=(1, 2))
+
+    with pytest.raises(TecError, match="channel 1 OFF rejected.*still reports ON"):
+        controller.set_output_stage_static_off()
+
+    assert backend.calls == [
+        ("set_output_stage_static_off", 1),
+        ("set_output_stage_static_off", 2),
+        ("read_status", (1, 2)),
+    ]
+    assert backend.output_stage_static_on == {1: True, 2: False}
+
+
+def test_tec_controller_partial_target_failure_attempts_off_without_rolling_back_targets():
+    class FailSecondTargetBackend(ChannelAwareRecordingTecBackend):
+        def set_target_temperature(self, channel: int, temperature_c: float) -> None:
+            self.calls.append(("set_target_temperature", channel, temperature_c))
+            if channel == 2:
+                raise TecError("channel 2 target write failed")
+            self.target_temperature_c[channel] = temperature_c
+
+    backend = FailSecondTargetBackend()
+    controller = TecController(enabled=True, simulate=True, backend=backend, channels=(1, 2))
+
+    with pytest.raises(TecPartialApplicationError, match="Target values were not rolled back") as exc_info:
+        controller.apply_static_setpoint({1: 18.0, 2: 24.0})
+
+    assert exc_info.value.attempted_channels == (1, 2)
+    assert exc_info.value.off_cleanup_error is None
+    assert backend.target_temperature_c == {1: 18.0, 2: 25.0}
+    assert backend.output_stage_static_on == {1: False, 2: False}
+    assert backend.calls[-3:] == [
+        ("set_output_stage_static_off", 1),
+        ("set_output_stage_static_off", 2),
+        ("read_status", (1, 2)),
+    ]
+
+
+def test_tec_controller_partial_on_failure_attempts_off_for_command_with_uncertain_response():
+    class FailSecondOnBackend(ChannelAwareRecordingTecBackend):
+        def set_output_stage_static_on(self, channel: int) -> None:
+            self.calls.append(("set_output_stage_static_on", channel))
+            self.output_stage_static_on[channel] = True
+            if channel == 2:
+                raise TecError("channel 2 response lost after ON")
+
+    backend = FailSecondOnBackend()
+    controller = TecController(enabled=True, simulate=True, backend=backend, channels=(1, 2))
+
+    with pytest.raises(TecPartialApplicationError) as exc_info:
+        controller.apply_static_setpoint({1: 18.0, 2: 24.0})
+
+    assert exc_info.value.attempted_channels == (1, 2)
+    assert backend.output_stage_static_on == {1: False, 2: False}
+
+
+def test_application_static_off_failure_emits_structured_hardware_fault():
+    class FailingOffController(TecController):
+        def set_output_stage_static_off(self, channels=None, *, timeout_s=None):
+            raise TecError("OFF readback unavailable")
+
+    app = Application(tec=FailingOffController(enabled=True, simulate=True))
+
+    with pytest.raises(TecError, match="OFF readback unavailable"):
+        app.set_tec_output_stage_static_off()
+
+    event = app.runtime_events[-1]
+    assert event.severity is RuntimeEventSeverity.HARDWARE_FAULT
+    assert event.operation == "static_off"
+    assert event.may_continue is False
 
 
 def test_tec_controller_initialize_closes_backend_when_status_read_fails():
@@ -628,6 +767,18 @@ def test_real_tec_client_only_touches_its_own_four_parameters_during_normal_oper
     assert touched_names == {"Output Enable Status", "Target Object Temperature", "Object Temperature", "Device Status"}
 
 
+def test_real_tec_client_static_off_writes_only_parameter_2010_value_zero():
+    fake = FakeMeComSerial()
+    fake.output_enabled[1] = True
+    client = _PyMeComTecClient(port="COM9")
+    client._mc = fake
+
+    client.set_output_stage_static_off(1)
+
+    assert fake.calls == [("set_parameter", "Output Enable Status", 1, 0)]
+    assert fake.output_enabled[1] == 0
+
+
 def test_real_tec_client_reads_device_status_once_for_multiple_channels():
     # Regression test for the real-hardware finding (2026-08-04): Device
     # Status/Error Number are device-wide "Common Product Parameters" on
@@ -751,6 +902,10 @@ def test_application_temperature_series_sets_each_target_then_runs_group(tmp_pat
     ]
 
     assert app.run_temperature_series(series, groups) is True
+    warning = next(event for event in app.runtime_events if event.subsystem == "tec")
+    assert warning.severity is RuntimeEventSeverity.WARNING
+    assert warning.operation == "run_temperature_series"
+    assert "simulated" in warning.message
     # TecController's default channels=(1, 2): the single "Temperature
     # points (C)" UI field broadcasts each target to both channels.
     assert [call for call in backend.calls if call[0] == "set_target_temperature"] == [
@@ -1119,6 +1274,28 @@ def test_run_temperature_series_step_failure_in_set_tec_target(tmp_path):
     assert progress_calls[-1] == ("step_failed", ("SetTecTarget", "boom: apply_static_setpoint"))
 
 
+def test_run_temperature_series_partial_apply_emits_structured_fault(tmp_path):
+    class PartialTecController(TecController):
+        def apply_static_setpoint(self, temperature_c, channels=None):
+            raise TecPartialApplicationError(
+                "channel 1 applied; channel 2 failed; OFF confirmed",
+                attempted_channels=(1, 2),
+                off_cleanup_error=None,
+            )
+
+    app = Application(tec=PartialTecController(enabled=True, simulate=True))
+    series = TemperatureSeries(temperature_points_c=[20.0])
+    groups = [ExperimentSeries2(tmp_path / "t1", [Experiment2(repeat_id=0)])]
+
+    with pytest.raises(TecPartialApplicationError):
+        app.run_temperature_series(series, groups)
+
+    event = next(event for event in app.runtime_events if event.operation == "apply_static_setpoint_partial")
+    assert event.severity is RuntimeEventSeverity.HARDWARE_FAULT
+    assert event.may_continue is False
+    assert "do not infer target rollback" in event.operator_next_action.lower()
+
+
 def test_run_temperature_series_step_failure_in_wait_tec_stable(tmp_path):
     class BrokenTecController(TecController):
         def wait_until_stable(self, *args, **kwargs):
@@ -1142,3 +1319,6 @@ def test_run_temperature_series_step_failure_in_wait_tec_stable(tmp_path):
     assert [value for kind, value in progress_calls if kind == "step_started"] == ["SetTecTarget", "WaitTecStable"]
     assert [value for kind, value in progress_calls if kind == "step_completed"] == ["SetTecTarget"]
     assert progress_calls[-1] == ("step_failed", ("WaitTecStable", "boom: wait_until_stable"))
+    event = next(event for event in app.runtime_events if event.operation == "wait_until_stable")
+    assert event.severity is RuntimeEventSeverity.HARDWARE_FAULT
+    assert event.may_continue is False

@@ -203,6 +203,9 @@ class Experiment2:
     sim_camera: bool = False
     sim_pump: bool = False
     sim_valve: bool = False
+    # TEC defaults deliberately match HardwareRuntimeConfig's safe default:
+    # simulated and disabled until Application snapshots the live controller.
+    sim_tec: bool = True
     # Real requested enabled/disabled state for this run, set alongside the
     # sim_* flags above from the same live instrument instances. A distinct
     # concept from sim_*: an instrument can be real (not simulated) and still
@@ -215,6 +218,7 @@ class Experiment2:
     camera_enabled: bool = True
     pump_enabled: bool = True
     valve_enabled: bool = True
+    tec_enabled: bool = False
     # Session 104: whether Application.clear_pump_fault_and_retry() -- the
     # manual, operator-initiated pump fault-clear escape hatch -- had been
     # used at any point in the session by the time this repeat ran. Set by
@@ -303,7 +307,10 @@ class Experiment2:
             # it with the real True/False once flush() actually completes.
             "FlushCompleted": "",
             "GitCommitHash": _git_commit_hash(),
+            "TECRequested": self.tec_target_c is not None or bool(self.tec_targets_c),
             "TECTarget": "" if self.tec_target_c is None else self.tec_target_c,
+            "TECTargetCh1": self._tec_target_for_channel(1),
+            "TECTargetCh2": self._tec_target_for_channel(2),
         }
         properties.update(self._wfg_properties("Ch1", ch1))
         properties.update(self._wfg_properties("Ch2", ch2))
@@ -333,14 +340,23 @@ class Experiment2:
                 "SimCamera": self.sim_camera,
                 "SimPump": self.sim_pump,
                 "SimValve": self.sim_valve,
+                "SimTEC": self.sim_tec,
                 "AD2Enabled": self.ad2_enabled,
                 "CameraEnabled": self.camera_enabled,
                 "PumpEnabled": self.pump_enabled,
                 "ValveEnabled": self.valve_enabled,
+                "TECEnabled": self.tec_enabled,
                 "PumpFaultManuallyCleared": self.pump_fault_manually_cleared,
             }
         )
         return properties
+
+    def _tec_target_for_channel(self, channel: int) -> float | str:
+        if self.tec_targets_c is not None:
+            return self.tec_targets_c.get(channel, "")
+        # Historical TECTarget semantics are a broadcast target. Preserve
+        # that meaning for callers that have not adopted tec_targets_c yet.
+        return "" if self.tec_target_c is None else self.tec_target_c
 
     def _sequence_properties(self) -> dict[str, Any]:
         # Session 22 made this cluster (masterpulse mode/source/interval/

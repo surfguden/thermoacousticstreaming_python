@@ -927,7 +927,7 @@ def test_run_experiment2_records_simulated_vs_real_instruments_in_final_tdms(tmp
     # fact. Uses a genuinely mixed configuration (AD2 the real, non-simulated
     # class -- just disabled, so no hardware is actually touched -- against
     # every other instrument left at its default simulate=True) so a bug
-    # that collapsed all four flags to the same hardcoded value, or read the
+    # that collapsed all five flags to the same hardcoded value, or read the
     # wrong instrument for one of them, would be caught, not just "the key
     # exists".
     writes = install_fake_nptdms(monkeypatch)
@@ -946,15 +946,59 @@ def test_run_experiment2_records_simulated_vs_real_instruments_in_final_tdms(tmp
     assert properties["SimCamera"] is True
     assert properties["SimPump"] is True
     assert properties["SimValve"] is True
+    assert properties["SimTEC"] is True
     # Part 3 (enabled-state recording): AD2 was genuinely disabled for this
     # run, distinct from "simulated" -- SimAD2 alone can't tell these apart.
     assert properties["AD2Enabled"] is False
     assert properties["CameraEnabled"] is True
     assert properties["PumpEnabled"] is True
     assert properties["ValveEnabled"] is True
+    assert properties["TECEnabled"] is False
+    assert properties["TECRequested"] is False
     assert properties["PumpFaultManuallyCleared"] is False, (
         "default session state: no manual pump fault clear happened this session"
     )
+
+
+def test_run_experiment2_records_requested_disabled_simulated_tec_in_final_tdms(tmp_path, monkeypatch):
+    writes = install_fake_nptdms(monkeypatch)
+    app = Application(ad2=SimulatedAD2Sdk())
+    experiment = Experiment2(
+        experiment_folder=tmp_path / "experiment-disabled-simulated-tec",
+        tec_target_c=25.0,
+    )
+    app.experiment_series.enqueue_experiments([experiment])
+
+    ok = app.run_experiment2()
+
+    assert ok
+    tdms_path = tmp_path / "experiment-disabled-simulated-tec" / "data.tdms"
+    objects = writes[str(tdms_path)]
+    experiment_group = next(
+        item for item in objects if getattr(item, "kind", "") == "group" and item.name == "Experiment"
+    )
+    properties = experiment_group.properties
+    assert properties["TECRequested"] is True
+    assert properties["TECTarget"] == 25.0
+    assert properties["TECTargetCh1"] == 25.0
+    assert properties["TECTargetCh2"] == 25.0
+    assert properties["TECEnabled"] is False
+    assert properties["SimTEC"] is True
+
+
+def test_experiment2_records_independent_channel_targets_without_changing_legacy_target(tmp_path):
+    experiment = Experiment2(
+        experiment_folder=tmp_path / "independent-tec-targets",
+        tec_target_c=21.0,
+        tec_targets_c={1: 21.0, 2: 18.5},
+    )
+
+    properties = experiment._settings_properties()
+
+    assert properties["TECRequested"] is True
+    assert properties["TECTarget"] == 21.0
+    assert properties["TECTargetCh1"] == 21.0
+    assert properties["TECTargetCh2"] == 18.5
 
 
 def test_run_experiment2_records_pump_fault_manually_cleared_flag_in_final_tdms(tmp_path, monkeypatch):
