@@ -13,6 +13,8 @@ from PySide6.QtWidgets import QApplication, QComboBox, QGroupBox, QLabel, QPushB
 
 from thermo_acoustic import qt_ui, qt_ui_v2, qt_ui_v3
 from thermo_acoustic.application import Application
+from thermo_acoustic.experiment_planning import normalize_experiment
+from thermo_acoustic.tec import TecStatus
 
 from conftest import build_with_retry
 
@@ -50,31 +52,41 @@ def test_v3_reuses_the_supplied_application_and_places_status_first(monkeypatch,
         assert window.app.camera is app.camera
         status = window.findChild(QGroupBox, "v3StatusFirst")
         connections = window.findChild(QGroupBox, "v3ConnectionStrip")
+        identity = window.findChild(QGroupBox, "v3ExperimentIdentity")
+        plan = window.findChild(QGroupBox, "v3ExperimentPlan")
         run_control = window.findChild(QGroupBox, "v3PrimaryRunControl")
         setup_tabs = window.findChild(QTabWidget, "v3SetupTabs")
+        runtime = window.findChild(QScrollArea, "v3RuntimeMonitoring")
         assert status is not None
         assert connections is not None
+        assert identity is not None
+        assert plan is not None
         assert run_control is not None
         assert setup_tabs is not None
+        assert runtime is not None
         assert connections.title() == "Hardware connection status"
         assert status.title() == "Experiment status and progress"
         connection_y = connections.mapTo(window.centralWidget(), connections.rect().topLeft()).y()
         status_y = status.mapTo(window.centralWidget(), status.rect().topLeft()).y()
+        identity_y = identity.mapTo(window.centralWidget(), identity.rect().topLeft()).y()
+        plan_y = plan.mapTo(window.centralWidget(), plan.rect().topLeft()).y()
         run_y = run_control.mapTo(window.centralWidget(), run_control.rect().topLeft()).y()
         setup_y = setup_tabs.mapTo(window.centralWidget(), setup_tabs.rect().topLeft()).y()
-        assert connection_y < status_y < run_y < setup_y
+        assert connection_y < status_y < identity_y == plan_y < setup_y < run_y
+        assert runtime.width() >= 330
         assert [setup_tabs.tabText(index) for index in range(setup_tabs.count())] == [
             "AD2 Output",
             "Camera",
             "Fluidics",
             "Temperature scan",
         ]
-        assert set(window._v3_connection_values) == {"AD2", "Camera", "Pump", "Valve"}
+        assert set(window._v3_connection_values) == {"AD2", "Camera", "Pump", "Valve", "TEC"}
         assert all(dot.text() == "\u25cf" for dot in window._sidebar_status_dots.values())
         assert window._v3_connection_values["AD2"].text() == window.ad2_connection_status.text()
         assert window._v3_connection_values["Camera"].text() == window.camera_connection_status.text()
         assert window._v3_connection_values["Pump"].text() == window.pump_connection_status.text()
         assert window._v3_connection_values["Valve"].text() == window.valve_connection_status.text()
+        assert window._v3_connection_values["TEC"].text() == "Disabled"
         labels = {label.text() for label in window.findChildren(QLabel)}
         assert {
             "Elapsed time",
@@ -114,7 +126,8 @@ def test_v3_reuses_the_supplied_application_and_places_status_first(monkeypatch,
         acquisition = next(
             group for group in window.findChildren(QGroupBox) if group.title() == "Experiment acquisition"
         )
-        assert run_control.isAncestorOf(window.exp_repeats)
+        assert identity.isAncestorOf(window.exp_repeats)
+        assert not run_control.isAncestorOf(window.exp_repeats)
         assert not acquisition.isAncestorOf(window.exp_repeats)
         button_texts = {button.text() for button in window.findChildren(QPushButton)}
         assert "Browse..." in button_texts
@@ -260,6 +273,9 @@ def test_v3_preserves_v2_flush_sequence_safety_context(monkeypatch, tmp_path):
         assert "position 2" in tooltip
         assert "idle" in tooltip
         assert "sequential" in tooltip
+        workflow_note = window.findChild(QLabel, "v3FluidicsWorkflowNote")
+        assert "P01 → pump dispense → valve P02" in workflow_note.text()
+        assert "bench-unverified" in workflow_note.text()
         summary = window.findChild(QGroupBox, "v3FlushDerivedSummary")
         assert summary is not None
         window.syringe.setCurrentText("BD 1ml")
@@ -270,6 +286,93 @@ def test_v3_preserves_v2_flush_sequence_safety_context(monkeypatch, tmp_path):
         assert window._v3_flush_timeout.text().startswith("20.000 s")
         assert window._v3_flush_capacity.text() == "1.000 ml; within capacity"
         assert window._v3_flush_fill_margin.text().startswith("0.700 ml")
+    finally:
+        window.close()
+
+
+def test_v3_inactive_parameter_families_preserve_values_but_disable_inputs(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        assert not window.exp_sweep_enable.isChecked()
+        assert not window.exp_sweep_start_khz.isEnabled()
+        sweep_start = window.exp_sweep_start_khz.value()
+        window.exp_sweep_enable.setChecked(True)
+        assert window.exp_sweep_start_khz.isEnabled()
+        assert window.exp_sweep_start_khz.value() == sweep_start
+
+        assert not window.exp_freq_scan_enable.isChecked()
+        assert not window.exp_freq_scan_start_khz.isEnabled()
+        assert not window._v3_frequency_scan_input_mode.isEnabled()
+        assert not window.exp_freq_scan_count.isEnabled()
+        assert not window.exp_freq_scan_step_khz.isEnabled()
+        window.exp_freq_scan_enable.setChecked(True)
+        assert window.exp_freq_scan_start_khz.isEnabled()
+        assert window._v3_frequency_scan_input_mode.isEnabled()
+        assert window.exp_freq_scan_count.isEnabled()
+        assert not window.exp_freq_scan_step_khz.isEnabled()
+        window._v3_frequency_scan_input_mode.setCurrentIndex(1)
+        assert not window.exp_freq_scan_count.isEnabled()
+        assert window.exp_freq_scan_step_khz.isEnabled()
+
+        assert not window.exp_flush_enabled.isChecked()
+        assert not window.exp_flush_flowrate.isEnabled()
+        flush_flow = window.exp_flush_flowrate.value()
+        window.exp_flush_enabled.setChecked(True)
+        assert window.exp_flush_flowrate.isEnabled()
+        assert window.exp_flush_flowrate.value() == flush_flow
+
+        assert not window.exp_tec_scan_enable.isChecked()
+        assert not window.exp_tec_points.isEnabled()
+        assert not window.exp_tec_tolerance_c.isEnabled()
+        window.exp_tec_scan_enable.setChecked(True)
+        assert window.exp_tec_points.isEnabled()
+        assert window.exp_tec_tolerance_c.isEnabled()
+        assert not window.exp_tec_points_ch2.isEnabled()
+        window.exp_tec_lock_channels.setChecked(False)
+        assert window.exp_tec_points_ch2.isEnabled()
+
+        window.dcam_source.setCurrentText("Internal")
+        assert not window.external_polarity.isEnabled()
+        assert not window.external_delay.isEnabled()
+        window.dcam_source.setCurrentText("External")
+        assert window.external_polarity.isEnabled()
+        assert window.external_delay.isEnabled()
+    finally:
+        window.close()
+
+
+def test_v3_temperature_group_separates_policy_and_shows_cached_readback(monkeypatch, tmp_path):
+    app = Application()
+    window = make_window(monkeypatch, tmp_path, app=app)
+    try:
+        temperature = window.findChild(QGroupBox, "v3TecTemperatureScan")
+        assert temperature is not None
+        assert {
+            "Temperature targets",
+            "Stabilization criteria",
+            "Advanced wait and polling policy",
+            "Cached TEC readback",
+        } <= {group.title() for group in temperature.findChildren(QGroupBox)}
+
+        app.tec.enabled = True
+        app.tec.simulate = True
+        app.tec.initialized = True
+        app.tec.last_status = {
+            1: TecStatus(
+                channel=1,
+                current_temperature_c=24.75,
+                target_temperature_c=25.0,
+                output_stage_static_on=True,
+                ready=True,
+            ),
+            2: TecStatus(channel=2, error_state="sensor warning"),
+        }
+        window._refresh_status()
+        assert window._v3_connection_values["TEC"].text() == "Connected (simulated)"
+        assert "Measured 24.750 °C; target 25.000 °C; ready; output on" in window.findChild(
+            QLabel, "v3TecChannel1Readback"
+        ).text()
+        assert "error: sensor warning" in window.findChild(QLabel, "v3TecChannel2Readback").text()
     finally:
         window.close()
 
@@ -351,6 +454,88 @@ def test_v3_relationship_panels_use_shared_requested_timing_builders(monkeypatch
         window.close()
 
 
+def test_v3_plan_exposes_axes_sequence_camera_request_and_evidence_boundaries(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        window.exp_repeats.setValue(3)
+        window.exp_camera_fps.setValue(20.0)
+        window.exp_frames.setValue(50)
+        window.exp_exposure_ms.setValue(10.0)
+        mode = window.findChild(QComboBox, "v3FrequencyScanInputMode")
+        mode.setCurrentText("Number of Frequencies")
+        window.exp_freq_scan_start_khz.setValue(100.0)
+        window.exp_freq_scan_stop_khz.setValue(140.0)
+        window.exp_freq_scan_count.setValue(3)
+        window.exp_freq_scan_enable.setChecked(True)
+        window.exp_tec_points.setText("20, 25")
+        window.exp_tec_scan_enable.setChecked(True)
+
+        axis = window.findChild(QLabel, "v3ExperimentAxisSummary")
+        workflow = window.findChild(QLabel, "v3RepeatWorkflowSummary")
+        camera = window.findChild(QLabel, "v3RequestedCameraSummary")
+        requirements = window.findChild(QLabel, "v3HardwareRequirementsSummary")
+        preview = window.findChild(QLabel, "v3FrequencyScanListPreview")
+        warnings = window.findChild(QLabel, "v3PreRunWarnings")
+        assert "TEC temperature: 2 point(s)" in axis.text()
+        assert "3 repeat(s) per temperature; 6 acquisition run(s) total" in axis.text()
+        assert "one-to-one to repeat indices" in axis.text()
+        assert "configure AD2/DIO" in workflow.text()
+        assert "optional flush" in workflow.text()
+        assert "2.500 s DIO1 window" in camera.text()
+        assert "10.000 ms exposure vs 50.000 ms frame interval" in camera.text()
+        assert "Live DCAM readout margin is checked only at run start" in camera.text()
+        assert "Software-known shared snapshot only; no hardware query" in requirements.text()
+        assert "shared AD2 snapshot intentionally deferred" in requirements.text()
+        assert "Output path: CONFIGURED" in requirements.text()
+        assert "Frequency-list preview (3 point(s), kHz): 100, 120, 140" == preview.text()
+        assert "DIO1-to-camera exposure synchronization remains bench-unverified" in warnings.text()
+        assert "2 temperature point(s) × 3 repeats = 6 acquisition runs" in window.findChild(
+            QLabel, "v3TecAxisSummary"
+        ).text()
+
+        window.exp_ad2_channels[0]["enable"].setChecked(False)
+        window.exp_sweep_enable.setChecked(True)
+        assert "FM sweep enables channel 0" in warnings.text()
+    finally:
+        window.close()
+
+
+def test_v3_readiness_distinguishes_disabled_not_required_and_unverified_state(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        readiness = window.findChild(QLabel, "v3HardwareRequirementsSummary")
+        warnings = window.findChild(QLabel, "v3PreRunWarnings")
+        window.app.ad2.enabled = False
+        window.app.camera.enabled = False
+        window.app.pump.enabled = False
+        window.app.valve.enabled = True
+        window.app.tec.enabled = False
+        window.exp_camera_fps.setValue(25.0)
+        window.series_path.setText("")
+        assert "Output path: UNSET" in readiness.text()
+        window.exp_flush_enabled.setChecked(True)
+        window.exp_tec_points.setText("20")
+        window.exp_tec_scan_enable.setChecked(True)
+        window._refresh_v3_relationships()
+
+        assert "AD2: DISABLED — current runtime skips this subsystem" in readiness.text()
+        assert "Camera: DISABLED — current runtime skips this subsystem" in readiness.text()
+        assert "Fluidics: DISABLED — selected flush will be skipped by runtime" in readiness.text()
+        assert "TEC: DISABLED — current runtime skips this subsystem" in readiness.text()
+        assert "Output path: UNSET" in readiness.text()
+        assert "no physical-ready claim" in readiness.text()
+        assert "Blank output path resolves to the current working directory" in warnings.text()
+        assert "TEC evidence is simulated, not physical" in warnings.text()
+        assert "current runtime will skip its hardware actions" in warnings.text()
+
+        window.exp_flush_enabled.setChecked(False)
+        window.exp_tec_scan_enable.setChecked(False)
+        assert "Pump/Valve: NOT REQUIRED (flush off)" in readiness.text()
+        assert "TEC: NOT REQUIRED (temperature scan off)" in readiness.text()
+    finally:
+        window.close()
+
+
 def test_v3_frequency_scan_warns_on_repeat_mismatch_like_dio_slot_budget(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
     try:
@@ -376,11 +561,182 @@ def test_v3_frequency_scan_warns_on_repeat_mismatch_like_dio_slot_budget(monkeyp
         window.close()
 
 
+def test_v3_shadow_plan_matches_authoritative_builder_for_frequency_camera_flush_and_path(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        output_path = tmp_path / "shadow-series"
+        window.series_path.setText(str(output_path))
+        window.exp_repeats.setValue(3)
+        window.exp_camera_fps.setValue(25.0)
+        window.exp_frames.setValue(40)
+        window.exp_camera_start.setValue(0.4)
+        window.exp_flush_enabled.setChecked(True)
+        window.exp_flush_flowrate.setValue(15.0)
+        window.exp_flush_volume.setValue(0.2)
+        window.exp_wait_after_flush.setValue(1.5)
+        mode = window.findChild(QComboBox, "v3FrequencyScanInputMode")
+        mode.setCurrentText("Number of Frequencies")
+        window.exp_freq_scan_start_khz.setValue(100.0)
+        window.exp_freq_scan_stop_khz.setValue(120.0)
+        window.exp_freq_scan_count.setValue(3)
+        window.exp_freq_scan_enable.setChecked(True)
+
+        authoritative, total_frames, _config = window._build_experiment_series(output_path)
+        shadow = window._v3_shadow_build_result()
+
+        assert shadow.plan is not None
+        assert shadow.plan.total_frames == total_frames == 120
+        assert shadow.plan.output_path == output_path
+        assert shadow.request.frequency_values_hz == (100000.0, 110000.0, 120000.0)
+        assert shadow.request.camera_fps == 25.0
+        assert shadow.request.frames == 40
+        assert shadow.request.flush_enabled is True
+        assert shadow.plan.normalized_experiments() == tuple(
+            normalize_experiment(experiment) for experiment in authoritative.experiments
+        )
+        assert [item["wfg_frequencies_hz"][0] for item in shadow.plan.normalized_experiments()] == [
+            100000.0,
+            110000.0,
+            120000.0,
+        ]
+        assert all(item["do_channels"][0][2:] == (25.0, 0.4, 1.6) for item in shadow.plan.normalized_experiments())
+        assert all(item["flush_enabled"] is True for item in shadow.plan.normalized_experiments())
+    finally:
+        window.close()
+
+
+def test_v3_shadow_plan_matches_authoritative_unlocked_tec_groups(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        output_path = tmp_path / "shadow-tec-series"
+        window.series_path.setText(str(output_path))
+        window.exp_repeats.setValue(2)
+        window.exp_camera_fps.setValue(20.0)
+        window.exp_tec_scan_enable.setChecked(True)
+        window.exp_tec_lock_channels.setChecked(False)
+        window.exp_tec_points.setText("21, 26")
+        window.exp_tec_points_ch2.setText("18, 23")
+
+        _series, groups, total_frames, _config = window._build_temperature_experiment_groups(output_path)
+        shadow = window._v3_shadow_build_result()
+
+        assert shadow.plan is not None
+        assert shadow.plan.total_frames == total_frames
+        assert shadow.request.temperature_targets_c == (((1, 21.0), (2, 18.0)), ((1, 26.0), (2, 23.0)))
+        authoritative_normalized = tuple(
+            normalize_experiment(experiment)
+            for group in groups
+            for experiment in group.experiments
+        )
+        assert shadow.plan.normalized_experiments() == authoritative_normalized
+        assert [item["tec_targets_c"] for item in authoritative_normalized] == [
+            {1: 21.0, 2: 18.0},
+            {1: 21.0, 2: 18.0},
+            {1: 26.0, 2: 23.0},
+            {1: 26.0, 2: 23.0},
+        ]
+    finally:
+        window.close()
+
+
+def test_v3_shadow_plan_matches_plain_fixed_start_grouping_and_camera_overrides(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        output_path = tmp_path / "plain-shadow"
+        window.series_path.setText(str(output_path))
+        window.exp_repeats.setValue(4)
+        window.exp_frames.setValue(6)
+        window.exp_camera_fps.setValue(12.0)
+        window.exp_camera_start.setValue(0.25)
+        window.dynamic_camera_start.setChecked(False)
+        window.exp_freq_scan_enable.setChecked(False)
+        window.exp_sweep_enable.setChecked(False)
+        window.exp_flush_enabled.setChecked(False)
+        window.exp_tec_scan_enable.setChecked(False)
+
+        authoritative, total_frames, _config = window._build_experiment_series(output_path)
+        shadow = window._v3_shadow_build_result()
+
+        assert shadow.plan is not None
+        assert shadow.plan.normalized_groups() == (
+            tuple(normalize_experiment(experiment) for experiment in authoritative.experiments),
+        )
+        assert tuple(len(group) for group in shadow.plan.experiment_groups) == (4,)
+        assert shadow.plan.total_frames == total_frames == 24
+        assert all(item["sequence_settings"]["frames"] == 6 for item in shadow.plan.normalized_experiments())
+        assert all(
+            item["sequence_settings"]["trigger_source"] == "Internal"
+            for item in shadow.plan.normalized_experiments()
+        )
+        assert all(item["do_channels"][0][3] == 0.25 for item in shadow.plan.normalized_experiments())
+    finally:
+        window.close()
+
+
+def test_v3_shadow_plan_matches_fm_dynamic_start_locked_tec_and_blank_path(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        window.series_path.setText("")
+        window.exp_repeats.setValue(3)
+        window.exp_frames.setValue(4)
+        window.exp_camera_fps.setValue(10.0)
+        window.dynamic_camera_start.setChecked(True)
+        for value, widget in zip((0.1, 0.2, 0.3), window.camera_start_array, strict=False):
+            widget.setValue(value)
+        window.exp_sweep_enable.setChecked(True)
+        window.exp_ad2_channels[0]["enable"].setChecked(False)
+        window.exp_flush_enabled.setChecked(False)
+        window.exp_tec_scan_enable.setChecked(True)
+        window.exp_tec_lock_channels.setChecked(True)
+        window.exp_tec_points.setText("20, 25")
+        window.sequence_mode.setCurrentText("Continuous")
+        window.sequence_source.setCurrentText("External")
+        window.sequence_interval.setValue(0.125)
+        window.sequence_burst.setValue(2)
+        window.external_polarity.setCurrentText("Negative")
+        window.external_delay.setValue(0.003)
+        window.exp_exposure_ms.setValue(7.5)
+        window.app.camera.enabled = False
+        window.app.pump.enabled = False
+        window.app.valve.enabled = False
+        window.app.tec.enabled = False
+
+        _temperature_series, groups, total_frames, _config = window._build_temperature_experiment_groups(Path(""))
+        shadow = window._v3_shadow_build_result()
+
+        assert shadow.plan is not None
+        authoritative_groups = tuple(
+            tuple(normalize_experiment(experiment) for experiment in group.experiments)
+            for group in groups
+        )
+        assert shadow.plan.normalized_groups() == authoritative_groups
+        assert tuple(len(group) for group in shadow.plan.experiment_groups) == (3, 3)
+        assert shadow.plan.total_frames == total_frames == 24
+        assert shadow.preflight.output_path_state == "implicit_working_directory"
+        assert shadow.preflight.fluidics_required is False
+        assert "pump" not in shadow.preflight.required_devices
+        assert "valve" not in shadow.preflight.required_devices
+        assert {"camera", "tec"}.issubset(shadow.preflight.disabled_devices)
+        assert "ad2" in shadow.preflight.simulated_devices
+        normalized = shadow.plan.normalized_experiments()
+        assert [item["do_channels"][0][3] for item in normalized[:3]] == [0.1, 0.2, 0.3]
+        assert all(item["fm_sweep"] is not None for item in normalized)
+        assert all(item["wfg"]["channels"][0]["carrier"]["enable"] is True for item in normalized)
+        assert all(item["global_exposure_ms"] == 7.5 for item in normalized)
+        assert all(item["sequence_settings"]["trigger_source"] == "Internal" for item in normalized)
+        assert all(item["sequence_settings"]["masterpulse_interval_s"] == 0.125 for item in normalized)
+    finally:
+        window.close()
+
+
 def test_v3_frequency_scan_count_and_step_modes_are_exclusive_and_preserve_values(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
     try:
         mode = window.findChild(QComboBox, "v3FrequencyScanInputMode")
         assert mode.currentText() == "Number of Frequencies"
+        assert not window.exp_freq_scan_count.isEnabled()
+        assert not window.exp_freq_scan_step_khz.isEnabled()
+        window.exp_freq_scan_enable.setChecked(True)
         assert window.exp_freq_scan_count.isEnabled()
         assert not window.exp_freq_scan_step_khz.isEnabled()
 
@@ -436,21 +792,23 @@ def test_v3_pump_panel_separates_actions_from_static_configuration(monkeypatch, 
             "Syringe setup",
             "Recovery",
         ]
-        assert {group.title() for group in tasks.widget(0).findChildren(QGroupBox)} == {"Pump operations"}
+        assert {group.title() for group in tasks.widget(0).findChildren(QGroupBox)} == {
+            "Immediate pump operations"
+        }
         assert {group.title() for group in tasks.widget(1).findChildren(QGroupBox)} == {"Valve position"}
         assert {group.title() for group in tasks.widget(2).findChildren(QGroupBox)} == {"Manual flush"}
         assert {group.title() for group in tasks.widget(3).findChildren(QGroupBox)} == {
-            "Syringe setup and calibration"
+            "Shared syringe setup and calibration"
         }
         assert {group.title() for group in tasks.widget(4).findChildren(QGroupBox)} == {
             "Connection recovery"
         }
         groups = {group.title() for group in dialog.findChildren(QGroupBox)}
         assert {
-            "Pump operations",
+            "Immediate pump operations",
             "Valve position",
             "Manual flush",
-            "Syringe setup and calibration",
+            "Shared syringe setup and calibration",
         } <= groups
         button_texts = {button.text() for button in dialog.findChildren(QPushButton)}
         assert {
@@ -487,6 +845,36 @@ def test_v3_pump_panel_separates_actions_from_static_configuration(monkeypatch, 
         assert "underlying CAN cause" in " ".join(
             label.text() for label in recovery.findChildren(QLabel)
         )
+        stop_pump = dialog.findChild(QPushButton, "v3StopPumpButton")
+        assert stop_pump is not None
+        assert "darkred" in stop_pump.styleSheet()
+        flush_note = dialog.findChild(QLabel, "v3ManualFlushWorkflowNote")
+        assert "P01 → pump dispense → valve P02" in flush_note.text()
+        syringe_boundary = dialog.findChild(QLabel, "v3SharedSyringeBoundary")
+        assert "capacity" in syringe_boundary.text()
+        assert "does not apply it" in syringe_boundary.text()
+        assert dialog.findChild(QGroupBox, "v3PumpValveLocalStatus") is not None
+        pump_state = dialog.findChild(QLabel, "v3PumpLocalState")
+        valve_state = dialog.findChild(QLabel, "v3ValveLocalState")
+        syringe_state = dialog.findChild(QLabel, "v3SyringeLocalState")
+        assert "tracked fill 0.000 ml" in pump_state.text()
+        assert "cached protocol position 1 (P01)" in valve_state.text()
+        assert "No syringe configuration has been applied" in syringe_state.text()
+        assert "does not query hardware" in dialog.findChild(
+            QLabel, "v3PumpLocalStatusEvidenceNote"
+        ).text()
+
+        window.app.pump.initialized = True
+        window.app.pump.fill_level = 0.625
+        window.app.pump.referenced = True
+        window.app.pump.syringe_config = {"name": "Custom", "inner_diameter_mm": 4.5}
+        window.app.valve.initialized = True
+        window.app.valve.position = 2
+        window.app.valve.status_note = "confirmed"
+        window._refresh_status()
+        assert "Connected; idle; tracked fill 0.625 ml; reference move confirmed" in pump_state.text()
+        assert "Connected; cached protocol position 2 (P02); status confirmed" in valve_state.text()
+        assert "name Custom; inner diameter 4.5 mm" in syringe_state.text()
     finally:
         window.close()
 
@@ -506,7 +894,8 @@ def test_v3_camera_panel_has_ordered_acquisition_sequence_and_advanced_display(m
         assert [tasks.tabText(index) for index in range(tasks.count())] == ["Capture", "Sequence", "Display"]
         assert {group.title() for group in tasks.widget(0).findChildren(QGroupBox)} == {
             "Capture and preview",
-            "Camera region of interest (ROI)",
+            "Shared applied ROI and manual exposure",
+            "Saved-frame output",
         }
         sequence_sections = tasks.widget(1).findChild(QTabWidget, "v3CameraSequenceSections")
         assert sequence_sections is not None
@@ -519,11 +908,14 @@ def test_v3_camera_panel_has_ordered_acquisition_sequence_and_advanced_display(m
         assert {group.title() for group in sequence_sections.widget(0).findChildren(QGroupBox)} == {
             "Sequence actions"
         }
+        assert "Save last captured image" not in {
+            button.text() for button in sequence_sections.widget(0).findChildren(QPushButton)
+        }
         assert {group.title() for group in sequence_sections.widget(1).findChildren(QGroupBox)} == {
-            "Sequence timing"
+            "Shared sequence defaults"
         }
         assert {group.title() for group in sequence_sections.widget(2).findChildren(QGroupBox)} == {
-            "Camera trigger"
+            "Trigger defaults and manual mode"
         }
         assert {group.title() for group in sequence_sections.widget(3).findChildren(QGroupBox)} == {
             "Retained sequence fields (not used)"
@@ -556,6 +948,24 @@ def test_v3_camera_panel_has_ordered_acquisition_sequence_and_advanced_display(m
         assert window.sequence_frames in sequence_sections.widget(1).findChildren(type(window.sequence_frames))
         assert window.dcam_source in sequence_sections.widget(2).findChildren(type(window.dcam_source))
         assert window.capture_mode in sequence_sections.widget(3).findChildren(type(window.capture_mode))
+        shared_summary = dialog.findChild(QLabel, "v3CameraSharedStateSummary")
+        assert "inherit the applied ROI" in shared_summary.text()
+        assert "force Internal trigger source" in shared_summary.text()
+        assert "preview only" in shared_summary.text()
+        assert "replace the capture-buffer" in dialog.findChild(
+            QLabel, "v3CameraSequenceBoundary"
+        ).text()
+        assert "force trigger source to Internal" in dialog.findChild(
+            QLabel, "v3CameraTriggerBoundary"
+        ).text()
+        capture_labels = {label.text() for label in tasks.widget(0).findChildren(QLabel)}
+        assert {
+            "Horizontal offset (px)",
+            "Vertical offset (px)",
+            "Horizontal size (px)",
+            "Vertical size (px)",
+            "Output folder",
+        } <= capture_labels
     finally:
         window.close()
 
@@ -570,6 +980,15 @@ def test_v3_wfg_keeps_manual_controls_but_removes_outer_horizontal_overflow(monk
         assert scroll is not None
         assert scroll.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         assert dialog.sizeHint().width() < 800
+        dialog.resize(900, 760)
+        dialog.show()
+        QApplication.processEvents()
+        for index in (0, 1):
+            channel_scroll = dialog.findChild(QScrollArea, f"v3WfgChannel{index}Scroll")
+            assert channel_scroll is not None
+            assert channel_scroll.widgetResizable()
+            assert channel_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+            assert channel_scroll.horizontalScrollBar().maximum() == 0
         groups = {group.title(): group for group in dialog.findChildren(QGroupBox)}
         assert "AD2 channel 0 (LabVIEW Ch1)" in groups
         assert "AD2 channel 1 (LabVIEW Ch2)" in groups
@@ -599,6 +1018,9 @@ def test_v3_wfg_keeps_manual_controls_but_removes_outer_horizontal_overflow(monk
             QLabel, "manualWfgPreviewDescription"
         )
         assert preview_note.text() == "Computed from the current manual settings; no hardware readback."
+        boundary = dialog.findChild(QLabel, "v3ManualWfgExperimentBoundary")
+        assert "first hardware initialization only" in boundary.text()
+        assert "one-time seed" in boundary.text()
         window.wfg_channels[0]["enable"].setChecked(True)
         window.wfg_channels[1]["enable"].setChecked(True)
         window._update_wfg_preview()
@@ -714,11 +1136,22 @@ def test_v3_zscan_keeps_motion_warning_compact_and_groups_top_aligned(monkeypatc
         dialog.show()
         QApplication.processEvents()
         labels = [label.text() for label in dialog.findChildren(QLabel)]
-        assert "Manual calibration workflow only. Motion requires explicit confirmation." in labels
+        workflow_note = next(label for label in labels if label.startswith("Manual calibration workflow only."))
+        assert "existing camera connection" in workflow_note
+        assert "independent of the experiment-camera exposure" in workflow_note
+        assert "Motion requires explicit confirmation" in workflow_note
         groups = {group.title(): group for group in dialog.findChildren(QGroupBox)}
         assert {"Z-Scan Calibration Parameters", "Z-Scan actions"} <= set(groups)
         assert groups["Z-Scan Calibration Parameters"].height() < dialog.height() - 80
         assert groups["Z-Scan actions"].height() < dialog.height() - 80
+        window._apply_zscan_range(10.0)
+        window.zscan_z_start_um.setValue(0.0)
+        window.zscan_z_end_um.setValue(10.0)
+        window.zscan_step_size_um.setValue(3.0)
+        summary = dialog.findChild(QLabel, "v3ZScanDerivedSummary")
+        assert "5 position(s) / image(s)" in summary.text()
+        assert "0.000–10.000 µm" in summary.text()
+        assert "live-read from device MaxTravel" in summary.text()
     finally:
         window.close()
 
@@ -876,7 +1309,8 @@ def test_v3_rebuilt_manual_panel_buttons_dispatch_without_hardware(monkeypatch, 
         }
         assert "does not retrieve an image" in camera_buttons["Start camera capture session"].toolTip()
         assert "does not retrieve an image" in camera_buttons["Send software trigger"].toolTip()
-        assert "Capture single image action" in camera_buttons["Save last captured image"].toolTip()
+        assert "Capture single image" in camera_buttons["Save last captured image"].toolTip()
+        assert "does not retrieve a new frame" in camera_buttons["Save last captured image"].toolTip()
         assert "does not capture a new image" in camera_buttons["Reprocess preview"].toolTip()
     finally:
         window.close()

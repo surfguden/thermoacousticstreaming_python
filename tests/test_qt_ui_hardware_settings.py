@@ -1558,7 +1558,34 @@ def test_qt_ui_builds_one_experiment_group_per_tec_temperature(monkeypatch, tmp_
         assert groups[1].series_path == tmp_path / "series" / "temperature_002_25p500C"
         assert [experiment.tec_target_c for experiment in groups[0].experiments] == [20.0, 20.0]
         assert [experiment.tec_target_c for experiment in groups[1].experiments] == [25.5, 25.5]
+        assert [experiment.tec_targets_c for experiment in groups[0].experiments] == [
+            {1: 20.0, 2: 20.0},
+            {1: 20.0, 2: 20.0},
+        ]
         assert config is not None
+    finally:
+        window.close()
+
+
+def test_qt_ui_builds_unlocked_tec_groups_with_both_channel_targets(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        window.series_path.setText(str(tmp_path / "series"))
+        window.exp_camera_fps.setValue(20.0)
+        window.exp_repeats.setValue(1)
+        window.exp_tec_scan_enable.setChecked(True)
+        window.exp_tec_lock_channels.setChecked(False)
+        window.exp_tec_points.setText("21.0, 26.0")
+        window.exp_tec_points_ch2.setText("18.5, 22.5")
+
+        _series, groups, _frames, _config = window._build_temperature_experiment_groups(
+            Path(window.series_path.text())
+        )
+
+        assert groups[0].experiments[0].tec_target_c == 21.0
+        assert groups[0].experiments[0].tec_targets_c == {1: 21.0, 2: 18.5}
+        assert groups[1].experiments[0].tec_target_c == 26.0
+        assert groups[1].experiments[0].tec_targets_c == {1: 26.0, 2: 22.5}
     finally:
         window.close()
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import math
 import time
 from typing import Callable, Protocol
@@ -97,6 +98,21 @@ class TecError(RuntimeError):
 
 class TecAbortedError(TecError):
     pass
+
+
+class TecPartialApplicationError(TecError):
+    """A sequential multi-channel apply failed after state may have changed."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        attempted_channels: tuple[int, ...],
+        off_cleanup_error: str | None,
+    ) -> None:
+        super().__init__(message)
+        self.attempted_channels = attempted_channels
+        self.off_cleanup_error = off_cleanup_error
 
 
 @dataclass(slots=True)
@@ -377,7 +393,9 @@ class TecController:
     channels: tuple[int, ...] = TEC_CHANNELS
     initialized_via_real_port: bool = False
     last_status: dict[int, TecStatus] = field(default_factory=dict)
+    last_status_at_utc: datetime | None = None
     cleanup_timeout_s: float = 5.0
+    operation_timeout_s: float = 5.0
 
     def _backend(self) -> TecBackend:
         if self.backend is None:
@@ -405,6 +423,7 @@ class TecController:
             raise
         self.initialized = True
         self.last_status = status
+        self.last_status_at_utc = datetime.now(timezone.utc)
 
     def cleanup(self) -> None:
         if self.backend is not None:

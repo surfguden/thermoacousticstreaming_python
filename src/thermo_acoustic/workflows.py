@@ -187,7 +187,11 @@ class Experiment2:
     wfg_config: WfgConfig | dict[str, Any] | None = None
     do_clock_settings: DoConfig | dict[str, Any] | None = None
     fm_sweep: FmSweepSettings | None = None
+    # Backward-compatible single-target field retained for existing TDMS
+    # readers. For unlocked scans it remains channel 1's target; the explicit
+    # per-channel mapping below preserves channel 2 as well.
     tec_target_c: float | None = None
+    tec_targets_c: dict[int, float] | None = None
     # Whether each instrument was a Simulated*/simulate=True backend for this
     # run, not requested/enabled state -- set by Application.run_experiment2()
     # from the live instrument instances right before the settings snapshot,

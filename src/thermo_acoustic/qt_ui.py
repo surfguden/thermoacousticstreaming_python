@@ -59,6 +59,7 @@ from .ad2 import (
 )
 from .application import STEP_ORDER, STEP_SAVE_RESULTS, Application
 from .camera import SubRegion
+from .experiment_planning import ExperimentCameraDefaults
 from .hardware_factory import HardwareRuntimeConfig, apply_hardware_bundle, build_hardware_bundle
 from .hardware_config import ZStageBackend, default_hardware_config
 from .instruments import SimulatedAD2Sdk
@@ -3744,31 +3745,43 @@ class MainWindow(QMainWindow):
         return "EmptyComplete" if self.app.empty(self.fill_flow_rate.value()) else "EmptyTimedOut"
 
     def _start_configure_camera(self) -> None:
-        roi = SubRegion(
-            horizontal_offset=self.roi_h_offset.value(),
-            vertical_offset=self.roi_v_offset.value(),
-            horizontal_size=self.roi_h_size.value(),
-            vertical_size=self.roi_v_size.value(),
-        )
+        defaults = self._experiment_camera_defaults()
+        roi = defaults.roi
         exposure_ms = self.exposure_ms.value()
         center = self.center_roi.isChecked()
-        sequence_settings = self._camera_sequence_settings()
+        sequence_settings = defaults.sequence_settings(
+            frames=self.sequence_frames.value(),
+            trigger_source_override=self.dcam_source.currentText(),
+        )
         self._run_action(
             lambda progress: self._configure_camera(roi, exposure_ms, center, sequence_settings),
             "Configuring Camera",
         )
 
     def _camera_sequence_settings(self) -> dict[str, object]:
-        return {
-            "masterpulse_mode": self.sequence_mode.currentText(),
-            "masterpulse_source": self.sequence_source.currentText(),
-            "masterpulse_interval_s": self.sequence_interval.value(),
-            "masterpulse_burst_times": self.sequence_burst.value(),
-            "frames": self.sequence_frames.value(),
-            "trigger_source": self.dcam_source.currentText(),
-            "trigger_polarity": self.external_polarity.currentText(),
-            "trigger_delay_s": self.external_delay.value(),
-        }
+        return self._experiment_camera_defaults().sequence_settings(
+            frames=self.sequence_frames.value(),
+            trigger_source_override=self.dcam_source.currentText(),
+        )
+
+    def _experiment_camera_defaults(self) -> ExperimentCameraDefaults:
+        """Adapt the existing Camera widgets into one shared defaults model."""
+
+        return ExperimentCameraDefaults(
+            masterpulse_mode=self.sequence_mode.currentText(),
+            masterpulse_source=self.sequence_source.currentText(),
+            masterpulse_interval_s=self.sequence_interval.value(),
+            masterpulse_burst_times=self.sequence_burst.value(),
+            trigger_source=self.dcam_source.currentText(),
+            trigger_polarity=self.external_polarity.currentText(),
+            trigger_delay_s=self.external_delay.value(),
+            roi=SubRegion(
+                horizontal_offset=self.roi_h_offset.value(),
+                vertical_offset=self.roi_v_offset.value(),
+                horizontal_size=self.roi_h_size.value(),
+                vertical_size=self.roi_v_size.value(),
+            ),
+        )
 
     def _configure_camera(self, roi: SubRegion, exposure_ms: float, center: bool, sequence_settings: dict[str, object] | None = None) -> str:
         self.app.camera.configure_exposure_time(exposure_ms)
@@ -3938,7 +3951,10 @@ class MainWindow(QMainWindow):
         return any(series_path.rglob("data.tdms")) or any(series_path.rglob("frame_*.tiff"))
 
     def _build_experiment_series(
-        self, series_root: Path | None = None, tec_target_c: float | None = None
+        self,
+        series_root: Path | None = None,
+        tec_target_c: float | None = None,
+        tec_targets_c: dict[int, float] | None = None,
     ) -> tuple[ExperimentSeries2, int, WfgConfig]:
         series_path = Path(series_root) if series_root is not None else Path(self.series_path.text())
         repeats = self.exp_repeats.value()
@@ -3987,15 +4003,13 @@ class MainWindow(QMainWindow):
                     global_exposure_ms=self.exp_exposure_ms.value(),
                     trigger_global_exposure=self.global_exposure.isChecked(),
                     sequence_settings={
-                        # Start from the manual Camera tab's own sequence settings so
-                        # masterpulse_mode/masterpulse_source/masterpulse_interval_s/
-                        # masterpulse_burst_times/trigger_polarity/trigger_delay_s --
-                        # which have no separate Experiment-tab controls -- carry
-                        # through to the automated path every run instead of being
-                        # silently omitted, matching RunExperiment2.vi's own behavior
-                        # of always applying the whole SequenceSettings cluster.
-                        **self._camera_sequence_settings(),
-                        "frames": self.exp_frames.value(),
+                        # The existing Camera widgets edit one shared defaults
+                        # model. Automated runs keep their two explicit overrides:
+                        # Experiment Frames and deterministic Internal trigger.
+                        **self._experiment_camera_defaults().sequence_settings(
+                            frames=self.exp_frames.value(),
+                            trigger_source_override="Internal",
+                        ),
                         "camera_start_s": [widget.value() for widget in self.camera_start_array],
                         # Explicit and deterministic so experiment runs never inherit
                         # whatever trigger source a prior manual Camera tab session left
@@ -4004,12 +4018,12 @@ class MainWindow(QMainWindow):
                         # question. The current experiment DO config below programs only
                         # DIO1; this deterministic Internal setting removes undefined
                         # leftover state but does not establish physical synchronization.
-                        "trigger_source": "Internal",
                     },
                     wfg_config=config,
                     do_clock_settings=self._experiment_do_clock_config(repeat),
                     fm_sweep=fm_sweep,
                     tec_target_c=tec_target_c,
+                    tec_targets_c=tec_targets_c,
                 )
             )
         return ExperimentSeries2(series_path, experiments), self.exp_frames.value() * repeats, preview_config
@@ -4068,7 +4082,17 @@ class MainWindow(QMainWindow):
         preview_config: WfgConfig | None = None
         for index, temperature_c in enumerate(temperature_series.temperature_points_c, start=1):
             group_path = series_path / self._temperature_folder_name(index, temperature_c)
-            group, frames, config = self._build_experiment_series(group_path, tec_target_c=temperature_c)
+            target = temperature_series.target_at(index - 1)
+            targets = (
+                {channel: float(target) for channel in self.app.tec.channels}
+                if isinstance(target, float)
+                else dict(target)
+            )
+            group, frames, config = self._build_experiment_series(
+                group_path,
+                tec_target_c=temperature_c,
+                tec_targets_c=targets,
+            )
             groups.append(group)
             total_frames += frames
             if preview_config is None:

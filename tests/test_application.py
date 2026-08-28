@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 import threading
@@ -64,6 +65,13 @@ from thermo_acoustic.serial_config import (
     visa_configure_serial_port_instr,
     visa_configure_serial_port_serial_instr,
 )
+from thermo_acoustic.runtime_truth import (
+    EvidenceBasis,
+    EvidenceFreshness,
+    RuntimeEventSeverity,
+    VerificationScope,
+)
+from thermo_acoustic.tec import TecController, TecStatus
 from thermo_acoustic.thorlabs_piezo import PiezoStage
 from thermo_acoustic.utilities import (
     DialogType,
@@ -211,6 +219,86 @@ def test_initialize_updates_status():
 
     assert app.status == "System Initialized"
     assert "System Initialized" in app.status_events
+
+
+def test_legacy_status_event_also_emits_structured_runtime_event():
+    app = Application()
+
+    app.fire_status_event("ReadyForReview")
+
+    assert app.status == "ReadyForReview"
+    assert app.status_events[-1] == "ReadyForReview"
+    assert app.ui_events[-1].data == "ReadyForReview"
+    event = app.runtime_events[-1]
+    assert event.severity is RuntimeEventSeverity.INFO
+    assert event.subsystem == "application"
+    assert event.operation == "status"
+    assert event.message == "ReadyForReview"
+
+
+def test_runtime_evidence_snapshot_adapts_existing_state_without_hardware_queries():
+    class PoisonBackend:
+        def __getattr__(self, name):
+            raise AssertionError(f"snapshot must not query backend attribute {name}")
+
+    tec_observed_at = datetime(2026, 8, 28, 6, 39, tzinfo=timezone.utc)
+    app = Application(
+        camera=HamamatsuCamera(enabled=True, simulate=False, backend=PoisonBackend(), handle=object()),
+        pump=CetoniPump(
+            enabled=True,
+            simulate=False,
+            backend=PoisonBackend(),
+            fill_level=0.75,
+            initialized=True,
+        ),
+        valve=Valve(enabled=True, simulate=False, backend=PoisonBackend(), position=1, initialized=True),
+        tec=TecController(
+            enabled=True,
+            simulate=False,
+            backend=PoisonBackend(),
+            initialized=True,
+            last_status={1: TecStatus(channel=1, current_temperature_c=24.5)},
+            last_status_at_utc=tec_observed_at,
+        ),
+    )
+    app.valve.status_note = "confirmed"
+
+    snapshot = app.runtime_evidence_snapshot()
+
+    assert snapshot.camera.values["enabled"].basis is EvidenceBasis.DERIVED
+    assert snapshot.camera.values["connected"].value is True
+    assert snapshot.camera.values["connected"].freshness is EvidenceFreshness.CACHED
+    assert snapshot.pump.values["fill_level_ml"].basis is EvidenceBasis.OBSERVED
+    assert snapshot.pump.values["fill_level_ml"].observed_at_utc is None
+    assert snapshot.tec.values["status"].verification is VerificationScope.PROTOCOL
+    assert snapshot.tec.values["status"].freshness is EvidenceFreshness.CACHED
+    assert snapshot.tec.values["status"].observed_at_utc == tec_observed_at
+    assert snapshot.valve.values["protocol_position"].basis is EvidenceBasis.OBSERVED
+    assert snapshot.valve.values["physical_route"].verification is VerificationScope.UNVERIFIED
+    assert snapshot.experiment.values["status"].observed_at_utc == snapshot.captured_at_utc
+
+
+def test_initialize_failure_emits_structured_fault_without_changing_final_legacy_status():
+    class FailingPump:
+        enabled = True
+
+        def initialize(self):
+            raise QmixPumpError("fault remained after clear")
+
+        def cleanup(self):
+            raise AssertionError("independent initialization must not roll back succeeded devices")
+
+    app = Application(ad2=SimulatedAD2Sdk(), pump=FailingPump())
+
+    with pytest.raises(RuntimeError, match="Pump initialize failed"):
+        app.initialize()
+
+    assert app.status.startswith("System Partially Initialized")
+    assert app.status_events == ["Initializing", app.status]
+    pump_event = next(event for event in app.runtime_events if event.subsystem == "pump")
+    assert pump_event.severity is RuntimeEventSeverity.HARDWARE_FAULT
+    assert pump_event.operation == "initialize"
+    assert pump_event.may_continue is True
 
 
 def test_priority_message_is_dequeued_first():

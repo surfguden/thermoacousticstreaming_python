@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import datetime, timezone
 import logging
 from dataclasses import dataclass, field
 import math
@@ -12,7 +13,17 @@ from .hw_logging import run_with_timeout
 from .instruments import AD2Sdk, CetoniPump, HamamatsuCamera, SimulatedAD2Sdk, Valve, ZStage
 from .messages import Message, MessageName, QueueResult, UiEvent
 from .queues import LabViewQueue
-from .tec import TecController
+from .runtime_truth import (
+    EvidenceBasis,
+    EvidenceFreshness,
+    EvidenceValue,
+    RuntimeEvent,
+    RuntimeEventSeverity,
+    RuntimeEvidenceSnapshot,
+    SubsystemEvidence,
+    VerificationScope,
+)
+from .tec import TecController, TecPartialApplicationError
 from .workflows import Experiment2, ExperimentSeries2, FlushSettings, TemperatureSeries
 
 
@@ -107,6 +118,7 @@ class Application:
     main_queue: LabViewQueue = field(default_factory=lambda: LabViewQueue("Main Queue"))
     ui_events: list[UiEvent] = field(default_factory=list)
     status_events: list[str] = field(default_factory=list)
+    runtime_events: list[RuntimeEvent] = field(default_factory=list)
     errors: list[BaseException | str] = field(default_factory=list)
     stop_fired: bool = False
     _running: bool = False
@@ -156,10 +168,178 @@ class Application:
     def fire_ui_event(self, message: MessageName | str, data: object = None) -> None:
         self.ui_events.append(UiEvent(message=message, data=data))
 
+    def emit_event(self, event: RuntimeEvent, *, update_legacy_status: bool = True) -> RuntimeEvent:
+        self.runtime_events.append(event)
+        if update_legacy_status:
+            self.status = event.message
+            self.status_events.append(event.message)
+            self.fire_ui_event(MessageName.UPDATE_STATUS, event.message)
+        return event
+
     def fire_status_event(self, status: str) -> None:
-        self.status = status
-        self.status_events.append(status)
-        self.fire_ui_event(MessageName.UPDATE_STATUS, status)
+        self.emit_event(
+            RuntimeEvent.create(
+                severity=RuntimeEventSeverity.INFO,
+                subsystem="application",
+                operation="status",
+                message=status,
+                may_continue=True,
+            )
+        )
+
+    def runtime_evidence_snapshot(self) -> RuntimeEvidenceSnapshot:
+        """Adapt current in-memory state without issuing any hardware query."""
+
+        captured_at = datetime.now(timezone.utc)
+
+        def live_software(value, source: str, note: str | None = None):
+            return EvidenceValue(
+                value=value,
+                # This is current process state, not a device readback.
+                # Reserve OBSERVED for values returned by a real backend.
+                basis=EvidenceBasis.DERIVED,
+                freshness=EvidenceFreshness.FRESH,
+                verification=VerificationScope.SOFTWARE,
+                observed_at_utc=captured_at,
+                source_operation=source,
+                note=note,
+            )
+
+        camera_real = self.camera.enabled and not self.camera.simulate
+        camera = SubsystemEvidence(
+            {
+                "enabled": live_software(self.camera.enabled, "camera.enabled"),
+                "simulated": live_software(self.camera.simulate, "camera.simulate"),
+                "connected": EvidenceValue(
+                    value=self.camera.handle is not None,
+                    basis=EvidenceBasis.DERIVED,
+                    freshness=EvidenceFreshness.CACHED,
+                    verification=VerificationScope.SOFTWARE,
+                    observed_at_utc=None,
+                    source_operation="camera.handle",
+                    note="Facade handle state; not a fresh device query.",
+                ),
+                "capturing": live_software(self.camera.capturing, "camera.capturing"),
+                "sequence": EvidenceValue(
+                    value=self.camera.sequence_config,
+                    basis=EvidenceBasis.APPLIED if camera_real and self.camera.sequence_config is not None else EvidenceBasis.DERIVED,
+                    freshness=EvidenceFreshness.UNKNOWN,
+                    verification=VerificationScope.PROTOCOL if camera_real else VerificationScope.SOFTWARE,
+                    observed_at_utc=None,
+                    source_operation="camera.configure_sequence",
+                    note="No hardware readback timestamp is retained.",
+                ),
+                "roi": EvidenceValue(
+                    value=self.camera.roi,
+                    basis=EvidenceBasis.APPLIED if camera_real and self.camera.roi is not None else EvidenceBasis.DERIVED,
+                    freshness=EvidenceFreshness.UNKNOWN,
+                    verification=VerificationScope.PROTOCOL if camera_real else VerificationScope.SOFTWARE,
+                    observed_at_utc=None,
+                    source_operation="camera.configure_roi/read_subregion_limits_and_value",
+                    note="Physical field of view is not independently verified.",
+                ),
+            }
+        )
+
+        tec_real = self.tec.enabled and not self.tec.simulate
+        tec_status_basis = EvidenceBasis.OBSERVED if tec_real else EvidenceBasis.DERIVED
+        tec = SubsystemEvidence(
+            {
+                "enabled": live_software(self.tec.enabled, "tec.enabled"),
+                "simulated": live_software(self.tec.simulate, "tec.simulate"),
+                "initialized": live_software(self.tec.initialized, "tec.initialized"),
+                "status": EvidenceValue(
+                    value=dict(self.tec.last_status),
+                    basis=tec_status_basis,
+                    freshness=EvidenceFreshness.CACHED if tec_real else EvidenceFreshness.FRESH,
+                    verification=VerificationScope.PROTOCOL if tec_real else VerificationScope.SOFTWARE,
+                    observed_at_utc=self.tec.last_status_at_utc if tec_real else captured_at,
+                    source_operation="tec.last_status",
+                    note=(
+                        "Real status timestamp marks the completed facade read; the snapshot remains cached. "
+                        "Real target-temperature readback is unavailable."
+                    ),
+                ),
+            }
+        )
+
+        pump_real = self.pump.enabled and not self.pump.simulate
+        pump = SubsystemEvidence(
+            {
+                "enabled": live_software(self.pump.enabled, "pump.enabled"),
+                "simulated": live_software(self.pump.simulate, "pump.simulate"),
+                "initialized": live_software(self.pump.initialized, "pump.initialized"),
+                "fill_level_ml": EvidenceValue(
+                    value=self.pump.fill_level,
+                    basis=EvidenceBasis.OBSERVED if pump_real and self.pump.initialized else EvidenceBasis.DERIVED,
+                    freshness=EvidenceFreshness.CACHED if pump_real else EvidenceFreshness.FRESH,
+                    verification=VerificationScope.PROTOCOL if pump_real else VerificationScope.SOFTWARE,
+                    observed_at_utc=None if pump_real else captured_at,
+                    source_operation="pump.fill_level",
+                    note="Protocol readback/bookkeeping; not physical liquid-volume verification.",
+                ),
+                "referenced": EvidenceValue(
+                    value=self.pump.referenced,
+                    basis=EvidenceBasis.APPLIED if self.pump.referenced else EvidenceBasis.DERIVED,
+                    freshness=EvidenceFreshness.CACHED,
+                    verification=VerificationScope.PROTOCOL if pump_real else VerificationScope.SOFTWARE,
+                    observed_at_utc=None,
+                    source_operation="pump.reference_move",
+                    note="No fresh reference-status query is made for this snapshot.",
+                ),
+            }
+        )
+
+        valve_real = self.valve.enabled and not self.valve.simulate
+        valve_confirmed = valve_real and self.valve.status_note == "confirmed"
+        valve = SubsystemEvidence(
+            {
+                "enabled": live_software(self.valve.enabled, "valve.enabled"),
+                "simulated": live_software(self.valve.simulate, "valve.simulate"),
+                "initialized": live_software(self.valve.initialized, "valve.initialized"),
+                "protocol_position": EvidenceValue(
+                    value=self.valve.position,
+                    basis=EvidenceBasis.OBSERVED if valve_confirmed else EvidenceBasis.REQUESTED,
+                    freshness=EvidenceFreshness.CACHED,
+                    verification=VerificationScope.PROTOCOL if valve_confirmed else VerificationScope.UNVERIFIED,
+                    observed_at_utc=None,
+                    source_operation="valve.status_note",
+                    note=self.valve.status_note or "No protocol confirmation retained.",
+                ),
+                "physical_route": EvidenceValue(
+                    value=None,
+                    basis=EvidenceBasis.DERIVED,
+                    freshness=EvidenceFreshness.UNKNOWN,
+                    verification=VerificationScope.UNVERIFIED,
+                    observed_at_utc=None,
+                    source_operation="valve physical routing bench check",
+                    note="P01/P02 physical fluidic meaning remains bench-unverified.",
+                ),
+            }
+        )
+
+        experiment = SubsystemEvidence(
+            {
+                "status": live_software(self.status, "application.status"),
+                "queue_remaining": EvidenceValue(
+                    value=self.experiment_series.see_elements_left(),
+                    basis=EvidenceBasis.DERIVED,
+                    freshness=EvidenceFreshness.FRESH,
+                    verification=VerificationScope.SOFTWARE,
+                    observed_at_utc=captured_at,
+                    source_operation="experiment_series.see_elements_left",
+                ),
+                "stop_requested": live_software(self.stop_fired, "application.stop_fired"),
+            }
+        )
+        return RuntimeEvidenceSnapshot(
+            captured_at_utc=captured_at,
+            camera=camera,
+            tec=tec,
+            pump=pump,
+            valve=valve,
+            experiment=experiment,
+        )
 
     def get_ad2_sdk(self) -> AD2Sdk:
         return self.ad2
@@ -257,7 +437,7 @@ class Application:
         )
         failures: list[tuple[str, Exception]] = []
         succeeded_count = 0
-        for _name, display_name, instrument in devices:
+        for name, display_name, instrument in devices:
             if progress:
                 progress("init_device", (display_name, "In Progress"))
             try:
@@ -266,6 +446,21 @@ class Application:
                 if progress:
                     progress("init_device", (display_name, "Failed"))
                 failures.append((display_name, exc))
+                self.emit_event(
+                    RuntimeEvent.create(
+                        severity=RuntimeEventSeverity.HARDWARE_FAULT,
+                        subsystem=name,
+                        operation="initialize",
+                        message=f"{display_name} initialize failed: {exc}",
+                        may_continue=True,
+                        operator_next_action=(
+                            "Inspect the Qmix/CAN fault and use only the reviewed recovery path."
+                            if name == "pump"
+                            else f"Inspect {display_name} configuration and connection evidence."
+                        ),
+                    ),
+                    update_legacy_status=False,
+                )
                 continue
             succeeded_count += 1
             if progress:
@@ -275,8 +470,18 @@ class Application:
         if failures:
             failed_names = ", ".join(display_name for display_name, _exc in failures)
             details = "; ".join(f"{display_name} initialize failed: {exc}" for display_name, exc in failures)
-            self.fire_status_event(
-                f"System Partially Initialized ({succeeded_count}/{len(devices)} succeeded; failed: {failed_names})"
+            self.emit_event(
+                RuntimeEvent.create(
+                    severity=RuntimeEventSeverity.HARDWARE_FAULT,
+                    subsystem="hardware",
+                    operation="initialize",
+                    message=(
+                        f"System Partially Initialized ({succeeded_count}/{len(devices)} succeeded; "
+                        f"failed: {failed_names})"
+                    ),
+                    may_continue=True,
+                    operator_next_action="Review each failed subsystem before using it.",
+                )
             )
             # Chained from the first failure for traceback context; when
             # several devices fail independently, all of them are still

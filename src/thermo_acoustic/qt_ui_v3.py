@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -20,9 +21,18 @@ from PySide6.QtWidgets import (
 )
 
 from .application import Application
+from .experiment_planning import (
+    BuildResult,
+    ExperimentRequest,
+    blocking_build_result,
+    build_result_from_existing_plan,
+    run_plan_from_existing_series,
+)
 from .instruments import SimulatedAD2Sdk
+from .piezo_zscan import ZScanCalibration
 from .qt_ui import install_focus_wheel_guard
 from .qt_ui_v2 import InitializationDialog, MainWindowV2
+from .runtime_truth import RuntimeEvent, RuntimeEventSeverity
 from .workflows import Experiment2
 
 
@@ -243,7 +253,12 @@ class MainWindowV3(MainWindowV2):
         status.setObjectName("v3StatusFirst")
         workspace_layout.addWidget(status, 0)
 
-        workspace_layout.addWidget(self._v3_run_control_group(), 0)
+        planning = QWidget()
+        planning_layout = QHBoxLayout(planning)
+        planning_layout.setContentsMargins(0, 0, 0, 0)
+        planning_layout.addWidget(self._v3_experiment_identity_group(), 1)
+        planning_layout.addWidget(self._v3_experiment_plan_group(), 2)
+        workspace_layout.addWidget(planning, 0)
 
         operational = QWidget()
         operational_layout = QHBoxLayout(operational)
@@ -256,6 +271,7 @@ class MainWindowV3(MainWindowV2):
         operational_layout.addWidget(setup, 1)
         operational_layout.addWidget(runtime, 0)
         workspace_layout.addWidget(operational, 1)
+        workspace_layout.addWidget(self._v3_run_control_group(), 0)
 
         root_layout.addWidget(workspace, 1)
         self._connect_v3_relationship_refresh()
@@ -320,26 +336,79 @@ class MainWindowV3(MainWindowV2):
         group.setObjectName("v3ConnectionStrip")
         layout = QHBoxLayout(group)
         self._v3_connection_values: dict[str, QLabel] = {}
-        for name in ("AD2", "Camera", "Pump", "Valve"):
+        for name in ("AD2", "Camera", "Pump", "Valve", "TEC"):
             layout.addWidget(QLabel(name))
             value = QLabel("Not connected")
+            value.setObjectName(f"v3ConnectionStatus{name}")
             value.setMinimumWidth(82)
             self._v3_connection_values[name] = value
             layout.addWidget(value)
         layout.addStretch(1)
         return group
 
-    def _v3_run_control_group(self) -> QGroupBox:
-        group = QGroupBox("Experiment run")
-        group.setObjectName("v3PrimaryRunControl")
+    def _v3_experiment_identity_group(self) -> QGroupBox:
+        group = QGroupBox("Series identity and inner repeats")
+        group.setObjectName("v3ExperimentIdentity")
         grid = QGridLayout(group)
+        browse = QPushButton("Browse...")
+        browse.clicked.connect(lambda: self._browse_folder(self.series_path))
+        repeats_host = QWidget()
+        repeats_layout = QHBoxLayout(repeats_host)
+        repeats_layout.setContentsMargins(0, 0, 0, 0)
+        self._v3_repeats_layout = repeats_layout
+        self._v3_series_relationship_summary = QLabel()
+        self._v3_series_relationship_summary.setObjectName("v3SeriesRelationshipSummary")
+        self._v3_series_relationship_summary.setWordWrap(True)
+        grid.addWidget(QLabel("Series path"), 0, 0)
+        grid.addWidget(self._wrap_with_tooltip_icon(self.series_path), 0, 1)
+        grid.addWidget(browse, 0, 2)
+        repeats_caption = QLabel("Series repeats")
+        repeats_caption.setObjectName("v3ExperimentRepeatsCaption")
+        grid.addWidget(repeats_caption, 1, 0)
+        grid.addWidget(repeats_host, 1, 1)
+        grid.addWidget(self._v3_series_relationship_summary, 2, 0, 1, 3)
+        grid.setColumnStretch(1, 1)
+        return group
+
+    def _v3_experiment_plan_group(self) -> QGroupBox:
+        group = QGroupBox("Derived experiment plan — configured state")
+        group.setObjectName("v3ExperimentPlan")
+        form = QFormLayout(group)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        self._v3_axis_summary = QLabel()
+        self._v3_axis_summary.setObjectName("v3ExperimentAxisSummary")
+        self._v3_repeat_workflow = QLabel()
+        self._v3_repeat_workflow.setObjectName("v3RepeatWorkflowSummary")
+        self._v3_camera_request_summary = QLabel()
+        self._v3_camera_request_summary.setObjectName("v3RequestedCameraSummary")
+        self._v3_requirements_summary = QLabel()
+        self._v3_requirements_summary.setObjectName("v3HardwareRequirementsSummary")
+        self._v3_plan_warnings = QLabel()
+        self._v3_plan_warnings.setObjectName("v3PreRunWarnings")
+        for label in (
+            self._v3_axis_summary,
+            self._v3_repeat_workflow,
+            self._v3_camera_request_summary,
+            self._v3_requirements_summary,
+            self._v3_plan_warnings,
+        ):
+            label.setWordWrap(True)
+        form.addRow("Acquisition axes", self._v3_axis_summary)
+        form.addRow("Per-repeat order", self._v3_repeat_workflow)
+        form.addRow("Camera request", self._v3_camera_request_summary)
+        form.addRow("Pre-run readiness", self._v3_requirements_summary)
+        form.addRow("Review", self._v3_plan_warnings)
+        return group
+
+    def _v3_run_control_group(self) -> QGroupBox:
+        group = QGroupBox("Review and run")
+        group.setObjectName("v3PrimaryRunControl")
+        layout = QHBoxLayout(group)
         start = QPushButton("Start experiment")
         start.setObjectName("v3StartExperimentButton")
         start.setMinimumHeight(44)
-        start.setToolTip(
-            "Runs with the currently initialized backends."
-        )
-        start.clicked.connect(self._start_experiment)
+        start.setToolTip("Runs with the currently initialized backends after shared validation.")
+        start.clicked.connect(self._v3_start_experiment_with_shared_preflight)
         stop = QPushButton("Request graceful stop")
         stop.setObjectName("v3RequestGracefulStopButton")
         stop.setMinimumHeight(44)
@@ -349,34 +418,15 @@ class MainWindowV3(MainWindowV2):
             "It does not stop hardware in the middle of an operation."
         )
         stop.clicked.connect(self._abort)
-        browse = QPushButton("Browse...")
-        browse.clicked.connect(lambda: self._browse_folder(self.series_path))
         note = QLabel(
-            "Start uses the configured series. Graceful stop finishes the active unit before halting; "
+            "Start uses the plan above. Graceful stop finishes the active unit before halting; "
             "it is not an emergency hardware stop."
         )
         note.setWordWrap(True)
-        note.setMaximumWidth(520)
-        repeats_host = QWidget()
-        repeats_layout = QHBoxLayout(repeats_host)
-        repeats_layout.setContentsMargins(0, 0, 0, 0)
-        self._v3_repeats_layout = repeats_layout
-        self._v3_series_relationship_summary = QLabel()
-        self._v3_series_relationship_summary.setObjectName("v3SeriesRelationshipSummary")
-        self._v3_series_relationship_summary.setWordWrap(True)
-        grid.addWidget(start, 0, 0, 2, 1)
-        grid.addWidget(stop, 0, 1, 2, 1)
-        grid.addWidget(QLabel("Series path"), 0, 2)
-        grid.addWidget(self._wrap_with_tooltip_icon(self.series_path), 1, 2)
-        grid.addWidget(browse, 1, 3)
-        grid.addWidget(note, 0, 4, 2, 1)
-        repeats_caption = QLabel("Series repeats")
-        repeats_caption.setObjectName("v3ExperimentRepeatsCaption")
-        grid.addWidget(repeats_caption, 2, 0)
-        grid.addWidget(repeats_host, 2, 1)
-        grid.addWidget(self._v3_series_relationship_summary, 2, 2, 1, 3)
-        grid.setColumnStretch(2, 1)
-        grid.setColumnStretch(4, 1)
+        note.setMaximumWidth(620)
+        layout.addWidget(start)
+        layout.addWidget(stop)
+        layout.addWidget(note, 1)
         return group
 
     def _v3_setup_tabs(self) -> QTabWidget:
@@ -398,7 +448,13 @@ class MainWindowV3(MainWindowV2):
         fluidics_content = QWidget()
         fluidics_layout = QVBoxLayout(fluidics_content)
         fluidics_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        fluidics_note = QLabel("Optional post-capture pump and valve sequence. Disabled by default.")
+        fluidics_note = QLabel(
+            "Optional post-capture sequence: valve P01 → pump dispense → valve P02 → configured wait. "
+            "The commands are sequential; physical P01/P02 fluid routing remains bench-unverified. "
+            "Capacity checks use the syringe selected in the manual Pump & Valve panel; applying that "
+            "geometry to the pump still requires its explicit Configure syringe action."
+        )
+        fluidics_note.setObjectName("v3FluidicsWorkflowNote")
         fluidics_note.setWordWrap(True)
         fluidics_note.setMaximumWidth(520)
         fluidics_layout.addWidget(fluidics_note)
@@ -495,6 +551,10 @@ class MainWindowV3(MainWindowV2):
         self._v3_frequency_program_summary.setObjectName("v3FrequencyProgramSummary")
         self._v3_frequency_program_summary.setWordWrap(True)
         layout.addWidget(self._v3_frequency_program_summary)
+        self._v3_frequency_scan_preview = QLabel()
+        self._v3_frequency_scan_preview.setObjectName("v3FrequencyScanListPreview")
+        self._v3_frequency_scan_preview.setWordWrap(True)
+        layout.addWidget(self._v3_frequency_scan_preview)
 
         modulation = QTabWidget()
         modulation.setObjectName("v3ModulationTabs")
@@ -599,9 +659,46 @@ class MainWindowV3(MainWindowV2):
                    self.exp_freq_scan_step_khz.singleStep())
 
     def _apply_v3_frequency_scan_input_mode(self) -> None:
+        scan_enabled = self.exp_freq_scan_enable.isChecked()
         use_step_size = self._v3_frequency_scan_input_mode.currentIndex() == 1
-        self.exp_freq_scan_count.setEnabled(not use_step_size)
-        self.exp_freq_scan_step_khz.setEnabled(use_step_size)
+        self.exp_freq_scan_count.setEnabled(scan_enabled and not use_step_size)
+        self.exp_freq_scan_step_khz.setEnabled(scan_enabled and use_step_size)
+
+    def _apply_v3_context_state(self, _value=None) -> None:
+        """Expose which configured values participate in the selected mode."""
+        fm_enabled = self.exp_sweep_enable.isChecked()
+        for field in (
+            self.exp_sweep_start_khz,
+            self.exp_sweep_stop_khz,
+            self.exp_sweep_center_khz,
+            self.exp_sweep_width_khz,
+            self.exp_sweep_time_ms,
+            self.exp_sweep_type,
+        ):
+            field.setEnabled(fm_enabled)
+
+        scan_enabled = self.exp_freq_scan_enable.isChecked()
+        for field in (
+            self.exp_freq_scan_start_khz,
+            self.exp_freq_scan_stop_khz,
+            self._v3_frequency_scan_input_mode,
+        ):
+            field.setEnabled(scan_enabled)
+        self._apply_v3_frequency_scan_input_mode()
+
+        flush_enabled = self.exp_flush_enabled.isChecked()
+        for field in (self.exp_flush_flowrate, self.exp_flush_volume, self.exp_wait_after_flush):
+            field.setEnabled(flush_enabled)
+
+        tec_enabled = self.exp_tec_scan_enable.isChecked()
+        self._v3_tec_targets_group.setEnabled(tec_enabled)
+        self._v3_tec_stability_group.setEnabled(tec_enabled)
+        self._v3_tec_advanced_group.setEnabled(tec_enabled)
+        self.exp_tec_points_ch2.setEnabled(tec_enabled and not self.exp_tec_lock_channels.isChecked())
+
+        external_camera_trigger = self.dcam_source.currentText() == "External"
+        self.external_polarity.setEnabled(external_camera_trigger)
+        self.external_delay.setEnabled(external_camera_trigger)
 
     def _switch_v3_frequency_scan_input_mode(self, index: int) -> None:
         use_step_size = index == 1
@@ -658,7 +755,12 @@ class MainWindowV3(MainWindowV2):
         area = QScrollArea()
         area.setObjectName("v3RuntimeMonitoring")
         area.setWidgetResizable(True)
-        area.setMaximumWidth(320)
+        # Keep monitoring readable when the setup column asks for more room.
+        # Without a minimum, Qt collapses this column to roughly 130 px and
+        # silently clips the waveform/status content behind a disabled
+        # horizontal scrollbar.
+        area.setMinimumWidth(330)
+        area.setMaximumWidth(360)
         area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         content = QWidget()
@@ -670,14 +772,65 @@ class MainWindowV3(MainWindowV2):
         return area
 
     def _experiment_temperature_group(self) -> QGroupBox:
-        group = super()._experiment_temperature_group()
-        group.setTitle("TEC temperature scan")
+        """Build v3 TEC controls, replacing v1 without calling its base method.
+
+        Future additions to v1's method of the same name do not appear here
+        automatically and require an explicit v3 review.
+        """
+        group = QGroupBox("TEC temperature scan")
+        group.setObjectName("v3TecTemperatureScan")
+        layout = QVBoxLayout(group)
         note = QLabel("Simulated by default. Real TEC operation remains unapproved.")
         note.setWordWrap(True)
         note.setMaximumWidth(520)
-        layout = group.layout()
-        if isinstance(layout, QFormLayout):
-            layout.insertRow(0, note)
+        layout.addWidget(note)
+        layout.addWidget(self.exp_tec_scan_enable)
+        self._v3_tec_axis_summary = QLabel()
+        self._v3_tec_axis_summary.setObjectName("v3TecAxisSummary")
+        self._v3_tec_axis_summary.setWordWrap(True)
+        layout.addWidget(self._v3_tec_axis_summary)
+
+        self._v3_tec_targets_group = QGroupBox("Temperature targets")
+        self._v3_tec_targets_group.setObjectName("v3TecTargets")
+        targets = QFormLayout(self._v3_tec_targets_group)
+        targets.addRow("Channel 1 points (°C)", self.exp_tec_points)
+        targets.addRow("Channel relationship", self.exp_tec_lock_channels)
+        targets.addRow("Channel 2 points (°C)", self.exp_tec_points_ch2)
+        self._add_tooltip_icons(targets)
+
+        self._v3_tec_stability_group = QGroupBox("Stabilization criteria")
+        self._v3_tec_stability_group.setObjectName("v3TecStabilityCriteria")
+        stability = QFormLayout(self._v3_tec_stability_group)
+        stability.addRow("Target tolerance (°C)", self.exp_tec_tolerance_c)
+        stability.addRow("Minimum in-tolerance time (s)", self.exp_tec_min_settle_s)
+        self._add_tooltip_icons(stability)
+
+        self._v3_tec_advanced_group = QGroupBox("Advanced wait and polling policy")
+        self._v3_tec_advanced_group.setObjectName("v3TecAdvancedPolicy")
+        advanced = QFormLayout(self._v3_tec_advanced_group)
+        advanced.addRow("Maximum wait per target (s)", self.exp_tec_max_wait_s)
+        advanced.addRow("Status poll interval (s)", self.exp_tec_poll_interval_s)
+        advanced.addRow("Post-stabilization hold (s)", self.exp_tec_post_stable_hold_s)
+        self._add_tooltip_icons(advanced)
+
+        readback = QGroupBox("Cached TEC readback")
+        readback.setObjectName("v3TecCachedReadback")
+        readback_form = QFormLayout(readback)
+        self._v3_tec_readback_labels: dict[int, QLabel] = {}
+        for channel in (1, 2):
+            value = QLabel("No cached readback")
+            value.setObjectName(f"v3TecChannel{channel}Readback")
+            value.setWordWrap(True)
+            self._v3_tec_readback_labels[channel] = value
+            readback_form.addRow(f"Channel {channel}", value)
+        readback_note = QLabel("Display only: refreshing the UI does not query or command the TEC.")
+        readback_note.setWordWrap(True)
+        readback_form.addRow(readback_note)
+
+        layout.addWidget(self._v3_tec_targets_group)
+        layout.addWidget(self._v3_tec_stability_group)
+        layout.addWidget(self._v3_tec_advanced_group)
+        layout.addWidget(readback)
         return group
 
     def _v2_status_progress_group(self) -> QGroupBox:
@@ -783,6 +936,7 @@ class MainWindowV3(MainWindowV2):
             self.exp_frames,
             self.exp_camera_fps,
             self.exp_camera_start,
+            self.exp_exposure_ms,
             self.exp_freq_scan_count,
             self.exp_freq_scan_step_khz,
             self.exp_freq_scan_start_khz,
@@ -802,18 +956,206 @@ class MainWindowV3(MainWindowV2):
             self.exp_freq_scan_enable,
             self.exp_sweep_enable,
             self.exp_flush_enabled,
+            self.exp_tec_scan_enable,
+            self.exp_tec_lock_channels,
             *(state["enable"] for state in self.exp_ad2_channels),
         ):
             checkbox.toggled.connect(self._refresh_v3_relationships)
         self.syringe.currentTextChanged.connect(self._refresh_v3_relationships)
+        self.dcam_source.currentTextChanged.connect(self._refresh_v3_relationships)
+        self.series_path.textChanged.connect(self._refresh_v3_relationships)
+        self.exp_tec_points.textChanged.connect(self._refresh_v3_relationships)
+        self.exp_tec_points_ch2.textChanged.connect(self._refresh_v3_relationships)
 
     @staticmethod
     def _v3_seconds(value: float) -> str:
         return f"{value:.3f}"
 
+    @staticmethod
+    def _v3_compact_values(values: list[float], *, limit: int = 7) -> str:
+        rendered = [f"{value:g}" for value in values]
+        if len(rendered) <= limit:
+            return ", ".join(rendered)
+        head = limit // 2
+        tail = limit - head
+        return ", ".join((*rendered[:head], "…", *rendered[-tail:]))
+
+    def _v3_experiment_request(self) -> ExperimentRequest:
+        try:
+            frequencies = tuple(self._experiment_frequency_scan_list_hz())
+        except (TypeError, ValueError):
+            frequencies = ()
+        temperature_targets: list[tuple[tuple[int, float], ...]] = []
+        if self.exp_tec_scan_enable.isChecked():
+            try:
+                temperature_series = self._temperature_series()
+                for index in range(len(temperature_series.temperature_points_c)):
+                    target = temperature_series.target_at(index)
+                    values = (
+                        {channel: float(target) for channel in self.app.tec.channels}
+                        if isinstance(target, float)
+                        else target
+                    )
+                    temperature_targets.append(tuple(sorted(values.items())))
+            except ValueError:
+                temperature_targets = []
+        return ExperimentRequest(
+            output_path=Path(self.series_path.text()),
+            repeats_per_group=self.exp_repeats.value(),
+            frequency_scan_enabled=self.exp_freq_scan_enable.isChecked(),
+            frequency_values_hz=frequencies,
+            camera_fps=float(self.exp_camera_fps.value()),
+            frames=self.exp_frames.value(),
+            camera_start_s=tuple(widget.value() for widget in self.camera_start_array),
+            dynamic_camera_start=self.dynamic_camera_start.isChecked(),
+            fm_sweep_enabled=self.exp_sweep_enable.isChecked(),
+            channel0_output_selected=self.exp_ad2_channels[0]["enable"].isChecked(),
+            flush_enabled=self.exp_flush_enabled.isChecked(),
+            tec_scan_enabled=self.exp_tec_scan_enable.isChecked(),
+            temperature_targets_c=tuple(temperature_targets),
+            device_modes=(
+                ("ad2", self.app.ad2.enabled, isinstance(self.app.ad2, SimulatedAD2Sdk)),
+                ("camera", self.app.camera.enabled, self.app.camera.simulate),
+                ("pump", self.app.pump.enabled, self.app.pump.simulate),
+                ("valve", self.app.valve.enabled, self.app.valve.simulate),
+                ("tec", self.app.tec.enabled, self.app.tec.simulate),
+            ),
+        )
+
+    def _v3_shadow_build_result(self) -> BuildResult:
+        request = self._v3_experiment_request()
+        try:
+            if request.tec_scan_enabled:
+                _temperature_series, groups, total_frames, _config = self._build_temperature_experiment_groups(
+                    request.output_path
+                )
+                plan = run_plan_from_existing_series(request.output_path, groups, total_frames=total_frames)
+            else:
+                series, total_frames, _config = self._build_experiment_series(request.output_path)
+                plan = run_plan_from_existing_series(request.output_path, series, total_frames=total_frames)
+        except (IndexError, TypeError, ValueError) as exc:
+            return blocking_build_result(request, exc)
+        return build_result_from_existing_plan(request, plan, self.app.runtime_evidence_snapshot())
+
+    def _v3_start_experiment_with_shared_preflight(self) -> None:
+        result = self._v3_shadow_build_result()
+        if result.preflight.blocking_issues:
+            message = "; ".join(issue.message for issue in result.preflight.blocking_issues)
+            self.app.emit_event(
+                RuntimeEvent.create(
+                    severity=RuntimeEventSeverity.BLOCKING_CONFIGURATION,
+                    subsystem="experiment",
+                    operation="preflight",
+                    message=message,
+                    may_continue=False,
+                    operator_next_action="Correct the reported configuration before starting.",
+                ),
+                update_legacy_status=False,
+            )
+        # Shadow-only in this milestone: the inherited authoritative Start
+        # path rebuilds and executes exactly as before.
+        self._start_experiment()
+
+    def _render_v3_shared_preflight(self, result: BuildResult) -> None:
+        self._v3_last_build_result = result
+        preflight = result.preflight
+        axes = dict(preflight.experiment_axes)
+        temperature_count = axes.get("temperature", 1)
+        repeats = axes.get("repeat", result.request.repeats_per_group)
+        total_runs = len(result.plan.experiments) if result.plan is not None else temperature_count * repeats
+        scan_text = (
+            f"frequency list maps {len(result.request.frequency_values_hz)} carrier value(s) one-to-one to repeat indices"
+            if result.request.frequency_scan_enabled
+            else "no frequency-list mapping"
+        )
+        outer = f"TEC temperature: {temperature_count} point(s)" if result.request.tec_scan_enabled else "No outer TEC axis"
+        inner = (
+            f"{repeats} repeat(s) per temperature; {total_runs} acquisition run(s) total"
+            if result.request.tec_scan_enabled
+            else f"{repeats} acquisition repeat(s)"
+        )
+        self._v3_axis_summary.setText(f"{outer}; {inner}; {scan_text}.")
+        self._v3_tec_axis_summary.setText(
+            f"Outer axis: {temperature_count} temperature point(s) × {repeats} repeats = {total_runs} acquisition runs."
+            if result.request.tec_scan_enabled and not preflight.blocking_issues
+            else (
+                "Temperature target plan is blocked by shared preflight."
+                if result.request.tec_scan_enabled
+                else "Disabled: no outer temperature axis."
+            )
+        )
+        self._v3_tec_axis_summary.setStyleSheet(
+            "color: darkred; font-weight: bold;" if preflight.blocking_issues else ""
+        )
+
+        snapshot = self.app.runtime_evidence_snapshot()
+        evidence_by_name = {
+            "camera": snapshot.camera,
+            "pump": snapshot.pump,
+            "valve": snapshot.valve,
+            "tec": snapshot.tec,
+        }
+        def device_state(name: str) -> str:
+            if name in preflight.disabled_devices:
+                return "DISABLED — current runtime skips this subsystem"
+            if name in preflight.simulated_devices:
+                return "SIMULATED — no physical evidence"
+            return "SELECTED"
+
+        def evidence_suffix(name: str) -> str:
+            subsystem = evidence_by_name.get(name)
+            if subsystem is not None:
+                connection = subsystem.values.get("connected") or subsystem.values.get("initialized")
+                if connection is not None:
+                    return f"; {connection.source_operation}={connection.value} ({connection.freshness.value})"
+            if name == "ad2":
+                return "; shared AD2 snapshot intentionally deferred"
+            return ""
+
+        requirement_lines = [
+            f"AD2: {device_state('ad2')}{evidence_suffix('ad2')}",
+            f"Camera: {device_state('camera')}{evidence_suffix('camera')}",
+        ]
+        if preflight.fluidics_required:
+            if "pump" in preflight.selected_devices and "valve" in preflight.selected_devices:
+                requirement_lines.extend(
+                    (
+                        f"Pump: {device_state('pump')}{evidence_suffix('pump')}",
+                        f"Valve: {device_state('valve')}{evidence_suffix('valve')}",
+                    )
+                )
+            else:
+                requirement_lines.append("Fluidics: DISABLED — selected flush will be skipped by runtime")
+        else:
+            requirement_lines.append("Pump/Valve: NOT REQUIRED (flush off)")
+        if preflight.tec_required:
+            requirement_lines.append(f"TEC: {device_state('tec')}{evidence_suffix('tec')}")
+        else:
+            requirement_lines.append("TEC: NOT REQUIRED (temperature scan off)")
+        requirement_lines.append(
+            "Output path: CONFIGURED (writeability unverified until run)"
+            if preflight.output_path_state == "configured"
+            else "Output path: UNSET — blank resolves to the current working directory"
+        )
+        self._v3_requirements_summary.setText(
+            "; ".join(requirement_lines)
+            + ". Software-known shared snapshot only; no hardware query and no physical-ready claim."
+        )
+
+        issues = preflight.blocking_issues + preflight.warnings
+        self._v3_plan_warnings.setText(
+            "; ".join(issue.message for issue in issues) + "." if issues else "No shared preflight issues."
+        )
+        self._v3_plan_warnings.setStyleSheet(
+            "color: darkred; font-weight: bold;"
+            if preflight.blocking_issues
+            else "color: darkorange; font-weight: bold;"
+        )
+
     def _refresh_v3_relationships(self, _value=None) -> None:
         if not hasattr(self, "_v3_timing_labels"):
             return
+        self._apply_v3_context_state()
         try:
             wfg = self._experiment_wfg_config()
             do_config = self._experiment_do_clock_config(0)
@@ -867,8 +1209,14 @@ class MainWindowV3(MainWindowV2):
             self._v3_completion_budget.setText(f"Shared AD2 completion budget unavailable: {exc}")
 
         repeats = self.exp_repeats.value()
-        scan_count = len(self._experiment_frequency_scan_list_hz())
         scan_enabled = self.exp_freq_scan_enable.isChecked()
+        try:
+            scan_values_hz = self._experiment_frequency_scan_list_hz()
+            scan_error = None
+        except (TypeError, ValueError) as exc:
+            scan_values_hz = []
+            scan_error = str(exc)
+        scan_count = len(scan_values_hz)
         scan_mismatch = scan_enabled and scan_count != repeats
         if scan_mismatch:
             scan_text = (
@@ -888,6 +1236,133 @@ class MainWindowV3(MainWindowV2):
             "color: darkorange; font-weight: bold;" if scan_mismatch else ""
         )
 
+        temperature_count = 1
+        temperature_error = None
+        if self.exp_tec_scan_enable.isChecked():
+            try:
+                temperature_count = len(self._temperature_series().temperature_points_c)
+            except ValueError as exc:
+                temperature_count = 0
+                temperature_error = str(exc)
+        total_runs = repeats * temperature_count
+        if self.exp_tec_scan_enable.isChecked():
+            outer = (
+                f"TEC temperature: {temperature_count} point(s)"
+                if temperature_error is None
+                else f"TEC temperature invalid: {temperature_error}"
+            )
+            inner = f"{repeats} repeat(s) per temperature; {total_runs} acquisition run(s) total"
+        else:
+            outer = "No outer TEC axis"
+            inner = f"{repeats} acquisition repeat(s)"
+        scan_axis = (
+            f"frequency list maps {scan_count} carrier value(s) one-to-one to repeat indices"
+            if scan_enabled
+            else "no frequency-list mapping"
+        )
+        self._v3_axis_summary.setText(f"{outer}; {inner}; {scan_axis}.")
+        self._v3_tec_axis_summary.setText(
+            f"Outer axis: {temperature_count} temperature point(s) × {repeats} repeats = {total_runs} acquisition runs."
+            if self.exp_tec_scan_enable.isChecked() and temperature_error is None
+            else (
+                f"Temperature target list invalid: {temperature_error}"
+                if temperature_error is not None
+                else "Disabled: no outer temperature axis."
+            )
+        )
+        self._v3_tec_axis_summary.setStyleSheet(
+            "color: darkorange; font-weight: bold;" if temperature_error is not None else ""
+        )
+        self._v3_repeat_workflow.setText(
+            "create record → configure AD2/DIO → configure camera → capture frames → wait for AD2 "
+            "completion → optional flush → save frames and metadata"
+        )
+        camera_fps = float(self.exp_camera_fps.value())
+        if camera_fps > 0:
+            frame_interval_ms = 1000.0 / camera_fps
+            acquisition_s = float(self.exp_frames.value()) / camera_fps
+            camera_request = (
+                f"{self.exp_frames.value()} frame(s) at {camera_fps:g} fps request a "
+                f"{acquisition_s:.3f} s DIO1 window; {self.exp_exposure_ms.value():.3f} ms exposure vs "
+                f"{frame_interval_ms:.3f} ms frame interval. Live DCAM readout margin is checked only at run start."
+            )
+        else:
+            camera_request = "Camera FPS must be greater than zero before a DIO1 window can be derived."
+        self._v3_camera_request_summary.setText(camera_request)
+        status = getattr(self, "_v3_connection_values", {})
+        status_text = lambda name: status[name].text() if name in status else "status unavailable"
+        selected = [
+            (
+                f"AD2: {status_text('AD2')}"
+                if self.app.ad2.enabled
+                else "AD2: DISABLED — runtime skips WFG, DIO, and PC trigger"
+            ),
+            (
+                f"Camera: {status_text('Camera')}"
+                if self.app.camera.enabled
+                else "Camera: DISABLED — runtime skips capture"
+            ),
+        ]
+        if self.exp_flush_enabled.isChecked():
+            if self.app.pump.enabled and self.app.valve.enabled:
+                selected.extend((f"Pump: {status_text('Pump')}", f"Valve: {status_text('Valve')}"))
+            else:
+                selected.append("Fluidics: DISABLED — selected flush will be skipped by runtime")
+        else:
+            selected.append("Pump/Valve: NOT REQUIRED (flush off)")
+        if self.exp_tec_scan_enable.isChecked():
+            selected.append(
+                f"TEC: {status_text('TEC')}"
+                if self.app.tec.enabled
+                else "TEC: DISABLED — target/stability are simulated; no TEC command"
+            )
+        else:
+            selected.append("TEC: NOT REQUIRED (temperature scan off)")
+        output_path = self.series_path.text().strip()
+        selected.append(
+            "Output path: CONFIGURED (writeability unverified until run)"
+            if output_path
+            else "Output path: UNSET — blank resolves to the current working directory"
+        )
+        self._v3_requirements_summary.setText(
+            "; ".join(selected) + ". Software-known configured/cached state only; no hardware query and no physical-ready claim."
+        )
+
+        warnings = []
+        if scan_error is not None:
+            warnings.append(f"frequency list invalid: {scan_error}")
+        elif scan_mismatch:
+            warnings.append("frequency count must match repeats")
+        if self.dynamic_camera_start.isChecked() and repeats > len(self.camera_start_array):
+            warnings.append("per-repeat DIO1 delay slots are insufficient")
+        if camera_fps <= 0:
+            warnings.append("camera FPS must be greater than zero")
+        if not output_path:
+            warnings.append("choose an explicit output path; blank currently resolves to the working directory")
+        if not self.app.ad2.enabled:
+            warnings.append("AD2 is disabled; WFG/DIO configuration and PC trigger will be skipped")
+        if not self.app.camera.enabled:
+            warnings.append("camera is disabled; the run will save no captured frames")
+        if self.exp_sweep_enable.isChecked() and not self.exp_ad2_channels[0]["enable"].isChecked():
+            warnings.append("FM sweep enables channel 0 in the shared builder even though Channel output is unchecked")
+        if temperature_error is not None:
+            warnings.append("TEC target list must be corrected")
+        if self.exp_tec_scan_enable.isChecked() and not self.app.tec.enabled:
+            warnings.append("TEC scan is selected but the controller is disabled; the shared runtime simulates target/stability")
+        if self.exp_flush_enabled.isChecked():
+            settings = self._flush_settings(experiment=True)
+            if settings.flush_volume_ml > settings.syringe_volume_ml:
+                warnings.append("flush volume exceeds selected syringe capacity")
+            if settings.flush_volume_ml > float(self.app.pump.fill_level):
+                warnings.append("flush volume exceeds the pump's tracked fill level")
+            if not (self.app.pump.enabled and self.app.valve.enabled):
+                warnings.append("flush is selected but pump or valve is disabled; the shared runtime will skip it")
+            warnings.append("fluid routing is bench-unverified; selected syringe geometry must be applied manually")
+        warnings.append("DIO1-to-camera exposure synchronization remains bench-unverified")
+        self._v3_plan_warnings.setText("; ".join(warnings) + ".")
+        self._v3_plan_warnings.setStyleSheet("color: darkorange; font-weight: bold;")
+        self._render_v3_shared_preflight(self._v3_shadow_build_result())
+
         fm = self.exp_sweep_enable.isChecked()
         scan = self.exp_freq_scan_enable.isChecked()
         if fm and scan:
@@ -899,6 +1374,16 @@ class MainWindowV3(MainWindowV2):
         else:
             program = "Static base carrier only."
         self._v3_frequency_program_summary.setText(f"Active program: {program}")
+        if scan_enabled and scan_error is None:
+            values_khz = [value / 1000.0 for value in scan_values_hz]
+            self._v3_frequency_scan_preview.setText(
+                f"Frequency-list preview ({len(values_khz)} point(s), kHz): "
+                f"{self._v3_compact_values(values_khz)}"
+            )
+        elif scan_error is not None:
+            self._v3_frequency_scan_preview.setText(f"Frequency-list preview unavailable: {scan_error}")
+        else:
+            self._v3_frequency_scan_preview.setText("Frequency-list preview: off; base carrier is unchanged across repeats.")
 
         dynamic = self.dynamic_camera_start.isChecked()
         self.exp_camera_start.setEnabled(not dynamic)
@@ -965,8 +1450,6 @@ class MainWindowV3(MainWindowV2):
 
     def _refresh_status(self) -> None:
         super()._refresh_status()
-        if hasattr(self, "_v3_timing_labels"):
-            self._refresh_v3_relationships()
         if hasattr(self, "connection_button"):
             # In v2 this action's text is derived from app.status being exactly
             # "System Initialized". Any later successful action changes that
@@ -984,6 +1467,15 @@ class MainWindowV3(MainWindowV2):
             "Camera": self.camera_connection_status.text(),
             "Pump": self.pump_connection_status.text(),
             "Valve": self.valve_connection_status.text(),
+            "TEC": (
+                "Disabled"
+                if not self.app.tec.enabled
+                else "Connected (simulated)"
+                if self.app.tec.initialized and self.app.tec.simulate
+                else "Connected"
+                if self.app.tec.initialized
+                else "Not connected"
+            ),
         }
         for name, text in sources.items():
             label = values[name]
@@ -997,6 +1489,26 @@ class MainWindowV3(MainWindowV2):
             else:
                 color = "red"
             label.setStyleSheet(f"color: {color};")
+        self._refresh_v3_tec_readback()
+        self._refresh_v3_pump_local_status()
+        if hasattr(self, "_v3_timing_labels"):
+            self._refresh_v3_relationships()
+
+    def _refresh_v3_tec_readback(self) -> None:
+        labels = getattr(self, "_v3_tec_readback_labels", None)
+        if not labels:
+            return
+        for channel, label in labels.items():
+            status = self.app.tec.last_status.get(channel)
+            if status is None:
+                label.setText("No cached readback")
+                continue
+            current = "—" if status.current_temperature_c is None else f"{status.current_temperature_c:.3f} °C"
+            target = "—" if status.target_temperature_c is None else f"{status.target_temperature_c:.3f} °C"
+            readiness = "ready" if status.ready else "not ready"
+            output = "output on" if status.output_stage_static_on else "output off"
+            error = f"; error: {status.error_state}" if status.error_state else ""
+            label.setText(f"Measured {current}; target {target}; {readiness}; {output}{error}")
 
     # Manual WFG panel: retain v2's computed preview and v1's validated
     # controls, but stack the two long channel forms instead of putting them
@@ -1015,7 +1527,11 @@ class MainWindowV3(MainWindowV2):
         layout = QVBoxLayout(content)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        note = QLabel("Manual AD2 waveform test. These settings do not affect experiment runs.")
+        note = QLabel(
+            "Manual AD2 waveform test. On the first hardware initialization only, this panel seeds the "
+            "experiment AD2 fields; after that one-time seed, manual and experiment values are independent."
+        )
+        note.setObjectName("v3ManualWfgExperimentBoundary")
         note.setWordWrap(True)
         note.setMaximumWidth(700)
         layout.addWidget(note)
@@ -1052,6 +1568,16 @@ class MainWindowV3(MainWindowV2):
 
     def _wfg_channel_group(self, title: str, state: dict[str, object]) -> QGroupBox:
         group = super()._wfg_channel_group(title, state)
+        inner_scroll = group.findChild(QScrollArea)
+        if inner_scroll is None:
+            raise RuntimeError("V3 expected the inherited WFG channel form scroll area.")
+        # V1/v2 deliberately keep this dense form at its natural width and
+        # expose a horizontal scrollbar. V3's longer relationship labels made
+        # that scrollbar appear even in its 900 px manual dialog. Allow the
+        # form to reflow here; vertical scrolling remains available for rows.
+        inner_scroll.setWidgetResizable(True)
+        inner_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        inner_scroll.setObjectName(f"v3WfgChannel{state['idx'].value()}Scroll")
         label_text_by_object_name = {
             "manualWfgCarrier_idxLabel": "Channel index",
             "manualWfgCarrier_frequencyLabel": "Carrier frequency (kHz) (overridden)",
@@ -1077,6 +1603,8 @@ class MainWindowV3(MainWindowV2):
             if label is None:
                 raise RuntimeError(f"V3 expected inherited WFG label {object_name!r}.")
             label.setText(text)
+            label.setWordWrap(True)
+            label.setMaximumWidth(310)
         state["enable"].setText("Enable channel output (overridden)")
         state["repeat_trigger"].setText("Re-arm trigger after each repeat (overridden)")
         state["fm_enable"].setText("Enable FM modulation")
@@ -1141,12 +1669,40 @@ class MainWindowV3(MainWindowV2):
         layout = QVBoxLayout(content)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        note = QLabel("Manual pump and valve controls. P01/P02 fluid routing requires bench confirmation.")
+        note = QLabel(
+            "Manual pump and valve controls. P01/P02 fluid routing requires bench confirmation. The syringe "
+            "selection is also used by experiment-flush capacity checks, but selecting it does not configure "
+            "the physical pump."
+        )
         note.setWordWrap(True)
         note.setMaximumWidth(700)
         layout.addWidget(note)
 
-        pump_group = QGroupBox("Pump operations")
+        local_status = QGroupBox("Cached pump and valve state")
+        local_status.setObjectName("v3PumpValveLocalStatus")
+        local_form = QFormLayout(local_status)
+        self._v3_pump_local_state = QLabel()
+        self._v3_pump_local_state.setObjectName("v3PumpLocalState")
+        self._v3_pump_local_state.setWordWrap(True)
+        self._v3_valve_local_state = QLabel()
+        self._v3_valve_local_state.setObjectName("v3ValveLocalState")
+        self._v3_valve_local_state.setWordWrap(True)
+        self._v3_syringe_local_state = QLabel()
+        self._v3_syringe_local_state.setObjectName("v3SyringeLocalState")
+        self._v3_syringe_local_state.setWordWrap(True)
+        local_form.addRow("Pump", self._v3_pump_local_state)
+        local_form.addRow("Valve", self._v3_valve_local_state)
+        local_form.addRow("Syringe configuration", self._v3_syringe_local_state)
+        local_note = QLabel(
+            "Application cache only: refreshed after software actions/readbacks; opening this panel does not query hardware. "
+            "Tracked fill and protocol position are not independent physical verification."
+        )
+        local_note.setObjectName("v3PumpLocalStatusEvidenceNote")
+        local_note.setWordWrap(True)
+        local_form.addRow(local_note)
+        layout.addWidget(local_status)
+
+        pump_group = QGroupBox("Immediate pump operations")
         pump_form = QFormLayout(pump_group)
         pump_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         refill = QPushButton("Refill syringe")
@@ -1158,7 +1714,9 @@ class MainWindowV3(MainWindowV2):
         go = QPushButton("Move to target fill level")
         go.clicked.connect(self._start_go_level)
         stop = QPushButton("Stop pump")
+        stop.setObjectName("v3StopPumpButton")
         stop.setMinimumHeight(50)
+        stop.setStyleSheet("color: darkred; font-weight: bold;")
         stop.clicked.connect(lambda: self._run_action(lambda progress: self.app.pump.stop(), "Pump stopped"))
         pump_form.addRow("Refill / empty flow rate (uL/min)", self.fill_flow_rate)
         pump_form.addRow(refill, empty)
@@ -1198,10 +1756,17 @@ class MainWindowV3(MainWindowV2):
         flush_form.addRow("Flow rate (uL/min)", self.flush_flowrate)
         flush_form.addRow("Volume (ml)", self.flush_volume)
         flush_form.addRow("Wait after flush (s)", self.wait_after_flush)
+        flush_note = QLabel(
+            "Sequence: valve P01 → pump dispense → valve P02 → configured wait. "
+            "Physical P01/P02 routing remains bench-unverified."
+        )
+        flush_note.setObjectName("v3ManualFlushWorkflowNote")
+        flush_note.setWordWrap(True)
+        flush_form.addRow(flush_note)
         flush_form.addRow(flush)
         self._add_tooltip_icons(flush_form)
 
-        syringe_group = QGroupBox("Syringe setup and calibration")
+        syringe_group = QGroupBox("Shared syringe setup and calibration")
         syringe_form = QFormLayout(syringe_group)
         syringe_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         configure = QPushButton("Configure syringe")
@@ -1213,6 +1778,13 @@ class MainWindowV3(MainWindowV2):
         syringe_form.addRow("Custom volume (ml)", self.custom_syringe_volume_ml)
         syringe_form.addRow("Custom inner diameter (mm)", self.custom_syringe_inner_diameter_mm)
         syringe_form.addRow("Custom max piston stroke (mm)", self.custom_syringe_stroke_mm)
+        syringe_note = QLabel(
+            "Experiment flush capacity calculations use this selected geometry. Configure syringe is the explicit "
+            "action that applies it to the pump; automated experiment setup does not apply it for you."
+        )
+        syringe_note.setObjectName("v3SharedSyringeBoundary")
+        syringe_note.setWordWrap(True)
+        syringe_form.addRow(syringe_note)
         syringe_form.addRow(configure)
         self._add_tooltip_icons(syringe_form)
 
@@ -1279,7 +1851,42 @@ class MainWindowV3(MainWindowV2):
 
         scroll.setWidget(content)
         outer.addWidget(scroll)
+        self._refresh_v3_pump_local_status()
         return tab
+
+    def _refresh_v3_pump_local_status(self) -> None:
+        pump_label = getattr(self, "_v3_pump_local_state", None)
+        valve_label = getattr(self, "_v3_valve_local_state", None)
+        syringe_label = getattr(self, "_v3_syringe_local_state", None)
+        if pump_label is None or valve_label is None or syringe_label is None:
+            return
+        pump = self.app.pump
+        pump_connection = (
+            "Disabled"
+            if not pump.enabled
+            else "Connected"
+            if pump.initialized
+            else "Not connected"
+        )
+        pump_label.setText(
+            f"{pump_connection}; {'dosing' if pump.dosing else 'idle'}; tracked fill {pump.fill_level:.3f} ml; "
+            f"reference move {'confirmed' if pump.referenced else 'not confirmed'}"
+        )
+        valve = self.app.valve
+        valve_label.setText(
+            f"{self._valve_connection_text()}; cached protocol position {self._valve_position_text()}; "
+            f"status {valve.status_note or 'no protocol readback note'}"
+        )
+        config = pump.syringe_config
+        if config is None:
+            syringe_label.setText("No syringe configuration has been applied by this process")
+        else:
+            details = [f"name {config.get('name', 'unnamed')}"]
+            if "inner_diameter_mm" in config:
+                details.append(f"inner diameter {config['inner_diameter_mm']} mm")
+            if "max_piston_stroke_mm" in config:
+                details.append(f"stroke {config['max_piston_stroke_mm']} mm")
+            syringe_label.setText("Last successfully applied by this process: " + "; ".join(details))
 
     def _camera_tab(self) -> QWidget:
         tab = QWidget()
@@ -1296,9 +1903,11 @@ class MainWindowV3(MainWindowV2):
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         note = QLabel(
-            "Manual camera controls. Settings used by an experiment are marked; fields unused by the "
-            "current runtime are retained separately."
+            "Camera setup and manual operation. Automated experiments inherit the applied ROI and selected "
+            "sequence defaults, then reapply experiment exposure/frame count and force Internal trigger source. "
+            "Display conversion affects preview only, not saved image data."
         )
+        note.setObjectName("v3CameraSharedStateSummary")
         note.setWordWrap(True)
         note.setMaximumWidth(700)
         layout.addWidget(note)
@@ -1310,6 +1919,7 @@ class MainWindowV3(MainWindowV2):
         capture_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         capture_layout.addWidget(self._v3_camera_acquisition_group())
         capture_layout.addWidget(self._v3_camera_roi_group())
+        capture_layout.addWidget(self._v3_camera_saved_output_group())
         capture_layout.addStretch(1)
 
         sequence_page = QWidget()
@@ -1382,33 +1992,43 @@ class MainWindowV3(MainWindowV2):
             "Save last captured image."
         )
         trigger.clicked.connect(lambda: self._run_action(lambda progress: self.app.camera.sw_trigg(), "Camera triggered"))
+        form.addRow(start)
+        form.addRow(stop)
+        form.addRow(trigger)
+        return group
+
+    def _v3_camera_saved_output_group(self) -> QGroupBox:
+        group = QGroupBox("Saved-frame output")
+        group.setObjectName("v3CameraSavedOutput")
+        form = QFormLayout(group)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         save = QPushButton("Save last captured image")
-        save.setToolTip("Saves the frame buffer populated by the Camera panel's Capture single image action.")
+        save.setToolTip("Saves the frame buffer populated by Capture single image; it does not retrieve a new frame.")
         save.clicked.connect(self._start_save_sequence)
         browse = QPushButton("Browse...")
         browse.clicked.connect(lambda: self._browse_folder(self.sequence_path))
         path_row = QHBoxLayout()
         path_row.addWidget(self.sequence_path, 1)
         path_row.addWidget(browse)
-        form.addRow(start)
-        form.addRow(stop)
-        form.addRow(trigger)
         form.addRow("Output folder", path_row)
         form.addRow(save)
         return group
 
     def _v3_camera_roi_group(self) -> QGroupBox:
-        group = QGroupBox("Camera region of interest (ROI)")
+        group = QGroupBox("Shared applied ROI and manual exposure")
         form = QFormLayout(group)
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        form.addRow("Horizontal offset", self.roi_h_offset)
-        form.addRow("Vertical offset", self.roi_v_offset)
-        form.addRow("Horizontal size", self.roi_h_size)
-        form.addRow("Vertical size", self.roi_v_size)
+        form.addRow("Horizontal offset (px)", self.roi_h_offset)
+        form.addRow("Vertical offset (px)", self.roi_v_offset)
+        form.addRow("Horizontal size (px)", self.roi_h_size)
+        form.addRow("Vertical size (px)", self.roi_v_size)
         form.addRow("Exposure time (ms)", self.exposure_ms)
         form.addRow("Center ROI", self.center_roi)
         configure = QPushButton("Apply camera settings")
-        configure.setToolTip("Applies exposure, region-of-interest, and Sequence tab settings to the camera.")
+        configure.setToolTip(
+            "Applies exposure, region-of-interest, and Sequence tab settings to the camera. Automated runs "
+            "reapply experiment exposure but retain the applied ROI."
+        )
         configure.clicked.connect(self._start_configure_camera)
         form.addRow(configure)
         self._add_tooltip_icons(form)
@@ -1424,7 +2044,7 @@ class MainWindowV3(MainWindowV2):
         return page
 
     def _v3_camera_sequence_timing_group(self) -> QGroupBox:
-        group = QGroupBox("Sequence timing")
+        group = QGroupBox("Shared sequence defaults")
         form = QFormLayout(group)
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         for label, widget in (
@@ -1435,16 +2055,30 @@ class MainWindowV3(MainWindowV2):
             ("Capture buffer size (frames)", self.sequence_frames),
         ):
             form.addRow(label, widget)
+        note = QLabel(
+            "Automated runs inherit mode, source, interval, and burst count, but replace the capture-buffer "
+            "frame count with Frames per repeat."
+        )
+        note.setObjectName("v3CameraSequenceBoundary")
+        note.setWordWrap(True)
+        form.addRow(note)
         self._add_tooltip_icons(form)
         return group
 
     def _v3_camera_trigger_group(self) -> QGroupBox:
-        group = QGroupBox("Camera trigger")
+        group = QGroupBox("Trigger defaults and manual mode")
         form = QFormLayout(group)
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         form.addRow("Camera trigger source", self.dcam_source)
         form.addRow("Trigger polarity", self.external_polarity)
         form.addRow("Trigger delay (s)", self.external_delay)
+        note = QLabel(
+            "Automated runs force trigger source to Internal. Polarity and delay remain inherited sequence "
+            "values, but their physical relevance depends on the selected camera mode and is bench-unverified."
+        )
+        note.setObjectName("v3CameraTriggerBoundary")
+        note.setWordWrap(True)
+        form.addRow(note)
         self._add_tooltip_icons(form)
         return group
 
@@ -1497,22 +2131,41 @@ class MainWindowV3(MainWindowV2):
         layout.addWidget(query_range)
         layout.addWidget(start)
         layout.addWidget(abort)
-        hint = QLabel("Apply camera settings before starting. Motion requires explicit confirmation.")
+        hint = QLabel(
+            "Uses the existing camera connection and the Z-scan exposure setting. "
+            "Apply camera settings before starting; motion requires explicit confirmation."
+        )
         hint.setWordWrap(True)
         hint.setMaximumWidth(280)
         layout.addWidget(hint)
         layout.addStretch(1)
         return group
 
+    def _apply_zscan_range(self, max_travel_um: float | None) -> None:
+        super()._apply_zscan_range(max_travel_um)
+        if hasattr(self, "_v3_zscan_derived_summary"):
+            self._refresh_v3_zscan_summary()
+
     def _zscan_tab(self) -> QWidget:
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        note = QLabel("Manual calibration workflow only. Motion requires explicit confirmation.")
+        note = QLabel(
+            "Manual calibration workflow only. It reuses the existing camera connection; "
+            "the Z-scan exposure is independent of the experiment-camera exposure. Motion requires explicit confirmation."
+        )
         note.setWordWrap(True)
         note.setMaximumWidth(620)
         layout.addWidget(note)
+
+        self._v3_zscan_derived_summary = QLabel()
+        self._v3_zscan_derived_summary.setObjectName("v3ZScanDerivedSummary")
+        self._v3_zscan_derived_summary.setWordWrap(True)
+        layout.addWidget(self._v3_zscan_derived_summary)
+        for widget in (self.zscan_z_start_um, self.zscan_z_end_um, self.zscan_step_size_um):
+            widget.valueChanged.connect(self._refresh_v3_zscan_summary)
+        self._refresh_v3_zscan_summary()
 
         body = QHBoxLayout()
         parameters = self._zscan_parameters_group()
@@ -1524,6 +2177,25 @@ class MainWindowV3(MainWindowV2):
         layout.addLayout(body)
         layout.addStretch(1)
         return tab
+
+    def _refresh_v3_zscan_summary(self, _value=None) -> None:
+        start_um = float(self.zscan_z_start_um.value())
+        end_um = float(self.zscan_z_end_um.value())
+        step_um = float(self.zscan_step_size_um.value())
+        if end_um < start_um:
+            text = "Requested range is invalid: Z end must be greater than or equal to Z start."
+            warning = True
+        else:
+            targets = ZScanCalibration._build_targets(start_um, end_um, step_um)
+            text = (
+                f"Derived scan: {len(targets)} position(s) / image(s), {start_um:.3f}–{end_um:.3f} µm "
+                f"with {step_um:.3f} µm requested spacing. {self.zscan_range_status.text()}"
+            )
+            warning = not self.zscan_z_start_um.isEnabled()
+        self._v3_zscan_derived_summary.setText(text)
+        self._v3_zscan_derived_summary.setStyleSheet(
+            "color: darkorange; font-weight: bold;" if warning else ""
+        )
 
 
 def main() -> int:
