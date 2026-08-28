@@ -1,8 +1,12 @@
 from __future__ import annotations
 
-import time
+import pytest
 
 from thermo_acoustic.instruments import SerialTextCommandBackend
+
+
+class _SerialTimeoutWouldBlock(RuntimeError):
+    """Signals entry into the fake serial port's timeout-wait branch."""
 
 
 class _FakeCarriageReturnOnlyPort:
@@ -10,7 +14,8 @@ class _FakeCarriageReturnOnlyPort:
     never "\\n" -- matches the real valve hardware behavior confirmed in a
     real-hardware verification session. `read()` mirrors pyserial's own
     semantics: it returns buffered bytes instantly if any are available,
-    otherwise blocks for `timeout` seconds and returns empty. `readline()`
+    otherwise enters a timeout wait. The fake represents that wait with a
+    deterministic exception instead of sleeping. `readline()`
     is a faithful reimplementation of the generic algorithm the real
     `serial.Serial.readline()` falls back to (documented via the OLD
     behavior actually observed on real hardware, Session 54): drain
@@ -27,6 +32,9 @@ class _FakeCarriageReturnOnlyPort:
         self._buffer = bytearray(response)
         self.timeout = timeout
         self.written: list[bytes] = []
+        self.readline_calls = 0
+        self.read_until_calls: list[tuple[bytes, int | None]] = []
+        self.timeout_wait_attempts = 0
 
     def write(self, data: bytes) -> int:
         self.written.append(data)
@@ -37,10 +45,13 @@ class _FakeCarriageReturnOnlyPort:
             chunk = bytes(self._buffer[:size])
             del self._buffer[:size]
             return chunk
-        time.sleep(self.timeout)
-        return b""
+        self.timeout_wait_attempts += 1
+        raise _SerialTimeoutWouldBlock(
+            f"serial read would block until the {self.timeout}s timeout"
+        )
 
     def readline(self) -> bytes:
+        self.readline_calls += 1
         line = bytearray()
         while True:
             c = self.read(1)
@@ -50,6 +61,7 @@ class _FakeCarriageReturnOnlyPort:
         return bytes(line)
 
     def read_until(self, expected: bytes = b"\n", size: int | None = None) -> bytes:
+        self.read_until_calls.append((expected, size))
         lenterm = len(expected)
         line = bytearray()
         while True:
@@ -68,21 +80,17 @@ class _FakeCarriageReturnOnlyPort:
         pass
 
 
-def test_query_returns_as_soon_as_carriage_return_terminator_arrives():
+def test_query_uses_carriage_return_terminator_without_entering_timeout_wait():
     port = _FakeCarriageReturnOnlyPort(b"01\r", timeout=0.3)
     backend = SerialTextCommandBackend(port=port, line_ending="\r")
 
-    start = time.monotonic()
     result = backend.query("S")
-    elapsed = time.monotonic() - start
 
     assert result == "01\r"
     assert port.written == [b"S\r"]
-    assert elapsed < 0.1, (
-        f"query() took {elapsed:.3f}s but the \\r-terminated response was "
-        "available immediately -- it should not wait anywhere near the "
-        "configured timeout_s"
-    )
+    assert port.read_until_calls == [(b"\r", None)]
+    assert port.readline_calls == 0
+    assert port.timeout_wait_attempts == 0
 
 
 class _FakePortThatRaisesOnClose:
@@ -122,14 +130,14 @@ def test_readline_based_read_would_have_blocked_for_the_full_timeout():
     query() implementation made (self.port.readline()) reproduces the
     real, hardware-confirmed failure mode (Session 54) against this same
     fake -- the correct bytes ("01\\r") are available immediately, but
-    readline() still blocks for the full configured timeout before
-    returning them, since it's looking for a "\\n" that never arrives.
+    readline() still enters the full-timeout wait because it is looking for
+    a "\\n" that never arrives. The fake signals entry into that wait rather
+    than relying on scheduler-sensitive wall-clock timing.
     """
     port = _FakeCarriageReturnOnlyPort(b"01\r", timeout=0.2)
 
-    start = time.monotonic()
-    result = port.readline()
-    elapsed = time.monotonic() - start
+    with pytest.raises(_SerialTimeoutWouldBlock, match="0.2s timeout"):
+        port.readline()
 
-    assert result == b"01\r"
-    assert elapsed >= 0.2
+    assert port.readline_calls == 1
+    assert port.timeout_wait_attempts == 1
