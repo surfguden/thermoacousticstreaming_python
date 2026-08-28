@@ -13,6 +13,22 @@ python tools\run_ui.py
 python -m pytest -q
 ```
 
+For an objective session-start snapshot and mechanical repository checks:
+
+```powershell
+python tools\project_state_report.py
+python tools\audit_change_surface.py --symbol _build_experiment_series
+python tools\check_repository_hygiene.py
+```
+
+`AGENTS.md` is the concise repository working contract. The offline GitHub
+Actions workflow compiles Python, validates tracked-file/LabVIEW-export
+consistency, runs fake/unit coverage, and exercises selected shared v1/v2/v3
+contracts. It never collects `hardware_tests/` or manual probes and does not
+authorize real devices. Recommended repository policy: require this workflow
+to pass before merging, while leaving hardware evidence as a separate reviewed
+bench process.
+
 Before committing, compare the drafted commit message with the actual staged
 change:
 

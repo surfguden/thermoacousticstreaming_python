@@ -1,0 +1,45 @@
+name: Offline software checks
+
+on:
+  pull_request:
+  push:
+
+jobs:
+  offline-tests:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install the pinned software environment
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-exp_ctrl.txt pytest
+      - name: Compile Python sources and tools
+        run: python -m compileall -q src tools
+      - name: Check tracked-file and LabVIEW-export hygiene
+        run: python tools/check_repository_hygiene.py
+      - name: Run deterministic offline core tests
+        run: >-
+          python -m pytest -q
+          tests/test_repository_tools.py
+          tests/test_labview_export_parser.py
+          tests/test_runtime_truth.py
+          tests/test_tec.py
+          tests/test_application.py
+          tests/test_instruments.py
+          tests/test_hardware_factory.py
+          tests/test_full_flow_dry_run.py
+      - name: Run shared v1/v2/v3 contract tests
+        run: >-
+          python -m pytest -q
+          tests/test_qt_ui_hardware_settings.py::test_qt_ui_builds_one_experiment_group_per_tec_temperature
+          tests/test_qt_ui_hardware_settings.py::test_qt_ui_experiment_do_clock_config_uses_camera_timing_fields
+          tests/test_qt_ui_v2.py::test_v2_reuses_existing_experiment_builder
+          tests/test_qt_ui_v3.py::test_v3_shadow_plan_matches_authoritative_builder_for_frequency_camera_flush_and_path
+          tests/test_qt_ui_v3.py::test_v3_shadow_plan_matches_authoritative_unlocked_tec_groups

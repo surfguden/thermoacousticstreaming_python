@@ -18,6 +18,23 @@ open but code/git shows resolved, or vice versa -- see Part 2 of the report
 for the full list), **DESIGN FORK** (not a bug -- a genuine either-way
 decision only the user can make).
 
+## Active item registry
+
+This compact registry gives durable IDs and closure criteria to the highest-
+impact active items. The detailed evidence remains in the existing entries
+below; the table does not replace their history.
+
+| ID | Status | Domain | Blocking impact | Evidence | Next action / review point | Closure criterion |
+| --- | --- | --- | --- | --- | --- | --- |
+| HW-TIMING-001 | OPEN | Camera / AD2 / DIO | Physical trigger and exposure timing cannot be claimed | `docs/p0_hardware_truth_20260828.md` records AD2 discovery and `DCAMERR_NOCAMERA`, with no output or measurement | Restore camera visibility and confirm scope wiring before the prepared low-output diagnostic | Retained scope data identifies AnalogOut, DIO1, trigger reference, and accessible exposure timing with uncertainty |
+| HW-VALVE-001 | OPEN | Valve / fluidics | P01/P02 cannot be given physical route names | No command was sent on 2026-08-28 because harmless routing could not be established | Run the pump-disabled P01/S and P02/S procedure with visible harmless routing | Both positions have separate requested, protocol-confirmed, and physically observed route records |
+| HW-QMIX-CAN-001 | OPEN | Qmix / CAN | Pump connection is not fault-free or motion-ready | Three no-motion trials cleaned up normally but retained `fault=True` in 3/3 | Capture passive VCI counters/state and inspect the physical CAN path | Repeated reviewed no-motion trials are fault-free and ownership cleanup remains clean |
+| HW-PUMP-MOTION-001 | OPEN | Qmix pump | Reference, fill truth, and bounded motion remain unsafe to infer | No recovery/reference/motion occurred in the 2026-08-28 baseline | Review syringe and fluid route only after HW-QMIX-CAN-001 | Reference, fill-level meaning, stop, and minimal motion are separately physically verified |
+| HW-TEC-001 | OPEN | Meerstetter TEC | Real write operation is not yet authorized | Independent COM6 read-only evidence confirmed both channels and 2010=0; Static OFF/partial cleanup is fake-tested only | Review the new OFF boundary, then perform a separately authorized OFF-only readback check | Per-channel OFF and cleanup behavior are retained from a safe real-device check; broader ON/target approval remains separate |
+| ARCH-PREFLIGHT-001 | OPEN | Experiment planning | `BuildResult` cannot yet replace the production builder | Normalized shadow cases pass, but v1/v2 do not consume `BuildResult` and validation equivalence is incomplete | Extend blocking/metadata comparison without changing Start | One shared result preserves every builder semantic and is consumed by v1/v2/v3 with regression evidence |
+| ARCH-PERSISTENCE-001 | OPEN | Settings architecture | Hardware identity and experiment protocol remain mixed | The Hardware Profile / Experiment Protocol split in `runtime_truth_and_bench_preparation.md` is proposal-only | Revisit after shared planning contracts stabilize | Versioned split round-trips legacy settings without applying stale hardware state or changing run semantics |
+| TEST-QT-LIFETIME-001 | OPEN | Qt / PySide / tests | Full offline runs can fail or hang nondeterministically | Fifteen observed members, two signatures, four informational markers, and offscreen-only evidence are documented below | Use the bounded reproduction and teardown plan; do not mark all tests or hide failures | Root cause is reproduced minimally and removed or isolated with deterministic teardown; full-suite repeats no longer produce the family |
+
 The headings below deliberately separate four categories: active workflow
 items that still need hardware confirmation; retained legacy/reference code;
 manual-only probes that must never be mistaken for automated tests; and
