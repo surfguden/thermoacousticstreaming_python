@@ -65,8 +65,16 @@ class WaveFormsBackend:
     }
 
     def __init__(self, library_path: str | Path | None = None, dwf: object | None = None) -> None:
-        self.library_path = self._resolve_library(library_path)
-        self._dwf = dwf or (ctypes.WinDLL(str(self.library_path)) if hasattr(ctypes, "WinDLL") else ctypes.CDLL(str(self.library_path)))
+        if dwf is not None:
+            self.library_path = Path(library_path) if library_path is not None else None
+            self._dwf = dwf
+        else:
+            self.library_path = self._resolve_library(library_path)
+            self._dwf = (
+                ctypes.WinDLL(str(self.library_path))
+                if hasattr(ctypes, "WinDLL")
+                else ctypes.CDLL(str(self.library_path))
+            )
         self._bind_signatures()
 
     @classmethod

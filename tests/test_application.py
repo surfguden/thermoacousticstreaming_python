@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import thermo_acoustic.waveforms as waveforms_module
 from thermo_acoustic.application import Application
 from thermo_acoustic.ad2 import (
     CarrierSettings,
@@ -3125,6 +3126,45 @@ class FakeDwf:
         func = FakeDwfFunction(name, self)
         setattr(self, name, func)
         return func
+
+
+def test_waveforms_injected_dwf_bypasses_vendor_library_resolution(monkeypatch):
+    fake = FakeDwf()
+
+    def fail_if_called(cls, library_path):
+        raise AssertionError("injected DWF object must bypass vendor library resolution")
+
+    monkeypatch.setattr(WaveFormsBackend, "_resolve_library", classmethod(fail_if_called))
+
+    backend = WaveFormsBackend(dwf=fake)
+
+    assert backend._dwf is fake
+    assert backend.library_path is None
+
+
+def test_waveforms_without_injected_dwf_uses_vendor_library_loader(monkeypatch):
+    fake = FakeDwf()
+    library_path = Path("C:/fake/WaveFormsSDK/dwf.dll")
+    resolve_calls = []
+    load_calls = []
+
+    def resolve_library(cls, requested_path):
+        resolve_calls.append(requested_path)
+        return library_path
+
+    def load_library(path):
+        load_calls.append(path)
+        return fake
+
+    monkeypatch.setattr(WaveFormsBackend, "_resolve_library", classmethod(resolve_library))
+    monkeypatch.setattr(waveforms_module.ctypes, "WinDLL", load_library, raising=False)
+
+    backend = WaveFormsBackend()
+
+    assert resolve_calls == [None]
+    assert load_calls == [str(library_path)]
+    assert backend.library_path == library_path
+    assert backend._dwf is fake
 
 
 def test_waveforms_low_level_wrappers():
