@@ -28,6 +28,16 @@ historical notes. This document is a live issue register, whereas
 
 ## Active workflow: unresolved hardware-confirmation items
 
+- **Shared runtime evidence and preflight are intentionally incomplete.**
+  `Application.runtime_evidence_snapshot()` adapts existing camera, TEC, pump,
+  valve, and experiment state without hardware queries. Cached protocol state
+  remains labeled cached, physical routing/timing remains unverified, and AD2/Z
+  are deferred rather than guessed. V3 renders the shared snapshot and
+  shadow `BuildResult`, but the inherited production builder/Start path remains
+  authoritative. The exact P0 evidence procedures and persistence proposal are
+  in `docs/runtime_truth_and_bench_preparation.md`. **Status: OPEN for bench
+  evidence and production-plan promotion.**
+
 - **Valve protocol position versus physical fluidic routing.** The serial
   protocol and status tokens confirm numeric positions `P01`/`P02`, but the
   current workflow and migration audits still record the physical routing as
@@ -38,6 +48,9 @@ historical notes. This document is a live issue register, whereas
   confirmation is not proof of fluidic semantics. A successful real serial
   write is now shown as `requested P01/P02; confirmation pending`; only a
   subsequent recognized `S` status reply restores `confirmed` state.
+  A 2026-08-28 attempt deliberately sent no command because physical pump
+  isolation and a harmless observable route could not be confirmed from
+  software. **Status: OPEN; no new physical mapping.**
 - **DIO0 (acoustic)/DIO1 (LED) relative timing never oscilloscope-verified.**
   Session 19/31/43. The DO-clock derivation (`_experiment_do_clock_config()`)
   is structurally wired from real UI values, but whether its physical timing
@@ -51,6 +64,11 @@ historical notes. This document is a live issue register, whereas
   physical camera-trigger line. `Camera Start` is therefore a programmed DO
   `sec_wait`, not a proven delay relative to the later `pc_trigger()` call.
   **Status: OPEN.**
+  **2026-08-28 attempt:** passive AD2 discovery found unopened device
+  `SN:210321A18CE2`, but DCAM initialization returned `0x80000206`
+  (`DCAMERR_NOCAMERA`) and physical scope wiring was not observable. No output
+  was issued and no timing edge was measured. See
+  `docs/p0_hardware_truth_20260828.md`.
 - **Staged hardware-test confirmations are not global GUI interlocks.**
   `CONFIRM_REAL_HARDWARE` and timing acknowledgements protect action-capable
   modes in newer `hardware_tests/` scripts. They do not apply to the tracked
@@ -452,9 +470,15 @@ historical notes. This document is a live issue register, whereas
   confirmed out of this integration's scope, firmware 5.10 meets the
   HV documentation's stated minimum). Also, `_PyMeComTecClient.write_config()`
   is a no-op and does not perform the vendor's separate flash-save operation.
-  Keep TEC disabled/simulated and do not use the historical claims as
-  authorization until a human review reconciles the implementation and bench
-  record. **Status: OPEN for real operation; mapping source-checked;
+  An independent 2026-08-28 read-only COM6 probe confirmed Device Status 104
+  = 1 and both channels reporting plausible object temperatures with Output
+  Enable Status 2010 = 0. It sent no writes. Commit `2da4c8d` adds a
+  bounded, per-channel Static OFF method plus best-effort OFF cleanup after a
+  partial setpoint application; those new write paths are fake-tested only.
+  Keep TEC disabled/simulated and do not use either historical write claims or
+  the read-only probe as authorization until the new boundary and retained
+  bench record are reviewed. **Status: OPEN for real write operation;
+  read-only communication independently confirmed; mapping source-checked;
   model/firmware fit CLOSED.**
 - **Historical, unverified Meerstetter TEC session record (Sessions 75-77).**
   The following claim has not been independently verified in this audit and
@@ -505,6 +529,11 @@ historical notes. This document is a live issue register, whereas
   not yet exercised against real hardware** -- the single-float
   broadcast path it's built on has been real-hardware verified
   repeatedly, but a real two-simultaneous-different-targets run has not.
+
+  TDMS provenance now keeps the legacy `TECTarget` and adds
+  `TECTargetCh1`/`TECTargetCh2` alongside `TECRequested`, `TECEnabled`, and
+  `SimTEC`. These record requested targets and runtime mode, including unlocked
+  CH2, but do not claim applied or measured temperatures. No TEC I/O changed.
 
   **Error-state (Device Status == 3) surfacing -- investigated,
   accepted as a documented gap (Session 77).** Real hardware has never
@@ -839,6 +868,14 @@ historical notes. This document is a live issue register, whereas
   occurs after initialization or an operator-requested fresh reconnect. It
   records the manual action in the live status log and `data.tdms`
   (`PumpFaultManuallyCleared`); it is no longer required for routine init.
+  A 2026-08-28 no-motion reliability run used the active stored project and
+  completed open/start/passive-status/stop/close cleanly in all three trials,
+  with no cleanup error. The pump stayed disabled and stopped throughout.
+  The fault flag nevertheless remained true in 3/3 trials: trial 1 reported
+  `33279` (`0x81FF`), while trials 2-3 reported last-error code 0 without
+  clearing the fault flag. This is transport/cleanup evidence, not a
+  fault-free pass and not permission to reference or move. Full timestamps
+  and limits are retained in `docs/p0_hardware_truth_20260828.md`.
 - **Qmix project identity and stored bus settings are now separated from live
   bus diagnosis (2026-08-12).** `hardware_config.py` selects the one-pump
   project under `video paper 2\\Paper 2 slow flow\\Configurations`; its XML

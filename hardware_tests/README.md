@@ -158,6 +158,13 @@ semantics, and operator confirmation.
   move the piezo only behind its explicit confirmation gate and must never be
   represented as automated coverage. It is intentionally ignored and named
   `manual_*.py`; no historical BPC-named probe is an active project tool.
+- `manual_tec_read_only_probe.py` reads only Device Status, conditional Error
+  Number, Object Temperature, and Output Enable Status. It has no write path.
+- `manual_qmix_no_motion_reliability.py` requires the literal confirmation
+  `NO_MOTION_CAN` and performs only bus open/start, passive pump status, stop,
+  and close across three to five trials. It never enables, clears, references,
+  or moves the pump and treats a retained fault flag as a failed reliability
+  outcome even when the last-error code has returned to zero.
 
 ## Prepared Minimal Bench-Confirmation Group
 
@@ -176,9 +183,10 @@ operator setup and observation:
    `test_valve_command_probe*.py` script with `--confirm SEND`, after confirming
    COM5/COM6 and the tubing state. A recognized status response confirms the
    numeric position, not its fluidic meaning.
-3. Qmix motion/stop semantics: do not run while the relatching `0x81FF` CAN
-   transmit-queue fault remains. Resolve that fault in the controller/CAN
-   setup before any movement check.
+3. Qmix motion/stop semantics: the 2026-08-28 no-motion probe completed three
+   clean bus ownership/cleanup cycles but retained the pump fault flag in all
+   three. Do not run motion while that relatching CAN fault remains. Resolve
+   the controller/CAN condition before any movement check.
 4. TEC persistence: do not test until the reviewed real-operation boundary is
    approved. A flash-writing check is intentionally outside the current
    simulated-default workflow.

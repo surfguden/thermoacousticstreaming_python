@@ -27,6 +27,9 @@ test coverage, `7c7e19f` said the four v3 files were excluded while adding
 them, `4105fa8` retained unfilled message-template placeholders, and `22c68cb`
 re-added the v3 files without disclosing them.
 
+The retained 2026-08-28 P0 bench evidence and its explicit unresolved limits
+are in `docs/p0_hardware_truth_20260828.md`.
+
 On Windows, `launch_gui.bat` (double-click, or run from a terminal) does the
 same thing as `python tools\run_ui.py`, using a fixed Conda environment path
 instead of whatever `python` currently resolves to on your PATH -- see the
@@ -144,3 +147,8 @@ independent real-hardware validation:
 
 The UI runs hardware actions on worker threads, persists settings in
 `.thermo_acoustic_ui.json`, and performs cleanup on Exit.
+
+The current shared evidence, event, shadow-preflight, TEC provenance, and
+bench-preparation boundaries are documented in
+`docs/runtime_truth_and_bench_preparation.md`. These software models do not
+promote cached/protocol state to physical hardware verification.

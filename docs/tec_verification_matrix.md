@@ -20,6 +20,19 @@ hardware operation.
 > Every "real-hardware verified" label retained below is therefore a historical
 > session claim, not a current independently verified status or authorization.
 
+Current run metadata records `TECRequested`, `TECEnabled`, `SimTEC`, legacy
+`TECTarget`, and explicit `TECTargetCh1`/`TECTargetCh2`. Those fields preserve
+unlocked dual-channel requested targets and distinguish disabled/simulated
+runs; they are not applied-setpoint readbacks or measured temperatures. The
+metadata change does not alter MeCom I/O. The independent read-only/OFF/write
+bench sequence is prepared in `docs/runtime_truth_and_bench_preparation.md`.
+On 2026-08-28 a read-only probe on COM6 independently read Device Status 104 =
+1 and, for instances 1 and 2, Object Temperature 1000 = 24.5669/24.6039 C and
+Output Enable Status 2010 = 0. No write was sent. Commit `2da4c8d` adds a
+public, per-channel, readback-verified Static OFF method and failure cleanup;
+that new boundary is fake-tested only. The retained
+evidence and remaining limits are in `docs/p0_hardware_truth_20260828.md`.
+
 ## Official Source Check
 
 Official Meerstetter pages confirm the following high-level facts:
@@ -56,13 +69,10 @@ Official Meerstetter pages confirm the following high-level facts:
   channel-2 investigation below); `get_parameter_raw()`/`set_parameter_raw()`
   remain forbidden in both directions, since every parameter this
   integration has needed to read has had a known name.
-- The TEC-Family user documentation distinguishes persistent `Static OFF/ON`
-  output-stage settings stored in flash from volatile `Live OFF/ON` settings
-  held in RAM. The real protocol document's own worked example confirms
-  parameter 2010 "Output Enable Status" is a plain binary value (0=OFF,
-  1=ON), not a 4-way Static/Live enum -- a value of 1 is what this
-  integration writes for "Static ON," 0 for OFF (used for real-hardware
-  shutdown, Sessions 75-76). Parameter 2000 ("Output Stage Input
+- The current TEC-Family communication protocol defines parameter 2010
+  "Output Enable" as 0=Static OFF, 1=Static ON, 2=Live, and 3=HW Enable.
+  This integration deliberately writes only 0 or 1; it does not use the Live
+  or HW Enable modes. Parameter 2000 ("Output Stage Input
   Selection") is a separate, related parameter and remains explicitly out
   of scope; it is never read or written here.
 - The vendor's configuration workflow describes Write Config as saving

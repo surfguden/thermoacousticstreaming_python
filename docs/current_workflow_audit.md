@@ -16,6 +16,11 @@ For the consolidated live list of items that should remain outside the active
 workflow until explicitly resolved, see `docs/known_open_items.md`.
 `docs/legacy_unresolved_items.md` is the focused high-risk safety summary. For the TEC-specific validation matrix and
 official-source boundary, see `docs/tec_verification_matrix.md`.
+For the shared runtime-evidence/event and shadow-preflight boundary, plus the
+prepared P0 bench procedures, see
+`docs/runtime_truth_and_bench_preparation.md`.
+The bounded 2026-08-28 P0 execution record is
+`docs/p0_hardware_truth_20260828.md`.
 
 **Evidence boundary:** code paths and fake-only tests cited below are current
 repository evidence. The "Historically Reported Hardware Milestones" section is retained
@@ -72,6 +77,13 @@ Current canonical experiment execution is `Application.run_experiment2()`.
 available and can still move pump and valve when real backends are connected.
 The current working tree rejects zero or negative flush flow before either
 device is touched; this workflow is a positive-rate dispense operation.
+
+`Application.runtime_evidence_snapshot()` now provides a no-I/O view of
+existing camera, TEC, pump, valve, and experiment state with explicit basis,
+freshness, and verification scope. The existing experiment builder and Start
+path remain authoritative; the new shared `BuildResult` is shadow-compared and
+rendered by v3 only. This is software truth-model work, not new hardware
+readback or readiness evidence.
 
 ## UI Runtime Boundary
 
@@ -152,7 +164,7 @@ device is touched; this workflow is a positive-rate dispense operation.
 | AD2 PC trigger | `AD2Sdk.pc_trigger()` | Present in run path; interaction with `trigsrcNone` needs confirmation |
 | AD2 DO Clock Special | `config_do_clock_special()` and DO settings | Active migrated DIO1 LED timing path; staged scripts are gated, canonical GUI is not confirmation-gated |
 | AD2 DO Custom | `config_do_custom()` and custom DO settings | Legacy/nonessential unless later evidence requires it |
-| Qmix/neMESYS pump | `CetoniPump` + `QmixPumpBackend` | Real backend is opt-in; normal initialization now clears the vendor fault latch and retains a final fail-closed fault gate. A colleague reported successful real initialization/operation under this policy, but the `0x81FF` CAN root cause remains unresolved and the canonical GUI has no separate movement-confirmation gate after initialization. |
+| Qmix/neMESYS pump | `CetoniPump` + `QmixPumpBackend` | Real backend is opt-in; normal initialization clears the vendor fault latch and retains a final fail-closed fault gate. On 2026-08-28, 3/3 bounded no-motion open/start/status/stop/close trials cleaned up, but 3/3 still reported `fault=True`; trial 1 retained `0x81FF`. This is transport-cleanup evidence, not motion readiness or CAN root-cause closure. |
 | Valve position 1/2 | `Valve.set_position(1/2)` | Mapping unresolved; do not switch yet |
 | Flush | `Application.flush()` | Gated by `flush_enabled`; positive dispense rate required before hardware is touched; real pump/valve behavior remains bench-unverified |
 | Legacy Prior Z-stage | Retained migration reference only; no active factory path | Obsolete for current PPC001 hardware |
