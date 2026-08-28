@@ -17,8 +17,9 @@ hardware operation.
 > that `_PyMeComTecClient.write_config()` is intentionally a no-op: it applies
 > RAM values through MeCom `VS`, but does **not** perform the vendor's separate
 > flash-persistence "Write Config"/save operation.
-> Every "real-hardware verified" label retained below is therefore a historical
-> session claim, not a current independently verified status or authorization.
+> Except for the independently retained 2026-08-28 read-only and Static OFF
+> evidence below, every "real-hardware verified" label retained below is a
+> historical session claim, not current authorization.
 
 Current run metadata records `TECRequested`, `TECEnabled`, `SimTEC`, legacy
 `TECTarget`, and explicit `TECTargetCh1`/`TECTargetCh2`. Those fields preserve
@@ -26,12 +27,14 @@ unlocked dual-channel requested targets and distinguish disabled/simulated
 runs; they are not applied-setpoint readbacks or measured temperatures. The
 metadata change does not alter MeCom I/O. The independent read-only/OFF/write
 bench sequence is prepared in `docs/runtime_truth_and_bench_preparation.md`.
-On 2026-08-28 a read-only probe on COM6 independently read Device Status 104 =
-1 and, for instances 1 and 2, Object Temperature 1000 = 24.5669/24.6039 C and
-Output Enable Status 2010 = 0. No write was sent. Commit `2da4c8d` adds a
-public, per-channel, readback-verified Static OFF method and failure cleanup;
-that new boundary is fake-tested only. The retained
-evidence and remaining limits are in `docs/p0_hardware_truth_20260828.md`.
+On 2026-08-28 read-only COM6 probes independently read Device Status 104 = 1
+and both channels at plausible room temperatures with Output Enable Status
+2010 = 0. A later authorized check used the public shared controller path to
+write only parameter 2010 value 0 to channels 1 and 2; both channels read back
+OFF and the client closed cleanly. No Static ON, target, PID/calibration, raw,
+or flash write occurred. Partial-failure cleanup remains fake-tested because no
+real failure was induced. The retained evidence and limits are in
+`docs/p0_hardware_truth_20260828.md`.
 
 ## Official Source Check
 
@@ -152,7 +155,7 @@ already cited elsewhere in this document.
 | Read device status / fault | TEC-Family protocol catalogues device-status and error fields (parameter 104 Device Status, 105 Error Number). | `_PyMeComTecClient.read_status(channels)` reads 104 and (if ==3) 105 ONCE at instance 1 and applies the result to every requested channel's `TecStatus` -- **fixed in Session 76** after real hardware confirmed these are device-wide, not per-channel (previously read per-channel, which broke channel 2). | Real-hardware verified, both channels |
 | Read object temperature | The protocol documents object-temperature readback (parameter 1000) for a TEC-Family controller instance. | `_PyMeComTecClient.read_status(channels)` reads parameter 1000 "Object Temperature" per channel via `get_parameter(parameter_name="Object Temperature", parameter_instance=channel)`. | Real-hardware verified, both channels hold independent real readings |
 | Set target object temperature | The protocol documents a target-object-temperature setting (parameter 3000) for a TEC-Family controller instance. | `_PyMeComTecClient.set_target_temperature(channel, temperature_c)` writes parameter 3000 "Target Object Temperature" via `set_parameter()`. | Real-hardware verified, both channels (genuine closed-loop thermal response) |
-| Static ON output stage | The real protocol document's own worked example confirms parameter 2010 "Output Enable Status" is a binary value: 0=OFF, 1=ON (Instance-addressed). | `_PyMeComTecClient.set_output_stage_static_on(channel)` writes `value=1` to parameter 2010 via `set_parameter()`. Parameter 2000 ("Output Stage Input Selection") is a separate parameter, confirmed out of scope, never referenced. | Real-hardware verified, both channels; OFF (value 0) also confirmed real-hardware |
+| Static ON/OFF output stage | The protocol defines parameter 2010 values 0=Static OFF and 1=Static ON (instance-addressed). | The client writes only the selected value through named parameter 2010; parameter 2000 remains out of scope. | Static ON remains a historical Session 75-76 claim; Static OFF through the current shared path was independently verified on both channels on 2026-08-28 |
 | Write configuration | Vendor configuration guidance says Write Config saves changed parameters to the controller; the protocol document's worked examples show `VS` (Value Set) commands take effect immediately in RAM. | `_PyMeComTecClient.write_config()` is a deliberate RAM-only no-op; it does not issue vendor Write Config or persist to flash. | Intentional omission, not equivalent to vendor Write Config; historical response claims are not independently retained bench evidence |
 | Readback, stable wait, abort / timeout | Vendor material distinguishes Ready, Run, and Error states, but does not establish this experiment's stability criterion. | `TecController.wait_until_stable()` polls per-channel `TecStatus` (`dict[int, TecStatus]`), with explicit tolerance, settle time, timeout, and abort callback, for both simulated and reviewed-client backends. | Real device-status readback verified. **Session 77: `wait_until_stable()`'s own success-path loop (tolerance + `min_settle_s` continuous-stability timer) real-hardware verified on channel 1** (target 25.65 C, converged and held within 0.2 C tolerance, `ready=True`, returned inside the 60s bound) -- timeout/abort paths still offline-tested only |
 
@@ -215,7 +218,7 @@ Meerstetter device-limit claim.
 | 2. Read-only status | Read current temperature, output stage state, ready flag, and error state, per channel; Device Status/Error Number read once, device-wide. | `TecController.read_status()`, backend `read_status(channels)`, `_PyMeComTecClient.read_status(channels)` | `dict[int, TecStatus]` populated for every requested channel | Missing/unsupported client method raises `TecError`; backend error state surfaces | **Real-hardware verified, both channels (Sessions 75-76)** -- includes the Session 76 fix for Device Status's device-wide addressing |
 | 3. Target temperature validation | Reject non-finite or out-of-range target before backend call. | `validate_tec_target_temperature()`, `TemperatureSeries.__post_init__()`, `TecController.apply_static_setpoint()` | Accepted target is finite and within `[0.0, 80.0] C` | `ValueError` before any backend write | Offline-tested |
 | 4. Set target temperature | Apply one static target for a group, broadcast by default to both configured channels. | `Application.run_temperature_series()` -> `TecController.apply_static_setpoint()` -> backend `set_target_temperature(channel, temperature_c)` -> `_PyMeComTecClient` writes parameter 3000 | Readback status target/current fields | Backend raises `TecError`; error state raises `TecError` | **Real-hardware verified, both channels (Sessions 75-76)** -- genuine closed-loop thermal convergence observed on each channel independently |
-| 5. Enable output stage static on | Turn on static output-stage control (parameter 2010 = 1) before setting target, per channel; also confirmed OFF (0) works for shutdown. | `TecController.apply_static_setpoint()` -> backend `set_output_stage_static_on(channel)` -> `_PyMeComTecClient` writes parameter 2010 | `TecStatus.output_stage_static_on=True`/`False` | Missing client method raises `TecError` | **Real-hardware verified, both channels, both ON and OFF (Sessions 75-76)** |
+| 5. Output-stage Static ON/OFF | Static ON uses parameter 2010 value 1 before a target; shutdown uses value 0 per channel. | `TecController.apply_static_setpoint()` uses Static ON; `TecController.set_output_stage_static_off()` issues bounded per-channel OFF and readback. | `TecStatus.output_stage_static_on=True`/`False` | Missing client method raises `TecError`; OFF path reports command/readback failures | Static ON remains historical Session 75-76 evidence; the current Static OFF path was independently real-verified on both channels on 2026-08-28 |
 | 6. Write config | `_PyMeComTecClient.write_config()` is a deliberate RAM-only no-op; it is not vendor flash persistence. | `TecController.apply_static_setpoint()` -> backend `write_config()` -> `_PyMeComTecClient.write_config()` (no-op) | A test confirms zero calls are made to the fake MeCom double during `write_config()` | No flash save occurs; persistence is outside the current boundary | No-op behavior offline-tested; vendor Write Config remains intentionally unimplemented |
 | 7. Temperature/readiness readback | Confirm current temperature, ready flag, and fault/error state after write and during wait, per channel. | `TecController.read_status()`, `wait_until_stable()` (over `dict[int, TecStatus]`) | `ready=True`, current within tolerance for the minimum settle time, for every configured channel | Error state raises `TecError`; unsupported status response raises `TecError` | **Real-hardware verified, including through `wait_until_stable()`'s own loop (Sessions 75-77)** |
 | 8. Stability wait | Wait until current temperature remains within tolerance for `min_settle_s`, bounded by `max_wait_s`, across all configured channels. | `TecController.wait_until_stable()` | Returns final `dict[int, TecStatus]` | Raises `TimeoutError` after `max_wait_s` | **Success path (tolerance + `min_settle_s`) real-hardware verified on channel 1 (Session 77)**; timeout path still offline-tested only |

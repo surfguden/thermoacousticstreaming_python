@@ -6,10 +6,11 @@ records; this page does not replace them.
 
 ## CURRENT MILESTONE
 
-Restore the software checkpoint, then resume the hardware-truth mainline.
-Offline CI is green at `525894f`; the rules/project-control checkpoint must also
-pass offline CI before any live hardware step. Engineering-control work is then
-in maintenance mode unless a demonstrated failure requires another change.
+The software checkpoint is restored: offline CI is green at the deterministic
+test fix (`525894f`) and the rules/project-control checkpoint (`da4a790`).
+Engineering control is in maintenance mode. The active mainline is hardware
+truth; camera visibility is restored, but physical trigger timing is not yet
+verified.
 
 Current operator surfaces:
 
@@ -21,15 +22,16 @@ Current operator surfaces:
 
 ## ACTIVE
 
-- **HW-TIMING-001:** restore passive camera visibility before trigger-timing work.
+- **HW-TIMING-001:** confirm scope wiring, then run the prepared bounded physical
+  trigger-timing diagnostic.
 - **HW-QMIX-CAN-001:** narrow passive CAN/controller state without pump motion.
-- **HW-TEC-001:** retain read-only evidence and prepare OFF-only verification.
 
 ## READY
 
-- **HW-TIMING-001:** camera power/interface, DCAM enumeration, vendor visibility,
-  process ownership, runtime path, and a clean vendor open/close cycle may be
-  checked passively after the software gate.
+- **HW-TIMING-001:** Windows PnP, the vendor sample, and the repository backend
+  now see camera `C15440-20UP` / `S/N: 500478`; a clean read-only open/close
+  succeeded. The later low-output capture is ready only after an operator
+  confirms the exact scope wiring and load.
 
 ## BLOCKED
 
@@ -55,9 +57,12 @@ Current operator surfaces:
 - Injected WaveForms startup no longer requires the vendor DLL (`ba25e27`).
 - The serial blocking regression test no longer depends on scheduler timing
   (`525894f`); its pushed offline workflow is green.
+- **HW-TEC-001:** the authorized real Static OFF path wrote only parameter 2010
+  value 0 to both channels, read both back OFF, and closed cleanly.
 
 ## NEXT CHECKPOINT
 
-Push the rules/project-control commit and require green offline CI. The next
-technical checkpoint is **HW-TIMING-001** camera visibility only; do not change
-trigger semantics or enable AD2 output while visibility is unresolved.
+The next technical checkpoint is **HW-TIMING-001**: operator-confirmed scope
+wiring followed by the already-prepared bounded timing capture. Do not infer a
+timing result from restored camera visibility, and do not enable AD2 output
+without that physical setup confirmation.

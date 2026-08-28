@@ -186,3 +186,69 @@ The software classification is now explicit:
 
 ROI remains excluded from the automated sequence settings and must not be
 mistaken for a freshly applied experiment ROI.
+
+## Follow-up after the green software checkpoints
+
+Follow-up repository state: branch `junjiebranch`, HEAD `da4a790`. The
+deterministic-test and rules/project-control commits had both passed the pushed
+offline workflow before these checks. No stage action, pump motion, valve
+command, camera acquisition, trigger change, or AD2 output occurred.
+
+### Camera visibility — PROTOCOL-CONFIRMED; TIMING STILL UNVERIFIED
+
+Windows PnP reported `Hamamatsu C15440`, instance
+`USB\VID_0661&PID_144B\500478`, status OK, using Hamamatsu driver
+`1.2.60.6749`. The installed x64 DCAM-API module reported version
+`24.1.4321.6749`. No Python, LabVIEW, or acquisition client process was found;
+two `DCAMTRAY.EXE` instances were present and were not terminated because they
+were not proven stale owners.
+
+Hamamatsu's bundled `dcam_show_device_list.py` independently listed
+`MODEL=C15440-20UP, CAMERAID=S/N: 500478`. The repository's discovery-only
+probe then initialized DCAM, counted one camera, opened index 0, and read:
+
+- bus USB3, model `C15440-20UP`, serial `500478`;
+- camera version 1.10, driver 1.2.6.6749, module 24.1.4322.6749;
+- 2304 x 2304 MONO16, Internal trigger, 0.0316446 s readout;
+- sensor -8 C, cooler READY.
+
+The probe performed no acquisition or configuration and reported successful
+camera close and DCAM uninitialization. This closes the visibility blocker that
+produced `DCAMERR_NOCAMERA`; it does not establish trigger timing. Scope wiring
+and the prepared bounded physical capture remain required under HW-TIMING-001.
+
+### Valve routing — UNCHANGED / UNVERIFIED
+
+No safe operator-visible physical route was available, so no `P01`, `P02`, or
+`S` command was sent. HW-VALVE-001 remains blocked.
+
+### Qmix/CAN passive state — SOFTWARE/OS-CONFIRMED; FAULT UNRESOLVED
+
+No QmixElements, Python, pytest, LabVIEW, or CAN-analyzer client process was
+running. Windows reported the `VCI4 USB-to-CAN compact` present and OK, and
+`VciDevService` remained Running/Automatic. `canAnaMini` is installed, but it
+was not opened because doing so could claim adapter ownership without a
+reviewed non-competing counter procedure.
+
+The active project still specifies node 2, 1000 kbit/s, 10 ms read timeout,
+500 ms write timeout, and 1000 ms heartbeat. No bus was opened, no counter was
+read, and the prior persistent `fault=True` result was not retested without a
+new question. HW-QMIX-CAN-001 and HW-PUMP-MOTION-001 remain separate and open.
+
+### TEC Static OFF — PROTOCOL-CONFIRMED
+
+At 08:36:21 UTC the existing read-only COM6 probe returned Device Status 104 =
+1 and Output Enable Status 2010 = 0 on both channels, with object temperatures
+24.5216 C and 24.5736 C. It sent no writes and closed cleanly.
+
+At 08:36:45 UTC the explicitly authorized shared
+`TecController.set_output_stage_static_off()` path ran with a five-second
+operation bound. Pre-readback showed both channels OFF. The only writes were
+named parameter 2010 value 0 for channel 1 and channel 2. Final readback again
+showed both channels OFF at 24.5222 C and 24.5749 C, with no error state, and
+the client closed cleanly.
+
+No Static ON, target, PID, calibration, raw, or flash operation was issued.
+This closes HW-TEC-001's bounded real Static OFF gate. It does not authorize or
+re-verify broader real TEC operations, and no failure was induced to exercise
+the partial-failure cleanup path physically.

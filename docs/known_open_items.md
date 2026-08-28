@@ -21,16 +21,16 @@ decision only the user can make).
 ## Active item registry
 
 This compact registry gives durable IDs and closure criteria to the highest-
-impact active items. The detailed evidence remains in the existing entries
+impact tracked items. The detailed evidence remains in the existing entries
 below; the table does not replace their history.
 
 | ID | Status | Domain | Blocking impact | Evidence | Next action / review point | Closure criterion |
 | --- | --- | --- | --- | --- | --- | --- |
-| HW-TIMING-001 | OPEN | Camera / AD2 / DIO | Physical trigger and exposure timing cannot be claimed | `docs/p0_hardware_truth_20260828.md` records AD2 discovery and `DCAMERR_NOCAMERA`, with no output or measurement | Restore camera visibility and confirm scope wiring before the prepared low-output diagnostic | Retained scope data identifies AnalogOut, DIO1, trigger reference, and accessible exposure timing with uncertainty |
+| HW-TIMING-001 | OPEN | Camera / AD2 / DIO | Physical trigger and exposure timing cannot be claimed | A 2026-08-28 follow-up restored PnP/vendor/backend visibility and a clean read-only open/close for `C15440-20UP` / `S/N: 500478`; no acquisition, output, or timing measurement occurred | Confirm scope wiring, then run the prepared bounded low-output diagnostic | Retained scope data identifies AnalogOut, DIO1, trigger reference, and accessible exposure timing with uncertainty |
 | HW-VALVE-001 | OPEN | Valve / fluidics | P01/P02 cannot be given physical route names | No command was sent on 2026-08-28 because harmless routing could not be established | Run the pump-disabled P01/S and P02/S procedure with visible harmless routing | Both positions have separate requested, protocol-confirmed, and physically observed route records |
-| HW-QMIX-CAN-001 | OPEN | Qmix / CAN | Pump connection is not fault-free or motion-ready | Three no-motion trials cleaned up normally but retained `fault=True` in 3/3 | Capture passive VCI counters/state and inspect the physical CAN path | Repeated reviewed no-motion trials are fault-free and ownership cleanup remains clean |
+| HW-QMIX-CAN-001 | OPEN | Qmix / CAN | Pump connection is not fault-free or motion-ready | Three no-motion trials retained `fault=True` in 3/3; a later passive check found the adapter/service healthy and no client owner, but did not open an analyzer or obtain counters | Review a non-competing analyzer/counter procedure and inspect the physical CAN path | Repeated reviewed no-motion trials are fault-free and ownership cleanup remains clean |
 | HW-PUMP-MOTION-001 | OPEN | Qmix pump | Reference, fill truth, and bounded motion remain unsafe to infer | No recovery/reference/motion occurred in the 2026-08-28 baseline | Review syringe and fluid route only after HW-QMIX-CAN-001 | Reference, fill-level meaning, stop, and minimal motion are separately physically verified |
-| HW-TEC-001 | OPEN | Meerstetter TEC | Real write operation is not yet authorized | Independent COM6 read-only evidence confirmed both channels and 2010=0; Static OFF/partial cleanup is fake-tested only | Review the new OFF boundary, then perform a separately authorized OFF-only readback check | Per-channel OFF and cleanup behavior are retained from a safe real-device check; broader ON/target approval remains separate |
+| HW-TEC-001 | RESOLVED | Meerstetter TEC | OFF-only real-operation gate closed; broader write scope remains separate | On 2026-08-28 the authorized shared path wrote only parameter 2010 value 0 to channels 1 and 2, read both back OFF, and closed cleanly | Keep ON, target, PID/calibration, raw, and persistence operations outside this closure | Per-channel OFF and cleanup behavior are retained from a safe real-device check; broader ON/target approval remains separate |
 | ARCH-PREFLIGHT-001 | OPEN | Experiment planning | `BuildResult` cannot yet replace the production builder | Normalized shadow cases pass, but v1/v2 do not consume `BuildResult` and validation equivalence is incomplete | Extend blocking/metadata comparison without changing Start | One shared result preserves every builder semantic and is consumed by v1/v2/v3 with regression evidence |
 | ARCH-PERSISTENCE-001 | OPEN | Settings architecture | Hardware identity and experiment protocol remain mixed | The Hardware Profile / Experiment Protocol split in `runtime_truth_and_bench_preparation.md` is proposal-only | Revisit after shared planning contracts stabilize | Versioned split round-trips legacy settings without applying stale hardware state or changing run semantics |
 | TEST-QT-LIFETIME-001 | OPEN | Qt / PySide / tests | Full offline runs can fail or hang nondeterministically | Fifteen observed members, two signatures, four informational markers, and offscreen-only evidence are documented below | Use the bounded reproduction and teardown plan; do not mark all tests or hide failures | Root cause is reproduced minimally and removed or isolated with deterministic teardown; full-suite repeats no longer produce the family |
@@ -86,6 +86,13 @@ historical notes. This document is a live issue register, whereas
   (`DCAMERR_NOCAMERA`) and physical scope wiring was not observable. No output
   was issued and no timing edge was measured. See
   `docs/p0_hardware_truth_20260828.md`.
+  **Later 2026-08-28 follow-up:** Windows PnP reported a healthy Hamamatsu
+  C15440, Hamamatsu's bundled device-list sample reported `C15440-20UP` /
+  `S/N: 500478`, and the repository discovery probe completed a clean
+  identity/property read and open/close cycle. No acquisition, configuration,
+  trigger change, or AD2 output occurred. Camera visibility is therefore
+  restored, but physical timing remains **OPEN** pending scope wiring and the
+  bounded measurement.
 - **Staged hardware-test confirmations are not global GUI interlocks.**
   `CONFIRM_REAL_HARDWARE` and timing acknowledgements protect action-capable
   modes in newer `hardware_tests/` scripts. They do not apply to the tracked
@@ -489,14 +496,12 @@ historical notes. This document is a live issue register, whereas
   is a no-op and does not perform the vendor's separate flash-save operation.
   An independent 2026-08-28 read-only COM6 probe confirmed Device Status 104
   = 1 and both channels reporting plausible object temperatures with Output
-  Enable Status 2010 = 0. It sent no writes. Commit `2da4c8d` adds a
-  bounded, per-channel Static OFF method plus best-effort OFF cleanup after a
-  partial setpoint application; those new write paths are fake-tested only.
-  Keep TEC disabled/simulated and do not use either historical write claims or
-  the read-only probe as authorization until the new boundary and retained
-  bench record are reviewed. **Status: OPEN for real write operation;
-  read-only communication independently confirmed; mapping source-checked;
-  model/firmware fit CLOSED.**
+  Enable Status 2010 = 0. A later explicitly authorized OFF-only check used the
+  shared `TecController.set_output_stage_static_off()` path: it wrote only
+  parameter 2010 value 0 to channels 1 and 2, then read both channels back OFF
+  and closed cleanly. No Static ON, target, PID/calibration, raw, or flash write
+  occurred. **Status: HW-TEC-001 RESOLVED for the bounded real Static OFF gate;
+  broader real operations and the historical claims below remain separate.**
 - **Historical, unverified Meerstetter TEC session record (Sessions 75-77).**
   The following claim has not been independently verified in this audit and
   must not be read as current authorization for real operation: core path
