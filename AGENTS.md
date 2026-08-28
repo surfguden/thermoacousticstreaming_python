@@ -1,52 +1,59 @@
 # Repository Working Contract
 
-## Priorities
+This file contains durable working boundaries. Current milestone, UI-role, CI,
+and hardware state belongs in `docs/project_control.md`; detailed unresolved
+evidence belongs in `docs/known_open_items.md` and the hardware truth records.
 
-1. Preserve LabVIEW/source parity where it is established; label inference.
-2. Protect hardware and the operator.
-3. Report evidence at its actual strength.
-4. Improve usability only after correctness and safety.
+## Authority And Conflict Resolution
 
-## Start From Repository State
+- Hardware and operator safety outrank parity, convenience, and presentation.
+- Act only within explicit authorization, and preserve user work and retained
+  evidence.
+- Current repository state, tests, CI, and runtime evidence establish factual
+  claims. The current user request establishes the desired outcome and action
+  authorization.
+- Preserve established LabVIEW/source parity unless it conflicts with safety,
+  current evidence, or an explicit owner decision; label inference. Usability
+  follows correctness and safety. If no clearly safe interpretation resolves a
+  conflict among task intent, evidence, safety, and these rules, stop and report
+  it.
 
-- Read branch, HEAD, upstream, `git status`, and the relevant files fresh.
-- Repository state overrides conversation, prompt, or session memory.
-- Verify tracking and launcher state; do not assume it from historical notes.
+## Scope And Change-Surface Discipline
 
-## UI Boundaries
+- Inspect fresh state and verify in proportion to risk. Local documentation,
+  isolated tests, and narrow helpers need local evidence; shared runtime and
+  safety behavior need relevant consumers and tests; architecture cutovers need
+  a clean checkpoint, broad equivalence/regression evidence, and a rollback
+  boundary. Use the repository state, hygiene, and CI mechanisms instead of
+  duplicating their inventories here.
+- For shared runtime, safety capability, or shared UI-builder changes, run
+  `tools/audit_change_surface.py` and interpret its scoped consumers, overrides,
+  and tests. Do not require a repository-wide audit for an unrelated local edit.
 
-- v1 (`qt_ui.py`) is the default operator UI.
-- v2 (`qt_ui_v2.py`) is the rollback/reference transitional UI.
-- v3 (`qt_ui_v3.py`) is tracked, opt-in repository content.
-- All three share `Application` and hardware backends. Presentation may differ;
-  safety-relevant capabilities and shared-builder changes need a cross-UI audit.
-- Before changing a shared symbol, inspect all uses, subclasses, overrides, and
-  tests. An override that does not call `super()` will not inherit later fixes.
-
-## Hardware And Evidence
+## Hardware And Evidence Integrity
 
 - Do not issue unrequested motion, output, valve, fault-clear, target, or
-  persistence writes. Stop at an unsafe or physically ambiguous boundary.
-- Manual hardware probes belong in `hardware_tests/`, outside ordinary pytest,
-  with explicit action gates where they can change hardware state.
-- Protocol confirmation is not physical confirmation.
-- Use the runtime evidence dimensions consistently:
-  requested/applied/observed/derived; fresh/cached/unknown; and
-  software/protocol/physical/unverified.
-- A UI may render retained state but must not query hardware merely to render.
+  persistence writes. Stop at an unsafe or physically ambiguous live boundary.
+- Action-capable probes are manual-only, explicitly gated, located under
+  `hardware_tests/`, and excluded from automated tests and CI.
+- Use the repository's current runtime-truth/evidence model. Do not represent
+  cached, software, or protocol evidence as fresh or physical evidence; keep
+  unresolved semantics explicit, and preserve retained evidence rather than
+  replacing it with test output.
+- Passive UI rendering must not cause hardware I/O. Explicit operator refresh
+  or action may use established shared hardware paths within its authorization.
 
-## Testing And Completion
+## Validation And Reporting
 
-- `tests/` is offline/simulated coverage. Real-hardware CI is forbidden.
-- Report the exact tests run, their selection scope, and their results.
-- Report every hardware device actually accessed and every action issued.
-- Keep unresolved physical or semantic questions explicitly unresolved.
-- Preserve retained hardware evidence; do not replace it with test output.
+- Automated tests and CI must not access real hardware. When claiming
+  validation, report exact commands, selection scope, and results. For hardware
+  work, report every device accessed and action issued, including none.
 
-## Git And Concurrency
+## Git And Workspace Integrity
 
-- Do not stage, commit, push, discard, or rewrite work unless explicitly asked.
-- Generated caches and runtime output are not source. Do not track them or
-  delete ambiguous evidence merely because it looks generated.
-- Preserve unrelated dirty-tree changes. Parallel coding tasks should use
-  separate branches/worktrees when practical and record their common base HEAD.
+- Do not stage, commit, push, discard, or rewrite work without explicit
+  authorization. Preserve unrelated dirty-tree changes and do not delete
+  ambiguous historical or hardware evidence merely because it looks generated.
+- For genuinely concurrent overlapping coding work, follow
+  `docs/concurrent_worktree_workflow.md`; it is not required for read-only or
+  sequential local work.
