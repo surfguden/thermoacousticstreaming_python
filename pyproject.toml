@@ -39,14 +39,7 @@ testpaths = ["tests"]
 markers = [
     "known_flaky: documented nondeterministic test; informational only (no retry, skip, or xfail)",
 ]
-# --basetemp=.pytest_tmp_scratch: this machine's real default tmp_path
-# location (%LOCALAPPDATA%\Temp\pytest-of-<user>) raises a genuine
-# PermissionError (Session 27), so this project has always needed an
-# explicit --basetemp workaround. Fixed here (rather than left to each ad
-# hoc invocation to pass a uniquely-named --basetemp manually) so pytest
-# reuses/overwrites the same directory every run instead of creating a new
-# permanent one each time -- 119 uniquely-named leftover directories had
-# accumulated in the project root before this was added (Session 49; see
-# docs/claude_code_change_log.md). A command-line --basetemp=<name> still
-# overrides this default if a one-off custom location is genuinely needed.
-addopts = "--basetemp=.pytest_tmp_scratch"
+# Use pytest's external system/user temporary location. Repository-root bases
+# accumulate and can become ACL-locked. A workstation that needs an override
+# must supply an external --basetemp explicitly; do not reintroduce a
+# repository-relative fallback here.
