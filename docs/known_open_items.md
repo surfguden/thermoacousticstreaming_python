@@ -1636,7 +1636,13 @@ historical notes. This document is a live issue register, whereas
   specific failing test is re-run alone. **Status: OPEN, accepted as
   environmental**, not expected to be fixed.
 - **pytest scratch-directory accumulation and Windows ACL lock remain
-  unresolved.** Session 49 found 119 `.pytest_tmp_*` leftovers, 35 of them
+  unresolved.** F0 (2026-09-01) removed the repository-relative default
+  `--basetemp`: a fresh create/write/read/rename/delete probe directly under
+  `%TEMP%` succeeds, and a normal pytest invocation now creates no new
+  repository-root scratch. This does not contradict the historical failure:
+  pytest previously failed while creating/scanning its deeper
+  `%LOCALAPPDATA%\\Temp\\pytest-of-<user>` hierarchy, while the old root
+  directories themselves remain ACL-protected and reject deletion. Session 49 found 119 `.pytest_tmp_*` leftovers, 35 of them
   undeletable because of a pre-existing OS permission problem
   (`UnauthorizedAccessException`, even to `Get-Acl` itself), and configured a
   shared `--basetemp=.pytest_tmp_scratch` in `pyproject.toml`. That did **not**
