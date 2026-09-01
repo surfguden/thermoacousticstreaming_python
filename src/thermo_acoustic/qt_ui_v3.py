@@ -1112,12 +1112,19 @@ class MainWindowV3(MainWindowV2):
             + ". Software-known shared snapshot only; no hardware query and no physical-ready claim."
         )
 
-        issues = preflight.blocking_issues + preflight.warnings
-        self._v3_plan_warnings.setText(
-            "; ".join(issue.message.rstrip(".") for issue in issues) + "."
-            if issues
-            else "No shared preflight issues."
-        )
+        # This is a projection of the shared result, not a second validator:
+        # distinguish why an item matters without implying it gates Start.
+        groups = [
+            ("Static configuration validity", preflight.blocking_issues),
+            ("Advisory or inactive selections", [issue for issue in preflight.warnings if "unverified" not in issue.message.lower() and "live" not in issue.message.lower()]),
+            ("Live-feasibility boundary", [issue for issue in preflight.warnings if "live" in issue.message.lower()]),
+            ("Physical-unverified caveat", [issue for issue in preflight.warnings if "unverified" in issue.message.lower()]),
+        ]
+        rendered = [
+            f"{heading}: " + "; ".join(issue.message.rstrip(".") for issue in issues) + "."
+            for heading, issues in groups if issues
+        ]
+        self._v3_plan_warnings.setText("\n".join(rendered) if rendered else "No shared preflight issues.")
         self._v3_plan_warnings.setStyleSheet(
             "color: darkred; font-weight: bold;"
             if preflight.blocking_issues
