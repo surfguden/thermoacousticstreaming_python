@@ -8,6 +8,7 @@ import queue
 import sys
 import threading
 import time
+from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
@@ -60,7 +61,7 @@ from .ad2 import (
 )
 from .application import STEP_ORDER, STEP_SAVE_RESULTS, Application
 from .camera import SubRegion
-from .experiment_planning import ExperimentCameraDefaults
+from .experiment_planning import ExperimentCameraDefaults, ExperimentRequest
 from .hardware_factory import HardwareRuntimeConfig, apply_hardware_bundle, build_hardware_bundle
 from .hardware_config import ZStageBackend, default_hardware_config
 from .instruments import SimulatedAD2Sdk
@@ -4380,6 +4381,68 @@ class MainWindow(QMainWindow):
             max_wait_s=float(self.exp_tec_max_wait_s.value()),
             poll_interval_s=float(self.exp_tec_poll_interval_s.value()),
             post_stable_hold_s=float(self.exp_tec_post_stable_hold_s.value()),
+        )
+
+    def _experiment_request(self) -> ExperimentRequest:
+        """Common v1/v2/v3 UI-value adapter for the shared static request.
+
+        It deliberately reads widgets but creates neither legacy experiments nor
+        runtime objects.  Planning rules remain in ``experiment_planning``.
+        """
+        try:
+            frequencies = tuple(self._experiment_frequency_scan_list_hz())
+        except (TypeError, ValueError):
+            frequencies = ()
+        targets: list[tuple[tuple[int, float], ...]] = []
+        if self.exp_tec_scan_enable.isChecked():
+            try:
+                temperature_series = self._temperature_series()
+                for index in range(len(temperature_series.temperature_points_c)):
+                    target = temperature_series.target_at(index)
+                    values = (
+                        {channel: float(target) for channel in self.app.tec.channels}
+                        if isinstance(target, float) else dict(target)
+                    )
+                    targets.append(tuple(sorted(values.items())))
+            except ValueError:
+                pass
+        dynamic = self.dynamic_camera_start.isChecked()
+        starts = tuple(float(widget.value()) for widget in self.camera_start_array)
+        fm_sweep = None
+        if self.exp_sweep_enable.isChecked() and self.exp_ch1_function.currentText() != WaveformFunction.DC.value:
+            sweep = self._experiment_fm_sweep_settings()
+            fm_sweep = (sweep.center_hz, sweep.width_hz, sweep.sweep_time_ms, sweep.sweep_type)
+        sequence = self._experiment_camera_defaults().sequence_settings(
+            frames=self.exp_frames.value(), trigger_source_override="Internal"
+        )
+        return ExperimentRequest(
+            output_path=Path(self.series_path.text()),
+            repeats_per_group=self.exp_repeats.value(),
+            frequency_scan_enabled=self.exp_freq_scan_enable.isChecked(),
+            frequency_values_hz=frequencies,
+            channel0_waveform_function=self.exp_ch1_function.currentText(),
+            camera_fps=float(self.exp_camera_fps.value()), frames=self.exp_frames.value(),
+            camera_start_s=starts, dynamic_camera_start=dynamic,
+            fixed_camera_start_s=float(self.exp_camera_start.value()),
+            fm_sweep_enabled=self.exp_sweep_enable.isChecked(),
+            channel0_output_selected=self.exp_ad2_channels[0]["enable"].isChecked(),
+            flush_enabled=self.exp_flush_enabled.isChecked(), tec_scan_enabled=self.exp_tec_scan_enable.isChecked(),
+            temperature_targets_c=tuple(targets),
+            device_modes=(
+                ("ad2", self.app.ad2.enabled, isinstance(self.app.ad2, SimulatedAD2Sdk)),
+                ("camera", self.app.camera.enabled, self.app.camera.simulate),
+                ("pump", self.app.pump.enabled, self.app.pump.simulate),
+                ("valve", self.app.valve.enabled, self.app.valve.simulate),
+                ("tec", self.app.tec.enabled, self.app.tec.simulate),
+            ),
+            wfg_templates=(asdict(self._experiment_wfg_config()),),
+            sequence_settings=tuple(sequence.items()),
+            flush_settings=(
+                self.exp_flush_flowrate.value(), self.exp_flush_volume.value(),
+                self.exp_wait_after_flush.value(), self._syringe_volume_ml(),
+            ),
+            exposure_ms=float(self.exp_exposure_ms.value()),
+            trigger_global_exposure=self.global_exposure.isChecked(), fm_sweep=fm_sweep,
         )
 
     def _update_tec_lock_button_text(self, *, locked: bool) -> None:

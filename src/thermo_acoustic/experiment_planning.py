@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, is_dataclass
+from copy import deepcopy
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from .ad2 import coerce_do_config, coerce_wfg_config
+from .ad2 import FmSweepSettings, coerce_do_config, coerce_wfg_config
 from .camera import SubRegion
 from .runtime_truth import RuntimeEvidenceSnapshot, VerificationScope
-from .workflows import Experiment2, ExperimentSeries2
+from .workflows import Experiment2, ExperimentSeries2, FlushSettings
 
 
 class CameraFieldOwnership(str, Enum):
@@ -83,26 +84,71 @@ class ExperimentRequest:
     tec_scan_enabled: bool
     temperature_targets_c: tuple[tuple[tuple[int, float], ...], ...]
     device_modes: tuple[tuple[str, bool, bool], ...]
+    fixed_camera_start_s: float | None = None
+    # Static execution semantics only. UI extractors populate these plain
+    # values; the independent planner never reads widgets or legacy builders.
+    wfg_templates: tuple[dict[str, Any], ...] = ()
+    do_template: dict[str, Any] | None = None
+    sequence_settings: tuple[tuple[str, Any], ...] = ()
+    flush_settings: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 60.0)
+    exposure_ms: float = 0.0
+    trigger_global_exposure: bool = False
+    fm_sweep: tuple[float, float, float, str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class RunPlan:
     output_path: Path
-    experiment_groups: tuple[tuple[Experiment2, ...], ...]
+    conditions: tuple["RunCondition", ...]
+    group_sizes: tuple[int, ...]
     total_frames: int
-
     @property
-    def experiments(self) -> tuple[Experiment2, ...]:
-        return tuple(experiment for group in self.experiment_groups for experiment in group)
+    def experiments(self) -> tuple["RunCondition", ...]:
+        return self.conditions
 
     def normalized_experiments(self) -> tuple[dict[str, Any], ...]:
-        return tuple(normalize_experiment(experiment) for experiment in self.experiments)
+        return tuple(
+            normalize_experiment(experiment)
+            for group in legacy_series_from_run_plan(self)
+            for experiment in (group.experiments or ())
+        )
 
     def normalized_groups(self) -> tuple[tuple[dict[str, Any], ...], ...]:
         return tuple(
-            tuple(normalize_experiment(experiment) for experiment in group)
-            for group in self.experiment_groups
+            tuple(normalize_experiment(experiment) for experiment in (group.experiments or ()))
+            for group in legacy_series_from_run_plan(self)
         )
+
+    @property
+    def experiment_groups(self) -> tuple[tuple["RunCondition", ...], ...]:
+        """Independent condition grouping; it never exposes Experiment2."""
+        cursor = 0
+        groups = []
+        for size in self.group_sizes:
+            groups.append(self.conditions[cursor:cursor + size])
+            cursor += size
+        return tuple(groups)
+
+
+@dataclass(frozen=True, slots=True)
+class RunCondition:
+    group_index: int
+    repeat_id: int
+    output_root: Path
+    experiment_folder: Path
+    temperature_targets_c: tuple[tuple[int, float], ...]
+    selected_frequency_hz: float | None
+    wfg_config: dict[str, Any]
+    do_config: dict[str, Any]
+    sequence_settings: tuple[tuple[str, Any], ...]
+    flush_settings: tuple[float, float, float, float]
+    flush_enabled: bool
+    exposure_ms: float
+    trigger_global_exposure: bool
+    fm_sweep: tuple[float, float, float, str] | None
+
+    def normalized(self) -> dict[str, Any]:
+        return _stable_value(asdict(self))
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,11 +254,109 @@ def run_plan_from_existing_series(
     total_frames: int,
 ) -> RunPlan:
     groups = [series] if isinstance(series, ExperimentSeries2) else list(series)
+    conditions = tuple(_condition_from_experiment(experiment, group_index)
+                       for group_index, group in enumerate(groups, start=1)
+                       for experiment in (group.experiments or ()))
     return RunPlan(
-        output_path=Path(output_path),
-        experiment_groups=tuple(tuple(group.experiments or ()) for group in groups),
-        total_frames=total_frames,
+        Path(output_path), conditions,
+        tuple(len(group.experiments or ()) for group in groups), total_frames,
     )
+
+
+def build_independent_run_plan(request: ExperimentRequest) -> RunPlan:
+    """Pure static planner: no UI, legacy builder, runtime, or hardware access."""
+    if request.repeats_per_group < 1:
+        raise ValueError("Repeats must be at least one.")
+    if request.camera_fps <= 0:
+        raise ValueError("Camera FPS must be greater than zero.")
+    scan_effective = _frequency_scan_is_effective(request)
+    if scan_effective and len(request.frequency_values_hz) != request.repeats_per_group:
+        raise ValueError("Frequency-list count must match repeats.")
+    targets = request.temperature_targets_c if request.tec_scan_enabled else ((),)
+    if request.tec_scan_enabled and not targets:
+        raise ValueError("Enable TEC temperature scan with at least one temperature point.")
+    if request.dynamic_camera_start and len(request.camera_start_s) < request.repeats_per_group:
+        raise ValueError("Dynamic Camera Start Time has more repeats than Camera Start Array entries.")
+    conditions: list[RunCondition] = []
+    for group_index, target in enumerate(targets, start=1):
+        temperature_c = dict(target).get(1, next(iter(dict(target).values()), None))
+        root = (
+            request.output_path / _temperature_folder_name(group_index, float(temperature_c))
+            if request.tec_scan_enabled and temperature_c is not None
+            else request.output_path
+        )
+        for repeat_id in range(request.repeats_per_group):
+            start = (
+                request.camera_start_s[repeat_id]
+                if request.dynamic_camera_start
+                else (request.fixed_camera_start_s if request.fixed_camera_start_s is not None else request.camera_start_s[0])
+            )
+            do = _do_config_recipe(request.camera_fps, request.frames, start)
+            wfg = deepcopy(dict(request.wfg_templates[0]) if request.wfg_templates else {})
+            selected = request.frequency_values_hz[repeat_id] if scan_effective else None
+            if selected is not None:
+                wfg["channels"][0]["carrier"]["frequency_hz"] = selected
+            sequence = dict(request.sequence_settings)
+            sequence["camera_start_s"] = list(request.camera_start_s)
+            sequence["camera_start_mode"] = "dynamic" if request.dynamic_camera_start else "fixed"
+            sequence["camera_start_selected_s"] = start
+            conditions.append(RunCondition(group_index, repeat_id, request.output_path,
+                root / f"repeat_{repeat_id + 1:03d}", tuple(target), selected, wfg, do,
+                tuple(sequence.items()), request.flush_settings, request.flush_enabled,
+                request.exposure_ms, request.trigger_global_exposure,
+                request.fm_sweep if request.fm_sweep_enabled and request.channel0_waveform_function != "DC" else None))
+    return RunPlan(request.output_path, tuple(conditions), tuple([request.repeats_per_group] * len(targets)), request.frames * len(conditions))
+
+
+def legacy_series_from_run_plan(plan: RunPlan) -> list[ExperimentSeries2]:
+    """Explicit offline compatibility adapter; it never reads UI or hardware."""
+    groups: list[ExperimentSeries2] = []
+    cursor = 0
+    for size in plan.group_sizes:
+        experiments = []
+        for condition in plan.conditions[cursor:cursor + size]:
+            experiments.append(Experiment2(repeat_id=condition.repeat_id, experiment_folder=condition.experiment_folder,
+                output_root=condition.output_root, planned_repeat_count=size,
+                temperature_point_index=condition.group_index if len(plan.group_sizes) > 1 else None,
+                frequency_scan_selected_hz=condition.selected_frequency_hz,
+                flush_settings=FlushSettings(*condition.flush_settings),
+                flush_enabled=condition.flush_enabled, global_exposure_ms=condition.exposure_ms,
+                trigger_global_exposure=condition.trigger_global_exposure,
+                sequence_settings=dict(condition.sequence_settings), wfg_config=deepcopy(condition.wfg_config),
+                do_clock_settings=coerce_do_config(deepcopy(condition.do_config)),
+                fm_sweep=(FmSweepSettings(*condition.fm_sweep) if condition.fm_sweep is not None else None),
+                tec_target_c=dict(condition.temperature_targets_c).get(1),
+                tec_targets_c=dict(condition.temperature_targets_c) or None,
+            ))
+        series_path = experiments[0].experiment_folder.parent if experiments else plan.output_path
+        groups.append(ExperimentSeries2(series_path, experiments)); cursor += size
+    return groups
+
+
+def _condition_from_experiment(experiment: Experiment2, group_index: int) -> RunCondition:
+    return RunCondition(group_index, experiment.repeat_id, experiment.output_root or experiment.experiment_folder.parent,
+        experiment.experiment_folder, tuple(sorted((experiment.tec_targets_c or {}).items())), experiment.frequency_scan_selected_hz,
+        asdict(coerce_wfg_config(experiment.wfg_config)), asdict(coerce_do_config(experiment.do_clock_settings)),
+        tuple((experiment.sequence_settings or {}).items()), (experiment.flush_settings.flush_flowrate, experiment.flush_settings.flush_volume_ml, experiment.flush_settings.wait_after_flush_s, experiment.flush_settings.syringe_volume_ml), experiment.flush_enabled, experiment.global_exposure_ms, experiment.trigger_global_exposure, _stable_value(experiment.fm_sweep))
+
+
+def _temperature_folder_name(index: int, temperature_c: float) -> str:
+    label = f"{temperature_c:.3f}".replace("-", "m").replace(".", "p")
+    return f"temperature_{index:03d}_{label}C"
+
+
+def _do_config_recipe(camera_fps: float, frames: int, camera_start_s: float) -> dict[str, Any]:
+    """The legacy CreateExperiments DIO1 recipe, expressed as static data."""
+    return {
+        "running": True,
+        "channels": [{
+            "channel_index": 1, "enable": True, "clock_frequency_hz": camera_fps,
+            "output_type": "Pulse", "output_mode": "PushPull", "idle_state": "Initial",
+            "counter_high_bits": 1, "counter_low_bits": 1, "counter_initial_bits": 0,
+            "start_high": True,
+            "trigger": {"sec_run": frames / camera_fps, "sec_wait": camera_start_s},
+        }],
+    }
 
 
 def blocking_build_result(request: ExperimentRequest, error: BaseException | str) -> BuildResult:
@@ -325,7 +469,7 @@ def build_result_from_existing_plan(
         )
     if request.flush_enabled:
         first = plan.experiments[0] if plan.experiments else None
-        if first is not None and first.flush_settings.flush_volume_ml > first.flush_settings.syringe_volume_ml:
+        if first is not None and first.flush_settings[1] > first.flush_settings[3]:
             issues.append(
                 PreflightIssue(
                     code="flush_capacity",
@@ -335,7 +479,7 @@ def build_result_from_existing_plan(
             )
         pump_fill = evidence.pump.values.get("fill_level_ml")
         if first is not None and pump_fill is not None and pump_fill.value is not None:
-            if first.flush_settings.flush_volume_ml > float(pump_fill.value):
+            if first.flush_settings[1] > float(pump_fill.value):
                 issues.append(
                     PreflightIssue(
                         code="flush_tracked_fill",

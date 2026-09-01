@@ -23,12 +23,10 @@ from PySide6.QtWidgets import (
 from .application import Application
 from .experiment_planning import (
     BuildResult,
-    ExperimentRequest,
     blocking_build_result,
+    build_independent_run_plan,
     build_result_from_existing_plan,
-    run_plan_from_existing_series,
 )
-from .instruments import SimulatedAD2Sdk
 from .piezo_zscan import ZScanCalibration
 from .qt_ui import bind_waveform_parameter_policy, install_focus_wheel_guard
 from .qt_ui_v2 import InitializationDialog, MainWindowV2
@@ -996,60 +994,10 @@ class MainWindowV3(MainWindowV2):
         tail = limit - head
         return ", ".join((*rendered[:head], "…", *rendered[-tail:]))
 
-    def _v3_experiment_request(self) -> ExperimentRequest:
-        try:
-            frequencies = tuple(self._experiment_frequency_scan_list_hz())
-        except (TypeError, ValueError):
-            frequencies = ()
-        temperature_targets: list[tuple[tuple[int, float], ...]] = []
-        if self.exp_tec_scan_enable.isChecked():
-            try:
-                temperature_series = self._temperature_series()
-                for index in range(len(temperature_series.temperature_points_c)):
-                    target = temperature_series.target_at(index)
-                    values = (
-                        {channel: float(target) for channel in self.app.tec.channels}
-                        if isinstance(target, float)
-                        else target
-                    )
-                    temperature_targets.append(tuple(sorted(values.items())))
-            except ValueError:
-                temperature_targets = []
-        return ExperimentRequest(
-            output_path=Path(self.series_path.text()),
-            repeats_per_group=self.exp_repeats.value(),
-            frequency_scan_enabled=self.exp_freq_scan_enable.isChecked(),
-            frequency_values_hz=frequencies,
-            channel0_waveform_function=self.exp_ch1_function.currentText(),
-            camera_fps=float(self.exp_camera_fps.value()),
-            frames=self.exp_frames.value(),
-            camera_start_s=tuple(widget.value() for widget in self.camera_start_array),
-            dynamic_camera_start=self.dynamic_camera_start.isChecked(),
-            fm_sweep_enabled=self.exp_sweep_enable.isChecked(),
-            channel0_output_selected=self.exp_ad2_channels[0]["enable"].isChecked(),
-            flush_enabled=self.exp_flush_enabled.isChecked(),
-            tec_scan_enabled=self.exp_tec_scan_enable.isChecked(),
-            temperature_targets_c=tuple(temperature_targets),
-            device_modes=(
-                ("ad2", self.app.ad2.enabled, isinstance(self.app.ad2, SimulatedAD2Sdk)),
-                ("camera", self.app.camera.enabled, self.app.camera.simulate),
-                ("pump", self.app.pump.enabled, self.app.pump.simulate),
-                ("valve", self.app.valve.enabled, self.app.valve.simulate),
-                ("tec", self.app.tec.enabled, self.app.tec.simulate),
-            ),
-        )
-
     def _v3_shadow_build_result(self) -> BuildResult:
-        request = self._v3_experiment_request()
+        request = self._experiment_request()
         try:
-            if request.tec_scan_enabled:
-                _temperature_series, groups, total_frames, _config = self._build_temperature_experiment_groups(
-                    request.output_path
-                )
-                plan = run_plan_from_existing_series(request.output_path, groups, total_frames=total_frames)
-            else:
-                series, total_frames, _config = self._build_experiment_series(request.output_path)
-                plan = run_plan_from_existing_series(request.output_path, series, total_frames=total_frames)
+            plan = build_independent_run_plan(request)
         except (IndexError, TypeError, ValueError) as exc:
             return blocking_build_result(request, exc)
         return build_result_from_existing_plan(request, plan, self.app.runtime_evidence_snapshot())
