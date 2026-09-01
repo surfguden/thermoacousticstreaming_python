@@ -10,7 +10,7 @@ from typing import Any
 
 import numpy as np
 
-from .ad2 import DoConfig, FmSweepSettings, WfgConfig, coerce_do_config, coerce_wfg_config
+from .ad2 import DoConfig, FmSweepSettings, WfgConfig, coerce_do_config, coerce_wfg_config, waveform_parameter_policy
 from .tec import validate_tec_target_temperature
 
 # Cheap sanity floor for _verify_tdms_write() -- not a rigorous size model,
@@ -411,6 +411,11 @@ class Experiment2:
                 f"WFGSymmetry{suffix}": "",
                 f"WFGPhase{suffix}": "",
                 f"WFGTriggerSource{suffix}": "",
+                f"WFGEffectiveFreq{suffix}": "",
+                f"WFGEffectiveAmp{suffix}": "",
+                f"WFGEffectiveOffset{suffix}": "",
+                f"WFGEffectiveSymmetry{suffix}": "",
+                f"WFGEffectivePhase{suffix}": "",
             }
             properties.update(self._wfg_fm_mod_properties(suffix, None))
             return properties
@@ -439,6 +444,14 @@ class Experiment2:
             f"WFGPhase{suffix}": channel.carrier.phase_deg,
             f"WFGTriggerSource{suffix}": channel.trigger.source,
         }
+        policy = waveform_parameter_policy(channel.carrier.function)
+        properties.update({
+            f"WFGEffectiveFreq{suffix}": channel.carrier.frequency_hz if "frequency" in policy.effective_parameters else "",
+            f"WFGEffectiveAmp{suffix}": channel.carrier.amplitude_v if "amplitude" in policy.effective_parameters else "",
+            f"WFGEffectiveOffset{suffix}": channel.carrier.offset_v if "offset" in policy.effective_parameters else "",
+            f"WFGEffectiveSymmetry{suffix}": channel.carrier.symmetry_percent if "symmetry" in policy.effective_parameters else "",
+            f"WFGEffectivePhase{suffix}": channel.carrier.phase_deg if "phase" in policy.effective_parameters else "",
+        })
         properties.update(self._wfg_fm_mod_properties(suffix, channel.fm_mod))
         return properties
 

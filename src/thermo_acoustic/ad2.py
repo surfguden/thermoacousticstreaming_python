@@ -14,6 +14,68 @@ class WaveformFunction(str, Enum):
     DC = "DC"
 
 
+@dataclass(frozen=True, slots=True)
+class WaveformParameterPolicy:
+    """Verified static semantics for one exposed carrier function."""
+
+    function: WaveformFunction
+    visible: bool = True
+    frequency_applicable: bool = True
+    amplitude_applicable: bool = True
+    offset_applicable: bool = True
+    symmetry_applicable: bool = True
+    phase_applicable: bool = True
+    effective_parameters: frozenset[str] = frozenset(
+        {"function", "frequency", "amplitude", "offset", "symmetry", "phase"}
+    )
+    frequency_label: str = "Frequency"
+    amplitude_label: str = "Amplitude (V)"
+    offset_label: str = "Offset (V)"
+    symmetry_label: str = "Symmetry (%)"
+    phase_label: str = "Phase (Deg)"
+    help_text: tuple[tuple[str, str], ...] = (
+        ("frequency", "Standard-waveform repetition frequency."),
+        ("amplitude", "Carrier voltage amplitude."),
+        ("offset", "Carrier voltage offset."),
+        ("symmetry", "Standard-signal symmetry percentage."),
+        ("phase", "Carrier phase in degrees."),
+    )
+    incompatible_experiment_features: frozenset[str] = frozenset()
+
+
+_WAVEFORM_POLICIES = {
+    WaveformFunction.DC: WaveformParameterPolicy(
+        WaveformFunction.DC,
+        frequency_applicable=False,
+        amplitude_applicable=False,
+        offset_label="DC Level (V)",
+        symmetry_applicable=False,
+        phase_applicable=False,
+        effective_parameters=frozenset({"function", "offset"}),
+        help_text=(
+            ("frequency", "Not applicable: DC has no repetition frequency."),
+            ("amplitude", "Not applicable: DC output level is set by DC Level."),
+            ("offset", "Effective DC output level in volts."),
+            ("symmetry", "Not applicable: DC has no waveform duty or symmetry."),
+            ("phase", "Not applicable: DC has no periodic phase."),
+        ),
+        incompatible_experiment_features=frozenset({"frequency_scan", "fm"}),
+    ),
+    WaveformFunction.SINE: WaveformParameterPolicy(WaveformFunction.SINE),
+    WaveformFunction.SQUARE: WaveformParameterPolicy(
+        WaveformFunction.SQUARE, symmetry_label="Duty Cycle (%)"
+    ),
+    WaveformFunction.TRIANGLE: WaveformParameterPolicy(WaveformFunction.TRIANGLE),
+    WaveformFunction.RAMP_UP: WaveformParameterPolicy(WaveformFunction.RAMP_UP),
+    WaveformFunction.RAMP_DOWN: WaveformParameterPolicy(WaveformFunction.RAMP_DOWN),
+}
+
+
+def waveform_parameter_policy(function: WaveformFunction | str) -> WaveformParameterPolicy:
+    """Return the single shared, static policy consumed by UI and backend."""
+    return _WAVEFORM_POLICIES[WaveformFunction(function)]
+
+
 class DigitalOutType(str, Enum):
     PULSE = "Pulse"
     CUSTOM = "Custom"

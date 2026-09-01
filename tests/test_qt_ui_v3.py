@@ -42,6 +42,25 @@ def test_v3_is_a_layout_evolution_of_v2_and_v2_remains_available(monkeypatch, tm
         v2.close()
 
 
+def test_v3_waveform_policy_locks_dc_and_labels_square(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        state = window.exp_ad2_channels[0]
+        state["function"].setCurrentText("Square")
+        assert state["symmetry"].isEnabled()
+        assert any("Duty Cycle (%)" in label.text() for label in window.findChildren(QLabel))
+        state["function"].setCurrentText("DC")
+        assert not state["frequency"].isEnabled()
+        assert not state["amplitude"].isEnabled()
+        assert not state["symmetry"].isEnabled()
+        assert not state["phase"].isEnabled()
+        assert state["offset"].isEnabled()
+        assert any("DC Level (V)" in label.text() for label in window.findChildren(QLabel))
+        assert "Not applicable" in state["frequency"].toolTip()
+    finally:
+        window.close()
+
+
 def test_v3_reuses_the_supplied_application_and_places_status_first(monkeypatch, tmp_path):
     app = Application()
     window = make_window(monkeypatch, tmp_path, app=app)

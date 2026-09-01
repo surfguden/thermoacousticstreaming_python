@@ -16,7 +16,7 @@ from PySide6.QtWidgets import QAbstractSpinBox, QCheckBox, QComboBox, QDoubleSpi
 from PySide6.QtWidgets import QApplication
 
 from thermo_acoustic import qt_ui, qt_ui_v2, qt_ui_v3
-from thermo_acoustic.ad2 import WfgChannelConfig, WfgConfig
+from thermo_acoustic.ad2 import WaveformFunction, WfgChannelConfig, WfgConfig, waveform_parameter_policy
 from thermo_acoustic.camera import SubRegion
 from thermo_acoustic.hardware_config import ZStageBackend, default_hardware_config
 from thermo_acoustic.instruments import AD2Sdk
@@ -180,7 +180,7 @@ def test_ad_settings_scroll_area_wheel_guard_interaction(monkeypatch, tmp_path):
     assert window.exp_ch1_freq.value() == before_value
     assert vbar.value() > 0, "wheel over an unfocused spin box should scroll the containing QScrollArea"
 
-    # Focused spin box: wheel should still edit its own value (existing, unchanged behavior).
+    # Focused spin box: the repository-wide policy applies regardless of focus.
     vbar.setValue(0)
     window.exp_ch1_freq.setFocus(Qt.FocusReason.OtherFocusReason)
     QApplication.processEvents()
@@ -188,7 +188,72 @@ def test_ad_settings_scroll_area_wheel_guard_interaction(monkeypatch, tmp_path):
     before_focused_value = window.exp_ch1_freq.value()
     QApplication.sendEvent(window.exp_ch1_freq, _synthetic_wheel_event(window.exp_ch1_freq, dy=120))
     QApplication.processEvents()
-    assert window.exp_ch1_freq.value() != before_focused_value
+    assert window.exp_ch1_freq.value() == before_focused_value
+
+
+def test_shared_numeric_editors_ignore_real_wheel_events_but_allow_keyboard_editing():
+    QApplication.instance() or QApplication([])
+    spin = qt_ui.WheelSafeSpinBox()
+    double = qt_ui.WheelSafeDoubleSpinBox()
+    combo = qt_ui.WheelSafeComboBox()
+    spin.setRange(0, 10); spin.setValue(5)
+    double.setRange(0, 10); double.setValue(5.0)
+    combo.addItems(["A", "B"]); combo.setCurrentIndex(0)
+    try:
+        for widget, before in ((spin, spin.value()), (double, double.value()), (combo, combo.currentIndex())):
+            QApplication.sendEvent(widget, _synthetic_wheel_event(widget, dy=120))
+            after = widget.currentIndex() if isinstance(widget, QComboBox) else widget.value()
+            assert after == before
+        spin.setValue(6)
+        double.setValue(6.0)
+        assert spin.value() == 6
+        assert double.value() == pytest.approx(6.0)
+    finally:
+        spin.close(); double.close(); combo.close()
+
+
+def test_waveform_policy_disables_dc_only_parameters_and_preserves_switch_values(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        window.exp_ch1_freq.setValue(1234.5)
+        window.exp_ch1_amp.setValue(0.25)
+        window.exp_ch1_symmetry.setValue(62.0)
+        window.exp_ch1_phase.setValue(17.0)
+        window.exp_ch1_function.setCurrentText(qt_ui.WaveformFunction.DC.value)
+        assert not window.exp_ch1_freq.isEnabled()
+        assert not window.exp_ch1_amp.isEnabled()
+        assert not window.exp_ch1_symmetry.isEnabled()
+        assert not window.exp_ch1_phase.isEnabled()
+        assert window.exp_ch1_offset.isEnabled()
+        assert any("DC Level" in label.text() for label in window.findChildren(QLabel))
+        window.exp_ch1_function.setCurrentText(qt_ui.WaveformFunction.SINE.value)
+        assert window.exp_ch1_freq.value() == pytest.approx(1234.5)
+        assert window.exp_ch1_amp.value() == pytest.approx(0.25)
+        assert window.exp_ch1_symmetry.value() == pytest.approx(62.0)
+        assert window.exp_ch1_phase.value() == pytest.approx(17.0)
+        assert window.exp_ch1_freq.isEnabled()
+        assert any("CH1 Frequency (kHz)" in label.text() for label in window.findChildren(QLabel))
+        assert not any("Frequency (not applicable)" in label.text() for label in window.findChildren(QLabel))
+    finally:
+        window.close()
+
+
+@pytest.mark.parametrize("function", list(WaveformFunction))
+def test_every_exposed_waveform_has_explicit_policy(function):
+    policy = waveform_parameter_policy(function)
+    assert policy.visible is True
+    assert policy.function is function
+    assert set(dict(policy.help_text)) == {"frequency", "amplitude", "offset", "symmetry", "phase"}
+    if function is WaveformFunction.DC:
+        assert policy.effective_parameters == frozenset({"function", "offset"})
+        assert policy.incompatible_experiment_features == frozenset({"frequency_scan", "fm"})
+    else:
+        assert policy.effective_parameters == frozenset({"function", "frequency", "amplitude", "offset", "symmetry", "phase"})
+        assert not policy.incompatible_experiment_features
+    if function is WaveformFunction.SQUARE:
+        assert policy.symmetry_label == "Duty Cycle (%)"
+    else:
+        assert policy.symmetry_label == "Symmetry (%)"
 
 
 def test_no_group_box_is_squeezed_below_its_minimum_size_hint(monkeypatch, tmp_path):

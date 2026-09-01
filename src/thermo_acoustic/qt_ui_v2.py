@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .ad2 import WaveformFunction
+from .ad2 import WaveformFunction, waveform_parameter_policy
 from .application import (
     Application,
     STEP_CAPTURE_FRAMES,
@@ -709,9 +709,9 @@ class MainWindowV2(MainWindow):
         content = QWidget()
         grid = QGridLayout(content)
         headers = (
-            "Enable", "Function", "Frequency (kHz)", "Amplitude (V)", "Offset (V)",
+            "Enable", "Function", "Frequency (kHz)", "Amplitude (V)", "Offset / DC Level (V)",
             "Start (s)", "Run (s)", "cRepeat", "Trigger Source",
-            "Symmetry (%)", "Phase (Deg)", "Repeat Trigger",
+            "Symmetry / Duty (%)", "Phase (Deg)", "Repeat Trigger",
         )
         core_column_count = 9
         # Detail cluster (Symmetry/Phase/Repeat Trigger) visually set apart from
@@ -733,6 +733,7 @@ class MainWindowV2(MainWindow):
 
         self._add_experiment_ad2_row(grid, 2, "CH0", self.exp_ad2_channels[0])
         self._add_experiment_ad2_row(grid, 3, "CH1", self.exp_ad2_channels[1])
+        self._bind_dc_incompatible_experiment_features(self.exp_ch1_function)
         self._size_ad2_output_columns(grid, headers)
 
         # The outer configuration column shrinks this group's content to fit
@@ -782,6 +783,24 @@ class MainWindowV2(MainWindow):
         )
         for column, widget in enumerate(widgets, start=1):
             grid.addWidget(widget, row, column)
+        base_tooltips = {key: state[key].toolTip() for key in ("frequency", "amplitude", "offset", "symmetry", "phase")}
+        def refresh(function_text: str) -> None:
+            policy = waveform_parameter_policy(function_text)
+            help_text = dict(policy.help_text)
+            for key, enabled in (
+                ("frequency", policy.frequency_applicable),
+                ("amplitude", policy.amplitude_applicable),
+                ("offset", policy.offset_applicable),
+                ("symmetry", policy.symmetry_applicable),
+                ("phase", policy.phase_applicable),
+            ):
+                state[key].setEnabled(policy.visible and enabled)
+                base_tooltip = base_tooltips[key]
+                state[key].setToolTip(
+                    f"{base_tooltip}\n{help_text[key]}" if base_tooltip else help_text[key]
+                )
+        state["function"].currentTextChanged.connect(refresh)
+        refresh(state["function"].currentText())
 
     def _v2_acquisition_group(self) -> QGroupBox:
         group = QGroupBox("Acquisition Parameters")

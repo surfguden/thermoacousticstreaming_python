@@ -54,6 +54,7 @@ from .ad2 import (
     WaveformFunction,
     WfgChannelConfig,
     WfgConfig,
+    waveform_parameter_policy,
     coerce_do_config,
     coerce_wfg_config,
 )
@@ -159,8 +160,23 @@ _DENSE_NUMERIC_FIELD_WIDTH = 150
 _DENSE_NUMERIC_FIELD_KEYS = frozenset({"frequency", "amplitude", "offset", "symmetry", "phase"})
 
 
+class WheelSafeSpinBox(QSpinBox):
+    def wheelEvent(self, event) -> None:  # noqa: N802 - Qt API name
+        event.ignore()
+
+
+class WheelSafeDoubleSpinBox(QDoubleSpinBox):
+    def wheelEvent(self, event) -> None:  # noqa: N802 - Qt API name
+        event.ignore()
+
+
+class WheelSafeComboBox(QComboBox):
+    def wheelEvent(self, event) -> None:  # noqa: N802 - Qt API name
+        event.ignore()
+
+
 def _spin(value: float = 0.0, *, decimals: int = 3, minimum: float = -1e12, maximum: float = 1e12) -> QDoubleSpinBox:
-    widget = QDoubleSpinBox()
+    widget = WheelSafeDoubleSpinBox()
     widget.setDecimals(decimals)
     widget.setRange(minimum, maximum)
     widget.setValue(value)
@@ -170,7 +186,7 @@ def _spin(value: float = 0.0, *, decimals: int = 3, minimum: float = -1e12, maxi
 
 
 def _int_spin(value: int = 0, *, minimum: int = -1_000_000, maximum: int = 1_000_000) -> QSpinBox:
-    widget = QSpinBox()
+    widget = WheelSafeSpinBox()
     widget.setRange(minimum, maximum)
     widget.setValue(value)
     widget.setKeyboardTracking(False)
@@ -179,7 +195,7 @@ def _int_spin(value: int = 0, *, minimum: int = -1_000_000, maximum: int = 1_000
 
 
 def _combo(values: list[str], value: str) -> QComboBox:
-    widget = QComboBox()
+    widget = WheelSafeComboBox()
     widget.addItems(values)
     index = widget.findText(value)
     if index >= 0:
@@ -254,8 +270,61 @@ def _set_combo_text(widget: QComboBox, value: str) -> None:
         widget.setCurrentIndex(index)
 
 
+def bind_waveform_parameter_policy(function_widget: QComboBox, form: QFormLayout, fields: dict[str, object], *, prefix: str = "", suffix: str = "") -> None:
+    """Apply the shared static waveform policy to one carrier form."""
+    keys = tuple(fields)
+    base_tooltips = {key: fields[key].toolTip() for key in keys}
+
+    def label_for_field(field: object):
+        label = form.labelForField(field)
+        if label is not None:
+            return label
+        for row in range(form.rowCount()):
+            item = form.itemAt(row, QFormLayout.ItemRole.FieldRole)
+            wrapper = item.widget() if item is not None else None
+            if wrapper is not None and (wrapper is field or field in wrapper.findChildren(QWidget)):
+                label_item = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
+                return label_item.widget() if label_item is not None else None
+        return None
+
+    def refresh(function_text: str) -> None:
+        policy = waveform_parameter_policy(function_text)
+        applicable = {
+            "frequency": policy.frequency_applicable,
+            "amplitude": policy.amplitude_applicable,
+            "offset": policy.offset_applicable,
+            "symmetry": policy.symmetry_applicable,
+            "phase": policy.phase_applicable,
+        }
+        labels = {
+            "frequency": f"{policy.frequency_label} (kHz)",
+            "amplitude": policy.amplitude_label,
+            "offset": policy.offset_label,
+            "symmetry": policy.symmetry_label,
+            "phase": policy.phase_label,
+        }
+        help_text = dict(policy.help_text)
+        if policy.function == WaveformFunction.DC:
+            labels["frequency"] = "Frequency (not applicable)"
+            labels["amplitude"] = "Amplitude (not applicable)"
+            labels["symmetry"] = "Symmetry (not applicable)"
+            labels["phase"] = "Phase (not applicable)"
+        for key in keys:
+            fields[key].setEnabled(policy.visible and applicable[key])
+            base_tooltip = base_tooltips[key]
+            fields[key].setToolTip(
+                f"{base_tooltip}\n{help_text[key]}" if base_tooltip else help_text[key]
+            )
+            label = label_for_field(fields[key])
+            if label is not None:
+                label.setText(f"{prefix}{labels[key]}{suffix}")
+
+    function_widget.currentTextChanged.connect(refresh)
+    refresh(function_widget.currentText())
+
+
 class FocusWheelGuard(QObject):
-    """Let scroll pages handle wheel events unless numeric/dropdown widgets are focused."""
+    """Compatibility guard for legacy controls; shared factories are wheel-safe."""
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802 - Qt API name
         if event.type() != QEvent.Type.Wheel:
@@ -2045,6 +2114,11 @@ class MainWindow(QMainWindow):
         # everywhere else in this file) never hits this, since it's never
         # "added" to another layout afterward.
         layout.addLayout(form)
+        bind_waveform_parameter_policy(
+            state["function"], form,
+            {key: state[key] for key in ("frequency", "amplitude", "offset", "symmetry", "phase")},
+            suffix=overridden,
+        )
         self._add_tooltip_icons(form)
         trigger = QFormLayout()
         for label, key in (
@@ -3090,7 +3164,14 @@ class MainWindow(QMainWindow):
         carrier.addRow(f"{channel_label} Phase (Deg){overrides}", phase)
         layout.addWidget(QLabel("Carrier"))
         layout.addLayout(carrier)
+        bind_waveform_parameter_policy(
+            function, carrier,
+            {"frequency": freq, "amplitude": amp, "offset": offset, "symmetry": symmetry, "phase": phase},
+            prefix=f"{channel_label} ", suffix=overrides,
+        )
         self._add_tooltip_icons(carrier)
+        if channel_label == "CH0":
+            self._bind_dc_incompatible_experiment_features(function)
 
         trigger = QFormLayout()
         run_label = "Run (s) (0=Cont)" if channel_label == "CH0" else "Run (s)(0=Cont)"
@@ -3132,6 +3213,28 @@ class MainWindow(QMainWindow):
                 self.exp_sweep_start_khz, self.exp_sweep_stop_khz,
                 self.exp_sweep_center_khz, self.exp_sweep_width_khz,
             )
+
+    def _bind_dc_incompatible_experiment_features(self, function_widget: QComboBox) -> None:
+        if getattr(self, "_dc_feature_policy_bound", False):
+            return
+        self._dc_feature_policy_bound = True
+        controls = (
+            self.exp_freq_scan_enable, self.exp_freq_scan_start_khz,
+            self.exp_freq_scan_stop_khz, self.exp_freq_scan_count,
+            self.exp_freq_scan_step_khz, self.exp_sweep_enable,
+            self.exp_sweep_start_khz, self.exp_sweep_stop_khz,
+            self.exp_sweep_center_khz, self.exp_sweep_width_khz,
+            self.exp_sweep_time_ms, self.exp_sweep_type,
+        )
+        def refresh(function_text: str) -> None:
+            policy = waveform_parameter_policy(function_text)
+            enabled = not policy.incompatible_experiment_features.intersection(
+                {"frequency_scan", "fm"}
+            )
+            for control in controls:
+                control.setEnabled(enabled)
+        function_widget.currentTextChanged.connect(refresh)
+        refresh(function_widget.currentText())
 
     def _experiment_settings_column(self) -> QScrollArea:
         # Adding the Frequency Scanning group as a third box stacked in this
@@ -3433,7 +3536,7 @@ class MainWindow(QMainWindow):
         # FM sweep calibration only applies to CH0 (index 0), matching
         # WfgConfigureSweepCh1.vi's own hardcoded-Ch1 scope. Toggle off
         # leaves carrier/fm_mod exactly as computed above, unchanged.
-        if index == 0 and self.exp_sweep_enable.isChecked():
+        if index == 0 and carrier.function != WaveformFunction.DC and self.exp_sweep_enable.isChecked():
             sweep = self._experiment_fm_sweep_settings()
             carrier.frequency_hz = sweep.center_hz
             carrier.enable = True
@@ -3448,7 +3551,7 @@ class MainWindow(QMainWindow):
         # FM Sweep's own override above so the two (unrelated, both Ch1-only)
         # features don't silently fight if both were somehow enabled at
         # once -- the per-repeat scan value wins.
-        if index == 0 and frequency_override_hz is not None:
+        if index == 0 and carrier.function != WaveformFunction.DC and frequency_override_hz is not None:
             carrier.frequency_hz = frequency_override_hz
         return WfgChannelConfig(
             channel_index=index,
@@ -3959,7 +4062,7 @@ class MainWindow(QMainWindow):
         series_path = Path(series_root) if series_root is not None else Path(self.series_path.text())
         repeats = self.exp_repeats.value()
         frequency_scan_hz: list[float] | None = None
-        if self.exp_freq_scan_enable.isChecked():
+        if self.exp_freq_scan_enable.isChecked() and self.exp_ch1_function.currentText() != WaveformFunction.DC.value:
             frequency_scan_hz = self._experiment_frequency_scan_list_hz()
             if len(frequency_scan_hz) != repeats:
                 # Attribute the count to whichever field actually produced it --
@@ -3977,7 +4080,11 @@ class MainWindow(QMainWindow):
                     f"({count_source}) but Repeats is set to {repeats}; they must match "
                     "before starting this experiment."
                 )
-        fm_sweep = self._experiment_fm_sweep_settings() if self.exp_sweep_enable.isChecked() else None
+        fm_sweep = (
+            self._experiment_fm_sweep_settings()
+            if self.exp_sweep_enable.isChecked() and self.exp_ch1_function.currentText() != WaveformFunction.DC.value
+            else None
+        )
         started_at = time.monotonic()
         _ = started_at
         experiments = []

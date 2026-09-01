@@ -3393,6 +3393,44 @@ def test_configure_wfg_clamps_out_of_range_amplitude_and_frequency_and_flags_cha
     assert amplitude_set_calls[0][3].value == 5.0, "must clamp to the device's real max, not send the requested value unchanged"
 
 
+def test_configure_wfg_dc_applies_only_offset_and_enable_function():
+    fake = FakeAD2ConfigureDwf(frequency_range=(10.0, 1_000_000.0), amplitude_range=(-5.0, 5.0))
+    backend = WaveFormsBackend(dwf=fake)
+    channel = WfgChannelConfig(0)
+    channel.carrier.function = WaveformFunction.DC
+    channel.carrier.frequency_hz = 2_000_000.0
+    channel.carrier.amplitude_v = 10.0
+    channel.carrier.offset_v = 0.75
+    backend.configure_wfg(123, WfgConfig(channels=[channel]))
+    names = [name for name, _args in fake.calls]
+    assert "FDwfAnalogOutNodeOffsetSet" in names
+    assert "FDwfAnalogOutNodeFrequencySet" not in names
+    assert "FDwfAnalogOutNodeAmplitudeSet" not in names
+    assert "FDwfAnalogOutNodeSymmetrySet" not in names
+    assert "FDwfAnalogOutNodePhaseSet" not in names
+
+
+@pytest.mark.parametrize(
+    "function",
+    [
+        WaveformFunction.SINE,
+        WaveformFunction.SQUARE,
+        WaveformFunction.TRIANGLE,
+        WaveformFunction.RAMP_UP,
+        WaveformFunction.RAMP_DOWN,
+    ],
+)
+def test_configure_wfg_periodic_functions_apply_all_effective_shape_parameters(function):
+    fake = FakeAD2ConfigureDwf()
+    backend = WaveFormsBackend(dwf=fake)
+    channel = WfgChannelConfig(0)
+    channel.carrier.function = function
+    backend.configure_wfg(123, WfgConfig(channels=[channel]))
+    names = [name for name, _args in fake.calls]
+    for suffix in ("FunctionSet", "FrequencySet", "AmplitudeSet", "OffsetSet", "SymmetrySet", "PhaseSet"):
+        assert any(name.endswith(suffix) for name in names), f"{function.value} missing {suffix}"
+
+
 def test_configure_wfg_leaves_in_range_values_unclamped_and_not_out_of_range():
     fake = FakeAD2ConfigureDwf(frequency_range=(10.0, 1_000_000.0), amplitude_range=(-5.0, 5.0))
     backend = WaveFormsBackend(dwf=fake)
@@ -3641,6 +3679,39 @@ def test_experiment2_writes_wfg_carrier_trigger_and_fm_mod_fields_to_tdms(tmp_pa
     assert properties["WFGFMFreqCh2"] == ""
     assert properties["WFGFMAmpCh2"] == ""
     assert properties["WFGFMFunctionCh2"] == ""
+
+
+@pytest.mark.parametrize("function", list(WaveformFunction))
+def test_experiment2_metadata_marks_only_effective_carrier_parameters(function, tmp_path):
+    channel = WfgChannelConfig(
+        0,
+        carrier=CarrierSettings(
+            frequency_hz=1234.0,
+            amplitude_v=2.0,
+            offset_v=0.4,
+            symmetry_percent=25.0,
+            phase_deg=90.0,
+            function=function,
+        ),
+        trigger=TriggerSettings(sec_run=1.5, sec_wait=0.25, repeat_count=3),
+    )
+    experiment = Experiment2(experiment_folder=tmp_path / function.value, wfg_config=WfgConfig(channels=[channel]))
+    properties = experiment._wfg_properties("Ch1", channel)
+    assert properties["WFGFunctionCh1"] == function
+    assert properties["WFGEffectiveOffsetCh1"] == 0.4
+    assert properties["WFGRunCh1"] == 1.5
+    assert properties["WFGWaitCh1"] == 0.25
+    assert properties["RepeatCh1"] == 3
+    if function is WaveformFunction.DC:
+        assert properties["WFGEffectiveFreqCh1"] == ""
+        assert properties["WFGEffectiveAmpCh1"] == ""
+        assert properties["WFGEffectiveSymmetryCh1"] == ""
+        assert properties["WFGEffectivePhaseCh1"] == ""
+    else:
+        assert properties["WFGEffectiveFreqCh1"] == 1234.0
+        assert properties["WFGEffectiveAmpCh1"] == 2.0
+        assert properties["WFGEffectiveSymmetryCh1"] == 25.0
+        assert properties["WFGEffectivePhaseCh1"] == 90.0
 
 
 def test_experiment2_wfg_fm_mod_fields_default_to_sentinel_when_channel_absent(tmp_path, monkeypatch):

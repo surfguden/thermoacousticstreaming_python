@@ -30,7 +30,7 @@ from .experiment_planning import (
 )
 from .instruments import SimulatedAD2Sdk
 from .piezo_zscan import ZScanCalibration
-from .qt_ui import install_focus_wheel_guard
+from .qt_ui import bind_waveform_parameter_policy, install_focus_wheel_guard
 from .qt_ui_v2 import InitializationDialog, MainWindowV2
 from .runtime_truth import RuntimeEvent, RuntimeEventSeverity
 from .workflows import Experiment2
@@ -487,6 +487,7 @@ class MainWindowV3(MainWindowV2):
         for index, state in enumerate(self.exp_ad2_channels):
             title = "Channel 0" if index == 0 else "Channel 1 — role unverified"
             channels.addTab(self._v3_ad2_channel_page(state, index), title)
+        self._bind_dc_incompatible_experiment_features(self.exp_ch1_function)
         layout.addWidget(channels)
         return group
 
@@ -503,7 +504,6 @@ class MainWindowV3(MainWindowV2):
         carrier_form.addRow("Frequency (kHz)", state["frequency"])
         carrier_form.addRow("Amplitude (V)", state["amplitude"])
         carrier_form.addRow("Offset (V)", state["offset"])
-        self._add_tooltip_icons(carrier_form)
 
         timing = QGroupBox("Timing and trigger")
         timing_form = QFormLayout(timing)
@@ -519,6 +519,17 @@ class MainWindowV3(MainWindowV2):
         detail_form = QFormLayout(detail)
         detail_form.addRow("Symmetry (%)", state["symmetry"])
         detail_form.addRow("Phase (deg)", state["phase"])
+        bind_waveform_parameter_policy(
+            state["function"],
+            carrier_form,
+            {key: state[key] for key in ("frequency", "amplitude", "offset")},
+        )
+        bind_waveform_parameter_policy(
+            state["function"],
+            detail_form,
+            {key: state[key] for key in ("symmetry", "phase")},
+        )
+        self._add_tooltip_icons(carrier_form)
         self._add_tooltip_icons(detail_form)
 
         layout.addWidget(carrier)

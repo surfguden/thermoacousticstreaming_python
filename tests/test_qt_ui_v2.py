@@ -643,11 +643,11 @@ def test_v2_ad2_output_table_exposes_symmetry_phase_and_repeat_trigger(monkeypat
         assert detail_item.widget().text() == "Detail"
 
         headers = [grid.itemAtPosition(1, column).widget().text() for column in range(1, grid.columnCount())]
-        assert "Symmetry (%)" in headers
+        assert "Symmetry / Duty (%)" in headers
         assert "Phase (Deg)" in headers
         assert "Repeat Trigger" in headers
 
-        symmetry_col = headers.index("Symmetry (%)") + 1
+        symmetry_col = headers.index("Symmetry / Duty (%)") + 1
         phase_col = headers.index("Phase (Deg)") + 1
         repeat_trigger_col = headers.index("Repeat Trigger") + 1
 
