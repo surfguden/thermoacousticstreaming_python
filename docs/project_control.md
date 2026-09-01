@@ -63,6 +63,10 @@ Current operator surfaces:
 ## RECENTLY CLOSED
 
 - Injected WaveForms startup no longer requires the vendor DLL (`ba25e27`).
+- Z-Scan now reuses the initialized Application-owned configured Thorlabs
+  stage; no independent default-stage discovery or scan-owned disconnect
+  remains (`42fee3b`, `df50083`). Physical Z-stage operation remains
+  unverified.
 - The serial blocking regression test no longer depends on scheduler timing
   (`525894f`); its pushed offline workflow is green.
 - **HW-TEC-001:** the authorized real Static OFF path wrote only parameter 2010

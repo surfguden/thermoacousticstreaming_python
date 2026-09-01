@@ -825,6 +825,8 @@ class MainWindow(QMainWindow):
         # set True by _abort_zscan(), reset False at the start of each new
         # _start_zscan() call.
         self._zscan_abort_requested = False
+        self._zscan_active = False
+        self._manual_z_operation_active = False
         self._fixed_display_range = (0.0, 65535.0)
 
         self._build_state()
@@ -926,8 +928,8 @@ class MainWindow(QMainWindow):
         self.thorlabs_apt_serial.setToolTip(
             "The real Thorlabs piezo's own device serial number (thorlabs_piezo.PiezoStage "
             "connects by serial number via Kinesis, not a COM port) -- passed to "
-            "HardwareRuntimeConfig and genuinely used when 'Z stage' is enabled at Initialize, "
-            "the same connection thorlabs_piezo.PiezoStage() and the Z-Scan tab already use."
+            "HardwareRuntimeConfig and genuinely used when 'Z stage' is enabled at Initialize; "
+            "Manual Focus and Z-Scan reuse that initialized Application-owned stage."
         )
         self.thorlabs_apt_backend = QLineEdit(hardware_defaults.z_stage.thorlabs_apt_backend)
         self.thorlabs_apt_discovery_only = QCheckBox("Discovery only")
@@ -2904,7 +2906,12 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "manual_z_move"):
             return
         stage = self._manual_focus_stage()
-        blocked = bool(self._busy_count or self._experiment_series_active)
+        blocked = bool(
+            self._busy_count
+            or self._experiment_series_active
+            or self._zscan_active
+            or self._manual_z_operation_active
+        )
         enabled = stage is not None and not blocked
         for widget in (self.manual_z_target_um, self.manual_z_jog_step_um, self.manual_z_refresh,
                        self.manual_z_move, self.manual_z_minus, self.manual_z_plus):
@@ -2921,15 +2928,19 @@ class MainWindow(QMainWindow):
 
     def _manual_z_refresh_position(self) -> None:
         stage = self._manual_focus_stage()
-        if stage is None or self._busy_count or self._experiment_series_active:
+        if stage is None or self._busy_count or self._experiment_series_active or self._zscan_active:
             self._update_manual_focus_controls()
             return
+        self._manual_z_operation_active = True
         try:
             position = float(stage.get_position())
             self.manual_z_observed_um.setText(f"{position:.3f}")
             self._set_status("Z position refreshed")
         except Exception as exc:
             self._set_status(f"Z refresh failed: {exc}")
+        finally:
+            self._manual_z_operation_active = False
+            self._update_manual_focus_controls()
 
     def _manual_z_validate_target(self, target: float, stage) -> bool:
         maximum = float(getattr(stage, "max_travel_um", 0.0))
@@ -2940,12 +2951,13 @@ class MainWindow(QMainWindow):
 
     def _manual_z_move_to_target(self) -> None:
         stage = self._manual_focus_stage()
-        if stage is None or self._busy_count or self._experiment_series_active:
+        if stage is None or self._busy_count or self._experiment_series_active or self._zscan_active:
             self._update_manual_focus_controls()
             return
         target = float(self.manual_z_target_um.value())
         if not self._manual_z_validate_target(target, stage):
             return
+        self._manual_z_operation_active = True
         try:
             stage.set_position(target)
             readback = float(stage.get_position())
@@ -2953,12 +2965,16 @@ class MainWindow(QMainWindow):
             self._set_status(f"Z moved; readback {readback:.3f} um")
         except Exception as exc:
             self._set_status(f"Z move failed: {exc}")
+        finally:
+            self._manual_z_operation_active = False
+            self._update_manual_focus_controls()
 
     def _manual_z_jog(self, direction: float) -> None:
         stage = self._manual_focus_stage()
-        if stage is None or self._busy_count or self._experiment_series_active:
+        if stage is None or self._busy_count or self._experiment_series_active or self._zscan_active:
             self._update_manual_focus_controls()
             return
+        self._manual_z_operation_active = True
         try:
             current = float(stage.get_position())
             target = current + direction * float(self.manual_z_jog_step_um.value())
@@ -2970,6 +2986,9 @@ class MainWindow(QMainWindow):
             self._set_status(f"Z jog complete; readback {readback:.3f} um")
         except Exception as exc:
             self._set_status(f"Z jog failed: {exc}")
+        finally:
+            self._manual_z_operation_active = False
+            self._update_manual_focus_controls()
 
     def _zscan_parameters_group(self) -> QGroupBox:
         group = QGroupBox("Z-Scan Calibration Parameters")
@@ -3006,10 +3025,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(start)
         layout.addWidget(abort)
         hint = QLabel(
-            "Requires the Camera tab's own Configure Camera to have already been run this session -- "
-            "this scan reuses the existing camera connection, it does not open one of its own. Query "
-            "Piezo Range connects briefly to read the device's live MaxTravel before you commit to a "
-            "scan; Start Z-Scan also does this on its own connect if you skip that step."
+            "Requires the Camera tab's own Configure Camera and Initialize hardware to have already "
+            "been run this session. The scan reuses the Application-owned camera and configured Z-stage "
+            "connections; it never opens a second default piezo. Query Piezo Range reads live MaxTravel "
+            "from that initialized stage before you commit to a scan."
         )
         hint.setWordWrap(True)
         hint.setMaximumWidth(260)
@@ -3017,23 +3036,28 @@ class MainWindow(QMainWindow):
         layout.addStretch()
         return group
 
-    def _query_zscan_range(self) -> None:
-        from .thorlabs_piezo import PiezoStage, PiezoStageError
+    def _configured_z_stage_for_zscan(self):
+        """Return the initialized Application-owned stage, or fail closed."""
+        z_motor = getattr(self.app, "z_motor", None)
+        stage = getattr(z_motor, "stage", None)
+        if z_motor is None or not getattr(z_motor, "enabled", False) or stage is None:
+            self._set_status("Z-scan unavailable: configured Z stage is not initialized.")
+            return None
+        if not getattr(stage, "connected", False):
+            self._set_status("Z-scan unavailable: configured Z stage is not connected.")
+            return None
+        maximum = getattr(stage, "max_travel_um", None)
+        if maximum is None or not math.isfinite(float(maximum)) or float(maximum) <= 0.0:
+            self._set_status("Z-scan unavailable: configured Z stage MaxTravel is unknown or invalid.")
+            return None
+        return stage
 
-        piezo = PiezoStage()
-        try:
-            piezo.connect()
-        except PiezoStageError as exc:
-            self.app.check_loop_error(str(exc))
-            self._set_status(f"Z-scan error: piezo connect failed: {exc}")
+    def _query_zscan_range(self) -> None:
+        stage = self._configured_z_stage_for_zscan()
+        if stage is None:
             return
-        max_travel_um = piezo.max_travel_um
-        try:
-            piezo.disconnect()
-        except Exception:  # pragma: no cover - defensive cleanup path
-            pass
-        self._apply_zscan_range(max_travel_um)
-        self._set_status("Piezo range queried.")
+        self._apply_zscan_range(float(stage.max_travel_um))
+        self._set_status("Piezo range read from the initialized configured stage.")
 
     def _apply_zscan_range(self, max_travel_um: float | None) -> None:
         if max_travel_um is None:
@@ -3045,33 +3069,25 @@ class MainWindow(QMainWindow):
         self.zscan_range_status.setText(f"Valid range: 0.00 - {max_travel_um:.2f} um (live-read from device MaxTravel)")
 
     def _start_zscan(self) -> None:
-        if self._busy_count:
+        if self._busy_count or self._zscan_active or self._manual_z_operation_active:
             self._set_status("Busy")
             return
-        from .thorlabs_piezo import PiezoStage, PiezoStageError
+        from .thorlabs_piezo import PiezoStageError
 
         if getattr(self.app.camera, "handle", None) is None:
             self._set_status("Z-scan error: camera is not initialized -- run Configure Camera on the Camera tab first.")
+            return
+
+        piezo = self._configured_z_stage_for_zscan()
+        if piezo is None:
             return
 
         output_dir = Path(self.zscan_output_dir.text())
         step_size_um = float(self.zscan_step_size_um.value())
         exposure_ms = float(self.zscan_exposure_ms.value())
 
-        piezo = PiezoStage()
-        try:
-            piezo.connect()
-        except PiezoStageError as exc:
-            self.app.check_loop_error(str(exc))
-            self._set_status(f"Z-scan error: piezo connect failed: {exc}")
-            return
-
-        # Apply/refresh the live MaxTravel-based range before reading Z
-        # Start/End -- on a first click (fields still disabled from a fresh
-        # tab, never queried) this both enables the fields and means the
-        # values read below are 0.0/0.0 (safe, just a degenerate single-frame
-        # scan); Query Piezo Range lets a user populate real values before
-        # ever clicking Start.
+        # Apply/refresh the already initialized stage's live MaxTravel-based
+        # range before reading Z Start/End. This never opens a second device.
         self._apply_zscan_range(piezo.max_travel_um)
         z_start_um = float(self.zscan_z_start_um.value())
         z_end_um = float(self.zscan_z_end_um.value())
@@ -3090,13 +3106,11 @@ class MainWindow(QMainWindow):
                 QMessageBox.StandardButton.No,
             )
             if answer != QMessageBox.StandardButton.Yes:
-                piezo.disconnect()
                 self._set_status("Z-scan cancelled: ClosedLoop switch declined.")
                 return
             try:
                 piezo.switch_to_closed_loop()
             except PiezoStageError as exc:
-                piezo.disconnect()
                 self.app.check_loop_error(str(exc))
                 self._set_status(f"Z-scan error: ClosedLoop switch failed: {exc}")
                 return
@@ -3113,11 +3127,12 @@ class MainWindow(QMainWindow):
             QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:
-            piezo.disconnect()
             self._set_status("Z-scan cancelled: PPC001 motion not authorized.")
             return
 
         self._zscan_abort_requested = False
+        self._zscan_active = True
+        self._update_manual_focus_controls()
         self._run_action(
             lambda progress: self._run_zscan(piezo, z_start_um, z_end_um, step_size_um, exposure_ms, output_dir),
             "Running Z-scan",
@@ -3149,10 +3164,10 @@ class MainWindow(QMainWindow):
                 exposure_ms=exposure_ms,
             )
         finally:
-            try:
-                piezo.disconnect()
-            except Exception:  # pragma: no cover - defensive cleanup path
-                pass
+            # Application owns this connection. Only Application.cleanup()
+            # may disconnect it; a completed scan must leave the shared stage
+            # available to Manual Focus and later workflows.
+            self._zscan_active = False
         return f"Z-scan complete: {len(results)} frames written to {output_dir}"
 
     def _abort_zscan(self) -> None:

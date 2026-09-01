@@ -2522,6 +2522,78 @@ def test_manual_focus_is_explicit_closed_loop_only_and_prevalidates_targets(monk
     assert not window.manual_z_move.isEnabled()
 
 
+def test_zscan_uses_the_initialized_application_stage_and_never_constructs_a_default(monkeypatch, tmp_path):
+    class FakeStage:
+        connected = True
+        position_control_mode = "CloseLoop"
+        max_travel_um = 450.0
+        serial_number = "NONDEFAULT-123"
+
+        def __init__(self):
+            self.disconnect_calls = 0
+
+        def needs_closed_loop_confirmation(self):
+            return False
+
+        def switch_to_closed_loop(self):
+            self.position_control_mode = "CloseLoop"
+
+    window = make_window(monkeypatch, tmp_path)
+    stage = FakeStage()
+    window.app.z_motor = SimpleNamespace(enabled=True, stage=stage)
+    window.app.camera.handle = object()
+    window._update_manual_focus_controls()
+
+    window._query_zscan_range()
+    assert window.zscan_z_end_um.maximum() == 450.0
+
+    import thermo_acoustic.thorlabs_piezo as piezo_module
+
+    class UnexpectedDefaultStage:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("Z-Scan constructed an independent default PiezoStage")
+
+    monkeypatch.setattr(piezo_module, "PiezoStage", UnexpectedDefaultStage)
+    monkeypatch.setattr(
+        qt_ui.QMessageBox,
+        "question",
+        staticmethod(lambda *args, **kwargs: qt_ui.QMessageBox.StandardButton.Yes),
+    )
+    captured = []
+    monkeypatch.setattr(window, "_run_action", lambda action, status: captured.append((action, status)))
+    window._start_zscan()
+    assert captured and captured[0][1] == "Running Z-scan"
+    assert window._zscan_active is True
+
+    class FakeScan:
+        def __init__(self, **kwargs):
+            assert kwargs["piezo"] is stage
+            assert kwargs["piezo"].serial_number == "NONDEFAULT-123"
+
+        def run(self, **kwargs):
+            return []
+
+    monkeypatch.setattr("thermo_acoustic.piezo_zscan.ZScanCalibration", FakeScan)
+    captured[0][0](None)
+    assert stage.disconnect_calls == 0
+    assert window._zscan_active is False
+
+
+def test_zscan_and_manual_focus_interlock_and_unavailable_owned_stage_fail_closed(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    window._zscan_active = True
+    window._update_manual_focus_controls()
+    assert not window.manual_z_move.isEnabled()
+    window._start_zscan()
+    assert window._zscan_active is True
+
+    window._zscan_active = False
+    window.app.z_motor = SimpleNamespace(enabled=False, stage=None)
+    window._query_zscan_range()
+    assert "not initialized" in window.app.status.lower()
+    assert "ClosedLoop" in window.manual_z_range_status.text()
+
+
 def test_camera_adjust_reprocesses_last_raw_frame_without_recapture(monkeypatch, tmp_path):
     class FakeCamera:
         def __init__(self, frame) -> None:

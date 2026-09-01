@@ -2153,7 +2153,7 @@ class MainWindowV3(MainWindowV2):
         layout.addWidget(start)
         layout.addWidget(abort)
         hint = QLabel(
-            "Uses the existing camera connection and the Z-scan exposure setting. "
+            "Uses the existing camera connection and the initialized Application-owned configured Z stage. "
             "Apply camera settings before starting; motion requires explicit confirmation."
         )
         hint.setWordWrap(True)
