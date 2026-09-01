@@ -14,6 +14,22 @@ class WaveformFunction(str, Enum):
     DC = "DC"
 
 
+class WaveformParameterState(str, Enum):
+    SUPPORTED = "SUPPORTED"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+    DEVICE_UNSUPPORTED = "DEVICE_UNSUPPORTED"
+    EXPERIMENTAL_OR_UNCERTAIN = "EXPERIMENTAL_OR_UNCERTAIN"
+
+
+_WAVEFORM_PARAMETER_KEYS = (
+    "frequency", "amplitude", "offset", "symmetry", "phase",
+    "frequency_scan", "fm", "wait", "run", "repeat", "trigger", "enable",
+)
+_SUPPORTED_WAVEFORM_PARAMETERS = tuple(
+    (key, WaveformParameterState.SUPPORTED) for key in _WAVEFORM_PARAMETER_KEYS
+)
+
+
 @dataclass(frozen=True, slots=True)
 class WaveformParameterPolicy:
     """Verified static semantics for one exposed carrier function."""
@@ -41,6 +57,33 @@ class WaveformParameterPolicy:
         ("phase", "Carrier phase in degrees."),
     )
     incompatible_experiment_features: frozenset[str] = frozenset()
+    parameter_states: tuple[tuple[str, WaveformParameterState], ...] = _SUPPORTED_WAVEFORM_PARAMETERS
+    overrideable_parameters: frozenset[str] = frozenset()
+
+    def state_for(self, parameter: str) -> WaveformParameterState:
+        return dict(self.parameter_states)[parameter]
+
+    def is_editable(self, parameter: str, *, allow_experimental: bool = False) -> bool:
+        state = self.state_for(parameter)
+        return state is WaveformParameterState.SUPPORTED or (
+            allow_experimental
+            and state is WaveformParameterState.EXPERIMENTAL_OR_UNCERTAIN
+            and parameter in self.overrideable_parameters
+        )
+
+    def is_effective(self, parameter: str, *, allow_experimental: bool = False) -> bool:
+        return parameter in self.effective_parameters and self.is_editable(
+            parameter, allow_experimental=allow_experimental
+        )
+
+    def is_hard_locked(self, parameter: str) -> bool:
+        return self.state_for(parameter) in {
+            WaveformParameterState.NOT_APPLICABLE,
+            WaveformParameterState.DEVICE_UNSUPPORTED,
+        }
+
+    def is_soft_locked(self, parameter: str) -> bool:
+        return self.state_for(parameter) is WaveformParameterState.EXPERIMENTAL_OR_UNCERTAIN
 
 
 _WAVEFORM_POLICIES = {
@@ -60,6 +103,12 @@ _WAVEFORM_POLICIES = {
             ("phase", "Not applicable: DC has no periodic phase."),
         ),
         incompatible_experiment_features=frozenset({"frequency_scan", "fm"}),
+        parameter_states=tuple(
+            (key, WaveformParameterState.NOT_APPLICABLE)
+            if key in {"frequency", "amplitude", "symmetry", "phase", "frequency_scan", "fm"}
+            else (key, WaveformParameterState.SUPPORTED)
+            for key in _WAVEFORM_PARAMETER_KEYS
+        ),
     ),
     WaveformFunction.SINE: WaveformParameterPolicy(WaveformFunction.SINE),
     WaveformFunction.SQUARE: WaveformParameterPolicy(

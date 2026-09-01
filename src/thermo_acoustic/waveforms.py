@@ -515,20 +515,19 @@ class WaveFormsBackend:
         # ourselves, before the Set calls below, rather than trusting the SDK
         # to reject anything or relying on a later Get-based readback to
         # notice the substitution after the fact.
-        effective = policy.effective_parameters
         out_of_range = False
-        if "frequency" in effective or "amplitude" in effective:
+        if policy.is_effective("frequency") or policy.is_effective("amplitude"):
             frequency_min = c_double()
             frequency_max = c_double()
             self._check(self._dwf.FDwfAnalogOutNodeFrequencyInfo(handle, channel_index, node_id, byref(frequency_min), byref(frequency_max)), "FDwfAnalogOutNodeFrequencyInfo")
             amplitude_min = c_double()
             amplitude_max = c_double()
             self._check(self._dwf.FDwfAnalogOutNodeAmplitudeInfo(handle, channel_index, node_id, byref(amplitude_min), byref(amplitude_max)), "FDwfAnalogOutNodeAmplitudeInfo")
-            if "frequency" in effective:
+            if policy.is_effective("frequency"):
                 clamped_frequency_hz = min(max(settings.frequency_hz, frequency_min.value), frequency_max.value)
                 out_of_range |= clamped_frequency_hz != settings.frequency_hz
                 self._check(self._dwf.FDwfAnalogOutNodeFrequencySet(handle, channel_index, node_id, c_double(clamped_frequency_hz)), "FDwfAnalogOutNodeFrequencySet")
-            if "amplitude" in effective:
+            if policy.is_effective("amplitude"):
                 clamped_amplitude_v = min(max(settings.amplitude_v, amplitude_min.value), amplitude_max.value)
                 out_of_range |= clamped_amplitude_v != settings.amplitude_v
                 self._check(self._dwf.FDwfAnalogOutNodeAmplitudeSet(handle, channel_index, node_id, c_double(clamped_amplitude_v)), "FDwfAnalogOutNodeAmplitudeSet")
@@ -536,9 +535,9 @@ class WaveFormsBackend:
             self._dwf.FDwfAnalogOutNodeOffsetSet(handle, channel_index, node_id, c_double(settings.offset_v)),
             "FDwfAnalogOutNodeOffsetSet",
         )
-        if "symmetry" in effective:
+        if policy.is_effective("symmetry"):
             self._check(self._dwf.FDwfAnalogOutNodeSymmetrySet(handle, channel_index, node_id, c_double(settings.symmetry_percent)), "FDwfAnalogOutNodeSymmetrySet")
-        if "phase" in effective:
+        if policy.is_effective("phase"):
             self._check(self._dwf.FDwfAnalogOutNodePhaseSet(handle, channel_index, node_id, c_double(settings.phase_deg)), "FDwfAnalogOutNodePhaseSet")
         return out_of_range
 

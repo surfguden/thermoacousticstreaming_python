@@ -310,7 +310,7 @@ def bind_waveform_parameter_policy(function_widget: QComboBox, form: QFormLayout
             labels["symmetry"] = "Symmetry (not applicable)"
             labels["phase"] = "Phase (not applicable)"
         for key in keys:
-            fields[key].setEnabled(policy.visible and applicable[key])
+            fields[key].setEnabled(policy.visible and policy.is_editable(key) and applicable[key])
             base_tooltip = base_tooltips[key]
             fields[key].setToolTip(
                 f"{base_tooltip}\n{help_text[key]}" if base_tooltip else help_text[key]
@@ -3228,9 +3228,7 @@ class MainWindow(QMainWindow):
         )
         def refresh(function_text: str) -> None:
             policy = waveform_parameter_policy(function_text)
-            enabled = not policy.incompatible_experiment_features.intersection(
-                {"frequency_scan", "fm"}
-            )
+            enabled = policy.is_editable("frequency_scan") and policy.is_editable("fm")
             for control in controls:
                 control.setEnabled(enabled)
         function_widget.currentTextChanged.connect(refresh)

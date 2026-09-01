@@ -446,11 +446,11 @@ class Experiment2:
         }
         policy = waveform_parameter_policy(channel.carrier.function)
         properties.update({
-            f"WFGEffectiveFreq{suffix}": channel.carrier.frequency_hz if "frequency" in policy.effective_parameters else "",
-            f"WFGEffectiveAmp{suffix}": channel.carrier.amplitude_v if "amplitude" in policy.effective_parameters else "",
-            f"WFGEffectiveOffset{suffix}": channel.carrier.offset_v if "offset" in policy.effective_parameters else "",
-            f"WFGEffectiveSymmetry{suffix}": channel.carrier.symmetry_percent if "symmetry" in policy.effective_parameters else "",
-            f"WFGEffectivePhase{suffix}": channel.carrier.phase_deg if "phase" in policy.effective_parameters else "",
+            f"WFGEffectiveFreq{suffix}": channel.carrier.frequency_hz if policy.is_effective("frequency") else "",
+            f"WFGEffectiveAmp{suffix}": channel.carrier.amplitude_v if policy.is_effective("amplitude") else "",
+            f"WFGEffectiveOffset{suffix}": channel.carrier.offset_v if policy.is_effective("offset") else "",
+            f"WFGEffectiveSymmetry{suffix}": channel.carrier.symmetry_percent if policy.is_effective("symmetry") else "",
+            f"WFGEffectivePhase{suffix}": channel.carrier.phase_deg if policy.is_effective("phase") else "",
         })
         properties.update(self._wfg_fm_mod_properties(suffix, channel.fm_mod))
         return properties

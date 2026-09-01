@@ -16,7 +16,14 @@ from PySide6.QtWidgets import QAbstractSpinBox, QCheckBox, QComboBox, QDoubleSpi
 from PySide6.QtWidgets import QApplication
 
 from thermo_acoustic import qt_ui, qt_ui_v2, qt_ui_v3
-from thermo_acoustic.ad2 import WaveformFunction, WfgChannelConfig, WfgConfig, waveform_parameter_policy
+from thermo_acoustic.ad2 import (
+    WaveformFunction,
+    WaveformParameterPolicy,
+    WaveformParameterState,
+    WfgChannelConfig,
+    WfgConfig,
+    waveform_parameter_policy,
+)
 from thermo_acoustic.camera import SubRegion
 from thermo_acoustic.hardware_config import ZStageBackend, default_hardware_config
 from thermo_acoustic.instruments import AD2Sdk
@@ -225,6 +232,8 @@ def test_waveform_policy_disables_dc_only_parameters_and_preserves_switch_values
         assert not window.exp_ch1_symmetry.isEnabled()
         assert not window.exp_ch1_phase.isEnabled()
         assert window.exp_ch1_offset.isEnabled()
+        assert not window.exp_freq_scan_enable.isEnabled()
+        assert not window.exp_sweep_enable.isEnabled()
         assert any("DC Level" in label.text() for label in window.findChildren(QLabel))
         window.exp_ch1_function.setCurrentText(qt_ui.WaveformFunction.SINE.value)
         assert window.exp_ch1_freq.value() == pytest.approx(1234.5)
@@ -243,6 +252,10 @@ def test_every_exposed_waveform_has_explicit_policy(function):
     policy = waveform_parameter_policy(function)
     assert policy.visible is True
     assert policy.function is function
+    assert set(dict(policy.parameter_states)) == {
+        "frequency", "amplitude", "offset", "symmetry", "phase",
+        "frequency_scan", "fm", "wait", "run", "repeat", "trigger", "enable",
+    }
     assert set(dict(policy.help_text)) == {"frequency", "amplitude", "offset", "symmetry", "phase"}
     if function is WaveformFunction.DC:
         assert policy.effective_parameters == frozenset({"function", "offset"})
@@ -254,6 +267,27 @@ def test_every_exposed_waveform_has_explicit_policy(function):
         assert policy.symmetry_label == "Duty Cycle (%)"
     else:
         assert policy.symmetry_label == "Symmetry (%)"
+
+
+def test_waveform_policy_distinguishes_hard_and_soft_lock_boundaries():
+    experimental = WaveformParameterPolicy(
+        WaveformFunction.SINE,
+        parameter_states=tuple(
+            (key, WaveformParameterState.EXPERIMENTAL_OR_UNCERTAIN)
+            if key == "phase" else (key, WaveformParameterState.SUPPORTED)
+            for key in ("frequency", "amplitude", "offset", "symmetry", "phase")
+        ),
+        overrideable_parameters=frozenset({"phase"}),
+    )
+    assert experimental.is_soft_locked("phase")
+    assert not experimental.is_hard_locked("phase")
+    assert not experimental.is_editable("phase")
+    assert experimental.is_editable("phase", allow_experimental=True)
+
+    dc = waveform_parameter_policy(WaveformFunction.DC)
+    assert dc.is_hard_locked("frequency")
+    assert not dc.is_editable("frequency", allow_experimental=True)
+    assert not dc.is_effective("frequency", allow_experimental=True)
 
 
 def test_no_group_box_is_squeezed_below_its_minimum_size_hint(monkeypatch, tmp_path):

@@ -794,7 +794,7 @@ class MainWindowV2(MainWindow):
                 ("symmetry", policy.symmetry_applicable),
                 ("phase", policy.phase_applicable),
             ):
-                state[key].setEnabled(policy.visible and enabled)
+                state[key].setEnabled(policy.visible and policy.is_editable(key) and enabled)
                 base_tooltip = base_tooltips[key]
                 state[key].setToolTip(
                     f"{base_tooltip}\n{help_text[key]}" if base_tooltip else help_text[key]
