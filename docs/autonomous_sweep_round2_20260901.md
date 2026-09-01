@@ -1,9 +1,8 @@
 # Autonomous Sweep Round 2 — Experiment Truth Audit
 
-Date: 2026-09-01  
-Scope: offline semantic/reproducibility audit only  
+Date: 2026-09-01
+Scope: offline semantic/reproducibility audit only
 Starting commit: `183ddd881404bf58e72a7da319529143d412ea75`
-
 No real hardware was accessed. No AD2 output, camera acquisition or live
 camera-property write, TEC action, Qmix action, pump, valve, or Z-stage action
 was issued.
@@ -120,4 +119,3 @@ remain unchanged.
 
 No P3 cleanup, architecture redesign, VISA/SCPI integration, BuildResult
 cutover, timing-code change, or hardware work was performed.
-
