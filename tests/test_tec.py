@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+import json
 
 import pytest
 
@@ -27,7 +28,7 @@ from thermo_acoustic.tec import (
     _PyMeComTecClient,
     _real_tec_client_factory,
 )
-from thermo_acoustic.workflows import Experiment2, ExperimentSeries2, TemperatureSeries
+from thermo_acoustic.workflows import Experiment2, ExperimentSeries2, SeriesLifecycleManifest, TemperatureSeries
 
 
 class RecordingTecBackend:
@@ -901,7 +902,10 @@ def test_application_temperature_series_sets_each_target_then_runs_group(tmp_pat
         ExperimentSeries2(tmp_path / "t2", [Experiment2(repeat_id=0), Experiment2(repeat_id=1)]),
     ]
 
-    assert app.run_temperature_series(series, groups) is True
+    lifecycle_manifest = SeriesLifecycleManifest.create(
+        tmp_path, requested_repeats=3, tec_points_requested=2
+    )
+    assert app.run_temperature_series(series, groups, lifecycle_manifest=lifecycle_manifest) is True
     warning = next(event for event in app.runtime_events if event.subsystem == "tec")
     assert warning.severity is RuntimeEventSeverity.WARNING
     assert warning.operation == "run_temperature_series"
@@ -919,6 +923,10 @@ def test_application_temperature_series_sets_each_target_then_runs_group(tmp_pat
         (str(tmp_path / "t2"), 0),
         (str(tmp_path / "t2"), 1),
     ]
+    manifest = json.loads((tmp_path / "series_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["outcome"] == "COMPLETED"
+    assert (manifest["requested_repeats"], manifest["started_repeats"], manifest["completed_repeats"]) == (3, 3, 3)
+    assert manifest["tec_points"] == {"requested": 2, "started": 2, "completed": 2}
 
 
 def test_application_temperature_series_unlocked_drives_independent_per_channel_targets(tmp_path):

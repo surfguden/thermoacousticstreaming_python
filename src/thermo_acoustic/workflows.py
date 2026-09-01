@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from functools import lru_cache
+import json
+import os
 from pathlib import Path
 import subprocess
 from typing import Any
@@ -17,6 +19,110 @@ from .tec import validate_tec_target_temperature
 # just enough to catch a silently-empty/header-only write. A real TDMS file
 # with the "Experiment" group's properties is comfortably larger than this.
 _MIN_TDMS_FILE_SIZE_BYTES = 128
+
+
+@dataclass(slots=True)
+class SeriesLifecycleManifest:
+    """Small, series-local aggregate record for execution lifecycle truth.
+
+    Per-repeat TDMS remains the authoritative record for requested settings,
+    runtime evidence, and detailed failures.  This record only makes the
+    requested-versus-started aggregate visible when a series stops early.
+    """
+
+    series_path: Path
+    requested_repeats: int
+    tec_points_requested: int | None = None
+    started_repeats: int = 0
+    completed_repeats: int = 0
+    failed_repeats: int = 0
+    graceful_abort_requested: bool = False
+    outcome: str = "IN_PROGRESS"
+    started_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    finalized_at: str | None = None
+    tec_points_started: int = 0
+    tec_points_completed: int = 0
+
+    @property
+    def path(self) -> Path:
+        return self.series_path / "series_manifest.json"
+
+    @classmethod
+    def create(
+        cls,
+        series_path: Path,
+        *,
+        requested_repeats: int,
+        tec_points_requested: int | None = None,
+    ) -> "SeriesLifecycleManifest":
+        manifest = cls(Path(series_path), requested_repeats, tec_points_requested)
+        manifest._write()
+        return manifest
+
+    def repeat_started(self) -> None:
+        self.started_repeats += 1
+        self._write()
+
+    def repeat_completed(self) -> None:
+        self.completed_repeats += 1
+        self._write()
+
+    def repeat_failed(self) -> None:
+        self.failed_repeats += 1
+        self._write()
+
+    def tec_point_started(self) -> None:
+        if self.tec_points_requested is None:
+            return
+        self.tec_points_started += 1
+        self._write()
+
+    def tec_point_completed(self) -> None:
+        if self.tec_points_requested is None:
+            return
+        self.tec_points_completed += 1
+        self._write()
+
+    def finalize(self, outcome: str, *, graceful_abort_requested: bool = False) -> None:
+        if outcome not in {"COMPLETED", "FAILED", "GRACEFULLY_ABORTED"}:
+            raise ValueError(f"Unsupported series lifecycle outcome: {outcome!r}")
+        self.outcome = outcome
+        self.graceful_abort_requested = graceful_abort_requested
+        self.finalized_at = datetime.now(timezone.utc).isoformat()
+        self._write()
+
+    def _payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "schema_version": 1,
+            "series_id": self.series_path.name,
+            "series_path": str(self.series_path),
+            "output_path": str(self.series_path),
+            "requested_repeats": self.requested_repeats,
+            "started_repeats": self.started_repeats,
+            "completed_repeats": self.completed_repeats,
+            "failed_repeats": self.failed_repeats,
+            "graceful_abort_requested": self.graceful_abort_requested,
+            "outcome": self.outcome,
+            "started_at": self.started_at,
+            "finalized_at": self.finalized_at,
+        }
+        if self.tec_points_requested is not None:
+            payload["tec_points"] = {
+                "requested": self.tec_points_requested,
+                "started": self.tec_points_started,
+                "completed": self.tec_points_completed,
+            }
+        return payload
+
+    def _write(self) -> None:
+        self.series_path.mkdir(parents=True, exist_ok=True)
+        temporary_path = self.path.with_name(f"{self.path.name}.tmp")
+        with temporary_path.open("w", encoding="utf-8", newline="\n") as handle:
+            json.dump(self._payload(), handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, self.path)
 
 
 @lru_cache(maxsize=1)

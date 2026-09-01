@@ -82,8 +82,9 @@ Current operator surfaces:
 
 ## NEXT CHECKPOINT
 
-The next technical checkpoint is **BuildResult independent request/plan DTO and
-legacy-adapter prototype**. It must remain offline and shadow-only until all UI
-versions share one independent constructor with equivalence and rollback
-evidence. **HW-TIMING-001** remains deferred / ready for physical verification;
-do not enable AD2 output as part of this software work.
+The independent request/plan DTO and legacy-adapter seam now has immutable
+planning data, a bounded semantic-equivalence matrix, and a series-local
+lifecycle manifest. Planning remains offline and shadow-only; the next approved
+software milestone is **V3 Information Architecture Consolidation**.
+**HW-TIMING-001** remains deferred / ready for physical verification; do not
+enable AD2 output as part of this software work.

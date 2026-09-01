@@ -69,7 +69,7 @@ from .hardware_factory import HardwareRuntimeConfig, apply_hardware_bundle, buil
 from .hardware_config import ZStageBackend, default_hardware_config
 from .instruments import SimulatedAD2Sdk
 from .tec import TEC_TARGET_MAX_C, TEC_TARGET_MIN_C
-from .workflows import Experiment2, ExperimentSeries2, FlushSettings, TemperatureSeries
+from .workflows import Experiment2, ExperimentSeries2, FlushSettings, SeriesLifecycleManifest, TemperatureSeries
 
 
 logger = logging.getLogger(__name__)
@@ -4596,6 +4596,9 @@ class MainWindow(QMainWindow):
         started_at = time.monotonic()
         experiments = list(series.experiments or [])
         total_repeats = len(experiments)
+        lifecycle_manifest = SeriesLifecycleManifest.create(
+            series.series_path, requested_repeats=total_repeats
+        )
         # "experiment_series_active" progress kind brackets the entire method
         # body (try/finally, so it clears on every exit path: normal
         # completion, ExperimentSeriesAborted, or a raised RuntimeError) --
@@ -4619,14 +4622,22 @@ class MainWindow(QMainWindow):
             )
             progress("experiment_series_active", True)
         try:
-            return self._run_experiment_series_body(
+            result = self._run_experiment_series_body(
                 series,
                 total_frames,
                 config,
                 progress,
                 started_at=started_at,
                 total_repeats=total_repeats,
+                lifecycle_manifest=lifecycle_manifest,
             )
+            if lifecycle_manifest.outcome == "IN_PROGRESS":
+                lifecycle_manifest.finalize("COMPLETED")
+            return result
+        except Exception:
+            if lifecycle_manifest.outcome == "IN_PROGRESS":
+                lifecycle_manifest.finalize("FAILED")
+            raise
         finally:
             if progress:
                 progress("experiment_series_active", False)
@@ -4646,6 +4657,12 @@ class MainWindow(QMainWindow):
             for experiment in (group.experiments or [])
         ]
         total_repeats = len(experiments)
+        series_path = groups[0].series_path.parent if groups else Path()
+        lifecycle_manifest = SeriesLifecycleManifest.create(
+            series_path,
+            requested_repeats=total_repeats,
+            tec_points_requested=len(groups),
+        )
         if progress:
             progress(
                 "series_timing_started",
@@ -4687,8 +4704,14 @@ class MainWindow(QMainWindow):
                 temperature_series,
                 groups,
                 progress=timed_progress if progress else None,
+                lifecycle_manifest=lifecycle_manifest,
             )
             if not completed:
+                if lifecycle_manifest.outcome == "IN_PROGRESS":
+                    lifecycle_manifest.finalize(
+                        "GRACEFULLY_ABORTED" if self.app.stop_fired else "FAILED",
+                        graceful_abort_requested=self.app.stop_fired,
+                    )
                 message = f"TEC temperature scan stopped before completion (status={self.app.status!r})."
                 logger.error(message)
                 raise RuntimeError(message)
@@ -4698,6 +4721,10 @@ class MainWindow(QMainWindow):
                 progress("status", self.app.status)
                 progress("average_fps", f"{total_frames / elapsed:.2f}")
             return "TemperatureSeriesComplete"
+        except Exception:
+            if lifecycle_manifest.outcome == "IN_PROGRESS":
+                lifecycle_manifest.finalize("FAILED")
+            raise
         finally:
             if progress:
                 progress("experiment_series_active", False)
@@ -4712,6 +4739,7 @@ class MainWindow(QMainWindow):
         *,
         started_at: float,
         total_repeats: int,
+        lifecycle_manifest: SeriesLifecycleManifest,
     ) -> str:
         self.app.set_experiment_series_general(series)
         # Clear any abort flag left over from a previous run before starting
@@ -4741,6 +4769,7 @@ class MainWindow(QMainWindow):
                     f"{remaining} repeat(s) remain queued and will not run."
                 )
                 self.app.fire_status_event("ExperimentSeriesAborted")
+                lifecycle_manifest.finalize("GRACEFULLY_ABORTED", graceful_abort_requested=True)
                 if progress:
                     progress("queue_count", remaining)
                 return "ExperimentSeriesAborted"
@@ -4749,12 +4778,18 @@ class MainWindow(QMainWindow):
             # the UI at all -- this call omitted `progress`, so v2's Phase 3
             # step-progress breadcrumb (2026-08-04) had nothing to listen to.
             # Fixed here, the real wiring point, not just in a test double.
-            completed = self.app.run_experiment2(progress=progress)
+            lifecycle_manifest.repeat_started()
+            try:
+                completed = self.app.run_experiment2(progress=progress)
+            except Exception:
+                lifecycle_manifest.repeat_failed()
+                raise
             repeat_index += 1
             if progress:
                 progress("queue_count", self.app.experiment_series.see_elements_left())
                 progress("status", self.app.status)
             if not completed:
+                lifecycle_manifest.repeat_failed()
                 message = (
                     f"Experiment series stopped at repeat {repeat_index}: "
                     f"run_experiment2 did not complete (status={self.app.status!r})."
@@ -4762,6 +4797,7 @@ class MainWindow(QMainWindow):
                 logger.error(message)
                 raise RuntimeError(message)
             if progress:
+                lifecycle_manifest.repeat_completed()
                 completed_at = time.monotonic()
                 progress(
                     "series_repeat_completed",
@@ -4772,7 +4808,16 @@ class MainWindow(QMainWindow):
                         "total_repeats": total_repeats,
                     },
                 )
+            else:
+                lifecycle_manifest.repeat_completed()
         elapsed = max(time.monotonic() - started_at, 0.001)
+        if self.app.stop_fired:
+            # An abort requested during the final in-flight repeat still
+            # describes this series as gracefully aborted, even though there
+            # was no later queued repeat to suppress.
+            self.app.fire_status_event("ExperimentSeriesAborted")
+            lifecycle_manifest.finalize("GRACEFULLY_ABORTED", graceful_abort_requested=True)
+            return "ExperimentSeriesAborted"
         if progress:
             fps = total_frames / elapsed
             progress("average_fps", f"{fps:.2f}")

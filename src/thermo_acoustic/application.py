@@ -24,7 +24,7 @@ from .runtime_truth import (
     VerificationScope,
 )
 from .tec import TecController, TecPartialApplicationError
-from .workflows import Experiment2, ExperimentSeries2, FlushSettings, TemperatureSeries
+from .workflows import Experiment2, ExperimentSeries2, FlushSettings, SeriesLifecycleManifest, TemperatureSeries
 
 
 logger = logging.getLogger(__name__)
@@ -1131,6 +1131,7 @@ class Application:
         temperature_series: TemperatureSeries,
         experiment_groups: list[ExperimentSeries2],
         progress: Callable[[str, object], None] | None = None,
+        lifecycle_manifest: SeriesLifecycleManifest | None = None,
     ) -> bool:
         if not temperature_series.enabled:
             raise ValueError("Temperature series requires at least one temperature point.")
@@ -1177,6 +1178,8 @@ class Application:
             # then stop" applied at the temperature-point granularity.
             if self.stop_fired:
                 self.fire_status_event("TemperatureSeriesAborted")
+                if lifecycle_manifest is not None:
+                    lifecycle_manifest.finalize("GRACEFULLY_ABORTED", graceful_abort_requested=True)
                 return False
             # Explicit reset at the temperature-point boundary too, not just
             # inside run_experiment2() below: SetTecTarget/WaitTecStable/the
@@ -1188,6 +1191,8 @@ class Application:
             # risk, at the point granularity instead of the repeat one.
             if progress:
                 progress("step_reset", None)
+            if lifecycle_manifest is not None:
+                lifecycle_manifest.tec_point_started()
             # target: a plain float when temperature_series is locked
             # (broadcasts to every configured channel, today's original
             # behavior, unchanged); a {1: ..., 2: ...} dict when unlocked
@@ -1257,9 +1262,34 @@ class Application:
             self.fire_status_event(f"Running temperature group {group_index}/{len(experiment_groups)}")
             self.set_experiment_series_general(group)
             while self.experiment_series.see_elements_left():
-                if not self.run_experiment2(progress=progress):
+                if lifecycle_manifest is not None:
+                    lifecycle_manifest.repeat_started()
+                try:
+                    completed = self.run_experiment2(progress=progress)
+                except Exception:
+                    if lifecycle_manifest is not None:
+                        lifecycle_manifest.repeat_failed()
+                        lifecycle_manifest.finalize("FAILED")
+                    raise
+                if not completed:
+                    if lifecycle_manifest is not None:
+                        lifecycle_manifest.repeat_failed()
+                        lifecycle_manifest.finalize("FAILED")
                     return False
+                if lifecycle_manifest is not None:
+                    lifecycle_manifest.repeat_completed()
+            if lifecycle_manifest is not None:
+                lifecycle_manifest.tec_point_completed()
+        if self.stop_fired:
+            # The current outer unit finished before observing Abort; retain
+            # the abort truth even when it was also the final TEC point.
+            self.fire_status_event("TemperatureSeriesAborted")
+            if lifecycle_manifest is not None:
+                lifecycle_manifest.finalize("GRACEFULLY_ABORTED", graceful_abort_requested=True)
+            return False
         self.fire_status_event("TemperatureSeriesComplete")
+        if lifecycle_manifest is not None:
+            lifecycle_manifest.finalize("COMPLETED")
         return True
 
     def handle_message(self, message: Message) -> None:

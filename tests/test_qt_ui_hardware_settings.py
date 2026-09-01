@@ -29,6 +29,7 @@ from thermo_acoustic.camera import SubRegion
 from thermo_acoustic.hardware_config import ZStageBackend, default_hardware_config
 from thermo_acoustic.instruments import AD2Sdk
 from thermo_acoustic.waveforms import WaveFormsBackend
+from thermo_acoustic.workflows import Experiment2, ExperimentSeries2
 
 from conftest import build_with_retry
 
@@ -3205,8 +3206,83 @@ def test_run_experiment_series_stops_queuing_further_repeats_after_abort(monkeyp
         assert status == "ExperimentSeriesAborted"
         assert call_count["n"] == 1, "no further repeat should have started after Abort was fired"
         assert series.see_elements_left() == 2, "queue must not drain to completion after Abort"
+        manifest = json.loads((tmp_path / "series_manifest.json").read_text(encoding="utf-8"))
+        assert manifest["outcome"] == "GRACEFULLY_ABORTED"
+        assert manifest["graceful_abort_requested"] is True
+        assert (manifest["requested_repeats"], manifest["started_repeats"], manifest["completed_repeats"]) == (3, 1, 1)
     finally:
         window.close()
+
+
+def test_series_manifest_records_completion_and_requested_count(monkeypatch, tmp_path):
+    class CompletingApplication(qt_ui.Application):
+        def run_experiment2(self, progress=None) -> bool:
+            self.experiment_series.dequeue_experiment()
+            self.status = "ExperimentComplete"
+            return True
+
+    QApplication.instance() or QApplication([])
+    window = build_with_retry(lambda: qt_ui.MainWindow(app=CompletingApplication()))
+    try:
+        series = ExperimentSeries2(series_path=tmp_path, experiments=[Experiment2(), Experiment2()])
+        assert window._run_experiment_series(series, 1, window._experiment_wfg_config()) == "ExperimentComplete"
+        manifest = json.loads((tmp_path / "series_manifest.json").read_text(encoding="utf-8"))
+        assert manifest["schema_version"] == 1
+        assert manifest["outcome"] == "COMPLETED"
+        assert (manifest["requested_repeats"], manifest["started_repeats"], manifest["completed_repeats"], manifest["failed_repeats"]) == (2, 2, 2, 0)
+        assert manifest["started_at"] and manifest["finalized_at"]
+        assert not (tmp_path / "series_manifest.json.tmp").exists()
+    finally:
+        window.close()
+
+
+def test_series_manifest_marks_abort_requested_during_final_repeat(monkeypatch, tmp_path):
+    class FinalRepeatAbortApplication(qt_ui.Application):
+        def run_experiment2(self, progress=None) -> bool:
+            self.experiment_series.dequeue_experiment()
+            self.fire_stop_event()
+            return True
+
+    QApplication.instance() or QApplication([])
+    window = build_with_retry(lambda: qt_ui.MainWindow(app=FinalRepeatAbortApplication()))
+    try:
+        series = ExperimentSeries2(series_path=tmp_path, experiments=[Experiment2()])
+        assert window._run_experiment_series(series, 1, window._experiment_wfg_config()) == "ExperimentSeriesAborted"
+        manifest = json.loads((tmp_path / "series_manifest.json").read_text(encoding="utf-8"))
+        assert manifest["outcome"] == "GRACEFULLY_ABORTED"
+        assert manifest["completed_repeats"] == 1
+    finally:
+        window.close()
+
+
+def test_series_manifest_records_failures_before_and_after_completed_repeats(monkeypatch, tmp_path):
+    class FailingApplication(qt_ui.Application):
+        def __init__(self, fail_at: int) -> None:
+            super().__init__()
+            self.fail_at = fail_at
+            self.calls = 0
+
+        def run_experiment2(self, progress=None) -> bool:
+            self.calls += 1
+            if self.calls != self.fail_at:
+                self.experiment_series.dequeue_experiment()
+                return True
+            self.status = "ExperimentFlushFailed"
+            return False
+
+    QApplication.instance() or QApplication([])
+    for fail_at, expected in ((1, (2, 1, 0, 1)), (2, (2, 2, 1, 1))):
+        series_path = tmp_path / f"failure_{fail_at}"
+        window = build_with_retry(lambda: qt_ui.MainWindow(app=FailingApplication(fail_at)))
+        try:
+            series = ExperimentSeries2(series_path=series_path, experiments=[Experiment2(), Experiment2()])
+            with pytest.raises(RuntimeError, match=f"repeat {fail_at}"):
+                window._run_experiment_series(series, 1, window._experiment_wfg_config())
+            manifest = json.loads((series_path / "series_manifest.json").read_text(encoding="utf-8"))
+            assert manifest["outcome"] == "FAILED"
+            assert (manifest["requested_repeats"], manifest["started_repeats"], manifest["completed_repeats"], manifest["failed_repeats"]) == expected
+        finally:
+            window.close()
 
 
 def test_run_experiment_series_brackets_experiment_series_active_progress(monkeypatch, tmp_path):
