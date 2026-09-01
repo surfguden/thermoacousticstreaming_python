@@ -4,6 +4,7 @@ import json
 import os
 import threading
 import time
+from types import SimpleNamespace
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -2384,15 +2385,37 @@ def test_camera_preview_conversion_modes():
         preview.close()
 
 
+def test_camera_native_and_fixed_ranges_are_deterministic_and_do_not_mutate_raw():
+    QApplication.instance() or QApplication([])
+    preview = qt_ui.ImagePreviewWindow()
+    try:
+        raw = np.array([[100, 200]], dtype=np.uint16)
+        original = raw.copy()
+        preview.show_frame(raw, method="Native (No Auto Scaling)")
+        assert preview._last_display_range == (0.0, 65535.0)
+        native_first = preview._last_qimage.pixelColor(1, 0).value()
+        preview.show_frame(np.array([[100, 1000]], dtype=np.uint16), method="Native (No Auto Scaling)")
+        assert preview._last_qimage.pixelColor(0, 0).value() == native_first
+        preview._convert_to_display_image(raw, method="Fixed Range", minimum=0, maximum=1000)
+        assert preview._last_display_range == (0.0, 1000.0)
+        assert np.array_equal(raw, original)
+        with pytest.raises(ValueError, match="minimum < maximum"):
+            preview._convert_to_display_image(raw, method="Fixed Range", minimum=10, maximum=10)
+    finally:
+        preview.close()
+
+
 def test_camera_conversion_policy_controls(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
 
-    assert combo_items(window.conversion_method) == ["Full Dynamic", "90% Dynamic", "Downshift"]
+    assert combo_items(window.conversion_method) == [
+        "Native (No Auto Scaling)", "Full Dynamic", "90% Dynamic", "Fixed Range", "Downshift"
+    ]
     assert window.conversion_method.currentText() == "Full Dynamic"
     assert window.conversion_min.isReadOnly()
     assert window.conversion_max.isReadOnly()
-    assert window.conversion_min.isEnabled()
-    assert window.conversion_max.isEnabled()
+    assert not window.conversion_min.isEnabled()
+    assert not window.conversion_max.isEnabled()
     assert not window.conversion_shifts.isEnabled()
 
     window.conversion_method.setCurrentText("Downshift")
@@ -2400,6 +2423,16 @@ def test_camera_conversion_policy_controls(monkeypatch, tmp_path):
     assert not window.conversion_min.isEnabled()
     assert not window.conversion_max.isEnabled()
     assert window.conversion_shifts.isEnabled()
+
+    window.conversion_method.setCurrentText("Fixed Range")
+    assert window.conversion_min.isEnabled()
+    assert not window.conversion_min.isReadOnly()
+    window.conversion_min.setValue(800)
+    window.conversion_max.setValue(6000)
+    window.conversion_method.setCurrentText("Native (No Auto Scaling)")
+    window.conversion_method.setCurrentText("Fixed Range")
+    assert window.conversion_min.value() == 800
+    assert window.conversion_max.value() == 6000
 
 
 def test_camera_capture_updates_preview_and_last_frame(monkeypatch, tmp_path):
@@ -2433,6 +2466,55 @@ def test_camera_capture_updates_preview_and_last_frame(monkeypatch, tmp_path):
     assert window.conversion_min.value() == 10.0
     assert window.conversion_max.value() == 40.0
     window._camera_preview.close()
+
+
+def test_manual_focus_is_explicit_closed_loop_only_and_prevalidates_targets(monkeypatch, tmp_path):
+    class FakeStage:
+        connected = True
+        position_control_mode = "ClosedLoop"
+        max_travel_um = 450.0
+
+        def __init__(self):
+            self.position = 100.0
+            self.set_calls = []
+            self.get_calls = 0
+
+        def get_position(self):
+            self.get_calls += 1
+            return self.position
+
+        def set_position(self, target):
+            self.set_calls.append(target)
+            self.position = target + 0.25
+
+    window = make_window(monkeypatch, tmp_path)
+    stage = FakeStage()
+    window.app.z_motor = SimpleNamespace(enabled=True, stage=stage)
+    window._update_manual_focus_controls()
+    assert window.manual_z_move.isEnabled()
+    assert window.manual_z_target_um.maximum() == 450.0
+
+    window.manual_z_target_um.setValue(200.0)
+    assert stage.set_calls == []
+    window.manual_z_move.click()
+    assert stage.set_calls == [200.0]
+    assert window.manual_z_observed_um.text() == "200.250"
+
+    window.manual_z_jog_step_um.setValue(10.0)
+    window.manual_z_plus.click()
+    assert stage.set_calls[-1] == pytest.approx(210.25)
+    window.manual_z_minus.click()
+    assert stage.set_calls[-1] == pytest.approx(200.5)
+
+    before = list(stage.set_calls)
+    stage.position = 449.0
+    window.manual_z_plus.click()
+    assert stage.set_calls == before
+
+    stage.position_control_mode = "OpenLoop"
+    window._update_manual_focus_controls()
+    assert not window.manual_z_move.isEnabled()
+    assert "ClosedLoop" in window.manual_z_range_status.text()
 
 
 def test_camera_adjust_reprocesses_last_raw_frame_without_recapture(monkeypatch, tmp_path):

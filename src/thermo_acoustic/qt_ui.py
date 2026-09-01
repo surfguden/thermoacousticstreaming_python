@@ -72,7 +72,7 @@ logger = logging.getLogger(__name__)
 
 SETTINGS_PATH = Path(__file__).resolve().parents[2] / ".thermo_acoustic_ui.json"
 WFG_TRIGGER_SOURCE_OPTIONS = ["trigsrcNone", "trigsrcPC", "trigsrcAnalogIn", "trigsrcDigitalIn"]
-CONVERSION_METHOD_OPTIONS = ["Full Dynamic", "90% Dynamic", "Downshift"]
+CONVERSION_METHOD_OPTIONS = ["Native (No Auto Scaling)", "Full Dynamic", "90% Dynamic", "Fixed Range", "Downshift"]
 
 
 def _format_duration_s(seconds: float, *, round_up: bool = False) -> str:
@@ -527,8 +527,18 @@ class ImagePreviewWindow(QDialog):
         self.image_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout.addWidget(self.image_label)
 
-    def show_frame(self, frame: np.ndarray, *, method: str = "Full Dynamic", shifts: int = 0) -> tuple[float, float] | None:
-        self._last_qimage = self._convert_to_display_image(frame, method=method, shifts=shifts)
+    def show_frame(
+        self,
+        frame: np.ndarray,
+        *,
+        method: str = "Full Dynamic",
+        shifts: int = 0,
+        minimum: float | None = None,
+        maximum: float | None = None,
+    ) -> tuple[float, float] | None:
+        self._last_qimage = self._convert_to_display_image(
+            frame, method=method, shifts=shifts, minimum=minimum, maximum=maximum
+        )
         self._update_pixmap()
         return self._last_display_range
 
@@ -538,18 +548,34 @@ class ImagePreviewWindow(QDialog):
         self.image_label.setPixmap(QPixmap())
         self.image_label.setText(message)
 
-    def _convert_to_display_image(self, frame: np.ndarray, *, method: str = "Full Dynamic", shifts: int = 0) -> QImage:
+    def _convert_to_display_image(
+        self,
+        frame: np.ndarray,
+        *,
+        method: str = "Full Dynamic",
+        shifts: int = 0,
+        minimum: float | None = None,
+        maximum: float | None = None,
+    ) -> QImage:
         array = np.asarray(frame)
         if array.size == 0:
             raise ValueError("empty camera frame")
         if array.ndim > 2:
             array = array[..., 0]
-        if method == "Full Dynamic":
+        if method == "Native (No Auto Scaling)":
+            display_range = self._native_display_range(array)
+            display = self._linear_stretch(array, *display_range)
+        elif method == "Full Dynamic":
             display, display_range = self._display_full_dynamic(array)
         elif method == "90% Dynamic":
             display, display_range = self._display_90_percent_dynamic(array)
         elif method == "Downshift":
             display, display_range = self._display_downshift(array, shifts)
+        elif method == "Fixed Range":
+            if minimum is None or maximum is None or not np.isfinite(minimum) or not np.isfinite(maximum) or minimum >= maximum:
+                raise ValueError("fixed display range requires finite minimum < maximum")
+            display_range = (float(minimum), float(maximum))
+            display = self._linear_stretch(array, *display_range)
         else:
             raise ValueError(f"unknown conversion method: {method}")
         self._last_display_range = display_range
@@ -557,6 +583,13 @@ class ImagePreviewWindow(QDialog):
         height, width = display.shape
         image = QImage(display.data, width, height, display.strides[0], QImage.Format.Format_Grayscale8)
         return image.copy()
+
+    def _native_display_range(self, array: np.ndarray) -> tuple[float, float]:
+        """Return the deterministic range implied by the frame pixel dtype."""
+        if not np.issubdtype(array.dtype, np.integer):
+            raise ValueError("Native display requires an integer camera pixel dtype")
+        limits = np.iinfo(array.dtype)
+        return float(limits.min), float(limits.max)
 
     def _finite_display_array(self, array: np.ndarray) -> np.ndarray:
         if array.size == 0:
@@ -792,6 +825,7 @@ class MainWindow(QMainWindow):
         # set True by _abort_zscan(), reset False at the start of each new
         # _start_zscan() call.
         self._zscan_abort_requested = False
+        self._fixed_display_range = (0.0, 65535.0)
 
         self._build_state()
         self._build_layout()
@@ -1150,7 +1184,7 @@ class MainWindow(QMainWindow):
         self.image_continuous.setChecked(False)
         self.conversion_method = _combo(CONVERSION_METHOD_OPTIONS, "Full Dynamic")
         self.conversion_method.setToolTip(
-            "How a captured 16-bit frame is stretched to 8-bit for on-screen preview only -- "
+            "How a captured frame is converted to 8-bit for on-screen preview only -- "
             "traced ImagePreviewWindow's own conversion methods: 'Full Dynamic' linearly stretches "
             "the frame's real min/max to 0-255; '90% Dynamic' stretches the middle 90th-percentile "
             "range instead (clips the outer 5% at each tail); 'Downshift' right-bit-shifts the raw "
@@ -1167,6 +1201,10 @@ class MainWindow(QMainWindow):
             "by this many bits before clipping to 0-255 (e.g. 8 shifts converts a 16-bit range "
             "down to roughly its top byte)."
         )
+        self.conversion_applied_range = QLabel("Applied: not available")
+        self.conversion_applied_range.setWordWrap(True)
+        self.conversion_min.valueChanged.connect(lambda _value: self._remember_fixed_display_range())
+        self.conversion_max.valueChanged.connect(lambda _value: self._remember_fixed_display_range())
         self.sequence_path = QLineEdit("")
         self.sequence_mode = _combo(["Continuous", "Start (single)", "Burst"], "Continuous")
         sequence_cluster_tip = (
@@ -1638,6 +1676,21 @@ class MainWindow(QMainWindow):
             "Folder where each frame is saved as z_<measured_um>um.tif (real closed-loop readback, "
             "not the commanded target -- Session 47). Created if it doesn't already exist."
         )
+
+        self.manual_z_observed_um = QLabel("Unknown")
+        self.manual_z_observed_um.setObjectName("manualZObserved")
+        self.manual_z_target_um = _spin(0.0, decimals=2, minimum=0.0, maximum=0.0)
+        self.manual_z_jog_step_um = _spin(1.0, decimals=2, minimum=0.01, maximum=1000.0)
+        self.manual_z_refresh = QPushButton("Refresh")
+        self.manual_z_move = QPushButton("Move")
+        self.manual_z_minus = QPushButton("-Z")
+        self.manual_z_plus = QPushButton("+Z")
+        self.manual_z_range_status = QLabel("Initialize Z stage to read closed-loop capability")
+        self.manual_z_range_status.setWordWrap(True)
+        self.manual_z_refresh.clicked.connect(self._manual_z_refresh_position)
+        self.manual_z_move.clicked.connect(self._manual_z_move_to_target)
+        self.manual_z_minus.clicked.connect(lambda: self._manual_z_jog(-1.0))
+        self.manual_z_plus.clicked.connect(lambda: self._manual_z_jog(1.0))
 
     def _make_wfg_channel_state(self, index: int, frequency: float, amplitude: float) -> dict[str, object]:
         # frequency/amplitude are passed in Hz (caller-facing default values);
@@ -2119,6 +2172,7 @@ class MainWindow(QMainWindow):
             {key: state[key] for key in ("frequency", "amplitude", "offset", "symmetry", "phase")},
             suffix=overridden,
         )
+
         self._add_tooltip_icons(form)
         trigger = QFormLayout()
         for label, key in (
@@ -2690,11 +2744,19 @@ class MainWindow(QMainWindow):
         form.addRow("# Shifts", self.conversion_shifts)
         adjust = QPushButton("Adjust")
         adjust.clicked.connect(self._adjust_camera_preview)
+        freeze = QPushButton("Freeze Current Range")
+        freeze.setToolTip("Use the last dynamic preview range as a fixed display range; this never captures or changes camera settings.")
+        freeze.clicked.connect(self._freeze_current_display_range)
         self.conversion_method.currentTextChanged.connect(lambda _value: self._update_conversion_controls())
         layout.addLayout(form)
         self._add_tooltip_icons(form)
         layout.addWidget(QLabel("Adjust Intensity in image"))
-        layout.addWidget(adjust, alignment=Qt.AlignmentFlag.AlignLeft)
+        actions = QHBoxLayout()
+        actions.addWidget(adjust)
+        actions.addWidget(freeze)
+        actions.addStretch()
+        layout.addLayout(actions)
+        layout.addWidget(self.conversion_applied_range)
         layout.addStretch()
         self._update_conversion_controls()
         return group
@@ -2799,10 +2861,112 @@ class MainWindow(QMainWindow):
         note.setWordWrap(True)
         note.setMaximumWidth(700)
         grid.addWidget(note, 0, 0, 1, 2)
-        grid.addWidget(self._zscan_parameters_group(), 1, 0)
-        grid.addWidget(self._zscan_control_group(), 1, 1)
+        grid.addWidget(self._manual_focus_group(), 1, 0, 1, 2)
+        grid.addWidget(self._zscan_parameters_group(), 2, 0)
+        grid.addWidget(self._zscan_control_group(), 2, 1)
         grid.setColumnStretch(2, 1)
         return tab
+
+    def _manual_focus_group(self) -> QGroupBox:
+        group = QGroupBox("Manual Focus (Z Stage)")
+        form = QFormLayout(group)
+        form.addRow("Observed/current position (um)", self.manual_z_observed_um)
+        form.addRow("Requested target (um)", self.manual_z_target_um)
+        form.addRow("Jog step (um)", self.manual_z_jog_step_um)
+        buttons = QHBoxLayout()
+        buttons.addWidget(self.manual_z_refresh)
+        buttons.addWidget(self.manual_z_move)
+        buttons.addWidget(self.manual_z_minus)
+        buttons.addWidget(self.manual_z_plus)
+        form.addRow(buttons)
+        form.addRow(self.manual_z_range_status)
+        self._update_manual_focus_controls()
+        return group
+
+    def _manual_focus_stage(self):
+        z_motor = getattr(self.app, "z_motor", None)
+        stage = getattr(z_motor, "stage", None)
+        if z_motor is None or not getattr(z_motor, "enabled", False) or stage is None:
+            return None
+        if not getattr(stage, "connected", False):
+            return None
+        # Kinesis reports the enum spelling ``CloseLoop``; the user-facing
+        # terminology is Closed Loop. Accept the descriptive fake spelling in
+        # offline tests without weakening the real-mode gate.
+        if str(getattr(stage, "position_control_mode", "")) not in {"CloseLoop", "ClosedLoop"}:
+            return None
+        return stage
+
+    def _update_manual_focus_controls(self) -> None:
+        if not hasattr(self, "manual_z_move"):
+            return
+        stage = self._manual_focus_stage()
+        blocked = bool(self._busy_count or self._experiment_series_active)
+        enabled = stage is not None and not blocked
+        for widget in (self.manual_z_target_um, self.manual_z_jog_step_um, self.manual_z_refresh,
+                       self.manual_z_move, self.manual_z_minus, self.manual_z_plus):
+            widget.setEnabled(enabled)
+        if stage is None:
+            self.manual_z_range_status.setText("Manual focus unavailable: initialize a connected ClosedLoop PPC001/PFM450E stage.")
+            self.manual_z_target_um.setRange(0.0, 0.0)
+        else:
+            maximum = float(getattr(stage, "max_travel_um", 0.0))
+            self.manual_z_target_um.setRange(0.0, maximum)
+            self.manual_z_range_status.setText(f"Valid range: 0.00 – {maximum:.2f} um; motion requires an explicit button.")
+        if blocked:
+            self.manual_z_range_status.setText("Manual focus unavailable while another operation owns the stage.")
+
+    def _manual_z_refresh_position(self) -> None:
+        stage = self._manual_focus_stage()
+        if stage is None or self._busy_count or self._experiment_series_active:
+            self._update_manual_focus_controls()
+            return
+        try:
+            position = float(stage.get_position())
+            self.manual_z_observed_um.setText(f"{position:.3f}")
+            self._set_status("Z position refreshed")
+        except Exception as exc:
+            self._set_status(f"Z refresh failed: {exc}")
+
+    def _manual_z_validate_target(self, target: float, stage) -> bool:
+        maximum = float(getattr(stage, "max_travel_um", 0.0))
+        if target < 0.0 or target > maximum:
+            self._set_status(f"Z target rejected: {target:.3f} um is outside 0.000–{maximum:.3f} um")
+            return False
+        return True
+
+    def _manual_z_move_to_target(self) -> None:
+        stage = self._manual_focus_stage()
+        if stage is None or self._busy_count or self._experiment_series_active:
+            self._update_manual_focus_controls()
+            return
+        target = float(self.manual_z_target_um.value())
+        if not self._manual_z_validate_target(target, stage):
+            return
+        try:
+            stage.set_position(target)
+            readback = float(stage.get_position())
+            self.manual_z_observed_um.setText(f"{readback:.3f}")
+            self._set_status(f"Z moved; readback {readback:.3f} um")
+        except Exception as exc:
+            self._set_status(f"Z move failed: {exc}")
+
+    def _manual_z_jog(self, direction: float) -> None:
+        stage = self._manual_focus_stage()
+        if stage is None or self._busy_count or self._experiment_series_active:
+            self._update_manual_focus_controls()
+            return
+        try:
+            current = float(stage.get_position())
+            target = current + direction * float(self.manual_z_jog_step_um.value())
+            if not self._manual_z_validate_target(target, stage):
+                return
+            stage.set_position(target)
+            readback = float(stage.get_position())
+            self.manual_z_observed_um.setText(f"{readback:.3f}")
+            self._set_status(f"Z jog complete; readback {readback:.3f} um")
+        except Exception as exc:
+            self._set_status(f"Z jog failed: {exc}")
 
     def _zscan_parameters_group(self) -> QGroupBox:
         group = QGroupBox("Z-Scan Calibration Parameters")
@@ -3951,19 +4115,55 @@ class MainWindow(QMainWindow):
 
     def _update_conversion_controls(self) -> None:
         method = self.conversion_method.currentText()
-        dynamic_range = method in {"Full Dynamic", "90% Dynamic"}
-        self.conversion_min.setReadOnly(True)
-        self.conversion_max.setReadOnly(True)
-        self.conversion_min.setEnabled(dynamic_range)
-        self.conversion_max.setEnabled(dynamic_range)
+        if method == "Fixed Range":
+            self.conversion_min.setReadOnly(False)
+            self.conversion_max.setReadOnly(False)
+            self.conversion_min.setEnabled(True)
+            self.conversion_max.setEnabled(True)
+            self.conversion_min.setValue(self._fixed_display_range[0])
+            self.conversion_max.setValue(self._fixed_display_range[1])
+        else:
+            self.conversion_min.setReadOnly(True)
+            self.conversion_max.setReadOnly(True)
+            self.conversion_min.setEnabled(False)
+            self.conversion_max.setEnabled(False)
         self.conversion_shifts.setEnabled(method == "Downshift")
+
+    def _remember_fixed_display_range(self) -> None:
+        if self.conversion_method.currentText() != "Fixed Range":
+            return
+        minimum = float(self.conversion_min.value())
+        maximum = float(self.conversion_max.value())
+        if minimum < maximum:
+            self._fixed_display_range = (minimum, maximum)
 
     def _set_conversion_range(self, display_range: tuple[float, float] | None) -> None:
         if display_range is None:
             return
         minimum, maximum = display_range
-        self.conversion_min.setValue(float(minimum))
-        self.conversion_max.setValue(float(maximum))
+        self.conversion_applied_range.setText(f"Applied: {minimum:.3f} – {maximum:.3f}")
+        if self.conversion_method.currentText() != "Fixed Range":
+            self.conversion_min.setValue(float(minimum))
+            self.conversion_max.setValue(float(maximum))
+
+    def _freeze_current_display_range(self) -> None:
+        display_range = getattr(self._camera_preview, "_last_display_range", None)
+        if display_range is None:
+            self._set_status("No dynamic display range is available to freeze")
+            return
+        self._fixed_display_range = tuple(float(value) for value in display_range)
+        self.conversion_method.setCurrentText("Fixed Range")
+        self._set_status("Current display range frozen")
+
+    def _display_range_for_method(self) -> tuple[float, float] | None:
+        if self.conversion_method.currentText() != "Fixed Range":
+            return None
+        minimum = float(self.conversion_min.value())
+        maximum = float(self.conversion_max.value())
+        if minimum >= maximum:
+            raise ValueError("fixed display range requires minimum < maximum")
+        self._fixed_display_range = (minimum, maximum)
+        return self._fixed_display_range
 
     def _adjust_camera_preview(self) -> None:
         if not self._last_camera_image_data:
@@ -3972,10 +4172,13 @@ class MainWindow(QMainWindow):
         self._ensure_camera_preview()
         method, shifts = self._conversion_policy()
         try:
+            fixed_range = self._display_range_for_method()
             display_range = self._camera_preview.show_frame(
                 np.asarray(self._last_camera_image_data[-1]),
                 method=method,
                 shifts=shifts,
+                minimum=fixed_range[0] if fixed_range else None,
+                maximum=fixed_range[1] if fixed_range else None,
             )
             self._set_conversion_range(display_range)
             self._set_status("Image intensity adjusted")
@@ -3989,7 +4192,12 @@ class MainWindow(QMainWindow):
         preview = self._camera_preview
         method, shifts = self._conversion_policy()
         try:
-            display_range = preview.show_frame(np.asarray(image), method=method, shifts=shifts)
+            fixed_range = self._display_range_for_method()
+            display_range = preview.show_frame(
+                np.asarray(image), method=method, shifts=shifts,
+                minimum=fixed_range[0] if fixed_range else None,
+                maximum=fixed_range[1] if fixed_range else None,
+            )
             self._set_conversion_range(display_range)
         except Exception as exc:
             preview.show_message(f"Capture display failed: {exc}")
@@ -4776,6 +4984,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_status(self) -> None:
         self.status.add_entry(self.app.status)
+        self._update_manual_focus_controls()
 
     def _preview_points(self, config: WfgConfig) -> list[float]:
         channel = config.channels[0]
@@ -4910,13 +5119,8 @@ class MainWindow(QMainWindow):
             # Save/Load Settings gap-closure, batch 2 (2026-08-04): Camera
             # manual tab's own fields -- previously entirely unpersisted,
             # same as batch 1's Pump&Valve tab. Own sub-dict, same shape.
-            # conversion_min/conversion_max deliberately EXCLUDED, not
-            # missed: confirmed via _update_conversion_controls()/
-            # _set_conversion_range() that both are always setReadOnly(True)
-            # and only ever written programmatically from a live capture's
-            # computed display range -- a live readout, not a user-set
-            # config value, so persisting it would round-trip stale
-            # historical capture data as if it were an intentional setting.
+            # conversion_min/conversion_max remain derived/applied readouts;
+            # the explicit Fixed Range preference is persisted separately.
             # Distinct key from "experiment"'s own exposure_ms
             # (self.exp_exposure_ms) -- self.exposure_ms here is the
             # separate manual ROI-group widget, never the same Qt object.
@@ -4929,6 +5133,8 @@ class MainWindow(QMainWindow):
                 "exposure_ms": self.exposure_ms.value(),
                 "conversion_method": self.conversion_method.currentText(),
                 "conversion_shifts": self.conversion_shifts.value(),
+                "conversion_fixed_min": self._fixed_display_range[0],
+                "conversion_fixed_max": self._fixed_display_range[1],
                 "sequence_mode": self.sequence_mode.currentText(),
                 "sequence_source": self.sequence_source.currentText(),
                 "sequence_interval": self.sequence_interval.value(),
@@ -5195,6 +5401,11 @@ class MainWindow(QMainWindow):
                     widget.setValue(camera[key])
             if "center_roi" in camera:
                 self.center_roi.setChecked(bool(camera["center_roi"]))
+            if "conversion_fixed_min" in camera and "conversion_fixed_max" in camera:
+                minimum = float(camera["conversion_fixed_min"])
+                maximum = float(camera["conversion_fixed_max"])
+                if np.isfinite(minimum) and np.isfinite(maximum) and minimum < maximum:
+                    self._fixed_display_range = (minimum, maximum)
             # image_continuous intentionally not loaded -- see the matching
             # exclusion comment in _settings_dict() above.
             for key, widget in (

@@ -2119,8 +2119,18 @@ class MainWindowV3(MainWindowV2):
             "It does not capture a new image or modify saved data."
         )
         adjust.clicked.connect(self._adjust_camera_preview)
+        freeze = QPushButton("Freeze Current Range")
+        freeze.setToolTip("Use the last dynamic preview range as a fixed display range without acquiring a new frame.")
+        freeze.clicked.connect(self._freeze_current_display_range)
         self.conversion_method.currentTextChanged.connect(lambda _value: self._update_conversion_controls())
-        form.addRow(adjust)
+        actions = QHBoxLayout()
+        actions.addWidget(adjust)
+        actions.addWidget(freeze)
+        actions.addStretch()
+        actions_widget = QWidget()
+        actions_widget.setLayout(actions)
+        form.addRow(actions_widget)
+        form.addRow(self.conversion_applied_range)
         self._add_tooltip_icons(form)
         self._update_conversion_controls()
         return group
@@ -2177,6 +2187,8 @@ class MainWindowV3(MainWindowV2):
         for widget in (self.zscan_z_start_um, self.zscan_z_end_um, self.zscan_step_size_um):
             widget.valueChanged.connect(self._refresh_v3_zscan_summary)
         self._refresh_v3_zscan_summary()
+
+        layout.addWidget(self._manual_focus_group())
 
         body = QHBoxLayout()
         parameters = self._zscan_parameters_group()
