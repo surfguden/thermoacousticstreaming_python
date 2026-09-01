@@ -61,7 +61,10 @@ from .ad2 import (
 )
 from .application import STEP_ORDER, STEP_SAVE_RESULTS, Application
 from .camera import SubRegion
-from .experiment_planning import ExperimentCameraDefaults, ExperimentRequest
+from .experiment_planning import (
+    ExperimentCameraDefaults, ExperimentRequest, build_independent_run_plan,
+    legacy_series_from_run_plan, temperature_series_from_request,
+)
 from .hardware_factory import HardwareRuntimeConfig, apply_hardware_bundle, build_hardware_bundle
 from .hardware_config import ZStageBackend, default_hardware_config
 from .instruments import SimulatedAD2Sdk
@@ -74,6 +77,10 @@ logger = logging.getLogger(__name__)
 SETTINGS_PATH = Path(__file__).resolve().parents[2] / ".thermo_acoustic_ui.json"
 WFG_TRIGGER_SOURCE_OPTIONS = ["trigsrcNone", "trigsrcPC", "trigsrcAnalogIn", "trigsrcDigitalIn"]
 CONVERSION_METHOD_OPTIONS = ["Native (No Auto Scaling)", "Full Dynamic", "90% Dynamic", "Fixed Range", "Downshift"]
+LEGACY_AUTHORITY = "LEGACY_AUTHORITY"
+SHARED_PLAN_VIA_ADAPTER = "SHARED_PLAN_VIA_ADAPTER"
+# Internal migration seam; deliberately not an operator-facing setting.
+EXPERIMENT_PLANNING_AUTHORITY = SHARED_PLAN_VIA_ADAPTER
 
 
 def _format_duration_s(seconds: float, *, round_up: bool = False) -> str:
@@ -4252,6 +4259,38 @@ class MainWindow(QMainWindow):
             if answer != QMessageBox.StandardButton.Yes:
                 return
 
+        if EXPERIMENT_PLANNING_AUTHORITY == LEGACY_AUTHORITY:
+            self._start_experiment_legacy_authority(series_path)
+            return
+
+        request = self._experiment_request()
+        plan = build_independent_run_plan(request)
+        groups = legacy_series_from_run_plan(plan)
+        if not groups or not groups[0].experiments:
+            raise ValueError("Shared plan did not produce an experiment to execute.")
+        config = coerce_wfg_config(groups[0].experiments[0].wfg_config)
+        if request.tec_scan_enabled:
+            temperature_series = temperature_series_from_request(request)
+            self.queue_count.setText(str(sum(group.see_elements_left() for group in groups)))
+            self.waveform_graph.set_points(self._preview_points(config))
+            self._run_action(
+                lambda progress: self._run_temperature_experiment_series(
+                    temperature_series, groups, plan.total_frames, config, progress
+                ),
+                "Running TEC temperature scan",
+            )
+            return
+
+        series = groups[0]
+        self.queue_count.setText(str(series.see_elements_left()))
+        self.waveform_graph.set_points(self._preview_points(config))
+        self._run_action(
+            lambda progress: self._run_experiment_series(series, plan.total_frames, config, progress),
+            "Running experiment",
+        )
+
+    def _start_experiment_legacy_authority(self, series_path: Path) -> None:
+        """Rollback branch retained while shared-plan authority is validated."""
         if self.exp_tec_scan_enable.isChecked():
             temperature_series, groups, total_frames, config = self._build_temperature_experiment_groups(series_path)
             self.queue_count.setText(str(sum(group.see_elements_left() for group in groups)))
