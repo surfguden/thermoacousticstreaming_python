@@ -53,23 +53,28 @@ def _request(**changes) -> ExperimentRequest:
 
 
 @pytest.mark.parametrize(
-    "function, scan, fm, dynamic, tec_targets, flush",
+    "function, repeats, scan, fm, dynamic, tec_targets, flush, device_modes",
     [
-        ("Sine", False, False, False, (), False),
-        ("Square", True, False, False, (), True),
-        ("DC", True, True, True, (), False),  # selected fields are stored, inactive semantics stay inactive
-        ("Sine", False, True, True, (((1, 21.0), (2, 21.0)),), True),
-        ("Sine", True, False, True, (((1, 21.0), (2, 18.0)), ((1, 25.0), (2, 22.0))), False),
+        pytest.param("Sine", 1, False, False, False, (), False, _request().device_modes, id="sine-single-fixed"),
+        pytest.param("Sine", 2, False, False, False, (), False, _request().device_modes, id="sine-multiple-fixed"),
+        pytest.param("Square", 2, True, False, False, (), True, _request().device_modes, id="square-scan-flush"),
+        pytest.param("DC", 2, True, True, True, (), False, _request().device_modes, id="dc-inactive-scan-fm"),
+        pytest.param("Sine", 2, False, True, True, (((1, 21.0), (2, 21.0)),), True, _request().device_modes, id="fm-dynamic-locked-tec"),
+        pytest.param("Sine", 2, True, False, True, (((1, 21.0), (2, 18.0)), ((1, 25.0), (2, 22.0))), False, _request().device_modes, id="scan-dynamic-unlocked-tec"),
+        pytest.param("Sine", 2, False, False, False, (), False,
+                     (("ad2", False, True), ("camera", False, True), ("pump", True, False), ("valve", True, True), ("tec", False, True)),
+                     id="disabled-and-simulated-subsystems"),
     ],
 )
 def test_independent_plan_adapter_preserves_static_execution_semantics(
-    function, scan, fm, dynamic, tec_targets, flush
+    function, repeats, scan, fm, dynamic, tec_targets, flush, device_modes
 ):
     request = _request(
-        channel0_waveform_function=function, frequency_scan_enabled=scan,
+        channel0_waveform_function=function, repeats_per_group=repeats,
+        frequency_scan_enabled=scan, frequency_values_hz=(90_000.0,) if repeats == 1 else (90_000.0, 110_000.0),
         fm_sweep_enabled=fm, dynamic_camera_start=dynamic,
         tec_scan_enabled=bool(tec_targets), temperature_targets_c=tec_targets,
-        flush_enabled=flush, wfg_templates=(_wfg(function),),
+        flush_enabled=flush, device_modes=device_modes, wfg_templates=(_wfg(function),),
         fm_sweep=(100_000.0, 20_000.0, 2.0, "Symmetric") if fm and function != "DC" else None,
     )
     plan = build_independent_run_plan(request)
@@ -80,6 +85,7 @@ def test_independent_plan_adapter_preserves_static_execution_semantics(
     assert len(normalized) == len(plan.conditions)
     assert all(item["do_channels"][0][2] == request.camera_fps for item in normalized)
     assert all(item["flush_enabled"] is flush for item in normalized)
+    assert request.device_modes == device_modes  # simulation/enabled state is retained request semantics, not invented by the adapter
     if function == "DC":
         assert all(item["frequency_scan_selected_hz"] is None for item in normalized)
         assert all(item["fm_sweep"] is None for item in normalized)
