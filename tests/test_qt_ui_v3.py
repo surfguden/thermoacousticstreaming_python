@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QApplication, QComboBox, QGroupBox, QLabel, QPushB
 from thermo_acoustic import qt_ui, qt_ui_v2, qt_ui_v3
 from thermo_acoustic.application import Application
 from thermo_acoustic.experiment_planning import normalize_experiment
+from thermo_acoustic.instruments import SimulatedAD2Sdk
 from thermo_acoustic.tec import TecStatus
 
 from conftest import build_with_retry
@@ -25,6 +26,62 @@ def make_window(monkeypatch, tmp_path, app: Application | None = None) -> qt_ui_
     monkeypatch.setattr(qt_ui, "SETTINGS_PATH", settings_path)
     QApplication.instance() or QApplication([])
     return build_with_retry(lambda: qt_ui_v3.MainWindowV3(app=app))
+
+
+def test_v3_main_constructs_its_offline_application_without_entering_qt_loop(monkeypatch):
+    captured = []
+
+    class FakeQApplication:
+        @staticmethod
+        def instance():
+            return None
+
+        def __init__(self, argv):
+            self.argv = argv
+
+        def exec(self):
+            return 17
+
+    class FakeWindow:
+        def __init__(self, *, app):
+            captured.append(app)
+
+        def show(self):
+            pass
+
+    monkeypatch.setattr(qt_ui_v3, "QApplication", FakeQApplication)
+    monkeypatch.setattr(qt_ui_v3, "MainWindowV3", FakeWindow)
+    monkeypatch.setattr(qt_ui_v3, "install_focus_wheel_guard", lambda app: None)
+
+    assert qt_ui_v3.main() == 17
+    assert len(captured) == 1
+    assert isinstance(captured[0].ad2, SimulatedAD2Sdk)
+
+
+@pytest.mark.parametrize("module, window_name", [(qt_ui, "MainWindow"), (qt_ui_v2, "MainWindowV2")])
+def test_v1_v2_main_construct_offline_application_without_qt_loop(monkeypatch, module, window_name):
+    captured = []
+
+    class FakeQApplication:
+        @staticmethod
+        def instance(): return None
+        def __init__(self, argv): pass
+        def exec(self): return 0
+
+    class FakeWindow:
+        def __init__(self, *args, **kwargs): captured.append(kwargs.get("app"))
+        def show(self): pass
+
+    monkeypatch.setattr(module, "QApplication", FakeQApplication)
+    monkeypatch.setattr(module, window_name, FakeWindow)
+    if hasattr(module, "install_focus_wheel_guard"):
+        monkeypatch.setattr(module, "install_focus_wheel_guard", lambda app: None)
+    assert module.main() == 0
+    assert len(captured) == 1
+    if module is qt_ui:
+        assert captured[0] is None  # MainWindow itself supplies the canonical simulated default.
+    else:
+        assert isinstance(captured[0].ad2, SimulatedAD2Sdk)
 
 
 def test_v3_is_a_layout_evolution_of_v2_and_v2_remains_available(monkeypatch, tmp_path):

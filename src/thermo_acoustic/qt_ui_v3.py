@@ -27,6 +27,7 @@ from .experiment_planning import (
     build_independent_run_plan,
     build_result_from_existing_plan,
 )
+from .instruments import SimulatedAD2Sdk
 from .piezo_zscan import ZScanCalibration
 from .qt_ui import bind_waveform_parameter_policy, install_focus_wheel_guard
 from .qt_ui_v2 import InitializationDialog, MainWindowV2
