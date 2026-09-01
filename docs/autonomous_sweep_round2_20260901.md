@@ -69,13 +69,12 @@ camera exposure, DO achieved frequency, camera sequence data, flush result,
 and image/timestamp data. Simulation and enabled state are captured from live
 facades at run time.
 
-The audit found that output/series identity is reconstructible from the
-filesystem and repeat folder, but is not fully duplicated as explicit TDMS
-properties. A failure after the initial record can leave a truthful partial
-requested record, but there is no single explicit completion/outcome property
-marking the run incomplete in all failure paths. These are **RECOMMEND** items
-for a separate metadata checkpoint; they were not expanded in this bounded
-fix subset.
+Round-2 identified missing explicit run identity and terminal outcome truth as
+**RECOMMEND** items. The subsequent bounded Experiment Record Completeness
+closure added per-repeat identity and `IN_PROGRESS`/`COMPLETED`/`FAILED` TDMS
+outcomes with separate primary/cleanup failure fields. A series-level manifest
+for never-started repeats remains a separate recommendation; see
+`experiment_record_completeness_closure_20260901.md`.
 
 ## Abort and ownership findings
 
@@ -97,8 +96,9 @@ configured Application-owned stage.
 
 ### RECOMMEND
 
-- Add explicit series/output identity and a final completion/outcome marker in
-  a later metadata-focused checkpoint, with a defined partial-run schema.
+- Decide whether a series-level manifest should record requested versus
+  completed repeat counts when graceful Abort or a failure leaves later repeats
+  unstarted.
 - Broaden semantic comparison coverage before any planning-authority change.
 
 ### OWNER_DECISION — BuildResult authority

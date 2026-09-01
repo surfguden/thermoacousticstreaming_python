@@ -133,6 +133,7 @@ class Application:
     # a run whose pump fault was manually cleared this session is
     # distinguishable after the fact from one where it never faulted.
     pump_fault_manually_cleared_this_session: bool = False
+    _active_experiment: Experiment2 | None = field(default=None, init=False, repr=False)
 
     def create_queues(self) -> None:
         self.main_queue = LabViewQueue("Main Queue")
@@ -854,10 +855,42 @@ class Application:
             return True
 
     def run_experiment2(self, progress: Callable[[str, object], None] | None = None) -> bool:
+        """Run one repeat and finalize an already-created TDMS record.
+
+        The legacy workflow remains authoritative. This wrapper only makes its
+        terminal outcome explicit when the initial record was successfully
+        created; it does not convert requested metadata into applied evidence.
+        """
+        self._active_experiment = None
+        try:
+            completed = self._run_experiment2_unfinalized(progress=progress)
+        except BaseException as exc:
+            experiment = self._active_experiment
+            if experiment is not None and experiment._record_created:
+                cleanup_failure = experiment._tdms_properties.get("CleanupFailure") or None
+                experiment.finalize_record(
+                    "FAILED",
+                    primary_failure=None if cleanup_failure else exc,
+                    cleanup_failure=cleanup_failure,
+                )
+            raise
+        else:
+            experiment = self._active_experiment
+            if experiment is not None and experiment._record_created:
+                if completed:
+                    experiment.finalize_record("COMPLETED")
+                else:
+                    experiment.finalize_record("FAILED", primary_failure=self.status)
+            return completed
+        finally:
+            self._active_experiment = None
+
+    def _run_experiment2_unfinalized(self, progress: Callable[[str, object], None] | None = None) -> bool:
         experiment, timed_out = self.experiment_series.dequeue_experiment()
         if timed_out or experiment is None:
             self.fire_status_event("NoExperiment")
             return False
+        self._active_experiment = experiment
 
         # Explicit reset before this repeat's first step is marked active --
         # not left for step_started(STEP_INITIALIZE_EXPERIMENT) below to imply
@@ -1025,6 +1058,9 @@ class Application:
                         self.camera.stop_capture()
                     except Exception as cleanup_exc:
                         if capture_error is None:
+                            # Preserve the category before the outer repeat
+                            # finalizer records the terminal FAILED outcome.
+                            experiment._tdms_properties["CleanupFailure"] = str(cleanup_exc)
                             raise
                         logger.error(
                             "Camera stop failed while preserving an earlier capture error: %s",

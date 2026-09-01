@@ -179,6 +179,13 @@ class TemperatureSeries:
 class Experiment2:
     repeat_id: int = 0
     experiment_folder: Path = Path()
+    # Explicit planned identity, populated by the legacy UI builder. These
+    # fields retain the condition that produced one saved repeat without
+    # requiring a later reader to infer it from folder names.
+    output_root: Path | None = None
+    planned_repeat_count: int | None = None
+    temperature_point_index: int | None = None
+    frequency_scan_selected_hz: float | None = None
     flush_settings: FlushSettings = field(default_factory=lambda: FlushSettings(0.0, 0.0, 0.0))
     flush_enabled: bool = False
     global_exposure_ms: float = 0.0
@@ -228,12 +235,41 @@ class Experiment2:
     _tdms_properties: dict[str, Any] = field(default_factory=dict, init=False)
     _tdms_image_names: list[str] = field(default_factory=list, init=False)
     _tdms_timestamps: list[str] = field(default_factory=list, init=False)
+    _record_created: bool = field(default=False, init=False)
 
     def create_folder_and_tdms(self) -> Path:
         self.experiment_folder.mkdir(parents=True, exist_ok=True)
         self._tdms_properties.setdefault("Experiment started", datetime.now(timezone.utc).isoformat())
+        self._tdms_properties.setdefault("RecordOutcome", "IN_PROGRESS")
+        self._tdms_properties.setdefault("PrimaryFailure", "")
+        self._tdms_properties.setdefault("CleanupFailure", "")
         self._write_tdms()
+        self._record_created = True
         return self.experiment_folder
+
+    def finalize_record(
+        self,
+        outcome: str,
+        *,
+        primary_failure: BaseException | str | None = None,
+        cleanup_failure: BaseException | str | None = None,
+    ) -> None:
+        """Persist the terminal truth for a repeat that already has a TDMS record.
+
+        This deliberately records only what the workflow reached. A FAILED
+        record does not claim that requested settings were applied; a cleanup
+        error stays distinct from the primary workflow error.
+        """
+        self.experiment_folder.mkdir(parents=True, exist_ok=True)
+        self._tdms_properties.update(
+            {
+                "RecordOutcome": outcome,
+                "RecordFinalized": datetime.now(timezone.utc).isoformat(),
+                "PrimaryFailure": "" if primary_failure is None else str(primary_failure),
+                "CleanupFailure": "" if cleanup_failure is None else str(cleanup_failure),
+            }
+        )
+        self._write_tdms()
 
     def save_settings(self) -> None:
         self.experiment_folder.mkdir(parents=True, exist_ok=True)
@@ -296,6 +332,16 @@ class Experiment2:
             do_channel = do_clock.channels[0]
         properties = {
             "Repeat ID": self.repeat_id,
+            "RepeatIndex": self.repeat_id,
+            "RepeatNumber": self.repeat_id + 1,
+            "RequestedRepeatCount": "" if self.planned_repeat_count is None else self.planned_repeat_count,
+            "OutputRoot": "" if self.output_root is None else str(self.output_root),
+            "ExperimentFolder": str(self.experiment_folder),
+            "TDMSPath": str(self.tdms_path),
+            "TemperaturePointIndex": "" if self.temperature_point_index is None else self.temperature_point_index,
+            "FrequencyScanSelectedHz": (
+                "" if self.frequency_scan_selected_hz is None else self.frequency_scan_selected_hz
+            ),
             "ExposureTime": self.global_exposure_ms,
             "GlobalExposure": self.trigger_global_exposure,
             "FlushFlowrate": self.flush_settings.flush_flowrate,
@@ -380,6 +426,8 @@ class Experiment2:
         return {
             "CameraFrames": settings.get("frames", ""),
             "CameraFPS": camera_fps,
+            "CameraStartMode": settings.get("camera_start_mode", ""),
+            "CameraStartRequested": settings.get("camera_start_selected_s", ""),
             "TriggerSource": settings.get("trigger_source", ""),
             "MasterPulseMode": settings.get("masterpulse_mode", ""),
             "MasterPulseSource": settings.get("masterpulse_source", ""),

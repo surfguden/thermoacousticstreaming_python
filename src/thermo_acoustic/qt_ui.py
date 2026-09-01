@@ -4282,6 +4282,9 @@ class MainWindow(QMainWindow):
         series_root: Path | None = None,
         tec_target_c: float | None = None,
         tec_targets_c: dict[int, float] | None = None,
+        *,
+        output_root: Path | None = None,
+        temperature_point_index: int | None = None,
     ) -> tuple[ExperimentSeries2, int, WfgConfig]:
         series_path = Path(series_root) if series_root is not None else Path(self.series_path.text())
         repeats = self.exp_repeats.value()
@@ -4324,11 +4327,18 @@ class MainWindow(QMainWindow):
             )
             if preview_config is None:
                 preview_config = config
+            do_clock = self._experiment_do_clock_config(repeat)
             folder = series_path / f"repeat_{repeat + 1:03d}"
             experiments.append(
                 Experiment2(
                     repeat_id=repeat,
                     experiment_folder=folder,
+                    output_root=output_root if output_root is not None else series_path,
+                    planned_repeat_count=repeats,
+                    temperature_point_index=temperature_point_index,
+                    frequency_scan_selected_hz=(
+                        frequency_scan_hz[repeat] if frequency_scan_hz is not None else None
+                    ),
                     flush_settings=self._flush_settings(experiment=True),
                     flush_enabled=self.exp_flush_enabled.isChecked(),
                     global_exposure_ms=self.exp_exposure_ms.value(),
@@ -4342,6 +4352,8 @@ class MainWindow(QMainWindow):
                             trigger_source_override="Internal",
                         ),
                         "camera_start_s": [widget.value() for widget in self.camera_start_array],
+                        "camera_start_mode": "dynamic" if self.dynamic_camera_start.isChecked() else "fixed",
+                        "camera_start_selected_s": do_clock.channels[0].trigger.sec_wait,
                         # Explicit and deterministic so experiment runs never inherit
                         # whatever trigger source a prior manual Camera tab session left
                         # the DCAM device in. Whether this should be "External" and which
@@ -4351,7 +4363,7 @@ class MainWindow(QMainWindow):
                         # leftover state but does not establish physical synchronization.
                     },
                     wfg_config=config,
-                    do_clock_settings=self._experiment_do_clock_config(repeat),
+                    do_clock_settings=do_clock,
                     fm_sweep=fm_sweep,
                     tec_target_c=tec_target_c,
                     tec_targets_c=tec_targets_c,
@@ -4423,6 +4435,8 @@ class MainWindow(QMainWindow):
                 group_path,
                 tec_target_c=temperature_c,
                 tec_targets_c=targets,
+                output_root=series_path,
+                temperature_point_index=index,
             )
             groups.append(group)
             total_frames += frames

@@ -638,6 +638,13 @@ def test_v3_shadow_plan_matches_authoritative_builder_for_frequency_camera_flush
             110000.0,
             120000.0,
         ]
+        assert [item["frequency_scan_selected_hz"] for item in shadow.plan.normalized_experiments()] == [
+            100000.0,
+            110000.0,
+            120000.0,
+        ]
+        assert all(item["output_root"] == str(output_path) for item in shadow.plan.normalized_experiments())
+        assert all(item["planned_repeat_count"] == 3 for item in shadow.plan.normalized_experiments())
         assert all(item["do_channels"][0][2:] == (25.0, 0.4, 1.6) for item in shadow.plan.normalized_experiments())
         assert all(item["flush_enabled"] is True for item in shadow.plan.normalized_experiments())
     finally:
@@ -674,6 +681,8 @@ def test_v3_shadow_plan_matches_authoritative_unlocked_tec_groups(monkeypatch, t
             {1: 26.0, 2: 23.0},
             {1: 26.0, 2: 23.0},
         ]
+        assert [item["temperature_point_index"] for item in authoritative_normalized] == [1, 1, 2, 2]
+        assert all(item["output_root"] == str(output_path) for item in authoritative_normalized)
     finally:
         window.close()
 
@@ -764,6 +773,33 @@ def test_v3_shadow_plan_matches_fm_dynamic_start_locked_tec_and_blank_path(monke
         assert all(item["global_exposure_ms"] == 7.5 for item in normalized)
         assert all(item["sequence_settings"]["trigger_source"] == "Internal" for item in normalized)
         assert all(item["sequence_settings"]["masterpulse_interval_s"] == 0.125 for item in normalized)
+    finally:
+        window.close()
+
+
+def test_v3_shadow_preflight_matches_legacy_dc_scan_and_fm_semantics(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        window.series_path.setText(str(tmp_path / "dc"))
+        window.exp_repeats.setValue(3)
+        window.exp_camera_fps.setValue(10.0)
+        window.exp_ch1_function.setCurrentText("DC")
+        window.exp_freq_scan_enable.setChecked(True)
+        window.exp_freq_scan_count.setValue(1)  # intentionally mismatched if scan were effective
+        window.exp_sweep_enable.setChecked(True)
+
+        authoritative, _frames, _config = window._build_experiment_series(Path(window.series_path.text()))
+        shadow = window._v3_shadow_build_result()
+
+        assert shadow.plan is not None
+        assert shadow.plan.normalized_experiments() == tuple(
+            normalize_experiment(experiment) for experiment in authoritative.experiments
+        )
+        assert shadow.preflight.frequency_repeat_compatible is True
+        assert not shadow.preflight.blocking_issues
+        codes = {issue.code for issue in shadow.preflight.warnings}
+        assert {"frequency_scan_ignored_for_dc", "fm_sweep_ignored_for_dc"} <= codes
+        assert "inactive for DC" in window._v3_axis_summary.text()
     finally:
         window.close()
 

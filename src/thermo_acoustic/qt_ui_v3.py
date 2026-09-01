@@ -1020,6 +1020,7 @@ class MainWindowV3(MainWindowV2):
             repeats_per_group=self.exp_repeats.value(),
             frequency_scan_enabled=self.exp_freq_scan_enable.isChecked(),
             frequency_values_hz=frequencies,
+            channel0_waveform_function=self.exp_ch1_function.currentText(),
             camera_fps=float(self.exp_camera_fps.value()),
             frames=self.exp_frames.value(),
             camera_start_s=tuple(widget.value() for widget in self.camera_start_array),
@@ -1081,8 +1082,12 @@ class MainWindowV3(MainWindowV2):
         total_runs = len(result.plan.experiments) if result.plan is not None else temperature_count * repeats
         scan_text = (
             f"frequency list maps {len(result.request.frequency_values_hz)} carrier value(s) one-to-one to repeat indices"
-            if result.request.frequency_scan_enabled
-            else "no frequency-list mapping"
+            if result.request.frequency_scan_enabled and result.request.channel0_waveform_function != "DC"
+            else (
+                "frequency scan selected but inactive for DC"
+                if result.request.frequency_scan_enabled
+                else "no frequency-list mapping"
+            )
         )
         outer = f"TEC temperature: {temperature_count} point(s)" if result.request.tec_scan_enabled else "No outer TEC axis"
         inner = (

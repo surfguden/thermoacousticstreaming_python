@@ -844,6 +844,91 @@ def test_run_experiment2_processes_one_experiment(tmp_path, monkeypatch):
     assert (tmp_path / "experiment-1").exists()
 
 
+def test_run_experiment2_finalizes_completed_record_with_explicit_identity(tmp_path, monkeypatch):
+    writes = install_fake_nptdms(monkeypatch)
+    app = Application(ad2=SimulatedAD2Sdk())
+    experiment = Experiment2(
+        repeat_id=2,
+        experiment_folder=tmp_path / "series" / "repeat_003",
+        output_root=tmp_path / "series",
+        planned_repeat_count=4,
+        temperature_point_index=2,
+        frequency_scan_selected_hz=125_000.0,
+        sequence_settings={
+            "frames": 5,
+            "camera_start_mode": "dynamic",
+            "camera_start_selected_s": 0.25,
+        },
+    )
+    app.experiment_series.enqueue_experiments([experiment])
+
+    assert app.run_experiment2() is True
+
+    objects = writes[str(experiment.tdms_path)]
+    group = next(item for item in objects if getattr(item, "kind", "") == "group" and item.name == "Experiment")
+    properties = group.properties
+    assert properties["RecordOutcome"] == "COMPLETED"
+    assert properties["PrimaryFailure"] == ""
+    assert properties["CleanupFailure"] == ""
+    assert properties["RepeatIndex"] == 2
+    assert properties["RepeatNumber"] == 3
+    assert properties["RequestedRepeatCount"] == 4
+    assert properties["OutputRoot"] == str(tmp_path / "series")
+    assert properties["ExperimentFolder"] == str(experiment.experiment_folder)
+    assert properties["TDMSPath"] == str(experiment.tdms_path)
+    assert properties["TemperaturePointIndex"] == 2
+    assert properties["FrequencyScanSelectedHz"] == 125_000.0
+    assert properties["CameraStartMode"] == "dynamic"
+    assert properties["CameraStartRequested"] == 0.25
+
+
+def test_run_experiment2_finalizes_failed_record_without_claiming_configuration_applied(tmp_path, monkeypatch):
+    writes = install_fake_nptdms(monkeypatch)
+    app = Application(ad2=SimulatedAD2Sdk())
+    experiment = Experiment2(
+        experiment_folder=tmp_path / "failed-before-camera",
+        global_exposure_ms=12.5,
+    )
+    app.experiment_series.enqueue_experiments([experiment])
+
+    def fail_configure_wfg(_self, _config):
+        raise RuntimeError("simulated WFG configuration failure")
+
+    monkeypatch.setattr(SimulatedAD2Sdk, "config_wfg", fail_configure_wfg)
+    with pytest.raises(RuntimeError, match="simulated WFG configuration failure"):
+        app.run_experiment2()
+
+    objects = writes[str(experiment.tdms_path)]
+    group = next(item for item in objects if getattr(item, "kind", "") == "group" and item.name == "Experiment")
+    properties = group.properties
+    assert properties["RecordOutcome"] == "FAILED"
+    assert "simulated WFG configuration failure" in properties["PrimaryFailure"]
+    assert properties["CleanupFailure"] == ""
+    # Exposure was retained as requested; camera configuration never ran, so
+    # there is no separate applied-camera record to misread as evidence.
+    assert properties["ExposureTime"] == 12.5
+
+
+def test_run_experiment2_records_capture_cleanup_failure_separately(tmp_path, monkeypatch):
+    writes = install_fake_nptdms(monkeypatch)
+    app = Application(ad2=SimulatedAD2Sdk())
+    experiment = Experiment2(experiment_folder=tmp_path / "capture-cleanup-failed")
+    app.experiment_series.enqueue_experiments([experiment])
+
+    def fail_stop_capture(_self):
+        raise RuntimeError("simulated camera stop failure")
+
+    monkeypatch.setattr(HamamatsuCamera, "stop_capture", fail_stop_capture)
+    with pytest.raises(RuntimeError, match="simulated camera stop failure"):
+        app.run_experiment2()
+
+    objects = writes[str(experiment.tdms_path)]
+    group = next(item for item in objects if getattr(item, "kind", "") == "group" and item.name == "Experiment")
+    assert group.properties["RecordOutcome"] == "FAILED"
+    assert group.properties["PrimaryFailure"] == ""
+    assert "simulated camera stop failure" in group.properties["CleanupFailure"]
+
+
 def test_run_experiment2_records_real_wfg_clamping_in_final_tdms(tmp_path, monkeypatch):
     # Finding A regression test: drives the REAL run_experiment2() call
     # order end-to-end (not configure_wfg()/save_settings() in isolation --
@@ -1226,6 +1311,8 @@ def test_run_experiment2_records_flush_failure_in_final_tdms(tmp_path, monkeypat
         "the failed flush must be recorded in this repeat's own data.tdms, not just surfaced "
         "transiently via status/logging"
     )
+    assert experiment_group.properties["RecordOutcome"] == "FAILED"
+    assert experiment_group.properties["PrimaryFailure"] == "ExperimentFlushFailed"
 
 
 def test_run_experiment2_records_flush_success_in_final_tdms(tmp_path, monkeypatch):
@@ -1250,6 +1337,7 @@ def test_run_experiment2_records_flush_success_in_final_tdms(tmp_path, monkeypat
     objects = writes[str(tdms_path)]
     experiment_group = next(item for item in objects if getattr(item, "kind", "") == "group" and item.name == "Experiment")
     assert experiment_group.properties["FlushCompleted"] is True
+    assert experiment_group.properties["RecordOutcome"] == "COMPLETED"
 
 
 def test_run_experiment2_completes_fully_even_after_abort_is_fired_mid_run(tmp_path, monkeypatch):

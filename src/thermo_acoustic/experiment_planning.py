@@ -72,6 +72,7 @@ class ExperimentRequest:
     repeats_per_group: int
     frequency_scan_enabled: bool
     frequency_values_hz: tuple[float, ...]
+    channel0_waveform_function: str
     camera_fps: float
     frames: int
     camera_start_s: tuple[float, ...]
@@ -147,6 +148,10 @@ def normalize_experiment(experiment: Experiment2) -> dict[str, Any]:
     do_config = coerce_do_config(experiment.do_clock_settings)
     return {
         "repeat_id": experiment.repeat_id,
+        "output_root": str(experiment.output_root) if experiment.output_root is not None else "",
+        "planned_repeat_count": experiment.planned_repeat_count,
+        "temperature_point_index": experiment.temperature_point_index,
+        "frequency_scan_selected_hz": experiment.frequency_scan_selected_hz,
         "output_path": str(experiment.experiment_folder),
         "global_exposure_ms": experiment.global_exposure_ms,
         "trigger_global_exposure": experiment.trigger_global_exposure,
@@ -222,7 +227,7 @@ def blocking_build_result(request: ExperimentRequest, error: BaseException | str
             disabled_devices=_disabled_devices(request),
             experiment_axes=(("temperature", len(request.temperature_targets_c) or 1), ("repeat", request.repeats_per_group)),
             frequency_repeat_compatible=(
-                not request.frequency_scan_enabled
+                not _frequency_scan_is_effective(request)
                 or len(request.frequency_values_hz) == request.repeats_per_group
             ),
             camera_timing_valid=request.camera_fps > 0,
@@ -240,7 +245,8 @@ def build_result_from_existing_plan(
     evidence: RuntimeEvidenceSnapshot,
 ) -> BuildResult:
     issues: list[PreflightIssue] = []
-    compatible = not request.frequency_scan_enabled or len(request.frequency_values_hz) == request.repeats_per_group
+    scan_effective = _frequency_scan_is_effective(request)
+    compatible = not scan_effective or len(request.frequency_values_hz) == request.repeats_per_group
     if not compatible:
         issues.append(
             PreflightIssue(
@@ -293,7 +299,23 @@ def build_result_from_existing_plan(
                 blocking=False,
             )
         )
-    if request.fm_sweep_enabled and not request.channel0_output_selected:
+    if request.frequency_scan_enabled and not scan_effective:
+        issues.append(
+            PreflightIssue(
+                code="frequency_scan_ignored_for_dc",
+                message="Frequency scan is selected but has no effect while Channel 0 uses DC.",
+                blocking=False,
+            )
+        )
+    if request.fm_sweep_enabled and request.channel0_waveform_function == "DC":
+        issues.append(
+            PreflightIssue(
+                code="fm_sweep_ignored_for_dc",
+                message="FM sweep is selected but has no effect while Channel 0 uses DC.",
+                blocking=False,
+            )
+        )
+    if request.fm_sweep_enabled and request.channel0_waveform_function != "DC" and not request.channel0_output_selected:
         issues.append(
             PreflightIssue(
                 code="fm_enables_channel0",
@@ -370,6 +392,12 @@ def build_result_from_existing_plan(
 
 def _device_modes(request: ExperimentRequest) -> dict[str, tuple[bool, bool]]:
     return {name: (enabled, simulated) for name, enabled, simulated in request.device_modes}
+
+
+def _frequency_scan_is_effective(request: ExperimentRequest) -> bool:
+    """Match the legacy builder, which intentionally skips scan for DC."""
+
+    return request.frequency_scan_enabled and request.channel0_waveform_function != "DC"
 
 
 def _required_devices(request: ExperimentRequest) -> tuple[str, ...]:
