@@ -85,6 +85,11 @@ train, AnalogOut channel 0, the software PC-trigger call, and a camera exposure
 indicator. The current automated camera trigger is `Internal`; therefore this
 test must not assume DIO1 triggers the camera.
 
+Provenance for the prepared bounded diagnostic: **Execution path:
+PRODUCTION** (`Application.run_experiment2()` and its normal orchestration);
+**Configuration basis: DIAGNOSTIC** (low-amplitude, one-repeat scope setup).
+The configuration basis is not the normal scientific production configuration.
+
 Preconditions:
 
 1. Pump, valve, TEC, and Z stage disabled. Do not initialize them.
@@ -130,10 +135,14 @@ Measure and retain:
 - relative deltas between the physical traces, plus scope timebase/trigger and
   probe settings.
 
-Pass means each physical output matches its own programmed period/duration and
-the observed ordering is repeatable across at least three trials. Equivalence
-between DIO1 and camera exposure requires measured exposure edges with a
-defined tolerance; DIO1 alone cannot prove it. If AnalogOut starts at
+The first bounded capture may establish the timing semantics and observed
+relationship for that capture: each visible physical output can be compared
+with its programmed period/duration, and the measured ordering can be recorded.
+That single capture does **not** establish repeatability, jitter, or general
+performance. Those require a separately planned characterization; they are not
+a prerequisite for this first safe diagnostic. Equivalence between DIO1 and
+camera exposure requires measured exposure edges with a defined tolerance;
+DIO1 alone cannot prove it. If AnalogOut starts at
 configuration rather than PC trigger, or camera exposure is unrelated to
 DIO1, record that result as the actual semantics and stop—do not change timing
 code in the bench session.
