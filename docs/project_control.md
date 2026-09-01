@@ -8,9 +8,9 @@ records; this page does not replace them.
 
 The software checkpoint is restored: offline CI is green at the deterministic
 test fix (`525894f`) and the rules/project-control checkpoint (`da4a790`).
-Engineering control is in maintenance mode. The active mainline is hardware
-truth; camera visibility is restored, but physical trigger timing is not yet
-verified.
+Engineering control is in maintenance mode. The active mainline is offline
+software consistency; camera visibility is restored, but physical trigger
+timing is not yet verified and is explicitly deferred.
 
 Current operator surfaces:
 
@@ -22,8 +22,6 @@ Current operator surfaces:
 
 ## ACTIVE
 
-- **HW-TIMING-001:** confirm scope wiring, then run the prepared bounded physical
-  trigger-timing diagnostic.
 - **HW-QMIX-CAN-001:** narrow passive CAN/controller state without pump motion.
 
 ## READY
@@ -33,10 +31,13 @@ Current operator surfaces:
   succeeded. Vendor documentation now identifies AD2 `W1`, AD2 `DIO1`, and the
   camera's SMA `TIMING 1/2/3` outputs and their electrical levels. A bounded
   read-only camera probe found all three timing outputs configured as fixed
-  `LOW`; none is currently an exposure monitor. The later low-output capture is
-  ready only after an operator confirms the exact scope wiring/load and approves
-  a temporary camera timing-output configuration that will be restored after
-  the capture.
+  `LOW`; none is currently an exposure monitor. The first capture uses an
+  operator-controlled external oscilloscope with one common timebase and three
+  simultaneous inputs: CH1 DIO1, CH2 W1, and CH3 Camera TIMING 1; CH4 is unused.
+  Repository-controlled scope acquisition is not required. The capture remains
+  ready only after the operator identifies the scope and confirms wiring/load,
+  then approves a temporary camera timing-output configuration that will be
+  restored after the capture.
 
 ## BLOCKED
 
@@ -57,6 +58,13 @@ Current operator surfaces:
 
 ## DEFERRED
 
+- **HW-TIMING-001 — DEFERRED / READY FOR PHYSICAL VERIFICATION:** software
+  timing paths are traced and the bounded measurement plan is ready, but
+  physical AD2/DIO1/camera timing remains unverified. This does not block
+  ordinary software development; it blocks any claim that AD2, DIO1, and
+  camera exposure are physically synchronized. The eventual capture uses an
+  operator-controlled external oscilloscope; repository-controlled scope
+  acquisition is not required.
 - **ARCH-PERSISTENCE-001:** the hardware-profile/protocol split waits for shared
   planning contracts to stabilize.
 
@@ -74,8 +82,8 @@ Current operator surfaces:
 
 ## NEXT CHECKPOINT
 
-The next technical checkpoint is **HW-TIMING-001**: operator-confirmed scope
-wiring/load and approval of the temporary camera timing-output observation
-setting, followed by the already-prepared bounded timing capture. Do not infer
-a timing result from restored camera visibility, and do not enable AD2 output
-without that physical setup confirmation.
+The next technical checkpoint is **Autonomous Sweep Round 2**: offline
+experiment-configuration, execution, effective-backend, runtime-evidence, and
+TDMS truth auditing. **HW-TIMING-001** remains deferred / ready for physical
+verification; do not infer a timing result from restored camera visibility or
+enable AD2 output as part of this software milestone.

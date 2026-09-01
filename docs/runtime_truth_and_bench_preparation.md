@@ -100,14 +100,38 @@ Preconditions:
    camera's exposure-active/trigger-monitor connector and voltage level from
    its model-specific manual before connecting it; do not guess a pin.
 
-Scope channels:
+Oscilloscope prerequisite and control boundary:
+
+The oscilloscope is an operator-controlled external measurement instrument.
+The repository does not need to control it, and no VISA/SCPI/vendor scope
+integration is required for this first bounded timing test. Before any output,
+the operator must identify the actual scope (manufacturer, model, analog
+channel count, supported waveform-export method, input impedance/termination
+options, probe types, and external storage or PC-connection method). Use the
+current official vendor documentation for the exact capture/export procedure;
+do not infer generic front-panel menu paths.
+
+Scope channels for the first capture:
 
 | Scope input | Connection |
 | --- | --- |
 | CH1 | AD2 DIO1, the configured digital pulse train |
 | CH2 | AD2 W1 / AnalogOut channel 0 through a suitable probe/attenuation |
 | CH3 | Camera exposure-active or trigger-monitor output, only after the exact connector and electrical limits are verified |
-| CH4 | Optional external software-marker line only if an already-reviewed, otherwise-unused physical output exists; the current code provides no PC-trigger marker and this milestone does not add one |
+| CH4 | Unused; no marker is required for this capture |
+
+Use one common oscilloscope timebase and capture the three required signals
+simultaneously. Record channel labels, coupling, probe attenuation, input
+impedance/termination, volts/div, offsets, horizontal timebase, trigger source,
+trigger level, trigger edge, and sample rate/record length when available.
+Retain the scope's raw waveform export whenever possible, using the official
+vendor PC software if that is how the scope exports data. CSV or equivalent
+numeric data, native waveform format plus screenshot, and screenshot alone
+(only when raw export is genuinely unavailable) are acceptable evidence.
+Record the timestamp, software commit, requested settings, and the applied /
+read-back Camera TIMING 1 state with the retained evidence. Physical edge
+measurements must come from the retained scope data, never from source-code
+reconstruction.
 
 Use one repeat with: channel 0 enabled, sine 1.000 kHz, 0.10 V amplitude,
 0 V offset, 0.50 s run; channel 1 disabled; Camera FPS 10; Camera Start

@@ -3577,6 +3577,8 @@ def test_experiment2_writes_labview_metadata_tdms(tmp_path, monkeypatch):
         "DORun",
         "DOWait",
         "DOFreq",
+        "CameraFrames",
+        "CameraFPS",
         "ExposureTime",
         "GlobalExposure",
         "Repeat ID",
@@ -3592,6 +3594,8 @@ def test_experiment2_writes_labview_metadata_tdms(tmp_path, monkeypatch):
     ):
         assert field in properties
     assert properties["DOFreq"] == 100.0
+    assert properties["CameraFrames"] == ""
+    assert properties["CameraFPS"] == 100.0
     assert properties["WFGOutOfRangeCh1"] is False
     assert properties["WFGOutOfRangeCh2"] is False
     channels = {item.name: item for item in objects if getattr(item, "kind", "") == "channel"}
@@ -3712,6 +3716,31 @@ def test_experiment2_metadata_marks_only_effective_carrier_parameters(function, 
         assert properties["WFGEffectiveAmpCh1"] == 2.0
         assert properties["WFGEffectiveSymmetryCh1"] == 25.0
         assert properties["WFGEffectivePhaseCh1"] == 90.0
+
+
+def test_experiment2_metadata_does_not_mark_disabled_carrier_values_effective(tmp_path):
+    channel = WfgChannelConfig(
+        0,
+        carrier=CarrierSettings(
+            enable=False,
+            frequency_hz=1234.0,
+            amplitude_v=2.0,
+            offset_v=0.4,
+            symmetry_percent=25.0,
+            phase_deg=90.0,
+        ),
+    )
+    properties = Experiment2(experiment_folder=tmp_path / "disabled", wfg_config=WfgConfig(channels=[channel]))._wfg_properties(
+        "Ch1", channel
+    )
+    for field in (
+        "WFGEffectiveFreqCh1",
+        "WFGEffectiveAmpCh1",
+        "WFGEffectiveOffsetCh1",
+        "WFGEffectiveSymmetryCh1",
+        "WFGEffectivePhaseCh1",
+    ):
+        assert properties[field] == ""
 
 
 def test_experiment2_wfg_fm_mod_fields_default_to_sentinel_when_channel_absent(tmp_path, monkeypatch):
