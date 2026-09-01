@@ -2895,6 +2895,9 @@ class MainWindow(QMainWindow):
         # offline tests without weakening the real-mode gate.
         if str(getattr(stage, "position_control_mode", "")) not in {"CloseLoop", "ClosedLoop"}:
             return None
+        maximum = getattr(stage, "max_travel_um", None)
+        if maximum is None or not math.isfinite(float(maximum)) or float(maximum) <= 0.0:
+            return None
         return stage
 
     def _update_manual_focus_controls(self) -> None:

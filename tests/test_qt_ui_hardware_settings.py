@@ -2516,6 +2516,11 @@ def test_manual_focus_is_explicit_closed_loop_only_and_prevalidates_targets(monk
     assert not window.manual_z_move.isEnabled()
     assert "ClosedLoop" in window.manual_z_range_status.text()
 
+    stage.position_control_mode = "ClosedLoop"
+    stage.max_travel_um = None
+    window._update_manual_focus_controls()
+    assert not window.manual_z_move.isEnabled()
+
 
 def test_camera_adjust_reprocesses_last_raw_frame_without_recapture(monkeypatch, tmp_path):
     class FakeCamera:
