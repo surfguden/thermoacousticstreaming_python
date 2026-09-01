@@ -407,7 +407,10 @@ class MainWindowV3(MainWindowV2):
         start = QPushButton("Start experiment")
         start.setObjectName("v3StartExperimentButton")
         start.setMinimumHeight(44)
-        start.setToolTip("Runs with the currently initialized backends after shared validation.")
+        start.setToolTip(
+            "Runs with the currently initialized backends. The shared preflight shown above is "
+            "shadow-only in this milestone; the inherited production Start path remains authoritative."
+        )
         start.clicked.connect(self._v3_start_experiment_with_shared_preflight)
         stop = QPushButton("Request graceful stop")
         stop.setObjectName("v3RequestGracefulStopButton")
@@ -795,7 +798,9 @@ class MainWindowV3(MainWindowV2):
         note.setWordWrap(True)
         note.setMaximumWidth(520)
         layout.addWidget(note)
-        layout.addWidget(self.exp_tec_scan_enable)
+        # This no-super v3 replacement must explicitly retain the shared
+        # click-triggered tooltip wrapping convention.
+        layout.addWidget(self._wrap_with_tooltip_icon(self.exp_tec_scan_enable))
         self._v3_tec_axis_summary = QLabel()
         self._v3_tec_axis_summary.setObjectName("v3TecAxisSummary")
         self._v3_tec_axis_summary.setWordWrap(True)
@@ -1155,7 +1160,9 @@ class MainWindowV3(MainWindowV2):
 
         issues = preflight.blocking_issues + preflight.warnings
         self._v3_plan_warnings.setText(
-            "; ".join(issue.message for issue in issues) + "." if issues else "No shared preflight issues."
+            "; ".join(issue.message.rstrip(".") for issue in issues) + "."
+            if issues
+            else "No shared preflight issues."
         )
         self._v3_plan_warnings.setStyleSheet(
             "color: darkred; font-weight: bold;"

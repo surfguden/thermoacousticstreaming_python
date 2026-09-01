@@ -396,6 +396,26 @@ def test_v3_temperature_group_separates_policy_and_shows_cached_readback(monkeyp
         window.close()
 
 
+def test_v3_shadow_preflight_presentation_is_explicit_and_wrapped(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        start = window.findChild(QPushButton, "v3StartExperimentButton")
+        assert start is not None
+        assert "shadow-only" in start.toolTip()
+        assert "authoritative" in start.toolTip()
+
+        assert window.exp_tec_scan_enable.toolTip().startswith("<html>")
+        assert type(window.exp_tec_scan_enable.parentWidget()).__name__ == "_TooltipIconWrapper"
+
+        review = window.findChild(QLabel, "v3PreRunWarnings")
+        assert review is not None
+        assert "Camera FPS" in review.text()
+        assert "darkred" in review.styleSheet()
+        assert ".." not in review.text()
+    finally:
+        window.close()
+
+
 def test_v3_inherits_live_timing_for_ordinary_and_tec_series(monkeypatch, tmp_path):
     clock = {"now": 100.0}
     monkeypatch.setattr(qt_ui.time, "monotonic", lambda: clock["now"])

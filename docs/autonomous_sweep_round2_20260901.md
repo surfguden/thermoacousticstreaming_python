@@ -119,3 +119,20 @@ remain unchanged.
 
 No P3 cleanup, architecture redesign, VISA/SCPI integration, BuildResult
 cutover, timing-code change, or hardware work was performed.
+
+## INDEPENDENT REVIEW DISPOSITION
+
+The independent Claude Code v3 report was treated as a candidate-finding set.
+Its severity labels were not adopted without checking current code and final
+rendered state.
+
+| Finding | Verified? | Current impact | Correct classification | Action taken | Reason |
+| --- | --- | --- | --- | --- | --- |
+| `_experiment_temperature_group()` is an omitted no-super v3 override | Yes — current AST/change-surface evidence confirms it | Future v1 TEC-builder additions do not propagate automatically | AUTO_FIX | Corrected the stale completeness note in `docs/known_open_items.md` | The method is a live v3 replacement and must remain an explicit review boundary |
+| `exp_tec_scan_enable` bypasses shared tooltip wrapping | Yes — it was added directly to the v3 layout while other tooltip-bearing fields use the shared wrapper/helper | Native Windows hover can show the long tooltip without the established forced-wrap convention | AUTO_FIX | Wrapped the checkbox with `_wrap_with_tooltip_icon()` | Restores the repository-wide convention without one-off formatting |
+| `_refresh_v3_relationships()` warning text is overwritten by shared rendering | Yes — the local `setText`/style call is followed immediately by `_render_v3_shared_preflight()` | The local warning presentation is dead; final text/style come from shared preflight | NO_ACTION | Preserved the local relationship calculation and recorded the final-render fact | Shared preflight covers the same blocking relationships and additional checks; deleting presentation logic is not needed to keep BuildResult shadow-only |
+| Start presentation implies shared validation gates execution | Yes — prior tooltip said “after shared validation,” while the handler always calls inherited Start | UI wording falsely implied shared-preflight authority | AUTO_FIX | Tooltip now explicitly says shared preflight is shadow-only and inherited Start remains authoritative | Corrects presentation without changing execution authority |
+| Fresh/default construction shows blocking red state because Camera FPS is zero | Yes — the default is `0.0`, shared preflight reports `camera_fps` as blocking, and final rendering colors the review red | The request is semantically invalid if started immediately, but “not configured yet” is not separately modeled | RECOMMEND | Recorded; no touched/dirty-state framework or severity redesign added | Red accurately reflects the invalid attempted request; fresh-form presentation needs an owner decision if changed |
+| Final blocking/advisory severity is inconsistent for conditions that reject Start | Partly — final rendered severity is determined by `_render_v3_shared_preflight()`, while legacy Start remains authoritative | Shared red/orange severity describes the shadow result, not an execution gate | OWNER_DECISION | No color/alarm architecture change | Normalizing severity would conflate shadow analysis with current legacy authority |
+| Review rendering can duplicate terminal punctuation | Yes — shared issue messages already end in periods and the renderer appended another period | Final review could display `..` | AUTO_FIX | Renderer now strips trailing periods before joining and appending one terminal period | Pure presentation correction with no semantic change |
+| Z-Scan reassurance wording differs from v1 | Yes — wording differs; behavior uses the Application-owned configured stage contract | No remaining concrete safety ambiguity after the stage-identity fix | NO_ACTION | None | P3 wording difference only; no hardware or stage behavior was changed |

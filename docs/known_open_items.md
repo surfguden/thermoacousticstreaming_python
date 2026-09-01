@@ -231,10 +231,13 @@ historical notes. This document is a live issue register, whereas
   original list, which named only the first three. It is a fourth v1 method
   (`qt_ui.py:2754`) that v3 overrides at `qt_ui_v3.py:1483` without `super()`,
   and it is live — v3's own `_zscan_tab()` calls it at `qt_ui_v3.py:1519`. The
-  complete no-super set was re-derived by AST inspection of every
+  complete panel-builder no-super set was re-derived by AST inspection of every
   `MainWindowV3` method that shadows a `MainWindow` method: `_build_layout`
-  (intentional, whole-surface replacement), plus the four panel builders
-  `_pump_tab`, `_camera_tab`, `_zscan_tab`, and `_zscan_control_group`.
+  (intentional, whole-surface replacement), `_experiment_temperature_group`,
+  plus the four panel builders `_pump_tab`, `_camera_tab`, `_zscan_tab`, and
+  `_zscan_control_group`. The broader AST report also contains other deliberate
+  v3 no-super overrides outside this panel-builder list; this inventory is not
+  a substitute for rerunning the change-surface audit.
   `_zscan_control_group()` was also the only one of those four carrying no
   boundary docstring: the seven added in `60d8b8c` cover `_build_state`,
   `_build_layout`, `_wfg_channel_group`, `_mso_tab`, `_pump_tab`,
