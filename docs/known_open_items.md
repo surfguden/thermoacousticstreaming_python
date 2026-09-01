@@ -105,6 +105,17 @@ historical notes. This document is a live issue register, whereas
   is presently available without a deliberate temporary output-property write
   and subsequent restoration. No such write, acquisition, or AD2 output was
   issued. **Status remains OPEN.**
+- **Z-scan can bypass the configured Thorlabs device identity.** The
+  initialization path builds `ZStage` with the operator-configured
+  `thorlabs_apt_serial`, but the v1/v2 shared `_query_zscan_range()` and
+  `_start_zscan()` handlers each construct a fresh `PiezoStage()` using its
+  class default serial. With a non-default configured serial, the visible
+  configuration and the motion-capable Z-scan path can therefore refer to
+  different physical devices. This is a source-confirmed P0 safety finding;
+  no hardware was accessed and no automatic ownership cutover was made.
+  **Status: OPEN; OWNER_DECISION/HARDWARE_EVIDENCE_REQUIRED.** Resolve the
+  runtime-stage ownership and configured-identity contract before any real
+  Z-scan use.
 - **Staged hardware-test confirmations are not global GUI interlocks.**
   `CONFIRM_REAL_HARDWARE` and timing acknowledgements protect action-capable
   modes in newer `hardware_tests/` scripts. They do not apply to the tracked
