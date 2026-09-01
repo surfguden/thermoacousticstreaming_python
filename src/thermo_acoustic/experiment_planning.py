@@ -9,7 +9,7 @@ from typing import Any
 from .ad2 import FmSweepSettings, coerce_do_config, coerce_wfg_config
 from .camera import SubRegion
 from .runtime_truth import RuntimeEvidenceSnapshot, VerificationScope
-from .workflows import Experiment2, ExperimentSeries2, FlushSettings
+from .workflows import Experiment2, ExperimentSeries2, FlushSettings, TemperatureSeries
 
 
 class CameraFieldOwnership(str, Enum):
@@ -68,6 +68,23 @@ class ExperimentCameraDefaults:
 
 
 @dataclass(frozen=True, slots=True)
+class FrozenSequence:
+    """An immutable representation of a list used in static plan recipes."""
+
+    values: tuple[Any, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class FrozenMapping:
+    """An immutable, recursively frozen mapping for request/plan recipes."""
+
+    items: tuple[tuple[str, Any], ...]
+
+    def value_for(self, key: str, default: Any = None) -> Any:
+        return dict(self.items).get(key, default)
+
+
+@dataclass(frozen=True, slots=True)
 class ExperimentRequest:
     output_path: Path
     repeats_per_group: int
@@ -84,16 +101,22 @@ class ExperimentRequest:
     tec_scan_enabled: bool
     temperature_targets_c: tuple[tuple[tuple[int, float], ...], ...]
     device_modes: tuple[tuple[str, bool, bool], ...]
+    tec_settle_settings: tuple[float, float, float, float, float] = (0.1, 5.0, 300.0, 1.0, 0.0)
     fixed_camera_start_s: float | None = None
     # Static execution semantics only. UI extractors populate these plain
     # values; the independent planner never reads widgets or legacy builders.
-    wfg_templates: tuple[dict[str, Any], ...] = ()
-    do_template: dict[str, Any] | None = None
+    wfg_templates: tuple[FrozenMapping | dict[str, Any], ...] = ()
+    do_template: FrozenMapping | dict[str, Any] | None = None
     sequence_settings: tuple[tuple[str, Any], ...] = ()
     flush_settings: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 60.0)
     exposure_ms: float = 0.0
     trigger_global_exposure: bool = False
     fm_sweep: tuple[float, float, float, str] | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "wfg_templates", tuple(_freeze_mapping(item) for item in self.wfg_templates))
+        if self.do_template is not None:
+            object.__setattr__(self, "do_template", _freeze_mapping(self.do_template))
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,8 +161,8 @@ class RunCondition:
     experiment_folder: Path
     temperature_targets_c: tuple[tuple[int, float], ...]
     selected_frequency_hz: float | None
-    wfg_config: dict[str, Any]
-    do_config: dict[str, Any]
+    wfg_config: FrozenMapping
+    do_config: FrozenMapping
     sequence_settings: tuple[tuple[str, Any], ...]
     flush_settings: tuple[float, float, float, float]
     flush_enabled: bool
@@ -291,8 +314,8 @@ def build_independent_run_plan(request: ExperimentRequest) -> RunPlan:
                 if request.dynamic_camera_start
                 else (request.fixed_camera_start_s if request.fixed_camera_start_s is not None else request.camera_start_s[0])
             )
-            do = _do_config_recipe(request.camera_fps, request.frames, start)
-            wfg = deepcopy(dict(request.wfg_templates[0]) if request.wfg_templates else {})
+            do = _freeze_mapping(_do_config_recipe(request.camera_fps, request.frames, start))
+            wfg = _thaw(request.wfg_templates[0]) if request.wfg_templates else {}
             selected = request.frequency_values_hz[repeat_id] if scan_effective else None
             if selected is not None:
                 wfg["channels"][0]["carrier"]["frequency_hz"] = selected
@@ -301,7 +324,7 @@ def build_independent_run_plan(request: ExperimentRequest) -> RunPlan:
             sequence["camera_start_mode"] = "dynamic" if request.dynamic_camera_start else "fixed"
             sequence["camera_start_selected_s"] = start
             conditions.append(RunCondition(group_index, repeat_id, request.output_path,
-                root / f"repeat_{repeat_id + 1:03d}", tuple(target), selected, wfg, do,
+                root / f"repeat_{repeat_id + 1:03d}", tuple(target), selected, _freeze_mapping(wfg), do,
                 tuple(sequence.items()), request.flush_settings, request.flush_enabled,
                 request.exposure_ms, request.trigger_global_exposure,
                 request.fm_sweep if request.fm_sweep_enabled and request.channel0_waveform_function != "DC" else None))
@@ -322,8 +345,8 @@ def legacy_series_from_run_plan(plan: RunPlan) -> list[ExperimentSeries2]:
                 flush_settings=FlushSettings(*condition.flush_settings),
                 flush_enabled=condition.flush_enabled, global_exposure_ms=condition.exposure_ms,
                 trigger_global_exposure=condition.trigger_global_exposure,
-                sequence_settings=dict(condition.sequence_settings), wfg_config=deepcopy(condition.wfg_config),
-                do_clock_settings=coerce_do_config(deepcopy(condition.do_config)),
+                sequence_settings=dict(condition.sequence_settings), wfg_config=_thaw(condition.wfg_config),
+                do_clock_settings=coerce_do_config(_thaw(condition.do_config)),
                 fm_sweep=(FmSweepSettings(*condition.fm_sweep) if condition.fm_sweep is not None else None),
                 tec_target_c=dict(condition.temperature_targets_c).get(1),
                 tec_targets_c=dict(condition.temperature_targets_c) or None,
@@ -333,10 +356,30 @@ def legacy_series_from_run_plan(plan: RunPlan) -> list[ExperimentSeries2]:
     return groups
 
 
+def temperature_series_from_request(request: ExperimentRequest) -> TemperatureSeries:
+    """Explicit compatibility adapter for the legacy TEC settling workflow."""
+    if not request.tec_scan_enabled:
+        return TemperatureSeries()
+    targets = request.temperature_targets_c
+    if not targets:
+        return TemperatureSeries()
+    points_ch1 = [dict(target)[1] for target in targets]
+    points_ch2 = [dict(target).get(2) for target in targets]
+    unlocked = any(point is not None and point != points_ch1[index] for index, point in enumerate(points_ch2))
+    tolerance, min_settle, max_wait, poll, hold = request.tec_settle_settings
+    return TemperatureSeries(
+        temperature_points_c=points_ch1,
+        temperature_points_ch2_c=([float(point) for point in points_ch2] if unlocked else None),
+        tolerance_c=tolerance, min_settle_s=min_settle, max_wait_s=max_wait,
+        poll_interval_s=poll, post_stable_hold_s=hold,
+    )
+
+
 def _condition_from_experiment(experiment: Experiment2, group_index: int) -> RunCondition:
     return RunCondition(group_index, experiment.repeat_id, experiment.output_root or experiment.experiment_folder.parent,
         experiment.experiment_folder, tuple(sorted((experiment.tec_targets_c or {}).items())), experiment.frequency_scan_selected_hz,
-        asdict(coerce_wfg_config(experiment.wfg_config)), asdict(coerce_do_config(experiment.do_clock_settings)),
+        _freeze_mapping(asdict(coerce_wfg_config(experiment.wfg_config))),
+        _freeze_mapping(asdict(coerce_do_config(experiment.do_clock_settings))),
         tuple((experiment.sequence_settings or {}).items()), (experiment.flush_settings.flush_flowrate, experiment.flush_settings.flush_volume_ml, experiment.flush_settings.wait_after_flush_s, experiment.flush_settings.syringe_volume_ml), experiment.flush_enabled, experiment.global_exposure_ms, experiment.trigger_global_exposure, _stable_value(experiment.fm_sweep))
 
 
@@ -357,6 +400,32 @@ def _do_config_recipe(camera_fps: float, frames: int, camera_start_s: float) -> 
             "trigger": {"sec_run": frames / camera_fps, "sec_wait": camera_start_s},
         }],
     }
+
+
+def _freeze_mapping(value: FrozenMapping | dict[str, Any]) -> FrozenMapping:
+    if isinstance(value, FrozenMapping):
+        return value
+    return FrozenMapping(tuple(sorted((str(key), _freeze_value(item)) for key, item in value.items())))
+
+
+def _freeze_value(value: Any) -> Any:
+    if isinstance(value, FrozenMapping | FrozenSequence):
+        return value
+    if is_dataclass(value) and not isinstance(value, type):
+        return _freeze_mapping(asdict(value))
+    if isinstance(value, dict):
+        return _freeze_mapping(value)
+    if isinstance(value, (list, tuple)):
+        return FrozenSequence(tuple(_freeze_value(item) for item in value))
+    return value
+
+
+def _thaw(value: Any) -> Any:
+    if isinstance(value, FrozenMapping):
+        return {key: _thaw(item) for key, item in value.items}
+    if isinstance(value, FrozenSequence):
+        return [_thaw(item) for item in value.values]
+    return deepcopy(value)
 
 
 def blocking_build_result(request: ExperimentRequest, error: BaseException | str) -> BuildResult:

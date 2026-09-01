@@ -4428,6 +4428,11 @@ class MainWindow(QMainWindow):
             channel0_output_selected=self.exp_ad2_channels[0]["enable"].isChecked(),
             flush_enabled=self.exp_flush_enabled.isChecked(), tec_scan_enabled=self.exp_tec_scan_enable.isChecked(),
             temperature_targets_c=tuple(targets),
+            tec_settle_settings=(
+                float(self.exp_tec_tolerance_c.value()), float(self.exp_tec_min_settle_s.value()),
+                float(self.exp_tec_max_wait_s.value()), float(self.exp_tec_poll_interval_s.value()),
+                float(self.exp_tec_post_stable_hold_s.value()),
+            ),
             device_modes=(
                 ("ad2", self.app.ad2.enabled, isinstance(self.app.ad2, SimulatedAD2Sdk)),
                 ("camera", self.app.camera.enabled, self.app.camera.simulate),

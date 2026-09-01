@@ -1,17 +1,19 @@
 from __future__ import annotations
 
-from copy import deepcopy
 from pathlib import Path
 
 import pytest
 
 import thermo_acoustic.experiment_planning as planning
+from thermo_acoustic import qt_ui, qt_ui_v2, qt_ui_v3
 from thermo_acoustic.ad2 import WaveformFunction
 from thermo_acoustic.experiment_planning import (
     ExperimentRequest,
+    FrozenMapping,
     build_independent_run_plan,
     legacy_series_from_run_plan,
     normalize_experiment,
+    temperature_series_from_request,
 )
 
 
@@ -109,4 +111,26 @@ def test_run_plan_contains_no_legacy_experiment_objects():
     plan = build_independent_run_plan(_request())
     assert not any(type(value).__name__ == "Experiment2" for value in plan.conditions)
     assert not hasattr(plan, "legacy_experiment_groups")
-    assert all(type(condition.wfg_config) is dict for condition in plan.conditions)
+    assert all(type(condition.wfg_config) is FrozenMapping for condition in plan.conditions)
+    with pytest.raises((AttributeError, TypeError)):
+        plan.conditions[0].wfg_config.items += (("new", "value"),)
+
+
+def test_all_ui_versions_inherit_one_request_extraction_seam():
+    assert "_experiment_request" not in qt_ui_v2.MainWindowV2.__dict__
+    assert "_experiment_request" not in qt_ui_v3.MainWindowV3.__dict__
+    assert qt_ui_v2.MainWindowV2._experiment_request is qt_ui.MainWindow._experiment_request
+    assert qt_ui_v3.MainWindowV3._experiment_request is qt_ui.MainWindow._experiment_request
+
+
+def test_temperature_adapter_preserves_locked_unlocked_targets_and_settling_policy():
+    locked = temperature_series_from_request(_request(
+        tec_scan_enabled=True, temperature_targets_c=(((1, 20.0), (2, 20.0)),),
+        tec_settle_settings=(0.2, 2.0, 30.0, 0.5, 1.0),
+    ))
+    assert locked.target_at(0) == 20.0
+    assert (locked.tolerance_c, locked.min_settle_s, locked.max_wait_s, locked.poll_interval_s, locked.post_stable_hold_s) == (0.2, 2.0, 30.0, 0.5, 1.0)
+    unlocked = temperature_series_from_request(_request(
+        tec_scan_enabled=True, temperature_targets_c=(((1, 20.0), (2, 18.0)),),
+    ))
+    assert unlocked.target_at(0) == {1: 20.0, 2: 18.0}
