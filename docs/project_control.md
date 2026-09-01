@@ -82,8 +82,8 @@ Current operator surfaces:
 
 ## NEXT CHECKPOINT
 
-The next technical checkpoint is **Autonomous Sweep Round 2**: offline
-experiment-configuration, execution, effective-backend, runtime-evidence, and
-TDMS truth auditing. **HW-TIMING-001** remains deferred / ready for physical
-verification; do not infer a timing result from restored camera visibility or
-enable AD2 output as part of this software milestone.
+The next technical checkpoint is **BuildResult independent request/plan DTO and
+legacy-adapter prototype**. It must remain offline and shadow-only until all UI
+versions share one independent constructor with equivalence and rollback
+evidence. **HW-TIMING-001** remains deferred / ready for physical verification;
+do not enable AD2 output as part of this software work.
