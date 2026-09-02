@@ -1,5 +1,13 @@
 # Hardware Repair Plans
 
+> **Point-in-time procedure archive with still-useful evidence requirements.**
+> Later checkpoints closed Qmix startup/no-motion recovery, removed the duplicate
+> refresh target command, established owner P01/P02 route truth, and changed
+> normal DIO/routing assumptions. Before using any procedure below, consult
+> [`project_control.md`](project_control.md) and the exact current item in
+> [`known_open_items.md`](known_open_items.md), then re-derive the bounded action
+> against current source. This file does not itself define the next project step.
+
 Current triage record for unresolved hardware boundaries. This document records
 evidence and later repair/verification plans only. It does not authorize hardware
 actions, fault clearing, motion, output enable, or configuration writes.

@@ -1,5 +1,11 @@
 # Autonomous Sweep Round 2 — Experiment Truth Audit
 
+> **Historical audit baseline.** Later checkpoints completed the independent
+> planner cutover, deterministic camera/acoustic hardening, action logging, and
+> V3 redesign. Preserve this audit's evidence and decision trail, but use
+> [`project_control.md`](project_control.md) and
+> [`known_open_items.md`](known_open_items.md) for current truth and gates.
+
 Date: 2026-09-01
 Scope: offline semantic/reproducibility audit only
 Starting commit: `183ddd881404bf58e72a7da319529143d412ea75`

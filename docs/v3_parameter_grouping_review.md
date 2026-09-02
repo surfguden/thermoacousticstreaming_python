@@ -1,5 +1,12 @@
 # V3 Experiment-Parameter Relationship and Grouping Review
 
+> **Historical design/review record.** Sections that describe the then-current
+> V3 layout, CH2 uncertainty, DIO1 camera timing, or open grouping decisions were
+> superseded by owner-confirmed W2/DIO1 routing, the independent planner, and V3
+> checkpoint `9a899d7`. Use [`project_control.md`](project_control.md) for the
+> current operator model and routing. The relationship analysis below remains
+> useful only when read at its stated baseline.
+
 **Status:** implementation follow-up. Commit `085c06a` implemented the six
 recommendations in Sections 4.1 and 4.2 that required UI work. Recommendation 7
 (keep Temperature scan and manual panels separate) was already satisfied by

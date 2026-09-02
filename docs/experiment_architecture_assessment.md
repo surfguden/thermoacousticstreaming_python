@@ -1,5 +1,10 @@
 # Experiment Architecture Boundary Assessment
 
+> **Historical pre-cutover architecture assessment.** Its baseline predates the
+> implemented `ExperimentRequest` / immutable `RunPlan` authority and explicit
+> legacy adapter. Use [`project_control.md`](project_control.md) for current
+> architecture. Preserve this body as the evidence and proposal trail.
+
 Read-only assessment prepared against `junjiebranch` at commit `2c0ffc6`
 (2026-08-26), with live code citations revalidated at `a3d000f` (2026-08-27).
 This document proposes boundaries; it does not authorize or implement a
@@ -552,7 +557,9 @@ frequency, pulse count, and physical wiring. The current code forces DCAM
 `Internal`, configures DIO1, and issues one PC trigger, but does not prove those
 events synchronize
 ([hardware_repair_plan.md:105-129](hardware_repair_plan.md#minimal-evidence-needed),
-[known_open_items.md:41-53](known_open_items.md#canonical-migration-and-hardware-parity-gaps)).
+[the current open-item registry](known_open_items.md#current-registry); the
+assessment's original line-specific registry reference is preserved by its Git
+baseline rather than by today's compact live register).
 
 Only after the measurement should the project name and freeze a typed capture
 composite. Otherwise an abstraction would give an unresolved sequence a false

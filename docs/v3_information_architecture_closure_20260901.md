@@ -1,5 +1,13 @@
 # V3 Information Architecture Closure
 
+> **Historical pre-redesign closure.** The sidebar/top-strip/runtime-column
+> organization described below was superseded by V3 checkpoint `9a899d7`, which
+> introduced persistent instrument/run state and separate Experiment, Monitor,
+> Manual & Service, and Diagnostics workspaces. Use
+> [`project_control.md`](project_control.md) and current `qt_ui_v3.py` for the
+> live operator model. This document remains evidence of the earlier bounded
+> decision, not a current layout specification.
+
 Milestone E is bounded presentation consolidation. No hardware access, planner
 authority change, or experiment-semantics change occurred.
 

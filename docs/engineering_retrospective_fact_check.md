@@ -1,5 +1,9 @@
 # Engineering Retrospective Fact Check
 
+> **Historical appendix.** This document records a point-in-time assessment.
+> Use `project_control.md` for current project truth and
+> `known_open_items.md` for the live unresolved/deferred registry.
+
 The retrospective artifact itself was not present in the repository or the
 2026-08-28 task attachment. This appendix evaluates the lessons and example
 claims stated in that task against the current repository. It is not a rewrite

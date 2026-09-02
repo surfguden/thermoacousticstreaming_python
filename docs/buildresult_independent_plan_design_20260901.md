@@ -1,5 +1,11 @@
 # BuildResult Independent Plan and Rollback Boundary
 
+> **Historical design checkpoint.** The dependency inventory below predates the
+> completed authority cutover. Normal Start now builds an independent immutable
+> `RunPlan` directly from `ExperimentRequest`; `BuildResult` is presentation/
+> audit only. Use [`project_control.md`](project_control.md) for current
+> architecture truth.
+
 Date: 2026-09-01. This is a design checkpoint only. `BuildResult` remains
 shadow-only; Start, runtime workflows, hardware access, and metadata formats
 are unchanged.

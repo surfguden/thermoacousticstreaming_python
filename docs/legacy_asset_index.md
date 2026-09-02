@@ -5,8 +5,9 @@ support files.  It makes the evidence searchable without replacing, renaming,
 or converting the original exports.  It is not a runtime inventory, a claim of
 LabVIEW equivalence, or a hardware-validation record.
 
-For live workflow and unresolved-hardware status, use
-`docs/known_open_items.md`.  For the historical migration assessment, use
+For the live workflow and current authority hierarchy, use
+`docs/project_control.md`. For unresolved or deferred hardware status, use
+`docs/known_open_items.md`. For the historical migration assessment, use
 `docs/labview_migration_completeness_audit.md`.
 
 ## LabVIEW migration evidence — ACTIVE / REFERENCED

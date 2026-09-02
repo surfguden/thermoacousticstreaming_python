@@ -12,7 +12,11 @@ DO-clock/DIO1 LED timing derivation, an AD2 completion wait that includes the
 DO term, LabVIEW-style `data.tdms` metadata writing, corrected valve command
 strings, and a combined fill-level/flow-rate pump call in `flush()`. Treat
 the tables below as an audit trail plus remaining-gap list, not as a live-state
-substitute for current source inspection and `docs/claude_code_change_log.md`.
+specification. Later still, normal production removed DO-clock programming,
+assigned DIO1 to the owner-confirmed laser Digital In route, and made the
+independent request/plan path authoritative; see `project_control.md`.
+This document does not substitute for current source inspection or the newer
+records in `docs/claude_code_change_log.md`.
 The live conservative holding list for unresolved or legacy items is
 `docs/known_open_items.md`; `docs/legacy_unresolved_items.md` is the focused
 high-risk safety summary.

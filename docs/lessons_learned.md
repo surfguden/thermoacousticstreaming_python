@@ -26,6 +26,33 @@ summary.
 Enforcement: `PROJECT_CONTROL` (`docs/project_control.md`) and
 `HISTORICAL_ONLY` (the assessment/history).
 
+### A live register must not double as the project archive
+
+Before the September 2026 convergence, `project_control.md` and especially
+`known_open_items.md` accumulated completed milestones, superseded wiring
+assumptions, investigation narrative, and genuine current gates in the same
+current-tense surface. The facts were mostly preserved, but a new engineer
+could not reliably tell what to do next or which closed investigation should
+stay closed. Current truth now lives in the compact project dashboard; only
+genuine unresolved/deferred items remain in the open register. Point-in-time
+audits, retained run evidence, Git history, and changelogs preserve the trail.
+
+Enforcement: `PROJECT_CONTROL`, `KNOWN_OPEN_ITEMS`, and `HISTORICAL_ONLY`.
+
+### A physical connection has a role even when software deliberately does nothing
+
+Earlier documentation alternated between treating CH2/DIO1 as unused and
+treating a generic DO clock as active camera/LED timing. Owner wiring evidence
+later established specific routes: W2 is laser Analog In, DIO1 is laser Digital
+In, and DIO0 is camera `EXT.TRIG`. Normal production still programs none of
+those paths. The durable lesson is to record both truths: a connector can have a
+confirmed physical destination while its current software role is explicitly
+disabled. “Connected,” “configured,” “commanded,” and “verified effect” are
+different states.
+
+Enforcement: `PROJECT_CONTROL`, planner/runtime fail-closed tests, and
+`HUMAN_JUDGMENT` for physical claims.
+
 ### Injected fake WaveForms objects must exercise the vendor-loader boundary
 
 Commit `ba25e27` fixed a real offline-test defect: `WaveFormsBackend(dwf=fake)`

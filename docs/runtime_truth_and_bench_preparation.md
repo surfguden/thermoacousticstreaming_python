@@ -1,5 +1,13 @@
 # Shared Runtime Truth and Bench Preparation
 
+> **Historical 2026-08-28 design and bench-preparation record.** Its evidence
+> taxonomy remains useful, but later checkpoints changed planning authority,
+> normal DIO behavior, action logging, owner routing truth, and V3 organization.
+> Use [`project_control.md`](project_control.md) for current runtime/workflow
+> truth and [`known_open_items.md`](known_open_items.md) for current physical
+> gates. Do not execute an old procedure here without re-deriving it against
+> current source and explicit authorization.
+
 This document records the software evidence boundary introduced on 2026-08-28
 and prepares the next hardware-verification work. It does not authorize a real
 hardware run. The default operator UI remains v1; v2 is the rollback/reference

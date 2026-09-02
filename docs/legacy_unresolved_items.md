@@ -1,9 +1,15 @@
 # Legacy and Unresolved Items
 
-This is a focused high-risk safety summary, not the canonical complete holding
-list. For the consolidated live register of unresolved, deferred, legacy, and
-manual-only items, see `docs/known_open_items.md`. It is not an authorization to
-run hardware. Treat the current source and targeted tests as the source of truth
+> **Historical focused safety snapshot.** This file is no longer a second live
+> unresolved-items summary. Later TEC, Qmix, routing, planning, acquisition, and
+> V3 checkpoints closed or reclassified several statements below. Use
+> [`known_open_items.md`](known_open_items.md) as the only live unresolved/deferred
+> registry and [`project_control.md`](project_control.md) for current truth.
+> Preserve the body as evidence of what was unresolved at this snapshot.
+
+This was a focused high-risk safety summary, not the canonical complete holding
+list. For the current live register, see `docs/known_open_items.md`. It is not
+an authorization to run hardware. Treat the current source and targeted tests as the source of truth
 for implemented behavior; keep the items below out of the active workflow until
 a human decision, hardware confirmation, or focused implementation resolves them.
 
@@ -126,8 +132,8 @@ a human decision, hardware confirmation, or focused implementation resolves them
 
 - `docs/claude_code_change_log.md` is historical and self-reported; it must be
   checked against git and current source before being used as evidence.
-- `docs/current_workflow_audit.md` is the operational safety map for the current
-  workflow.
+- `docs/current_workflow_audit.md` is a retained point-in-time safety audit;
+  `docs/project_control.md` is the operational map for the current workflow.
 - `docs/labview_migration_completeness_audit.md` is a migration-parity audit and
   still contains historical findings that later sessions may have partially
   closed.

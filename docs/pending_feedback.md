@@ -2,11 +2,12 @@
 
 User-reported issue log and feedback history. This is **not** the canonical
 live tracker for all unresolved project work: use
-[known_open_items.md](known_open_items.md) for that, and
-[hardware_repair_plan.md](hardware_repair_plan.md) for evidence requirements
-and repair planning. This file preserves raw issues personally reported by the
-user; [claude_code_change_log.md](claude_code_change_log.md) is historical
-only.
+[project_control.md](project_control.md) for current truth and
+[known_open_items.md](known_open_items.md) for unresolved/deferred work.
+[hardware_repair_plan.md](hardware_repair_plan.md) retains point-in-time
+procedure evidence and must be re-derived against those current authorities.
+This file preserves raw issues personally reported by the user;
+[claude_code_change_log.md](claude_code_change_log.md) is historical only.
 
 **Convention:** any newly-reported issue gets appended here immediately,
 before any other work happens on it (even mid-task). Status is one of
@@ -30,9 +31,9 @@ current-code anchors; use the named symbol and current source before acting.
   focused/clicked first -- a real safety concern for hardware setpoints.
 - **Resolution:** Already implemented and already tested project-wide
   (v1 and v2) via `FocusWheelGuard`
-  ([qt_ui.py:116](qt_ui.py:116)), a `QApplication`-level event filter
+  ([qt_ui.py:116](../src/thermo_acoustic/qt_ui.py#L116)), a `QApplication`-level event filter
   installed once in `MainWindow.__init__`
-  ([qt_ui.py:447](qt_ui.py:447)), inherited by `MainWindowV2`. Ignores
+  ([qt_ui.py:447](../src/thermo_acoustic/qt_ui.py#L447)), inherited by `MainWindowV2`. Ignores
   wheel events on unfocused `QSpinBox`/`QDoubleSpinBox`/`QComboBox` and
   forwards them to the nearest ancestor `QScrollArea`'s viewport instead;
   focused widgets are unaffected. Covered by 4 existing tests:
@@ -54,7 +55,7 @@ current-code anchors; use the named symbol and current source before acting.
   enabled-or-not).
 - **Resolution:** Confirmed this 3-column grid only exists in v2's
   `InitializationDialog._device_selection_group()`
-  ([qt_ui_v2.py:65](qt_ui_v2.py:65)) -- v1's Initialization tab uses a
+  ([qt_ui_v2.py:65](../src/thermo_acoustic/qt_ui_v2.py#L65)) -- v1's Initialization tab uses a
   structurally different layout (two separate `QFormLayout` group boxes,
   "Hardware" and "Simulation," each with device-name-as-row-label, no
   single Enable/Simulate/Device grid), so no v1 change applies. Reordered

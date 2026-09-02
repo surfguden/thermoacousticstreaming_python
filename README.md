@@ -1,10 +1,15 @@
-# LabVIEW to Python Conversion
+# Thermoacoustic Streaming Instrument Control
 
-This workspace is being converted from the LabVIEW HTML export in `main_html/`.
+Python control software for the laboratory thermoacoustic-streaming instrument.
+The repository originated as a LabVIEW migration, but the current normal
+experiment is governed by the Python request/plan/runtime path; retained
+LabVIEW exports are migration evidence, not current operational authority.
 
-The export currently documents `Main.vi` and its subVIs as images. The Python
-conversion starts with the application structure and simulated instrument
-interfaces, then ports individual VI behavior into focused Python methods.
+Read [`docs/project_control.md`](docs/project_control.md) first for current
+architecture, workflow, routing, evidence semantics, readiness, and the single
+next project step. Genuine unresolved/deferred work is in
+[`docs/known_open_items.md`](docs/known_open_items.md). Historical audits,
+handovers, and changelogs preserve reasoning but may describe superseded state.
 
 ## Useful Commands
 
@@ -65,9 +70,9 @@ front panel tabs that are still in scope:
 - Experiment
 
 The direct DOCustom, DOClock, and Zstack tabs are intentionally omitted.
-Normal production plans explicitly disable DIO1/DO Clock and the experiment
-runtime does not program DO Clock Special; the retained DO helpers are
-legacy/manual capabilities only. Owner-supplied current wiring maps project Ch1
+Normal production plans explicitly disable digital output on DIO0 and DIO1,
+and the experiment runtime does not program DO Clock Special; retained DO
+helpers are legacy/manual capabilities only. Owner-supplied current wiring maps project Ch1
 to AD2 API 0 / W1 / acoustic amplifier and transducer, and project Ch2 to API 1
 / W2 / laser Analog In. Normal production rejects enabled W2 pending exact
 laser input semantics. DIO0/pink is connected to camera trigger and DIO1/green
@@ -83,14 +88,15 @@ hardware-verified and is **not the default launch target** until approved -- it
 must be launched explicitly (see "Launchers" below), never by running
 `tools/run_ui.py`/`launch_gui.bat` alone.
 
-`src/thermo_acoustic/qt_ui_v3.py` (`MainWindowV3`) and its launcher, tool, and
-test companions are tracked and formally accepted as repository content by
-explicit owner decision as of this commit. V3 is an opt-in layout derivative:
-it subclasses v2 and shares the same `Application` and hardware backends while
-rebuilding several panels. Acceptance supersedes the prior "never commit v3"
-rule; it does not make v3 the default UI or independently hardware-verified,
-and it does not validate every duplicated panel or safety affordance. V1
-remains the default operator UI, while v2 remains the rollback/reference path.
+`src/thermo_acoustic/qt_ui_v3.py` (`MainWindowV3`) is the tracked, opt-in,
+offline-UX-reviewed instrument surface. It subclasses v2 and shares the same
+`Application` and hardware backends; it is not a simulator or a separate
+execution stack. Its persistent instrument state and run controls surround four
+workspaces: Experiment, Monitor, Manual & Service, and Diagnostics. Experiment
+contains the canonical-request-derived “Start will run” review and surfaces
+requested-versus-latest-applied evidence without becoming a second planner.
+V3 remains non-default and not independently hardware-verified. V1 remains the
+default operator UI; v2 remains the rollback/reference path.
 
 ## Environment Setup
 
@@ -139,11 +145,11 @@ Three tracked, clearly-separated launchers exist for the repository UIs:
 | --- | --- | --- |
 | v1 (`qt_ui.py`, `MainWindow`) -- default operator UI | `launch_gui.bat` | `python tools\run_ui.py` |
 | v2 (`qt_ui_v2.py`, `MainWindowV2`) -- older transitional layout and rollback/reference path | `launch_gui_v2.bat` | `python tools\run_ui_v2.py` |
-| v3 (`qt_ui_v3.py`, `MainWindowV3`) -- accepted opt-in layout derivative, not independently hardware-verified | `launch_gui_v3.bat` | `python tools\run_ui_v3.py` |
+| v3 (`qt_ui_v3.py`, `MainWindowV3`) -- offline-UX-reviewed opt-in instrument workflow, not independently hardware-verified | `launch_gui_v3.bat` | `python tools\run_ui_v3.py` |
 
 V3 is available from a fresh checkout but is not the default launch target.
-Its acceptance into the repository does not promote it over v1 or establish
-real-hardware validation.
+Its reviewed presentation does not promote it over v1, authorize hardware, or
+turn software/protocol state into physical verification.
 
 The `.bat` files use a fixed Conda environment path (edit `PYTHON_EXE` at the
 top of either script if that path changes); the `tools/run_ui*.py` scripts
@@ -162,15 +168,14 @@ independent real-hardware validation:
   with `pyserial` and is selected by clearing the valve's Simulate toggle. The
   current Z hardware is a Thorlabs PPC001 controlled through the Kinesis USB
   API; its manual calibration motion is not a generic serial-device path.
-- Hamamatsu camera and Cetoni/Qmix pump: real SDK backends are implemented in
+- Hamamatsu camera and CETONI/Qmix pump: real SDK backends are implemented in
   `thermo_acoustic.hamamatsu_dcam` and `thermo_acoustic.qmix_backend`, with
   simulator paths still available through the UI toggles. Real operation still
-  needs hardware validation with the installed SDKs and device configurations.
+  remains subject to the feature-specific gates in `docs/known_open_items.md`.
 
 The UI runs hardware actions on worker threads, persists settings in
 `.thermo_acoustic_ui.json`, and performs cleanup on Exit.
 
-The current shared evidence, event, shadow-preflight, TEC provenance, and
-bench-preparation boundaries are documented in
-`docs/runtime_truth_and_bench_preparation.md`. These software models do not
-promote cached/protocol state to physical hardware verification.
+The current evidence/action model and operator boundary are summarized in
+`docs/project_control.md`. `docs/runtime_truth_and_bench_preparation.md` is a
+dated design/bench-preparation record and must not override newer current truth.

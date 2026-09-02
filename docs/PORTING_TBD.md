@@ -3,7 +3,7 @@
 > Generated LabVIEW VI coverage registry and historical porting checklist. It is
 > not a current hardware-validation or operational-status document; entries below
 > may have been implemented, superseded, or deliberately retained as legacy.
-> Use current source, `docs/current_workflow_audit.md`, and
+> Use current source, `docs/project_control.md`, and
 > `docs/known_open_items.md` for live status.
 
 This file is generated from `labview_manifest.json` and records a historical

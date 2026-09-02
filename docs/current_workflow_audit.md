@@ -1,5 +1,12 @@
 # Current Workflow Audit and Safety Boundary
 
+> **Historical point-in-time audit.** Despite the title, this is not the live
+> workflow authority. Its active DIO1/DO-Clock descriptions and pre-cutover
+> planning model were superseded by later camera/acoustic hardening and the
+> independent planner. Use [`project_control.md`](project_control.md) for the
+> current normal workflow and [`known_open_items.md`](known_open_items.md) for
+> current gates. Preserve the body below as the reasoning trail at its date.
+
 This document captures the current Python control workflow and the safety
 boundary before any LabVIEW acoustic output is run. It is documentation only;
 it does not authorize new hardware actions.
