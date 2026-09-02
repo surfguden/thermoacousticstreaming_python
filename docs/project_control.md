@@ -24,6 +24,34 @@ Current operator surfaces:
 | v2 | Tracked rollback/reference transitional UI; `launch_gui_v2.bat` / `tools/run_ui_v2.py` |
 | v3 | Tracked opt-in UI, not independently hardware-verified; `launch_gui_v3.bat` / `tools/run_ui_v3.py` |
 
+## CURRENT HARDWARE INVENTORY
+
+This is the single current hardware inventory. Detailed truth records retain
+their point-in-time evidence but do not form competing current inventories.
+`CONFIRMED CURRENT` requires a present physical label, live read-only
+enumeration, current repository configuration, or exact applicable vendor
+documentation. Remembered and historical identities remain `CANDIDATE` until
+such evidence is obtained. Confirmation should be gathered opportunistically
+during the next separately authorized device-specific validation, not through
+a standalone full-hardware audit. Last reconciled: 2026-09-02.
+
+| Subsystem | Current classification | Identity and current evidence | Still unresolved |
+| --- | --- | --- | --- |
+| Waveform generator | CONFIRMED CURRENT — device identity | Digilent Analog Discovery 2 using the WaveForms SDK; live read-only WaveForms enumeration on 2026-08-28 found one unopened device, `SN:210321A18CE2` | Physical USB route and waveform/trigger timing are unverified; no output is authorized by inventory status |
+| Camera | CONFIRMED CURRENT — enumerated model; family name retained separately | Hamamatsu `C15440-20UP`, `S/N: 500478`, confirmed by current Windows PnP and read-only DCAM enumeration/open-close. `ORCA-Fusion BT` is the candidate family/product name associated with this model | Physical USB route is not currently traced; timing/output behavior remains unverified |
+| Pump | CONFIRMED CURRENT — physical module label and logical node | CETONI label strings preserved exactly: `Niederdruckmodul / Low-pressure module 14:1`, `NEM-B101-02 E 5`, `CET-003455-1505`. Logical enumeration: `neMESYS_Low_Pressure_1_Pump`, node 2. H2B confirmed stable clear-fault/no-motion recovery | Do not reinterpret either identifier as article or serial number. Exact base type, base serial, integrated Ixxat article/serial/firmware, syringe/loading/travel, fluid route, and termination remain unknown |
+| Valve | CONFIGURED CURRENT / PHYSICAL CANDIDATE | Current repository path uses serial `COM5`, 19200 baud, MX Series II protocol family, status `S`, and current `P01`/`P02` command semantics | Exact physical SKU and the fluidic meaning of P01/P02 remain unverified |
+| Z stage | CANDIDATE — live re-verification required | Thorlabs `PPC001` controller driving `PFM450E`; candidate controller serial `44533854`, consistent with current repository configuration and retained historical discovery | Do not promote to current physical truth until the controller/stage identity and serial are re-enumerated during an authorized Z-stage validation; no motion is implied |
+| TEC | CANDIDATE — identity not read in current verification | Meerstetter `TEC 1123-HV`, candidate firmware `5.10`, candidate serial family `509xx`. Current read-only status communication succeeded on COM6, but that probe did not read identity | Current model, exact serial, firmware, and physical USB route require a future authorized read-only identity check; no TEC write is implied |
+
+Current system-level USB topology:
+
+| Path | Classification | Evidence boundary |
+| --- | --- | --- |
+| PC -> i-tec `U3HUB742` -> white USB cable -> CETONI USB Type-B/base | CONFIRMED CURRENT — physical branch | Direct cable tracing plus current PnP/Qmix evidence supports an Ixxat USB-CAN interface integrated in the CETONI base; this does not identify the exact base or adapter article/serial |
+| Pump + AD2 + TEC + PPC001 + valve sharing a two-stage hub path | CANDIDATE | Historical project knowledge only beyond the confirmed pump branch; promote individual branches only when physically traced or confirmed by current PnP parent topology |
+| Camera on an independent USB path | CANDIDATE | Current USB3 enumeration confirms the camera endpoint, not its physical independence from the shared hubs |
+
 ## ACTIVE
 
 - No active software architecture change; the freeze remains in force.
