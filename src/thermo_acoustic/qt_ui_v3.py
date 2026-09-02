@@ -222,7 +222,42 @@ class MainWindowV3(MainWindowV2):
         self.connection_button.setToolTip(
             "Open device selection, simulation options, and initialization progress."
         )
+        self._apply_v3_numeric_presentation()
         self.resize(1440, 900)
+
+    def _apply_v3_numeric_presentation(self) -> None:
+        """Keep high-frequency experiment values compact and unit-explicit."""
+        suffixes = (
+            (self.exp_camera_fps, " fps"),
+            (self.exp_exposure_ms, " ms"),
+            (self.exp_camera_start, " s"),
+            (self.exp_sweep_start_khz, " kHz"),
+            (self.exp_sweep_stop_khz, " kHz"),
+            (self.exp_sweep_center_khz, " kHz"),
+            (self.exp_sweep_width_khz, " kHz"),
+            (self.exp_sweep_time_ms, " ms"),
+            (self.exp_freq_scan_start_khz, " kHz"),
+            (self.exp_freq_scan_stop_khz, " kHz"),
+            (self.exp_freq_scan_step_khz, " kHz"),
+            (self.exp_flush_flowrate, " µl/min"),
+            (self.exp_flush_volume, " ml"),
+            (self.exp_wait_after_flush, " s"),
+        )
+        for field, suffix in suffixes:
+            field.setSuffix(suffix)
+            field.setMinimumWidth(max(field.minimumWidth(), 120))
+        for state in self.exp_ad2_channels:
+            for key, suffix in (
+                ("frequency", " kHz"),
+                ("amplitude", " V"),
+                ("offset", " V"),
+                ("sec_wait", " s"),
+                ("sec_run", " s"),
+                ("symmetry", " %"),
+                ("phase", "°"),
+            ):
+                state[key].setSuffix(suffix)
+                state[key].setMinimumWidth(max(state[key].minimumWidth(), 112))
 
     @staticmethod
     def _make_status_dot(device_label: str) -> QLabel:
@@ -239,7 +274,8 @@ class MainWindowV3(MainWindowV2):
         root = QWidget()
         self.setCentralWidget(root)
         root_layout = QVBoxLayout(root)
-        root_layout.setContentsMargins(8, 8, 8, 8)
+        root_layout.setContentsMargins(10, 8, 10, 8)
+        root_layout.setSpacing(8)
         root_layout.addWidget(self._v3_instrument_bar(), 0)
 
         workspaces = QTabWidget()
@@ -309,14 +345,18 @@ class MainWindowV3(MainWindowV2):
         return dialog
 
     def _v3_instrument_bar(self) -> QGroupBox:
-        """Persistent high-value state, analogous to instrument settings badges."""
+        """Compact persistent state for decisions needed from every workspace."""
 
         group = QGroupBox("Instrument state")
         group.setObjectName("v3InstrumentBar")
         layout = QGridLayout(group)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setHorizontalSpacing(14)
+        layout.setVerticalSpacing(2)
         self.connection_button = QPushButton("Initialize hardware")
         self.connection_button.setObjectName("v3InitializeHardwareButton")
         self.connection_button.clicked.connect(self._open_initialization_dialog)
+        self.connection_button.setMinimumHeight(34)
         layout.addWidget(self.connection_button, 0, 0, 2, 1)
 
         self._v3_persistent_state: dict[str, QLabel] = {}
@@ -326,8 +366,6 @@ class MainWindowV3(MainWindowV2):
             ("Alerts", "Alerts"),
             ("Acoustic", "Acoustic / W1"),
             ("Camera", "Camera"),
-            ("Laser", "Laser control"),
-            ("Refresh", "Sample refresh"),
             ("Output", "Output"),
         )
         for column, (key, caption) in enumerate(captions, start=1):
@@ -336,66 +374,84 @@ class MainWindowV3(MainWindowV2):
             value = QLabel("UNKNOWN")
             value.setObjectName(f"v3Persistent{key}State")
             value.setWordWrap(True)
-            value.setMinimumWidth(105 if key != "Output" else 170)
+            value.setMinimumWidth(88 if key != "Output" else 190)
             self._v3_persistent_state[key] = value
             layout.addWidget(heading, 0, column)
             layout.addWidget(value, 1, column)
         layout.setColumnStretch(len(captions), 1)
+        group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         return group
 
     def _v3_experiment_workspace(self) -> QWidget:
         page = QWidget()
         page.setObjectName("v3ExperimentWorkspace")
-        layout = QHBoxLayout(page)
+        layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
 
         configure = QWidget()
         configure_layout = QVBoxLayout(configure)
-        configure_layout.setContentsMargins(0, 0, 0, 0)
+        configure_layout.setContentsMargins(8, 8, 8, 8)
+        configure_layout.setSpacing(8)
         configure_layout.addWidget(self._v3_experiment_identity_group(), 0)
         configure_layout.addWidget(self._v3_setup_tabs(), 1)
-        layout.addWidget(configure, 3)
 
         review_content = QWidget()
         review_layout = QVBoxLayout(review_content)
+        review_layout.setContentsMargins(8, 8, 8, 8)
+        review_layout.setSpacing(8)
         review_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         review_layout.addWidget(self._v3_experiment_plan_group())
         details = QTabWidget()
         details.setObjectName("v3ReviewDetails")
         details.addTab(self._v3_group_page(self._v3_requested_effective_group()), "Evidence")
         details.addTab(self._v3_scroll_page(self._v3_one_repeat_timing_plan(), "v3TimingReviewScroll"), "Timing")
+        details.setMinimumHeight(260)
         review_layout.addWidget(details)
         review_layout.addStretch(1)
         review = QScrollArea()
         review.setObjectName("v3PreRunReview")
         review.setWidgetResizable(True)
         review.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        review.setMinimumWidth(400)
-        review.setMaximumWidth(450)
         review.setWidget(review_content)
-        layout.addWidget(review, 2)
+
+        phases = QTabWidget()
+        phases.setObjectName("v3ExperimentPhaseTabs")
+        phases.addTab(configure, "1  Configure")
+        phases.addTab(review, "2  Review run")
+        self._v3_experiment_phase_tabs = phases
+        layout.addWidget(phases, 1)
         return page
 
     def _v3_monitor_workspace(self) -> QWidget:
         page = QWidget()
         page.setObjectName("v3MonitorWorkspace")
-        layout = QHBoxLayout(page)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
         status = self._v2_status_progress_group()
         status.setObjectName("v3RunProgress")
-        left = QVBoxLayout()
-        left.addWidget(status)
-        left.addWidget(self._v3_operator_event_group(), 1)
-        layout.addLayout(left, 3)
+        layout.addWidget(status, 0)
+        lower = QHBoxLayout()
+        lower.setSpacing(8)
+        lower.addWidget(self._v3_operator_event_group(), 3)
         right = QVBoxLayout()
-        right.addWidget(self._v2_waveform_group())
+        right.setSpacing(8)
+        right.addWidget(self._v3_monitor_context_group())
+        waveform = self._v2_waveform_group()
+        waveform.setMaximumHeight(280)
+        right.addWidget(waveform)
         right.addStretch(1)
-        layout.addLayout(right, 2)
+        lower.addLayout(right, 2)
+        layout.addLayout(lower, 1)
         return page
 
     def _v3_manual_service_workspace(self) -> QWidget:
         page = QWidget()
         page.setObjectName("v3ManualServiceWorkspace")
         layout = QVBoxLayout(page)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(10)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         warning = QLabel(
             "Manual and service actions are outside the experiment plan and may act immediately on initialized "
@@ -406,18 +462,42 @@ class MainWindowV3(MainWindowV2):
         warning.setWordWrap(True)
         warning.setStyleSheet("font-weight: bold; color: darkorange;")
         layout.addWidget(warning)
-        actions = QGroupBox("Manual and service panels")
-        grid = QGridLayout(actions)
-        panels = (
-            ("Camera", "Camera", "Apply ROI/exposure, preview, and manual capture"),
-            ("PumpValve", "Pump & Valve", "Pump motion, valve switching, syringe setup, and recovery"),
-            ("WFG", "Manual AD2 outputs", "Manual waveform output; separate from experiment settings"),
-            ("ZScan", "Z calibration scan", "Manual motion/camera calibration workflow"),
-            ("MSO", "AD2 diagnostics", "Oscilloscope and digital diagnostic acquisition"),
+        columns = QHBoxLayout()
+        columns.setSpacing(10)
+        routine = self._v3_manual_panel_group(
+            "Routine manual tasks",
+            (
+                ("Camera", "Camera", "Apply ROI/exposure, preview, and manual capture"),
+                ("PumpValve", "Pump & Valve", "Valve switching, syringe setup, pump motion, and recovery"),
+            ),
         )
+        engineering = self._v3_manual_panel_group(
+            "Engineering and calibration",
+            (
+                ("WFG", "Manual AD2 output", "Immediate waveform output, separate from experiment requests"),
+                ("MSO", "AD2 diagnostics", "Oscilloscope and digital diagnostic acquisition"),
+                ("ZScan", "Z calibration scan", "Manual motion and camera calibration workflow"),
+            ),
+        )
+        columns.addWidget(routine, 1)
+        columns.addWidget(engineering, 1)
+        layout.addLayout(columns)
+        layout.addStretch(1)
+        return page
+
+    def _v3_manual_panel_group(
+        self,
+        title: str,
+        panels: tuple[tuple[str, str, str], ...],
+    ) -> QGroupBox:
+        group = QGroupBox(title)
+        grid = QGridLayout(group)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(8)
         for row, (panel_name, caption, description) in enumerate(panels):
             button = QPushButton(f"Open {caption}")
             button.setObjectName(f"v3Open{panel_name}Panel")
+            button.setMinimumWidth(190)
             button.clicked.connect(
                 lambda checked=False, name=panel_name: self._open_manual_panel(name)
             )
@@ -426,20 +506,21 @@ class MainWindowV3(MainWindowV2):
             grid.addWidget(button, row, 0)
             grid.addWidget(detail, row, 1)
         grid.setColumnStretch(1, 1)
-        layout.addWidget(actions)
-        layout.addStretch(1)
-        return page
+        return group
 
     def _v3_diagnostics_workspace(self) -> QWidget:
         page = QWidget()
         page.setObjectName("v3DiagnosticsWorkspace")
         layout = QHBoxLayout(page)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(10)
         left = QVBoxLayout()
         left.addWidget(self._v3_device_diagnostics_group())
         left.addWidget(self._v3_action_log_group())
-        left.addStretch(1)
         layout.addLayout(left, 2)
-        layout.addWidget(self._global_status_panel(), 3)
+        status = self._global_status_panel()
+        status.setObjectName("v3DiagnosticStatusHistory")
+        layout.addWidget(status, 3, Qt.AlignmentFlag.AlignTop)
         return page
 
     def _v3_device_diagnostics_group(self) -> QGroupBox:
@@ -477,6 +558,28 @@ class MainWindowV3(MainWindowV2):
         layout.addWidget(note)
         return group
 
+    def _v3_monitor_context_group(self) -> QGroupBox:
+        group = QGroupBox("Current run context")
+        group.setObjectName("v3MonitorRunContext")
+        form = QFormLayout(group)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        self._v3_monitor_scope = QLabel("No run plan prepared")
+        self._v3_monitor_output = QLabel("Output not configured")
+        self._v3_monitor_acquisition = QLabel("No requested acquisition summary")
+        for label in (
+            self._v3_monitor_scope,
+            self._v3_monitor_output,
+            self._v3_monitor_acquisition,
+        ):
+            label.setWordWrap(True)
+        form.addRow("Scope", self._v3_monitor_scope)
+        form.addRow("Output", self._v3_monitor_output)
+        form.addRow("Requested", self._v3_monitor_acquisition)
+        note = QLabel("Requested/planned software state only; no live physical telemetry is inferred.")
+        note.setWordWrap(True)
+        form.addRow(note)
+        return group
+
     def _v3_experiment_identity_group(self) -> QGroupBox:
         group = QGroupBox("Series identity and inner repeats")
         group.setObjectName("v3ExperimentIdentity")
@@ -504,8 +607,15 @@ class MainWindowV3(MainWindowV2):
     def _v3_experiment_plan_group(self) -> QGroupBox:
         group = QGroupBox("Start will run")
         group.setObjectName("v3ExperimentPlan")
-        form = QFormLayout(group)
-        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        layout = QVBoxLayout(group)
+        layout.setSpacing(8)
+        self._v3_review_status = QLabel("REVIEW — preparing authoritative plan summary")
+        self._v3_review_status.setObjectName("v3ReviewStatus")
+        self._v3_review_status.setStyleSheet("font-weight: bold;")
+        layout.addWidget(self._v3_review_status)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(8)
         self._v3_axis_summary = QLabel()
         self._v3_axis_summary.setObjectName("v3ExperimentAxisSummary")
         self._v3_repeat_workflow = QLabel()
@@ -536,15 +646,40 @@ class MainWindowV3(MainWindowV2):
             self._v3_plan_warnings,
         ):
             label.setWordWrap(True)
-        form.addRow("Run scope", self._v3_axis_summary)
-        form.addRow("Per-repeat sequence", self._v3_repeat_workflow)
-        form.addRow("Camera", self._v3_camera_request_summary)
-        form.addRow("Acoustic / W1", self._v3_acoustic_request_summary)
-        form.addRow("Laser control", self._v3_laser_request_summary)
-        form.addRow("Sample refresh", self._v3_refresh_request_summary)
-        form.addRow("Output", self._v3_output_summary)
-        form.addRow("Required devices", self._v3_requirements_summary)
-        form.addRow("Blockers and warnings", self._v3_plan_warnings)
+        scope = self._v3_summary_section("Run scope", self._v3_axis_summary, self._v3_repeat_workflow)
+        camera = self._v3_summary_section("Acquisition", self._v3_camera_request_summary)
+        acoustic = self._v3_summary_section("Acoustic / W1", self._v3_acoustic_request_summary)
+        optional = self._v3_summary_section(
+            "Optional and unavailable systems",
+            self._v3_laser_request_summary,
+            self._v3_refresh_request_summary,
+        )
+        output = self._v3_summary_section(
+            "Output and required devices",
+            self._v3_output_summary,
+            self._v3_requirements_summary,
+        )
+        blockers = self._v3_summary_section("Blockers and warnings", self._v3_plan_warnings)
+        blockers.setObjectName("v3PreRunIssuesGroup")
+        grid.addWidget(scope, 0, 0)
+        grid.addWidget(camera, 0, 1)
+        grid.addWidget(acoustic, 1, 0)
+        grid.addWidget(optional, 1, 1)
+        grid.addWidget(output, 2, 0)
+        grid.addWidget(blockers, 2, 1)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        layout.addLayout(grid)
+        return group
+
+    @staticmethod
+    def _v3_summary_section(title: str, *labels: QLabel) -> QGroupBox:
+        group = QGroupBox(title)
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(9, 8, 9, 8)
+        layout.setSpacing(5)
+        for label in labels:
+            layout.addWidget(label)
         return group
 
     def _v3_requested_effective_group(self) -> QGroupBox:
@@ -598,12 +733,27 @@ class MainWindowV3(MainWindowV2):
         return group
 
     def _v3_run_control_group(self) -> QGroupBox:
-        group = QGroupBox("Review and run")
+        group = QGroupBox("Run control")
         group.setObjectName("v3PrimaryRunControl")
         layout = QHBoxLayout(group)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(8)
+        self._v3_run_gate = QLabel("REVIEW — check Start will run")
+        self._v3_run_gate.setObjectName("v3RunGateSummary")
+        self._v3_run_gate.setWordWrap(True)
+        self._v3_run_gate.setMinimumWidth(260)
+        layout.addWidget(self._v3_run_gate, 1)
+        review = QPushButton("Review run")
+        review.setObjectName("v3OpenRunReviewButton")
+        review.setMinimumHeight(38)
+        review.setMinimumWidth(130)
+        review.clicked.connect(lambda: self._v3_experiment_phase_tabs.setCurrentIndex(1))
+        layout.addWidget(review)
         start = QPushButton("Start experiment")
         start.setObjectName("v3StartExperimentButton")
-        start.setMinimumHeight(44)
+        start.setMinimumHeight(40)
+        start.setMinimumWidth(180)
+        start.setStyleSheet("font-weight: bold;")
         start.setToolTip(
             "Runs with the currently initialized backends. The review above is a presentation/audit "
             "derivation; the inherited Start path rebuilds the authoritative independent RunPlan."
@@ -612,23 +762,17 @@ class MainWindowV3(MainWindowV2):
         self._v3_start_button = start
         stop = QPushButton("Request graceful stop")
         stop.setObjectName("v3RequestGracefulStopButton")
-        stop.setMinimumHeight(44)
-        stop.setStyleSheet("color: darkred; font-weight: bold;")
+        stop.setMinimumHeight(40)
+        stop.setMinimumWidth(190)
+        stop.setStyleSheet("font-weight: bold;")
         stop.setToolTip(
             "Stops after the current repeat, or after the current temperature point during a TEC scan. "
             "It does not stop hardware in the middle of an operation."
         )
         stop.clicked.connect(self._abort)
         self._v3_stop_button = stop
-        note = QLabel(
-            "Start uses the plan above. Graceful stop finishes the active unit before halting; "
-            "it is not an emergency hardware stop."
-        )
-        note.setWordWrap(True)
-        note.setMaximumWidth(620)
         layout.addWidget(start)
         layout.addWidget(stop)
-        layout.addWidget(note, 1)
         return group
 
     def _v3_setup_tabs(self) -> QTabWidget:
@@ -678,7 +822,7 @@ class MainWindowV3(MainWindowV2):
         advanced_layout.addWidget(self._v3_camera_metadata_advanced_group)
         advanced_layout.addWidget(self._experiment_temperature_group())
         advanced_layout.addStretch(1)
-        tabs.addTab(self._v3_scroll_page(advanced_content, "v3AdvancedSetupScroll"), "Advanced")
+        tabs.addTab(self._v3_scroll_page(advanced_content, "v3AdvancedSetupScroll"), "Advanced / Deferred")
         return tabs
 
     def _v3_ad2_output_group(self) -> QGroupBox:
@@ -704,14 +848,14 @@ class MainWindowV3(MainWindowV2):
         state["enable"].setText("Enabled")
         carrier_form.addRow("Channel output", state["enable"])
         carrier_form.addRow("Waveform", state["function"])
-        carrier_form.addRow("Frequency (kHz)", state["frequency"])
-        carrier_form.addRow("Amplitude (V)", state["amplitude"])
-        carrier_form.addRow("Offset (V)", state["offset"])
+        carrier_form.addRow("Frequency", state["frequency"])
+        carrier_form.addRow("Amplitude", state["amplitude"])
+        carrier_form.addRow("Offset", state["offset"])
 
         timing = QGroupBox("Timing and trigger")
         timing_form = QFormLayout(timing)
-        timing_form.addRow("Start delay (s)", state["sec_wait"])
-        timing_form.addRow("Run duration (s)", state["sec_run"])
+        timing_form.addRow("Start delay", state["sec_wait"])
+        timing_form.addRow("Run duration", state["sec_run"])
         timing_form.addRow("Repeat count [0 = infinite]", state["repeat"])
         timing_form.addRow("Trigger source", state["trigger_source"])
         state["repeat_trigger"].setText("Enabled")
@@ -720,8 +864,8 @@ class MainWindowV3(MainWindowV2):
 
         detail = QGroupBox("Waveform shape")
         detail_form = QFormLayout(detail)
-        detail_form.addRow("Symmetry (%)", state["symmetry"])
-        detail_form.addRow("Phase (deg)", state["phase"])
+        detail_form.addRow("Symmetry / duty cycle", state["symmetry"])
+        detail_form.addRow("Phase", state["phase"])
         bind_waveform_parameter_policy(
             state["function"],
             carrier_form,
@@ -1078,9 +1222,10 @@ class MainWindowV3(MainWindowV2):
         # Use the shared field objects as the binding contract. The previous
         # exact-caption adapter broke whenever v1/v2 clarified their wording.
         captions = (
-            (self.exp_camera_fps, "Camera frame rate (Internal trigger)", "v3CameraFrameRateCaption"),
-            (self.exp_camera_start, "Fixed camera-start request (metadata only)", "v3CameraStartDelayCaption"),
+            (self.exp_camera_fps, "Camera frame rate — Internal trigger", "v3CameraFrameRateCaption"),
+            (self.exp_camera_start, "Fixed camera-start request — metadata only", "v3CameraStartDelayCaption"),
             (self.exp_frames, "Frames per repeat", "v3FramesPerRepeatCaption"),
+            (self.exp_exposure_ms, "Exposure request", "v3ExposureRequestCaption"),
             (self.global_exposure, "Request global exposure reset", "v3GlobalExposureCaption"),
             (
                 self.dynamic_camera_start,
@@ -1430,16 +1575,35 @@ class MainWindowV3(MainWindowV2):
         camera_text = camera_label.text() if camera_label is not None else "UNKNOWN"
         self._v3_persistent_state["Acoustic"].setText(ad2_text)
         self._v3_persistent_state["Camera"].setText(camera_text)
-        self._v3_persistent_state["Laser"].setText("UNAVAILABLE — production blocked")
-        if not self.exp_flush_enabled.isChecked():
-            refresh_text = "OFF — not required"
-        elif self.app.pump.enabled and self.app.valve.enabled:
-            refresh_text = "SELECTED — protocol state only"
-        else:
-            refresh_text = "SELECTED — devices disabled"
-        self._v3_persistent_state["Refresh"].setText(refresh_text)
         output = self.series_path.text().strip()
         self._v3_persistent_state["Output"].setText(output or "UNSET — working directory")
+        if hasattr(self, "_v3_review_status"):
+            if blocking:
+                review_text = f"BLOCKED — resolve {blocking} issue(s) before Start"
+                review_style = "color: darkred; font-weight: bold;"
+            elif warnings:
+                review_text = f"REVIEW — {warnings} warning(s); Start remains available"
+                review_style = "color: darkorange; font-weight: bold;"
+            else:
+                review_text = "READY — shared software preflight has no issues"
+                review_style = "color: green; font-weight: bold;"
+            self._v3_review_status.setText(review_text)
+            self._v3_review_status.setStyleSheet(review_style)
+        if hasattr(self, "_v3_run_gate"):
+            self._v3_run_gate.setText(
+                f"BLOCKED — {blocking} issue(s); open Review run"
+                if blocking
+                else f"REVIEW — {warnings} warning(s); inspect Review run"
+                if warnings
+                else "READY — authoritative software preflight passed"
+            )
+            self._v3_run_gate.setStyleSheet(
+                "color: darkred; font-weight: bold;"
+                if blocking
+                else "color: darkorange; font-weight: bold;"
+                if warnings
+                else "color: green; font-weight: bold;"
+            )
         if hasattr(self, "_v3_start_button"):
             self._v3_start_button.setEnabled(not blocking and not active and self._busy_count == 0)
         if hasattr(self, "_v3_stop_button"):
@@ -1553,7 +1717,18 @@ class MainWindowV3(MainWindowV2):
             if preflight.blocking_issues
             else "color: darkorange; font-weight: bold;"
         )
+        self._refresh_v3_monitor_context()
         self._refresh_v3_persistent_status(result)
+
+    def _refresh_v3_monitor_context(self) -> None:
+        if not hasattr(self, "_v3_monitor_scope"):
+            return
+        self._v3_monitor_scope.setText(self._v3_axis_summary.text())
+        self._v3_monitor_output.setText(self._v3_output_summary.text())
+        self._v3_monitor_acquisition.setText(
+            f"Camera: {self._v3_camera_request_summary.text()}\n"
+            f"Acoustic / W1: {self._v3_acoustic_request_summary.text()}"
+        )
 
     def _refresh_v3_relationships(self, _value=None) -> None:
         if not hasattr(self, "_v3_timing_labels"):
@@ -1876,7 +2051,7 @@ class MainWindowV3(MainWindowV2):
 
     def _v2_waveform_group(self) -> QGroupBox:
         group = super()._v2_waveform_group()
-        group.setTitle("Live waveform and camera rate")
+        group.setTitle("Requested waveform preview and measured camera rate")
         _rename_unique_text_widget(
             group,
             QLabel,
@@ -1888,6 +2063,8 @@ class MainWindowV3(MainWindowV2):
 
     def _global_status_panel(self) -> QGroupBox:
         group = super()._global_status_panel()
+        group.setMaximumWidth(16777215)
+        group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         form = group.layout()
         if not isinstance(form, QFormLayout):
             raise RuntimeError("V3 expected Global Status to use a form layout.")

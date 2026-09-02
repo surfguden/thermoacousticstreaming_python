@@ -7,8 +7,8 @@ Historical audits and evidence records preserve how conclusions were reached,
 but they do not override this page, current source, tests, Git state, or newer
 retained evidence.
 
-Last current-truth convergence: 2026-09-02, based on clean pushed V3 checkpoint
-`9a899d753d279f16b57c0065a9c8285f475aaec1`.
+Last current-truth convergence: 2026-09-02, based on clean pushed documentation
+checkpoint `86b03500af36c1b7d61c30c1f583641b709760ab`.
 
 ## Authority hierarchy
 
@@ -100,13 +100,13 @@ that policy.
 
 | Surface | Purpose and evidence boundary |
 | --- | --- |
-| Persistent instrument state | Readiness, run state, alerts, Acoustic/W1, camera, laser-control, sample-refresh, and output state. Software/backend state only unless explicitly labeled otherwise. |
-| Experiment | Series identity plus Acquisition, Acoustic, Sample Refresh, and Advanced configuration. |
-| Start will run | Canonical-request-derived run scope, sequence, camera, Acoustic/W1, disabled laser control, refresh, output, required devices, blockers, and warnings. |
-| Monitor | Progress, live display surfaces, and concise existing runtime events. |
-| Manual & Service | Existing immediate-action camera, pump/valve, AD2, Z, and diagnostic panels, clearly outside the experiment plan. Opening a panel is inert; actions retain their established gates and use `MANUAL_SERVICE` logging context. |
+| Persistent instrument state | Compact Readiness, Run, Alerts, Acoustic/W1, Camera, and Output state needed across workspaces. Software/backend state only unless explicitly labeled otherwise. |
+| Experiment — Configure | Series identity plus Acquisition, Acoustic, Sample Refresh, and Advanced/Deferred configuration, with explicit units on high-frequency numeric inputs. |
+| Experiment — Review run | Full-width canonical-request-derived run scope, sequence, camera, Acoustic/W1, unavailable laser control, refresh, output, required devices, blockers, warnings, and requested/latest-applied evidence. |
+| Monitor | Run progress and operator events plus requested run context. Its waveform is a requested/computed preview; measured camera rate remains distinct and no physical telemetry is inferred. |
+| Manual & Service | Existing immediate-action panels grouped as routine camera/fluidics tasks versus engineering/calibration AD2 and Z tasks, clearly outside the experiment plan. Opening a panel is inert; actions retain their established gates and use `MANUAL_SERVICE` logging context. |
 | Diagnostics | Detailed cached/device state, action-evidence location, and diagnostic history. |
-| Persistent run controls | Start the reviewed plan or request graceful stop. Graceful stop finishes the current unit; it is not an emergency hardware stop. |
+| Persistent run controls | Open Review run, Start after the shared software gate passes, or request graceful stop. Graceful stop finishes the current unit; it is not an emergency hardware stop. |
 
 Requested settings remain primary during configuration. V3 surfaces a latest
 applied/effective discrepancy only when the existing durable action record

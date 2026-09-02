@@ -52,7 +52,7 @@ contradictory evidence.
 | SW-SCI-INTEGRITY-001 | CLOSED OFFLINE | Requested FPS remains planned with DIO disabled; fresh applied exposure/readout budget is checked; requested/applied exposure and one automated `WaitAfterFlush` source are retained. |
 | SW-ACQ-DETERMINISM-001 | CLOSED OFFLINE | Requested ROI is applied and freshly read back; normal enabled CH0 requires Repeat=1; FM Sweep conflicts with Frequency Scan and requires explicit CH0 enable. |
 | SW-AD2-ROUTING-001 | CLOSED OFFLINE | Project Ch1/API 0/W1 is acoustic. Project Ch2/API 1/W2 is laser Analog In and fails closed. Normal production programs neither DIO line. |
-| SW-V3-UX-001 | CLOSED OFFLINE | V3 now has persistent state/run controls plus Experiment, Monitor, Manual & Service, and Diagnostics; pre-run and requested/effective evidence use existing planning/log sources. |
+| SW-V3-UX-001 | CLOSED OFFLINE | V3 has compact persistent state/run controls; separate Configure and Review run phases; run-focused Monitor context; grouped Manual & Service tasks; and Diagnostics. Pre-run and requested/effective evidence use existing planning/log sources. |
 | HW-QMIX-CAN-001 startup recovery | CLOSED FOR NO-MOTION STARTUP | H2A retained fresh startup events; H2B retained five stable accepted clear/fault-false/no-motion/clean-close trials. This does not close HW-PUMP-MOTION-001. |
 | Generic production DO Clock | SUPERSEDED | Normal production carries an explicit disabled digital-output payload and does not call the retained legacy DO-clock helper. DIO0/DIO1 retain specific physical roles but are unprogrammed. |
 | CH2 “unused” | SUPERSEDED | Owner evidence establishes W2 as laser Analog In. Exact electrical semantics remain HW-LASER-PATH-001. |

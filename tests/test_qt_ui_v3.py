@@ -150,12 +150,14 @@ def test_v3_reuses_the_supplied_application_and_separates_operator_workspaces(mo
         plan = window.findChild(QGroupBox, "v3ExperimentPlan")
         run_control = window.findChild(QGroupBox, "v3PrimaryRunControl")
         setup_tabs = window.findChild(QTabWidget, "v3SetupTabs")
+        experiment_phases = window.findChild(QTabWidget, "v3ExperimentPhaseTabs")
         assert instrument_bar is not None
         assert workspaces is not None
         assert identity is not None
         assert plan is not None
         assert run_control is not None
         assert setup_tabs is not None
+        assert experiment_phases is not None
         assert instrument_bar.title() == "Instrument state"
         assert [workspaces.tabText(index) for index in range(workspaces.count())] == [
             "Experiment",
@@ -171,11 +173,14 @@ def test_v3_reuses_the_supplied_application_and_separates_operator_workspaces(mo
             "Acquisition",
             "Acoustic",
             "Sample Refresh",
-            "Advanced",
+            "Advanced / Deferred",
         ]
+        assert [
+            experiment_phases.tabText(index) for index in range(experiment_phases.count())
+        ] == ["1  Configure", "2  Review run"]
         assert set(window._v3_connection_values) == {"AD2", "Camera", "Pump", "Valve", "TEC"}
         assert set(window._v3_persistent_state) == {
-            "Readiness", "Run", "Alerts", "Acoustic", "Camera", "Laser", "Refresh", "Output"
+            "Readiness", "Run", "Alerts", "Acoustic", "Camera", "Output"
         }
         assert window._v3_connection_values["AD2"].text() == window.ad2_connection_status.text()
         assert window._v3_connection_values["Camera"].text() == window.camera_connection_status.text()
@@ -188,8 +193,8 @@ def test_v3_reuses_the_supplied_application_and_separates_operator_workspaces(mo
             "Estimated time remaining",
             "Runs remaining",
             "Status and error history",
-            "Camera frame rate (Internal trigger)",
-            "Fixed camera-start request (metadata only)",
+            "Camera frame rate — Internal trigger",
+            "Fixed camera-start request — metadata only",
             "Series repeats",
             "Frames per repeat",
             "Request global exposure reset",
@@ -197,7 +202,9 @@ def test_v3_reuses_the_supplied_application_and_separates_operator_workspaces(mo
             "Measured camera rate (fps)",
         } <= labels
         assert window.findChild(QLabel, "v3ElapsedTimeCaption").text() == "Elapsed time"
-        assert window.findChild(QLabel, "v3CameraFrameRateCaption").text() == "Camera frame rate (Internal trigger)"
+        assert window.findChild(QLabel, "v3CameraFrameRateCaption").text() == (
+            "Camera frame rate — Internal trigger"
+        )
         assert window.findChild(QLabel, "v3StatusHistoryCaption").text() == "Status and error history"
         assert {
             "Elapsed Time",
@@ -217,6 +224,9 @@ def test_v3_reuses_the_supplied_application_and_separates_operator_workspaces(mo
             "Experiment acquisition",
             "Per-repeat camera-start metadata (s)",
             "Deferred camera metadata and trigger options",
+            "Routine manual tasks",
+            "Engineering and calibration",
+            "Current run context",
         } <= groups
         assert "metadata" in window.dynamic_camera_start.toolTip()
         assert "does not program DIO0 or DIO1" in window.dynamic_camera_start.toolTip()
@@ -235,6 +245,12 @@ def test_v3_reuses_the_supplied_application_and_separates_operator_workspaces(mo
         button_texts = {button.text() for button in window.findChildren(QPushButton)}
         assert "Browse..." in button_texts
         assert "..." not in button_texts
+        review_button = window.findChild(QPushButton, "v3OpenRunReviewButton")
+        assert review_button is not None
+        review_button.click()
+        assert experiment_phases.currentIndex() == 1
+        assert window.findChild(QLabel, "v3RunGateSummary") is not None
+        assert window.findChild(QLabel, "v3ReviewStatus") is not None
         graceful_stop = window.findChild(QPushButton, "v3RequestGracefulStopButton")
         assert graceful_stop is not None
         assert graceful_stop.text() == "Request graceful stop"
@@ -289,7 +305,9 @@ def test_v3_field_bound_adapters_survive_inherited_caption_changes(monkeypatch, 
     window = make_window(monkeypatch, tmp_path)
     try:
         assert window.findChild(QLabel, "v3ElapsedTimeCaption").text() == "Elapsed time"
-        assert window.findChild(QLabel, "v3CameraFrameRateCaption").text() == "Camera frame rate (Internal trigger)"
+        assert window.findChild(QLabel, "v3CameraFrameRateCaption").text() == (
+            "Camera frame rate — Internal trigger"
+        )
         assert window.findChild(QLabel, "v3DynamicCameraStartCaption").text() == (
             "Use per-repeat camera-start metadata"
         )
@@ -321,7 +339,7 @@ def test_v3_main_ad2_settings_use_channel_tabs_without_horizontal_overflow(monke
         assert {
             "Channel output",
             "Waveform",
-            "Start delay (s)",
+            "Start delay",
             "Repeat count [0 = infinite]",
             "Re-arm trigger after each repeat",
         } <= labels
@@ -481,6 +499,48 @@ def test_v3_temperature_group_separates_policy_and_shows_cached_readback(monkeyp
             QLabel, "v3TecChannel1Readback"
         ).text()
         assert "error: sensor warning" in window.findChild(QLabel, "v3TecChannel2Readback").text()
+    finally:
+        window.close()
+
+
+@pytest.mark.parametrize("size", [(1366, 768), (1440, 900), (1920, 1080)])
+def test_v3_primary_workflow_remains_horizontally_contained(monkeypatch, tmp_path, size):
+    window = make_window(monkeypatch, tmp_path)
+    window.resize(*size)
+    window.show()
+    QApplication.processEvents()
+    try:
+        phases = window.findChild(QTabWidget, "v3ExperimentPhaseTabs")
+        setup_tabs = window.findChild(QTabWidget, "v3SetupTabs")
+        camera_scroll = window.findChild(QScrollArea, "v3CameraSetupScroll")
+        review_scroll = window.findChild(QScrollArea, "v3PreRunReview")
+        review_details = window.findChild(QTabWidget, "v3ReviewDetails")
+        timing_scroll = window.findChild(QScrollArea, "v3TimingReviewScroll")
+        instrument_bar = window.findChild(QGroupBox, "v3InstrumentBar")
+
+        assert phases is not None
+        assert setup_tabs is not None
+        assert camera_scroll is not None
+        assert review_scroll is not None
+        assert review_details is not None
+        assert timing_scroll is not None
+        assert instrument_bar is not None
+
+        phases.setCurrentIndex(0)
+        setup_tabs.setCurrentIndex(0)
+        QApplication.processEvents()
+        assert camera_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        assert camera_scroll.horizontalScrollBar().maximum() == 0
+
+        phases.setCurrentIndex(1)
+        QApplication.processEvents()
+        assert review_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        assert review_scroll.horizontalScrollBar().maximum() == 0
+        review_details.setCurrentIndex(1)
+        QApplication.processEvents()
+        assert timing_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        assert timing_scroll.horizontalScrollBar().maximum() == 0
+        assert instrument_bar.height() <= 120
     finally:
         window.close()
 
@@ -1433,7 +1493,7 @@ def test_v3_shell_controls_dispatch_to_shared_v1_v2_callbacks(monkeypatch, tmp_p
         window._refresh_v3_relationships()
         buttons["Request graceful stop"].click()
         for label in (
-            "Open Manual AD2 outputs",
+            "Open Manual AD2 output",
             "Open AD2 diagnostics",
             "Open Pump & Valve",
             "Open Camera",
