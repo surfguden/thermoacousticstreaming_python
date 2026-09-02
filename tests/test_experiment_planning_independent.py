@@ -90,6 +90,10 @@ def test_independent_plan_adapter_preserves_static_execution_semantics(
     assert all(item["do_clock"]["running"] is False for item in normalized)
     assert all(item["do_channels"] == () for item in normalized)
     assert all(item["flush_enabled"] is flush for item in normalized)
+    assert all(item["sequence_settings"]["camera_fps"] == request.camera_fps for item in normalized)
+    assert all(item["requested_exposure_ms"] == request.exposure_ms for item in normalized)
+    assert all(item["applied_exposure_ms"] is None for item in normalized)
+    assert all(item["flush"][2] == request.flush_settings[2] for item in normalized)
     assert request.device_modes == device_modes  # simulation/enabled state is retained request semantics, not invented by the adapter
     if function == "DC":
         assert all(item["frequency_scan_selected_hz"] is None for item in normalized)

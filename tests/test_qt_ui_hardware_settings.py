@@ -483,8 +483,11 @@ def test_representative_fields_have_grounded_tooltips(monkeypatch, tmp_path):
     assert "uncommitted" not in window.sim_tec.toolTip()
     assert "not independently approved" in window.tec_port.toolTip()
 
-    # Camera tab: DCAM Trigger Source unresolved status.
-    assert "oscilloscope" in window.dcam_source.toolTip()
+    # Camera tab: Internal is authoritative for the current steady mode;
+    # External remains deferred and requires physical timing verification.
+    assert "selected steady/quasi-steady mode" in window.dcam_source.toolTip()
+    assert "DIO0 camera trigger remains unprogrammed" in window.dcam_source.toolTip()
+    assert "physical timing verification" in window.dcam_source.toolTip()
 
     # Experiment tab: Step Size convention, Frequency Scanning spacing caveat.
     assert "0 = not used" in window.exp_freq_scan_step_khz.toolTip()
@@ -1222,6 +1225,23 @@ def test_qt_ui_pump_valve_manual_flush_fields_round_trip_independently_of_experi
     assert second_window.exp_flush_flowrate.value() == pytest.approx(222.0)
     assert second_window.exp_flush_volume.value() == pytest.approx(0.22)
     assert second_window.exp_wait_after_flush.value() == pytest.approx(2.2)
+
+
+def test_experiment_help_distinguishes_flush_and_wfg_trigger_semantics(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        assert "does not override" in window.wait_after_flush.toolTip()
+        assert "Canonical operator-selected" in window.exp_wait_after_flush.toolTip()
+        assert "no duration is scientifically universal" in window.exp_wait_after_flush.toolTip()
+        assert window.exp_ch1_trigger_source.currentText() == "trigsrcNone"
+        trigger_help = window.exp_ch1_trigger_source.toolTip()
+        assert "steady/pre-actuated" in trigger_help
+        assert "trigsrcPC arms" in trigger_help
+        assert "not physical timing verification" in trigger_help
+        assert "selected steady/quasi-steady mode" in window.dcam_source.toolTip()
+        assert "DIO0 camera trigger remains unprogrammed" in window.dcam_source.toolTip()
+    finally:
+        window.close()
 
 
 def test_qt_ui_save_and_restore_camera_manual_tab_fields(monkeypatch, tmp_path):

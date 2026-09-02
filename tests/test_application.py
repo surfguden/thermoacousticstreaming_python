@@ -953,6 +953,8 @@ def test_run_experiment2_finalizes_failed_record_without_claiming_configuration_
     # Exposure was retained as requested; camera configuration never ran, so
     # there is no separate applied-camera record to misread as evidence.
     assert properties["ExposureTime"] == 12.5
+    assert properties["RequestedExposureMs"] == 12.5
+    assert properties["AppliedExposureMs"] == ""
 
 
 def test_run_experiment2_records_capture_cleanup_failure_separately(tmp_path, monkeypatch):
@@ -3792,6 +3794,8 @@ def test_experiment2_writes_labview_metadata_tdms(tmp_path, monkeypatch):
         "CameraFrames",
         "CameraFPS",
         "ExposureTime",
+        "RequestedExposureMs",
+        "AppliedExposureMs",
         "GlobalExposure",
         "Repeat ID",
         "Experiment started",
@@ -3806,6 +3810,8 @@ def test_experiment2_writes_labview_metadata_tdms(tmp_path, monkeypatch):
     ):
         assert field in properties
     assert properties["DOFreq"] == 100.0
+    assert properties["RequestedExposureMs"] == properties["ExposureTime"]
+    assert properties["AppliedExposureMs"] == ""
     assert properties["CameraFrames"] == ""
     assert properties["CameraFPS"] == 100.0
     assert properties["WFGOutOfRangeCh1"] is False
@@ -3820,6 +3826,28 @@ def test_experiment2_writes_labview_metadata_tdms(tmp_path, monkeypatch):
     channels = {item.name: item for item in objects if getattr(item, "kind", "") == "channel"}
     assert channels["ImageName"].data == ["frame_00000.tiff", "frame_00001.tiff"]
     assert len(channels["Timestamp"].data) == 2
+
+
+def test_experiment2_records_planned_camera_fps_with_production_dio_disabled(tmp_path, monkeypatch):
+    writes = install_fake_nptdms(monkeypatch)
+    experiment = Experiment2(
+        experiment_folder=tmp_path / "planned-camera-fps",
+        sequence_settings={"frames": 10, "camera_fps": 20.0, "trigger_source": "Internal"},
+        do_clock_settings={"running": False, "channels": []},
+    )
+
+    experiment.create_folder_and_tdms()
+    experiment.save_settings()
+
+    properties = next(
+        item
+        for item in writes[str(experiment.tdms_path)]
+        if getattr(item, "kind", "") == "group" and item.name == "Experiment"
+    ).properties
+    assert properties["CameraFPS"] == 20.0
+    assert properties["CameraDIO0TriggerUsed"] is False
+    assert properties["LaserDIO1TriggerRequested"] is False
+    assert properties["LaserDIO1TriggerConfiguredByProductionRuntime"] is False
 
 
 def test_experiment2_writes_wfg_carrier_trigger_and_fm_mod_fields_to_tdms(tmp_path, monkeypatch):
@@ -4576,8 +4604,6 @@ def test_check_camera_timing_budget_raises_when_readout_time_unavailable(tmp_pat
     # either would defeat the point of the check (LabVIEW's own "N is
     # Vertical is max for <fps> fps" readback), which exists specifically
     # to refuse an FPS the real hardware can't sustain.
-    from thermo_acoustic.ad2 import DoConfig, DoSingleChannelConfig
-
     class UnavailableReadoutCamera:
         exposure_ms = 5.0
 
@@ -4587,7 +4613,8 @@ def test_check_camera_timing_budget_raises_when_readout_time_unavailable(tmp_pat
     app = Application(ad2=SimulatedAD2Sdk(), camera=UnavailableReadoutCamera())
     experiment = Experiment2(
         experiment_folder=tmp_path / "experiment-readout-unavailable",
-        do_clock_settings=DoConfig(channels=[DoSingleChannelConfig(channel_index=0, enable=True, clock_frequency_hz=100.0)]),
+        sequence_settings={"camera_fps": 100.0},
+        do_clock_settings={"running": False, "channels": []},
     )
 
     with pytest.raises(ValueError, match="readout time"):
@@ -4692,6 +4719,8 @@ def test_run_experiment2_records_real_applied_exposure_in_final_tdms(tmp_path, m
     assert properties["ExposureTime"] == pytest.approx(40.25), (
         "the FINAL data.tdms must record the real applied exposure, not the original 40.0ms request"
     )
+    assert properties["RequestedExposureMs"] == pytest.approx(40.0)
+    assert properties["AppliedExposureMs"] == pytest.approx(40.25)
 
 
 # -- Camera ROI pre-flight validation (Session 51): DCAM's own SUBARRAY

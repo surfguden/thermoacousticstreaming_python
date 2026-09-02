@@ -338,6 +338,13 @@ class Experiment2:
     # Application.run_experiment2() from live Application state, same
     # pattern as sim_*/*_enabled above. See docs/hardware_repair_plan.md.
     pump_fault_manually_cleared: bool = False
+    # Preserve the canonical request separately from DCAM's applied readback.
+    # These are appended after the established public constructor fields so
+    # older positional Experiment2 callers retain their existing argument
+    # order. global_exposure_ms remains the compatibility/effective field and
+    # is updated to the applied value after camera configuration.
+    requested_exposure_ms: float | None = None
+    applied_exposure_ms: float | None = None
     _tdms_properties: dict[str, Any] = field(default_factory=dict, init=False)
     _tdms_image_names: list[str] = field(default_factory=list, init=False)
     _tdms_timestamps: list[str] = field(default_factory=list, init=False)
@@ -436,6 +443,16 @@ class Experiment2:
         do_channel = next((channel for channel in do_clock.channels if channel.enable), None)
         if do_channel is None and do_clock.channels:
             do_channel = do_clock.channels[0]
+        requested_exposure_ms = (
+            self.global_exposure_ms
+            if self.requested_exposure_ms is None
+            else self.requested_exposure_ms
+        )
+        effective_exposure_ms = (
+            self.global_exposure_ms
+            if self.applied_exposure_ms is None
+            else self.applied_exposure_ms
+        )
         properties = {
             "Repeat ID": self.repeat_id,
             "RepeatIndex": self.repeat_id,
@@ -448,7 +465,12 @@ class Experiment2:
             "FrequencyScanSelectedHz": (
                 "" if self.frequency_scan_selected_hz is None else self.frequency_scan_selected_hz
             ),
-            "ExposureTime": self.global_exposure_ms,
+            # ExposureTime is retained for existing readers. Before camera
+            # configuration it contains the request; after a confirmed DCAM
+            # readback it contains the applied value.
+            "ExposureTime": effective_exposure_ms,
+            "RequestedExposureMs": requested_exposure_ms,
+            "AppliedExposureMs": "" if self.applied_exposure_ms is None else self.applied_exposure_ms,
             "GlobalExposure": self.trigger_global_exposure,
             "FlushFlowrate": self.flush_settings.flush_flowrate,
             "FlushVolume": self.flush_settings.flush_volume_ml,
@@ -532,11 +554,15 @@ class Experiment2:
         settings = self.sequence_settings or {}
         do_clock = coerce_do_config(self.do_clock_settings)
         do_channel = next((channel for channel in do_clock.channels if channel.enable), None)
-        camera_fps = (
-            do_channel.clock_frequency_hz
-            if do_channel is not None and do_channel.clock_frequency_hz is not None
-            else ""
-        )
+        camera_fps = settings.get("camera_fps")
+        if camera_fps is None:
+            # Compatibility only for historical records in which Camera FPS
+            # lived exclusively on an enabled DO clock channel.
+            camera_fps = (
+                do_channel.clock_frequency_hz
+                if do_channel is not None and do_channel.clock_frequency_hz is not None
+                else ""
+            )
         return {
             "CameraFrames": settings.get("frames", ""),
             "CameraFPS": camera_fps,

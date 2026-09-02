@@ -1156,8 +1156,9 @@ class MainWindow(QMainWindow):
         )
         self.wait_after_flush = _spin(0.0, decimals=3, minimum=0.0)
         self.wait_after_flush.setToolTip(
-            "Seconds to wait after the flush's second valve move (P02) before considering the "
-            "flush complete -- lets the system settle after fluid movement stops."
+            "Manual Pump&Valve-tab operations only: seconds to wait after the flush's second "
+            "valve move (P02). This field does not override the separate automated Experiment "
+            "request's WaitAfterFlush value."
         )
         self.flush_count = _int_spin(1, minimum=1)
 
@@ -1261,12 +1262,11 @@ class MainWindow(QMainWindow):
         self.dcam_source = _combo(["Internal", "External", "Software", "MasterPulse"], "Internal")
         self.dcam_source.setToolTip(
             "DCAM TRIGGERSOURCE -- what starts each camera frame. Automated Experiment runs "
-            "hardcode this to 'Internal' (Session 13) purely to remove undefined leftover-state "
-            "risk -- whether it should instead be 'External' (paced by the AD2 DIO pulse train) "
-            "remains genuinely unresolved: Session 19 traced the real LabVIEW call chain but the "
-            "actual wired value is compiled block-diagram wiring, not recoverable from the "
-            "exported VI diagrams. Still needs oscilloscope verification. Polarity/Delay below are "
-            "only physically meaningful when this is 'External'."
+            "hardcode this to 'Internal', the selected steady/quasi-steady mode. The physically "
+            "connected DIO0 camera trigger remains unprogrammed and currently unused. External "
+            "triggering is deferred for a future transient/synchronized mode and would require "
+            "explicit polarity plus physical timing verification. Polarity/Delay below are only "
+            "physically meaningful when this manual control is 'External'."
         )
         self.external_polarity = _combo(["Negative", "Positive"], "Negative")
         self.external_polarity.setToolTip(
@@ -1353,8 +1353,12 @@ class MainWindow(QMainWindow):
         self.exp_ch1_repeat = _int_spin(1, minimum=0)
         self.exp_ch1_trigger_source = _combo(WFG_TRIGGER_SOURCE_OPTIONS, "trigsrcNone")
         self.exp_ch1_trigger_source.setToolTip(
-            "AD2 SDK trigger source enum. The automated Experiment path always arms via config "
-            "then fires one shared PC trigger (Application.run_experiment2() -> ad2.pc_trigger())."
+            "AD2 SDK trigger source enum. trigsrcNone (the steady/pre-actuated default) starts "
+            "generation without waiting for a trigger when the WFG is configured/started, so "
+            "output may already be active before camera acquisition. trigsrcPC arms the WFG to "
+            "wait for Application.run_experiment2()'s later shared PC trigger and is the software "
+            "shape for future onset capture. Call order is not physical timing verification; "
+            "neither mode proves synchronization with camera exposure."
         )
         self.exp_ch1_symmetry = _spin(50.0, decimals=3, minimum=0.0, maximum=100.0)
         self.exp_ch1_symmetry.setToolTip(
@@ -1506,8 +1510,9 @@ class MainWindow(QMainWindow):
         )
         self.exp_wait_after_flush = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_wait_after_flush.setToolTip(
-            "Seconds to wait after the flush's second valve move (P02) before considering the "
-            "flush complete -- lets the system settle after fluid movement stops."
+            "Canonical operator-selected stabilization delay for this automated experiment "
+            "request, applied once after P02 during repeat-to-repeat refresh. The separate manual "
+            "Pump&Valve-tab value does not override it; no duration is scientifically universal."
         )
         self.exp_flush_enabled = QCheckBox("Enable")
         self.camera_start_array = [_spin(0.0, decimals=3, minimum=0.0) for _ in range(10)]
@@ -1767,9 +1772,9 @@ class MainWindow(QMainWindow):
             "Trigger source; trigsrcNone timing versus a later PC trigger remains bench-unverified."
         )
         state["trigger_source"].setToolTip(
-            "AD2 SDK trigger source enum (trigsrcNone/trigsrcPC/etc.) controlling what starts this "
-            "channel's output. The automated Experiment path always arms via config then fires a "
-            "single shared PC trigger (Application.run_experiment2() -> ad2.pc_trigger())."
+            "AD2 SDK trigger source enum controlling what starts this channel. trigsrcNone starts "
+            "without waiting for a trigger; trigsrcPC waits for a later PC trigger. This manual "
+            "control does not establish camera synchronization or physically verified onset timing."
         )
         state["repeat_trigger"].setToolTip("Whether the trigger source re-arms automatically after each repeat.")
         # frequency/amplitude/offset/function removed here (Session 41 re-
@@ -4382,6 +4387,7 @@ class MainWindow(QMainWindow):
                     flush_settings=self._flush_settings(experiment=True),
                     flush_enabled=self.exp_flush_enabled.isChecked(),
                     global_exposure_ms=self.exp_exposure_ms.value(),
+                    requested_exposure_ms=self.exp_exposure_ms.value(),
                     trigger_global_exposure=self.global_exposure.isChecked(),
                     sequence_settings={
                         # The existing Camera widgets edit one shared defaults
@@ -4391,6 +4397,7 @@ class MainWindow(QMainWindow):
                             frames=self.exp_frames.value(),
                             trigger_source_override="Internal",
                         ),
+                        "camera_fps": float(self.exp_camera_fps.value()),
                         "camera_start_s": [widget.value() for widget in self.camera_start_array],
                         "camera_start_mode": "dynamic" if self.dynamic_camera_start.isChecked() else "fixed",
                         "camera_start_selected_s": do_clock.channels[0].trigger.sec_wait,

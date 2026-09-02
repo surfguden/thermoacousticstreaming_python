@@ -232,6 +232,8 @@ def normalize_experiment(experiment: Experiment2) -> dict[str, Any]:
         "frequency_scan_selected_hz": experiment.frequency_scan_selected_hz,
         "output_path": str(experiment.experiment_folder),
         "global_exposure_ms": experiment.global_exposure_ms,
+        "requested_exposure_ms": experiment.requested_exposure_ms,
+        "applied_exposure_ms": experiment.applied_exposure_ms,
         "trigger_global_exposure": experiment.trigger_global_exposure,
         "wfg": _stable_value(wfg),
         "do_clock": _stable_value(do_config),
@@ -366,6 +368,10 @@ def build_independent_run_plan(request: ExperimentRequest) -> RunPlan:
             if selected is not None:
                 wfg["channels"][0]["carrier"]["frequency_hz"] = selected
             sequence = {key: _thaw(value) for key, value in request.sequence_settings}
+            # Camera FPS is experiment-planning truth, not a DIO-clock
+            # property. Normal production disables DIO0/DIO1 but still needs
+            # this value for the exposure/readout timing budget and metadata.
+            sequence["camera_fps"] = request.camera_fps
             sequence["camera_start_s"] = list(request.camera_start_s)
             sequence["camera_start_mode"] = "dynamic" if request.dynamic_camera_start else "fixed"
             sequence["camera_start_selected_s"] = start
@@ -391,6 +397,7 @@ def legacy_series_from_run_plan(plan: RunPlan) -> list[ExperimentSeries2]:
                 frequency_scan_selected_hz=condition.selected_frequency_hz,
                 flush_settings=FlushSettings(*condition.flush_settings),
                 flush_enabled=condition.flush_enabled, global_exposure_ms=condition.exposure_ms,
+                requested_exposure_ms=condition.exposure_ms,
                 trigger_global_exposure=condition.trigger_global_exposure,
                 sequence_settings={key: _thaw(value) for key, value in condition.sequence_settings},
                 wfg_config=_thaw(condition.wfg_config),

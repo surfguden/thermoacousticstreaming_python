@@ -24,7 +24,14 @@ Scan and requires an explicitly enabled/running CH0, all checked before AD2
 configuration. New owner-supplied wiring evidence identifies API channel 1 / W2
 as the laser Analog In path; normal production now rejects any enabled carrier
 or FM node on that channel before hardware configuration while its exact laser
-input semantics remain unresolved.
+input semantics remain unresolved. Camera FPS is now carried from the canonical
+`ExperimentRequest` into each condition's sequence metadata, so the applied
+exposure plus fresh DCAM readout-time budget is checked even though production
+DIO is disabled. TDMS preserves `RequestedExposureMs` and
+`AppliedExposureMs`; legacy `ExposureTime` remains the effective/applied value
+after camera configuration. The Experiment-tab `WaitAfterFlush` is the one
+operator-selected stabilization delay for that automated request; the manual
+Pump&Valve-tab value remains a separate manual-operation setting.
 
 ## CURRENT OWNER-SUPPLIED AD2 WIRING AND VERIFIED SOFTWARE MAPPING
 
@@ -130,6 +137,14 @@ External evidence used for this decision:
   [WaveForms instrument guide](https://files.digilent.com/manuals/WaveForms/3.25.1/start3.html)
   identifies the physical analog outputs as W1 and W2. This directly applies to
   the AD2/WaveForms API mapping; it does not identify the attached apparatus.
+- Digilent's [WaveForms reference manual](https://digilent.com/reference/software/waveforms/waveforms-3/reference-manual)
+  and [WaveForms SDK reference manual](https://digilent.com/reference/_media/reference/software/waveforms/waveforms-sdk/waveformssdk_reference_manual.pdf)
+  establish that `trigsrcNone` starts generation without waiting for a trigger,
+  while `trigsrcPC` waits in the Analog Out trigger state for a PC event before
+  the configured Wait/Run sequence. In this project, `trigsrcNone` is the
+  steady/pre-actuated default and `trigsrcPC` is the software shape for a future
+  onset experiment. Neither software call order nor vendor state semantics are
+  physical synchronization evidence for this apparatus.
 - The same-group Lund paper,
   [*Configurable thermoacoustic streaming by laser-induced temperature gradients*](https://journals.aps.org/prapplied/pdf/10.1103/PhysRevApplied.23.024043),
   identifies an approximately 2 MHz acoustic transducer, a fixed-power 785 nm
@@ -198,6 +213,19 @@ Current system-level USB topology:
   fresh applied ROI metadata; CH0 Repeat must equal 1; FM Sweep cannot coexist
   with Frequency Scan and cannot auto-enable CH0. This is software/fake-test
   readiness only and does not authorize a camera or AD2 session.
+- **SW-SCI-INTEGRITY-001:** normal Internal-trigger runs retain their requested
+  FPS independently of disabled DIO, reject an exposure/readout budget that
+  cannot sustain it before capture, and save requested and applied exposure
+  separately. `ExposureTime` remains backward-compatible and becomes the
+  applied DCAM value. `WaitAfterFlush` has one automated-request source and is
+  applied once after P02. `trigsrcNone` remains the steady/pre-actuated default;
+  `trigsrcPC` remains an explicitly selected future onset-mode mechanism, not a
+  claim of measured timing. Final affected-suite evidence: 410 passed. The
+  broad suite reported 659 passed, 1 skipped, and two documented
+  PySide/Shiboken lifetime-family failures; both failures passed immediately in
+  isolated fresh processes. Compileall, repository hygiene, change-surface
+  audit, and `git diff --check` passed. Offline evidence only; no device was
+  accessed.
 - **SW-AD2-ROUTING-001:** project Ch1 -> API 0 -> W1 is the acoustic output;
   project Ch2 -> API 1 -> W2 is the owner-identified laser Analog In cable.
   Planner and runtime guards prevent W2 from being enabled by stale settings.
@@ -258,6 +286,16 @@ Current system-level USB topology:
   oscilloscope; repository-controlled scope acquisition is not required.
 - **ARCH-PERSISTENCE-001:** the hardware-profile/protocol split waits for shared
   planning contracts to stabilize.
+- **SCI-RHB-CAL-001:** Rhodamine-B thermometry calibration linkage is deferred
+  and does not block current streaming experiments. Before thermometry becomes
+  active, calibration provenance must link illumination, requested/applied
+  exposure, relevant camera mode/gain, optical filters, calibration identifier
+  and date, and compatible experimental condition.
+- **SCI-TEC-EQUIL-001:** controller-reported TEC stability is not evidence that
+  fluid at the imaging plane has physically equilibrated. A future
+  temperature-controlled experiment needs a separately justified
+  imaging-plane equilibration criterion; no TEC logic or current run gate is
+  added here.
 
 ## RECENTLY CLOSED
 

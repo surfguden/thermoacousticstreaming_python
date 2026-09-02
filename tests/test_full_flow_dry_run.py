@@ -534,13 +534,14 @@ def finite_do_clock_config(*, camera_fps=10.0, enabled=True):
     }
 
 
-def test_camera_timing_budget_rejects_legacy_do_fps_exceeding_readout_budget(tmp_path):
+def test_camera_timing_budget_rejects_planned_fps_exceeding_readout_budget_without_dio(tmp_path):
     calls = []
     app = make_fake_app(calls, tmp_path)
     app.camera.read_readout_time = lambda: 0.05  # 50 ms readout for the configured ROI
     experiment = make_recording_experiment(calls, tmp_path)
     experiment.global_exposure_ms = 20.0  # 20 ms exposure -> 70 ms frame period -> ~14.3 fps max
-    experiment.do_clock_settings = finite_do_clock_config(camera_fps=100.0)
+    experiment.sequence_settings["camera_fps"] = 100.0
+    experiment.do_clock_settings = {"running": False, "channels": []}
     app.camera.configure_exposure_time(experiment.global_exposure_ms)
     with pytest.raises(ValueError) as exc_info:
         app._check_camera_timing_budget(experiment)
@@ -550,32 +551,34 @@ def test_camera_timing_budget_rejects_legacy_do_fps_exceeding_readout_budget(tmp
     assert ("camera", "start_capture") not in calls
 
 
-def test_camera_timing_budget_allows_legacy_do_fps_within_readout_budget(tmp_path):
+def test_camera_timing_budget_allows_planned_fps_within_readout_budget_without_dio(tmp_path):
     calls = []
     app = make_fake_app(calls, tmp_path)
     app.camera.read_readout_time = lambda: 0.005  # 5 ms readout for the configured ROI
     experiment = make_recording_experiment(calls, tmp_path)
     experiment.global_exposure_ms = 5.0  # 5 ms exposure -> 10 ms frame period -> 100 fps max
-    experiment.do_clock_settings = finite_do_clock_config(camera_fps=50.0)
+    experiment.sequence_settings["camera_fps"] = 50.0
+    experiment.do_clock_settings = {"running": False, "channels": []}
     app.camera.configure_exposure_time(experiment.global_exposure_ms)
     app._check_camera_timing_budget(experiment)
 
     assert ("camera", "start_capture") not in calls
 
 
-def test_run_experiment2_ignores_legacy_enabled_do_clock_for_fps_budget(tmp_path):
+def test_run_experiment2_enforces_planned_fps_budget_while_production_dio_is_disabled(tmp_path):
     calls = []
     app = make_fake_app(calls, tmp_path)
     app.camera.read_readout_time = lambda: 0.05
     experiment = make_recording_experiment(calls, tmp_path)
     experiment.global_exposure_ms = 20.0
+    experiment.sequence_settings["camera_fps"] = 1000.0
     experiment.do_clock_settings = finite_do_clock_config(camera_fps=1000.0, enabled=True)
     app.experiment_series.enqueue_experiments([experiment])
 
-    ok = app.run_experiment2()
+    with pytest.raises(ValueError, match="exceeds what the current exposure"):
+        app.run_experiment2()
 
-    assert ok is True
-    assert ("camera", "start_capture") in calls
+    assert ("camera", "start_capture") not in calls
     assert not any(call[:2] == ("ad2", "config_do_clock_special") for call in calls)
 
 

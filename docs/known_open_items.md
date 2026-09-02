@@ -30,6 +30,9 @@ below; the table does not replace their history.
 | HW-LASER-PATH-001 | LASER_INPUT_SEMANTICS_NEEDS_OWNER/MODEL_CONFIGURATION_CONFIRMATION | Laser gate / AD2 wiring | Camera+acoustic-only work is not blocked; camera+acoustic+software-gated laser is blocked | Owner photographs identify TOPTICA `iBEAM-SMART-785-S-HP` and confirm project Ch2 -> API 1 -> W2 -> BNC `J5` -> Analog In (SMB), with DIO1/green -> Digital In (SMB). TOPTICA confirms 1-MHz analog modulation, user-configurable high-/low-active behavior, optional TTL digital modulation, and mixed-mode capability. Public family documents do not establish the installed voltage range/transfer function, input impedances, active selections, digital option/configuration, or simultaneous input states required for emission. Production rejects enabled W2 and programs neither DIO line | Obtain the installed-unit configuration/manual values for Analog In and Digital In and retain the selected polarity/mode. Then design only the narrow fixed-level plus ON/OFF path actually required; continue independent optical-power calibration | A retained device-specific configuration plus separately authorized bounded verification establishes requested, electrical, and optical ON/OFF behavior without treating AD2 voltage, a protocol state, or the `<500 mW` safety label as optical-power evidence |
 | HW-AD2-BNC-001 | BNC_AWG_TERMINATION_PHYSICAL_CONFIRMATION_REQUIRED | AD2 / Digilent BNC Adapter | Actual loaded acoustic-amplifier and laser-control input voltages cannot be inferred from programmed AD2 values until the source/load termination is known | Official Digilent documentation identifies the adapter as SKU `410-263`, maps W1/W2 to BNC `J4`/`J5`, and shows `JP4`/`JP5` selecting direct 0-ohm or approximately 49.9-ohm series output paths. The owner-supplied board appearance is consistent with this product, but the available workspace has no readable owner photograph file from which to establish exact PCB revision or shunt positions | During a separately authorized powered-down visual inspection, retain a readable straight-on image of PCB revision text and both AWG jumpers; independently establish the acoustic-amplifier and laser-control BNC input impedances. Do not alter software merely because termination is unknown | PCB revision, JP4/JP5 positions, and both downstream load impedances are retained with provenance; any claimed downstream voltage is then derived from or measured under that exact loaded configuration |
 | SW-ACQ-DETERMINISM-001 | RESOLVED OFFLINE | Camera ROI / AD2 preflight | Stale ROI, infinite/unsupported CH0 repeat, and inconsistent sweep requests could make data scientifically ambiguous | Canonical plans carry requested ROI; runtime applies it, performs fresh readback, and saves applied ROI. Enabled CH0 requires Repeat=1. FM Sweep plus Frequency Scan and FM Sweep without explicit CH0 enable/running state fail before hardware configuration. Focused fake/planner/UI tests cover each boundary | Preserve these gates during hardware validation; do not rewrite persisted Repeat=0 behind the operator's back | One separately authorized minimal run confirms the software evidence model against current camera/AD2 hardware |
+| SW-SCI-INTEGRITY-001 | RESOLVED OFFLINE | Camera timing / experiment metadata / refresh semantics | A disabled production DO clock previously removed the camera FPS timing gate, and TDMS did not retain exposure quantization provenance | `ExperimentRequest.camera_fps` is carried into sequence planning and drives the applied-exposure plus fresh-readout budget with DIO disabled. TDMS retains requested and applied exposure plus compatible `ExposureTime`. The automated request has one `WaitAfterFlush` value, consumed once after P02; the manual-tab delay is separate. `trigsrcNone`/`trigsrcPC` help text follows Digilent's generator state semantics without claiming physical timing. Final affected suite: 410 passed; broad suite: 659 passed, 1 skipped, plus two known PySide lifetime failures that passed in isolation | Preserve the Internal-trigger/no-DIO default and re-run offline timing/metadata tests when these fields change | A separately authorized run can compare saved requested/applied metadata with the current camera; physical synchronization remains HW-TIMING-001, not part of this software closure |
+| SCI-RHB-CAL-001 | DEFERRED / NONBLOCKING | Fluorescence thermometry provenance | A later Rhodamine-B temperature result would be scientifically ambiguous without an explicit calibration link | No active RhB calibration workflow is connected to experiment records | Before enabling RhB thermometry, define a calibration identifier/date and compatibility contract covering illumination, requested/applied exposure, relevant camera mode/gain, filters, and experimental condition | A saved experiment references a compatible retained calibration without inferring compatibility from filenames or chronology |
+| SCI-TEC-EQUIL-001 | DEFERRED / NONBLOCKING | Temperature-controlled imaging | TEC controller stability does not prove fluid at the imaging plane is equilibrated | Current TEC settling observes controller channels only; no imaging-plane thermal measurement or validated transfer-time model exists | Before temperature-controlled scientific claims, define and validate an imaging-plane equilibration criterion; do not add an arbitrary universal hold here | Retained evidence links controller stability to an experimentally justified imaging-plane equilibrium criterion |
 | HW-VALVE-001 | OPEN FOR OPTIONAL DIRECT PHYSICAL CONFIRMATION | Valve / fluidics | Software position/command correspondence and owner-supplied route names are resolved; direct physical actuation evidence is not retained | Owner-supplied experimental hardware truth defines position 1 / `P01` as through-chip liquid exchange and position 2 / `P02` as chip bypass. Current `Valve.set_position()` maps 1 directly to `P01` and 2 directly to `P02`; the serial backend adds carriage return on transmission | If direct confirmation is desired, run one separately authorized, pump-inactive valve command and `S` readback at a time while observing the expected route; one position does not authorize the other | Both positions have separate requested, protocol-confirmed, and physically observed route records; until then retain the owner-supplied provenance explicitly |
 | HW-QMIX-CAN-001 | RESOLVED FOR STARTUP/NO-MOTION RECOVERY | Qmix / CAN | Startup events do not block the accepted no-motion recovery lifecycle; this does not establish motion readiness | H2A proved fresh pre-clear startup emergencies. H2B then completed five single-client trials with pre-clear `fault=True`, exactly one accepted `LCP_ClearFault`, immediate and +0.5/+1.5/+3.0 second `fault=False`, enabled/pumping false, clear-associated `0x0000` with no post-clear nonzero emergency, and clean stop/close in 5/5 | Preserve the clear-before-enable policy and retained evidence; reopen physical CAN/termination diagnosis only if recovery fails, relatches, or host/device evidence materially changes | Five representative trials distinguish command acknowledgement from stable recovery while retaining H2A's startup-event truth |
 | HW-PUMP-MOTION-001 | OPEN | Qmix pump | Reference, fill truth, and bounded motion remain unsafe to infer | H2B confirmed stable no-motion startup recovery. H1 read `position_sensing_initialized=true` in 5/5 trials, but the bundled wrapper identifies this Low Pressure pump as incremental-encoder hardware that loses position on power-off. Production initialization now checks the flag freshly after fault recovery and before enable, failing closed on `false` without enabling or commanding the pump. Flush now contains one target command between P01/P02 confirmations. Installed syringe identity, loading, travel, and harmless route remain physically unconfirmed | First perform a no-command operator-visible physical readiness inspection. Then separately authorize a fresh connection/readiness result and review reference timeout-stop behavior if the gate is false, followed by fill truth, stop latency, and one minimal motion in that order | Single-client recovery remains stable; syringe/loading/route and motion bounds are physically known; current position sensing is explicitly established or restored; reference, fill truth, stop latency, and one minimal motion are separately authorized and verified |
@@ -637,14 +640,20 @@ historical notes. This document is a live issue register, whereas
   (genuinely simultaneous dual-channel) code path, a `wait_until_stable()`
   timeout/abort real-hardware pass, and error-state surfacing (accepted
   gap, see above, not planned).**
-- **Camera trigger source Internal-vs-External unresolved.** Session 13
+- **Camera trigger source for the current mode is resolved; transient External
+  triggering remains deferred.** Session 13
   hardcoded `"Internal"` to remove undefined-leftover-state risk; Session 19
   traced the real LabVIEW call chain (`RunExperiment2.vi` ->
   `CreateExperiments.vi` -> `Experiment2_Init.vi` -> `ConfigureSequence.vi` ->
   `tm_inputtriggersource_40.vi`) and confirmed the actual wired value is not
   recoverable from exported VI diagrams (compiled block-diagram wiring, not
-  text) -- a genuine negative result, not a gap in effort. Needs oscilloscope
-  verification, not fixable from software alone. **Status: OPEN.**
+  text) -- a genuine negative result, not a gap in effort. The owner has now
+  selected Internal trigger for standard steady/quasi-steady acquisition, with
+  DIO0 physically connected but unprogrammed
+  (`CONNECTED_BUT_CURRENTLY_UNUSED`). External trigger/polarity and measured
+  timing are future transient-mode work, not a current-mode ambiguity. **Status:
+  CURRENT INTERNAL MODE RESOLVED; EXTERNAL/TRANSIENT PHYSICAL TIMING DEFERRED
+  UNDER HW-TIMING-001.**
 - **The manual Camera sequence controls are low-level operations, not a
   complete sequence-read workflow.** `start_capture()` starts the DCAM capture
   session and `sw_trigg()` sends a software trigger, but neither call transfers
@@ -807,6 +816,44 @@ historical notes. This document is a live issue register, whereas
   not the pre-fix ~5s full-timeout block.
 
 ## Active workflow: data-integrity items
+
+- **Camera timing and exposure provenance are resolved offline for the normal
+  Internal-trigger path.** The canonical plan now carries `camera_fps` without
+  relying on DIO0/DIO1. `Application._check_camera_timing_budget()` compares
+  that requested rate with the actual applied DCAM exposure plus fresh readout
+  time and rejects an infeasible combination before capture. TDMS writes
+  `RequestedExposureMs` from planning and `AppliedExposureMs` from camera
+  readback; `ExposureTime` is retained for compatibility and reports the
+  applied value once available. **Status: RESOLVED OFFLINE; this is not
+  physical trigger/synchronization evidence.**
+- **WaitAfterFlush has one value per automated experiment request.** The
+  Experiment-tab field is carried through `ExperimentRequest` -> `RunCondition`
+  -> `FlushSettings`, and `Application.flush()` waits that value once after
+  confirmed P02. The historical 2-s experiment preset and 5-s manual-tab preset
+  are separate workflow defaults, not competing authorities and not universal
+  settling claims. Both remain operator-overridable in their own surfaces.
+  **Status: RESOLVED; no settling model was added.**
+- **AD2 trigger-source semantics are explicit but physical timing remains
+  deferred.** Official Digilent documentation states that `trigsrcNone` starts
+  generation without waiting for a trigger, whereas `trigsrcPC` waits for a PC
+  event before the Wait/Run states. Current `trigsrcNone` therefore represents
+  steady/pre-actuated acquisition, consistent with the Lund experiment's
+  actuation-before-steady-state-acquisition procedure. `trigsrcPC` is the
+  software shape for future onset work. The later project `pc_trigger()` call
+  does not make `trigsrcNone` an onset trigger and does not prove camera/WFG
+  synchronization. **Status: SOFTWARE SEMANTICS RESOLVED; physical onset timing
+  remains HW-TIMING-001.**
+- **Rhodamine-B calibration linkage is deferred and nonblocking.** No active
+  thermometry path links a calibration run to a later experiment. Before RhB
+  thermometry is used, provenance must retain compatible illumination,
+  requested/applied exposure, relevant camera mode/gain, optical filters,
+  calibration identifier/date, and experimental condition. **Status: DEFERRED;
+  do not block current streaming experiments.**
+- **TEC stability is not imaging-plane equilibration.** The current controller
+  criterion cannot establish the fluid temperature at the camera's imaging
+  plane. A future temperature-controlled protocol needs an experimentally
+  justified equilibration criterion; no arbitrary hold or new TEC gate is
+  introduced now. **Status: DEFERRED; nonblocking for current work.**
 
 - **TDMS write verification's own field-count/content assertions are
   lightweight by design, not comprehensive.** Session 26/27 added a size

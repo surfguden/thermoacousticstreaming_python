@@ -669,6 +669,14 @@ class Application:
         return wait_seconds
 
     def _configured_camera_fps(self, experiment: Experiment2) -> float | None:
+        # Normal production records the canonical ExperimentRequest camera
+        # rate in sequence_settings. The DO clock is intentionally disabled
+        # there, so it cannot be the authority for camera timing. Retain the
+        # DO lookup only as a compatibility fallback for older/manual
+        # Experiment2 records that predate the independent planner field.
+        sequence_settings = experiment.sequence_settings or {}
+        if sequence_settings.get("camera_fps") is not None:
+            return float(sequence_settings["camera_fps"])
         do_config = coerce_do_config(experiment.do_clock_settings)
         for channel in do_config.channels:
             if channel.enable and channel.clock_frequency_hz:
@@ -680,8 +688,9 @@ class Application:
         # readout timing" check (LabVIEW's Camera tab shows a live-computed
         # "N is Vertical is max for <fps> fps" readback derived from DCAM's
         # own DCAM_IDPROP_TIMING_READOUTTIME; Python had no equivalent).
-        # camera_fps is read from the DO clock channel because that is the
-        # only place the intended frame rate is recorded on Experiment2.
+        # camera_fps comes from canonical experiment planning. It is
+        # deliberately independent of DIO0/DIO1 configuration: normal
+        # Internal-trigger acquisition programs neither digital line.
         camera_fps = self._configured_camera_fps(experiment)
         if camera_fps is None or camera_fps <= 0:
             return
@@ -1013,7 +1022,13 @@ class Application:
                 # hardware -- matches the manual Camera tab's _configure_camera(),
                 # which already calls it. Previously this path only updated
                 # self.camera.exposure_ms without ever pushing it to the device.
-                applied_exposure_ms = self.camera.configure_exposure_time(experiment.global_exposure_ms)
+                requested_exposure_ms = (
+                    experiment.global_exposure_ms
+                    if experiment.requested_exposure_ms is None
+                    else experiment.requested_exposure_ms
+                )
+                experiment.requested_exposure_ms = float(requested_exposure_ms)
+                applied_exposure_ms = self.camera.configure_exposure_time(requested_exposure_ms)
                 # Finding E (silent-failure/data-integrity sweep): configure_exposure_time()
                 # now returns the real applied exposure (DCAM's own internal
                 # quantization can differ slightly from the request); record that
@@ -1023,6 +1038,7 @@ class Application:
                 # path used twice already above) and keeps the "record what actually
                 # happened, not just what was requested" guarantee Finding A already
                 # established for WFGOutOfRange consistent for this field too.
+                experiment.applied_exposure_ms = float(applied_exposure_ms)
                 experiment.global_exposure_ms = applied_exposure_ms
                 experiment.save_settings()
 
