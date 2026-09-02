@@ -572,7 +572,7 @@ def test_v3_inherits_live_timing_for_ordinary_and_tec_series(monkeypatch, tmp_pa
     window = make_window(monkeypatch, tmp_path)
     try:
         assert window._refresh_series_timing.__func__ is qt_ui.MainWindow._refresh_series_timing
-        assert window._handle_worker_progress.__func__ is qt_ui_v2.MainWindowV2._handle_worker_progress
+        assert window._handle_worker_progress.__func__ is qt_ui_v3.MainWindowV3._handle_worker_progress
         assert window._run_experiment_series.__func__ is qt_ui.MainWindow._run_experiment_series
         assert window._run_temperature_experiment_series.__func__ is qt_ui.MainWindow._run_temperature_experiment_series
         window._handle_worker_progress(
@@ -922,6 +922,133 @@ def test_v3_shadow_preflight_rejects_fm_without_explicit_channel0(monkeypatch, t
         assert "FM Sweep requires Channel 0 to be explicitly enabled" in shadow.preflight.blocking_issues[0].message
         assert shadow.preflight.output_path_state == "implicit_working_directory"
     finally:
+        window.close()
+
+
+def test_v3_current_execution_derives_context_phase_next_and_subsystem_states(monkeypatch, tmp_path):
+    from thermo_acoustic.application import (
+        STEP_CAPTURE_FRAMES,
+        STEP_CONFIGURE_CAMERA,
+        STEP_CONFIGURE_WFG,
+    )
+
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        group = window.findChild(QGroupBox, "v3CurrentExecution")
+        boundary = window.findChild(QLabel, "v3ExecutionEvidenceBoundary")
+        assert group is not None
+        assert boundary is not None
+        assert "software" in boundary.text()
+        assert "not physical verification" in boundary.text()
+        assert "COMMAND_SENT is not upgraded" in boundary.text()
+
+        window._handle_worker_progress("experiment_series_active", True)
+        window._handle_worker_progress(
+            "execution_context",
+            {
+                "condition": "frequency_hz=2000000",
+                "repeat": 2,
+                "repeat_total": 4,
+                "temperature_point": None,
+                "subsystems": {
+                    "ad2": True,
+                    "camera": True,
+                    "sample_refresh": False,
+                    "tec": False,
+                    "record": True,
+                },
+                "ad2_wait_required": True,
+                "tec_condition_ready": False,
+            },
+        )
+        window._handle_worker_progress("step_reset", None)
+        window._handle_worker_progress("step_started", STEP_CONFIGURE_WFG)
+
+        assert window._v3_execution_condition.text() == "frequency_hz=2000000"
+        assert window._v3_execution_repeat.text() == "2 / 4"
+        assert window._v3_execution_phase.text() == "Configure AD2 waveform"
+        assert window._v3_execution_active.text() == "AD2 / acoustic control"
+        assert window._v3_execution_next.text() == "Configure camera"
+        assert window._v3_execution_subsystem_states["ad2"].text() == "ACTIVE"
+        assert window._v3_execution_subsystem_states["camera"].text() == "WAITING"
+        assert window._v3_execution_subsystem_states["sample_refresh"].text() == "DISABLED"
+        assert window._v3_execution_subsystem_states["tec"].text() == "DISABLED"
+        assert window._v3_execution_subsystem_states["record"].text() == "WAITING"
+
+        window._handle_worker_progress("step_completed", STEP_CONFIGURE_WFG)
+        window._handle_worker_progress("step_started", STEP_CONFIGURE_CAMERA)
+        assert window._v3_execution_active.text() == "Camera"
+        assert window._v3_execution_next.text() == "Capture frames and trigger enabled AD2"
+
+        window._handle_worker_progress("step_completed", STEP_CONFIGURE_CAMERA)
+        window._handle_worker_progress("step_started", STEP_CAPTURE_FRAMES)
+        assert window._v3_execution_active.text() == "AD2 / acoustic control, Camera"
+        window._handle_worker_progress("step_failed", (STEP_CAPTURE_FRAMES, "capture failed"))
+        assert window._v3_execution_phase.text().startswith("FAULTED —")
+        assert window._v3_execution_next.text() == "No next software action — current phase faulted"
+        assert window._v3_execution_subsystem_states["ad2"].text() == "FAULTED"
+        assert window._v3_execution_subsystem_states["camera"].text() == "FAULTED"
+    finally:
+        window._handle_worker_progress("experiment_series_active", False)
+        window.close()
+
+
+def test_v3_current_execution_retains_observed_outer_tec_progress_for_inner_repeat(monkeypatch, tmp_path):
+    from thermo_acoustic.application import STEP_SET_TEC_TARGET, STEP_WAIT_TEC_STABLE
+
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        window._handle_worker_progress("experiment_series_active", True)
+        window._handle_worker_progress(
+            "execution_context",
+            {
+                "condition": "temperature point 1/2: 20.000 C",
+                "repeat": None,
+                "repeat_total": 3,
+                "temperature_point": 1,
+                "subsystems": {
+                    "ad2": True,
+                    "camera": True,
+                    "sample_refresh": False,
+                    "tec": True,
+                    "record": True,
+                },
+                "ad2_wait_required": False,
+                "tec_condition_ready": False,
+            },
+        )
+        window._handle_worker_progress("step_reset", None)
+        window._handle_worker_progress("step_started", STEP_SET_TEC_TARGET)
+        assert window._v3_execution_active.text() == "TEC"
+        window._handle_worker_progress("step_completed", STEP_SET_TEC_TARGET)
+        window._handle_worker_progress("step_started", STEP_WAIT_TEC_STABLE)
+        assert window._v3_execution_phase.text() == "Wait for TEC controller stability"
+        window._handle_worker_progress("step_completed", STEP_WAIT_TEC_STABLE)
+
+        window._handle_worker_progress(
+            "execution_context",
+            {
+                "condition": "temperature_point_1:temperature_20C",
+                "repeat": 1,
+                "repeat_total": 3,
+                "temperature_point": 1,
+                "subsystems": {
+                    "ad2": True,
+                    "camera": True,
+                    "sample_refresh": False,
+                    "tec": True,
+                    "record": True,
+                },
+                "ad2_wait_required": None,
+                "tec_condition_ready": False,
+            },
+        )
+        window._handle_worker_progress("step_reset", None)
+        assert window._v3_execution_repeat.text() == "1 / 3"
+        assert window._v3_execution_subsystem_states["tec"].text() == "COMPLETED"
+        assert window._v3_execution_next.text() == "Initialize experiment record"
+    finally:
+        window._handle_worker_progress("experiment_series_active", False)
         window.close()
 
 

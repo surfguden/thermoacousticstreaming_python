@@ -24,7 +24,19 @@ from PySide6.QtWidgets import (
 )
 
 from .ad2 import coerce_do_config
-from .application import Application
+from .application import (
+    Application,
+    STEP_CAPTURE_FRAMES,
+    STEP_CONFIGURE_CAMERA,
+    STEP_CONFIGURE_WFG,
+    STEP_FLUSH,
+    STEP_INITIALIZE_EXPERIMENT,
+    STEP_ORDER,
+    STEP_SAVE_RESULTS,
+    STEP_SET_TEC_TARGET,
+    STEP_WAIT_FOR_AD2_COMPLETION,
+    STEP_WAIT_TEC_STABLE,
+)
 from .experiment_planning import (
     BuildResult,
     blocking_build_result,
@@ -213,8 +225,38 @@ class MainWindowV3(MainWindowV2):
         "Camera": (720, 560),
         "ZScan": (700, 360),
     }
+    _EXECUTION_STEP_TITLES = {
+        STEP_INITIALIZE_EXPERIMENT: "Initialize experiment record",
+        STEP_CONFIGURE_WFG: "Configure AD2 waveform",
+        STEP_CONFIGURE_CAMERA: "Configure camera",
+        STEP_CAPTURE_FRAMES: "Capture frames and trigger enabled AD2",
+        STEP_WAIT_FOR_AD2_COMPLETION: "Wait for programmed AD2 duration",
+        STEP_FLUSH: "Refresh sample",
+        STEP_SAVE_RESULTS: "Save repeat results",
+        STEP_SET_TEC_TARGET: "Set TEC target",
+        STEP_WAIT_TEC_STABLE: "Wait for TEC controller stability",
+    }
+    _EXECUTION_SUBSYSTEMS = (
+        ("ad2", "AD2 / acoustic control"),
+        ("camera", "Camera"),
+        ("sample_refresh", "Sample refresh"),
+        ("tec", "TEC"),
+        ("record", "Record / output"),
+    )
+    _EXECUTION_STEP_SUBSYSTEMS = {
+        STEP_INITIALIZE_EXPERIMENT: ("record",),
+        STEP_CONFIGURE_WFG: ("ad2",),
+        STEP_CONFIGURE_CAMERA: ("camera",),
+        STEP_CAPTURE_FRAMES: ("ad2", "camera"),
+        STEP_WAIT_FOR_AD2_COMPLETION: ("ad2",),
+        STEP_FLUSH: ("sample_refresh",),
+        STEP_SAVE_RESULTS: ("record",),
+        STEP_SET_TEC_TARGET: ("tec",),
+        STEP_WAIT_TEC_STABLE: ("tec",),
+    }
 
     def __init__(self, app: Application | None = None) -> None:
+        self._v3_execution_context: dict[str, object] = {}
         super().__init__(app=app)
         self.setWindowTitle("Thermoacoustic Streaming — Instrument Control (V3)")
         self.connection_button.setText("Initialize hardware")
@@ -429,6 +471,7 @@ class MainWindowV3(MainWindowV2):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
+        layout.addWidget(self._v3_current_execution_group(), 0)
         status = self._v2_status_progress_group()
         status.setObjectName("v3RunProgress")
         layout.addWidget(status, 0)
@@ -445,6 +488,57 @@ class MainWindowV3(MainWindowV2):
         lower.addLayout(right, 2)
         layout.addLayout(lower, 1)
         return page
+
+    def _v3_current_execution_group(self) -> QGroupBox:
+        group = QGroupBox("Current execution")
+        group.setObjectName("v3CurrentExecution")
+        grid = QGridLayout(group)
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(3)
+
+        self._v3_execution_condition = QLabel("No execution context")
+        self._v3_execution_repeat = QLabel("—")
+        self._v3_execution_phase = QLabel("IDLE")
+        self._v3_execution_active = QLabel("None")
+        self._v3_execution_next = QLabel("No queued software action")
+        values = (
+            self._v3_execution_condition,
+            self._v3_execution_repeat,
+            self._v3_execution_phase,
+            self._v3_execution_active,
+            self._v3_execution_next,
+        )
+        for label in values:
+            label.setWordWrap(True)
+        for column, (caption, label) in enumerate(
+            zip(("Condition", "Repeat", "Software phase", "Active now", "Next"), values)
+        ):
+            heading = QLabel(caption)
+            heading.setStyleSheet("font-weight: bold;")
+            grid.addWidget(heading, 0, column)
+            grid.addWidget(label, 1, column)
+
+        self._v3_execution_subsystem_states: dict[str, QLabel] = {}
+        for column, (key, caption) in enumerate(self._EXECUTION_SUBSYSTEMS):
+            heading = QLabel(caption)
+            heading.setStyleSheet("font-weight: bold;")
+            state = QLabel("DISABLED")
+            state.setObjectName(f"v3ExecutionSubsystem{key.title().replace('_', '')}")
+            self._v3_execution_subsystem_states[key] = state
+            grid.addWidget(heading, 2, column)
+            grid.addWidget(state, 3, column)
+
+        note = QLabel(
+            "Derived from the dequeued software plan and worker step events. ACTIVE means software is "
+            "executing that step; it is not physical verification, and COMMAND_SENT is not upgraded."
+        )
+        note.setObjectName("v3ExecutionEvidenceBoundary")
+        note.setWordWrap(True)
+        grid.addWidget(note, 4, 0, 1, 5)
+        for column in range(5):
+            grid.setColumnStretch(column, 1)
+        self._refresh_v3_current_execution()
+        return group
 
     def _v3_manual_service_workspace(self) -> QWidget:
         page = QWidget()
@@ -1729,6 +1823,148 @@ class MainWindowV3(MainWindowV2):
             f"Camera: {self._v3_camera_request_summary.text()}\n"
             f"Acoustic / W1: {self._v3_acoustic_request_summary.text()}"
         )
+
+    def _v3_execution_steps(self) -> list[str]:
+        context = self._v3_execution_context
+        steps: list[str] = []
+        if context.get("temperature_point") is not None and not context.get("tec_condition_ready", False):
+            steps.extend((STEP_SET_TEC_TARGET, STEP_WAIT_TEC_STABLE))
+        steps.extend(STEP_ORDER)
+        if not context.get("ad2_wait_required", False):
+            steps.remove(STEP_WAIT_FOR_AD2_COMPLETION)
+        if not bool(dict(context.get("subsystems", {})).get("sample_refresh", False)):
+            steps.remove(STEP_FLUSH)
+        return steps
+
+    def _refresh_v3_current_execution(self) -> None:
+        if not hasattr(self, "_v3_execution_phase"):
+            return
+        context = self._v3_execution_context
+        condition = str(context.get("condition") or "No execution context")
+        self._v3_execution_condition.setText(condition)
+        repeat = context.get("repeat")
+        repeat_total = context.get("repeat_total")
+        if repeat is None:
+            repeat_text = "Not started"
+        elif repeat_total is None:
+            repeat_text = str(repeat)
+        else:
+            repeat_text = f"{repeat} / {repeat_total}"
+        self._v3_execution_repeat.setText(repeat_text)
+
+        states = getattr(self, "_step_states", {})
+        steps = self._v3_execution_steps()
+        active_step = next((step for step in steps if states.get(step) == "active"), None)
+        failed_step = next((step for step in steps if states.get(step) == "failed"), None)
+        series_active = bool(getattr(self, "_experiment_series_active", False))
+        if failed_step is not None:
+            self._v3_execution_phase.setText(
+                f"FAULTED — {self._EXECUTION_STEP_TITLES.get(failed_step, failed_step)}"
+            )
+            next_text = "No next software action — current phase faulted"
+        elif active_step is not None:
+            self._v3_execution_phase.setText(self._EXECUTION_STEP_TITLES.get(active_step, active_step))
+            active_index = steps.index(active_step)
+            next_step = next(
+                (step for step in steps[active_index + 1 :] if states.get(step, "pending") == "pending"),
+                None,
+            )
+            next_text = (
+                self._EXECUTION_STEP_TITLES.get(next_step, str(next_step))
+                if next_step is not None
+                else "Complete current run unit"
+            )
+        else:
+            next_step = next((step for step in steps if states.get(step, "pending") == "pending"), None)
+            if series_active:
+                self._v3_execution_phase.setText("Between software phases")
+                next_text = (
+                    self._EXECUTION_STEP_TITLES.get(next_step, str(next_step))
+                    if next_step is not None
+                    else "Complete current run unit"
+                )
+            else:
+                all_completed = bool(steps) and all(states.get(step) == "completed" for step in steps)
+                self._v3_execution_phase.setText("COMPLETED" if all_completed else "IDLE")
+                next_text = "No queued software action"
+        self._v3_execution_next.setText(next_text)
+
+        enabled = dict(context.get("subsystems", {}))
+        active_subsystems = []
+        if active_step is not None:
+            for subsystem in self._EXECUTION_STEP_SUBSYSTEMS.get(active_step, ()):
+                if enabled.get(subsystem, False):
+                    active_subsystems.append(dict(self._EXECUTION_SUBSYSTEMS)[subsystem])
+        self._v3_execution_active.setText(
+            ", ".join(active_subsystems)
+            if active_subsystems
+            else "None — no enabled subsystem in the active software phase"
+            if active_step is not None
+            else "None"
+        )
+
+        for subsystem, _caption in self._EXECUTION_SUBSYSTEMS:
+            label = self._v3_execution_subsystem_states[subsystem]
+            if not enabled.get(subsystem, False):
+                status = "DISABLED"
+            else:
+                relevant = [
+                    step
+                    for step in steps
+                    if subsystem in self._EXECUTION_STEP_SUBSYSTEMS.get(step, ())
+                ]
+                relevant_states = [states.get(step, "pending") for step in relevant]
+                if "failed" in relevant_states:
+                    status = "FAULTED"
+                elif "active" in relevant_states:
+                    status = "ACTIVE"
+                elif subsystem == "tec" and context.get("tec_condition_ready", False):
+                    status = "COMPLETED"
+                elif relevant_states and all(state == "completed" for state in relevant_states):
+                    status = "COMPLETED"
+                else:
+                    status = "WAITING"
+            label.setText(status)
+            label.setStyleSheet(
+                "color: darkred; font-weight: bold;"
+                if status == "FAULTED"
+                else "color: dodgerblue; font-weight: bold;"
+                if status == "ACTIVE"
+                else "color: green; font-weight: bold;"
+                if status == "COMPLETED"
+                else "color: gray;"
+                if status == "DISABLED"
+                else ""
+            )
+
+    def _handle_worker_progress(self, kind: str, value) -> None:
+        if kind == "execution_context" and isinstance(value, dict):
+            next_context = dict(value)
+            # A per-repeat reset follows immediately, so retain the completed
+            # outer TEC progression only when the incoming repeat belongs to
+            # that same temperature point.  This is derived from received
+            # progress events, not inferred from requested TEC metadata.
+            if (
+                next_context.get("temperature_point") is not None
+                and next_context.get("temperature_point")
+                == self._v3_execution_context.get("temperature_point")
+                and getattr(self, "_step_states", {}).get(STEP_WAIT_TEC_STABLE) == "completed"
+            ):
+                next_context["tec_condition_ready"] = True
+            self._v3_execution_context = next_context
+        elif kind == "execution_context_update" and isinstance(value, dict):
+            self._v3_execution_context.update(value)
+        super()._handle_worker_progress(kind, value)
+        if kind in {
+            "execution_context",
+            "execution_context_update",
+            "experiment_series_active",
+            "step_reset",
+            "step_started",
+            "step_completed",
+            "step_failed",
+        }:
+            self._refresh_v3_current_execution()
 
     def _refresh_v3_relationships(self, _value=None) -> None:
         if not hasattr(self, "_v3_timing_labels"):

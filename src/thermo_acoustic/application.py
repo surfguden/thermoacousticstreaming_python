@@ -952,6 +952,42 @@ class Application:
             self.fire_status_event("NoExperiment")
             return False
         self._active_experiment = experiment
+        if progress:
+            # Presentation-only projection of the authoritative dequeued
+            # experiment and live software enable gates.  The Monitor uses
+            # this with the existing step_* events; it is not hardware
+            # telemetry and does not claim that any command or physical
+            # effect occurred.
+            progress(
+                "execution_context",
+                {
+                    "condition": experiment.action_condition,
+                    "repeat": experiment.repeat_id + 1,
+                    "repeat_total": experiment.planned_repeat_count,
+                    "temperature_point": (
+                        None
+                        if experiment.temperature_point_index is None
+                        else experiment.temperature_point_index + 1
+                    ),
+                    "subsystems": {
+                        "ad2": bool(self.ad2.enabled),
+                        "camera": bool(self.camera.enabled),
+                        "sample_refresh": bool(
+                            experiment.flush_enabled and self.pump.enabled and self.valve.enabled
+                        ),
+                        "tec": bool(
+                            experiment.temperature_point_index is not None and self.tec.enabled
+                        ),
+                        "record": True,
+                    },
+                    # Filled after the established validation/completion-budget
+                    # calculation runs inside InitializeExperiment.  Keeping it
+                    # unknown here avoids moving validation ahead of the action
+                    # scope merely for presentation.
+                    "ad2_wait_required": None,
+                    "tec_condition_ready": False,
+                },
+            )
         with action_scope(
             experiment.action_log_path,
             run_id=experiment.action_run_id,
@@ -1048,6 +1084,11 @@ class Application:
             progress("step_reset", None)
         with _report_step(progress, STEP_INITIALIZE_EXPERIMENT):
             ad2_wait_seconds = self._ad2_completion_wait_seconds(experiment)
+            if progress:
+                progress(
+                    "execution_context_update",
+                    {"ad2_wait_required": bool(self.ad2.enabled and ad2_wait_seconds > 0)},
+                )
 
             # Finding B (silent-failure/data-integrity sweep): record which
             # instruments were simulated for this specific run, read from live
@@ -1443,6 +1484,34 @@ class Application:
             target_label = f"{target:.3f} C" if isinstance(target, float) else (
                 ", ".join(f"ch{channel}={value:.3f}C" for channel, value in target.items())
             )
+            if progress:
+                first_experiment = group.experiments[0] if group.experiments else None
+                progress(
+                    "execution_context",
+                    {
+                        "condition": f"temperature point {group_index}/{len(experiment_groups)}: {target_label}",
+                        "repeat": None,
+                        "repeat_total": (
+                            None if first_experiment is None else first_experiment.planned_repeat_count
+                        ),
+                        "temperature_point": group_index,
+                        "temperature_point_total": len(experiment_groups),
+                        "subsystems": {
+                            "ad2": bool(self.ad2.enabled),
+                            "camera": bool(self.camera.enabled),
+                            "sample_refresh": bool(
+                                first_experiment is not None
+                                and first_experiment.flush_enabled
+                                and self.pump.enabled
+                                and self.valve.enabled
+                            ),
+                            "tec": bool(self.tec.enabled),
+                            "record": True,
+                        },
+                        "ad2_wait_required": False,
+                        "tec_condition_ready": False,
+                    },
+                )
             log_action(
                 "tec",
                 "temperature_condition_planned",

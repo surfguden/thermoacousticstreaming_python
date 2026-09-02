@@ -878,8 +878,9 @@ def test_run_experiment2_processes_one_experiment(tmp_path, monkeypatch):
         do_clock_settings={"secWait": 1},
     )
     app.experiment_series.enqueue_experiments([experiment])
+    progress_events = []
 
-    ok = app.run_experiment2()
+    ok = app.run_experiment2(progress=lambda kind, value: progress_events.append((kind, value)))
 
     assert ok
     assert app.experiment_series.see_elements_left() == 0
@@ -889,6 +890,23 @@ def test_run_experiment2_processes_one_experiment(tmp_path, monkeypatch):
     assert experiment.do_clock_settings.channels == []
     assert app.status == "ExperimentComplete"
     assert (tmp_path / "experiment-1").exists()
+    execution_context = next(value for kind, value in progress_events if kind == "execution_context")
+    assert execution_context["condition"] == "default"
+    assert execution_context["repeat"] == 1
+    assert execution_context["repeat_total"] is None
+    assert execution_context["subsystems"] == {
+        "ad2": True,
+        "camera": True,
+        "sample_refresh": False,
+        "tec": False,
+        "record": True,
+    }
+    assert execution_context["ad2_wait_required"] is None
+    context_update = next(value for kind, value in progress_events if kind == "execution_context_update")
+    assert context_update["ad2_wait_required"] is False
+    assert progress_events.index(("execution_context", execution_context)) < progress_events.index(
+        ("step_reset", None)
+    )
 
 
 def test_run_experiment2_finalizes_completed_record_with_explicit_identity(tmp_path, monkeypatch):
