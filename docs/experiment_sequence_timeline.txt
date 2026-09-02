@@ -1,0 +1,513 @@
+THERMO ACOUSTIC STREAMING - V3 EXPERIMENT SEQUENCE TIMELINE
+======================================================================
+
+Purpose
+-------
+
+This document explains the order and timing of one automated experiment
+repeat, how the sequence is repeated, and which v3 GUI settings change each
+part of the sequence.
+
+The document describes the current Python implementation. It does not claim
+that every requested AD2 or camera time has been physically measured. Where
+the software knows only an order, timeout, or requested hardware window, that
+limitation is stated explicitly.
+
+
+1. THREE TYPES OF TIME IN THIS PROGRAM
+--------------------------------------
+
+1. Software order
+   The code defines the order in which functions are called. For example, the
+   camera is armed before the shared AD2 PC-trigger call.
+
+2. Programmed/requested hardware time
+   WFG channel start/run values and the DIO1 pulse window are programmed in
+   seconds. The program calculates their requested starts and ends.
+
+3. Measured physical time
+   The exact physical relationship between AD2 AnalogOut, DIO1, the camera
+   exposure, and the PC-trigger call has not yet been bench verified. Camera
+   frame timestamps are read after acquisition, but they are in the camera's
+   clock domain and are not currently synchronized to the AD2 clock.
+
+In the timelines below:
+
+    [==========]  configured/requested timed output
+    o             software command or instantaneous event
+    ............  programmed delay before an output
+    ????????????  exact time is not determined before the run
+    ----------->  conditional wait or continuation
+
+
+2. SERIES-LEVEL PROCEDURE
+-------------------------
+
+Without a TEC temperature scan:
+
+    Start experiment
+          |
+          v
+    Validate/build the experiment series
+          |
+          v
+    Repeat 1 -> Repeat 2 -> ... -> Repeat N
+          |
+          v
+    Series complete
+
+GUI setting:
+
+    Series identity and inner repeats -> Series repeats
+
+This controls N, the number of Experiment2 repeats. Each repeat receives its
+own repeat_NNN output folder.
+
+If "Frequency scan across repeats" is enabled, one frequency-list value is
+assigned to WFG channel 0 for each repeat. The frequency count must equal
+Series repeats. This changes carrier frequency between repeats; it does not
+change the timing formulas below.
+
+If "Use per-repeat DIO1 pulse delays" is enabled, repeat i uses delay slot i
+from "Per-repeat DIO1 pulse delays (s)". There are currently ten slots, so a
+series requesting more than ten repeats is rejected in this mode.
+
+
+With a TEC temperature scan:
+
+    For each configured temperature point:
+
+        Set TEC target(s)
+              |
+              v
+        Wait until temperature is within tolerance continuously for the
+        configured minimum in-tolerance time
+              |
+              v
+        Optional post-stabilization hold
+              |
+              v
+        Run all Series repeats for this temperature point
+
+Relevant GUI settings under "TEC temperature scan":
+
+    Channel 1 points (deg C)
+    Channel relationship
+    Channel 2 points (deg C), when channels are unlocked
+    Target tolerance (deg C)
+    Minimum in-tolerance time (s)
+    Maximum wait per target (s)
+    Status poll interval (s)
+    Post-stabilization hold (s)
+
+A graceful stop is checked between repeats. During a TEC scan it is checked
+between complete temperature-point groups. An operation already in progress
+is allowed to finish.
+
+
+3. ONE AUTOMATED REPEAT - SOFTWARE ORDER
+----------------------------------------
+
+The current Application.run_experiment2() order is:
+
+    1. Create the repeat folder and initial data.tdms record.
+
+    2. Configure AD2:
+         - WFG channel 0
+         - WFG channel 1
+         - DIO1 pulse output
+
+    3. Configure camera:
+         - apply Experiment exposure time
+         - apply sequence settings
+         - force automated camera trigger source to Internal
+         - apply requested global-exposure reset mode
+         - verify that requested Camera FPS is not greater than the live
+           exposure-plus-readout timing budget
+
+    4. Start/arm camera capture.
+
+    5. Call ad2.pc_trigger(). This call is the t = 0 reference used below.
+
+    6. Request the configured number of camera frames and wait for the camera
+       frame-acquisition call to return.
+
+    7. Read camera frame timestamps and stop camera capture.
+
+    8. If any requested AD2 output window has not yet ended, wait only for the
+       remaining AD2 time.
+
+    9. If enabled, perform the flush sequence shown separately in section 7.
+
+   10. Save TIFF images, image metadata, camera settings, and the final TDMS
+       metadata for the repeat.
+
+
+4. ONE-REPEAT TIMELINE
+----------------------
+
+Time origin:
+
+    t = 0 is the host software call to ad2.pc_trigger().
+
+The camera.start_capture() call occurs immediately before t = 0 in software
+order. The image_sequence() call begins immediately after t = 0 in software
+order. "Immediately" here means sequential Python calls; the exact host and
+hardware latency is not measured by this timeline.
+
+Symbolic timeline:
+
+    Time from shared PC-trigger call
+
+                      t=0
+                       |
+    Software           o  shared AD2 PC trigger
+    Camera arm         o  immediately before t=0
+    Camera images      |?????????????????????????????|
+                       exact frame times unavailable before the run
+
+    Sound / WFG CH0    |...delay 0...[requested run 0]|
+                       start = WFG0_Start
+                       end   = WFG0_Start + WFG0_Run
+
+    Secondary WFG CH1  |...delay 1...[requested run 1]|
+                       start = WFG1_Start
+                       end   = WFG1_Start + WFG1_Run
+
+    Laser / DIO1       |...DIO delay...[pulse train]|
+                       start = DIO_Start
+                       end   = DIO_Start + Frames / Camera_FPS
+
+    AD2 completion     |---------------------------> T_AD2_End
+                       wait starts only after camera acquisition returns
+
+The shared AD2 completion time is:
+
+    WFG0_End = WFG0_Start + WFG0_Run, if WFG channel 0 is enabled
+    WFG1_End = WFG1_Start + WFG1_Run, if WFG channel 1 is enabled
+    DIO_End  = DIO_Start  + Frames / Camera_FPS
+
+    T_AD2_End = maximum of all enabled WFG and DIO ends
+
+After camera acquisition returns, the remaining wait is:
+
+    Remaining_AD2_Wait = max(
+        T_AD2_End - elapsed_time_since_PC_trigger,
+        0
+    )
+
+This means camera acquisition and AD2 output run in parallel. The program does
+not blindly wait for T_AD2_End after collecting images; it waits only for the
+remaining portion.
+
+An enabled WFG channel with Run duration = 0 means continuous output. Automated
+experiments reject that configuration because there would be no defined time
+at which flush/save could safely continue.
+
+
+5. GUI SETTINGS THAT CHANGE THE MAIN TIMELINE
+---------------------------------------------
+
+A. Sound / acoustic request: WFG channel 0
+
+GUI location:
+
+    AD2 Output -> Acoustic / primary analog output (AD2 channel 0)
+
+Timing controls:
+
+    Channel output / Enable
+        Includes or excludes this output from the repeat and completion time.
+
+    Start delay (s)
+        WFG0_Start. Moves the requested sound start left or right in time.
+
+    Run duration (s)
+        WFG0_Run. Changes the requested sound duration and WFG0_End.
+
+    Trigger source
+        Changes the AD2 trigger-source configuration. The exact physical
+        reference of sec_wait for every trigger-source choice has not yet been
+        bench measured.
+
+Signal-content controls that do not directly change start/end time:
+
+    Frequency, Amplitude, Offset, Function, Symmetry/Duty Cycle, Phase
+
+FM sweep controls change the frequency program within the same WFG0 run
+window. Frequency scan changes the base frequency between repeats.
+
+
+B. Secondary analog request: WFG channel 1
+
+GUI location:
+
+    AD2 Output -> Secondary analog output (AD2 channel 1)
+
+The Enable, Start delay, Run duration, Trigger source, and signal-content
+controls work independently from channel 0. The physical apparatus role of
+WFG channel 1 is still marked unverified in v3 and must not be assumed to be a
+camera or laser trigger.
+
+
+C. Laser/illumination request: DIO1 pulse train
+
+GUI location:
+
+    Camera / Experiment acquisition
+
+Controls and formulas:
+
+    DIO1 pulse rate (camera FPS)
+        DIO pulse frequency = Camera_FPS
+        Pulse period        = 1 / Camera_FPS
+
+    Frames per repeat
+        Requested DIO pulse-window duration = Frames / Camera_FPS
+        Also sets the number of frames requested from the camera.
+
+    Fixed DIO1 pulse start delay (s)
+        Used as DIO_Start for every repeat when dynamic delays are off.
+
+    Use per-repeat DIO1 pulse delays
+        Selects repeat-indexed delay slots instead of the fixed delay.
+
+    Per-repeat DIO1 pulse delays (s)
+        DIO_Start for the selected repeat when dynamic delays are on.
+
+The DIO1 line is described in the current UI/code as the LED/illumination
+clock. If this is the laser trigger in the physical setup, the cable/path must
+still be confirmed on the bench.
+
+
+D. Camera image acquisition
+
+GUI controls:
+
+    Frames per repeat
+        Number of frames requested by image_sequence().
+
+    Exposure time (ms)
+        Applied to the real camera before capture.
+
+    Request global exposure reset
+        Requests the camera's supported global-reset exposure mode when on.
+
+Inherited Camera Setup controls:
+
+    MasterPulse mode
+    MasterPulse source
+    MasterPulse interval
+    MasterPulse burst count
+
+Important limitation:
+
+    Automated experiments force the DCAM trigger source to Internal.
+    Therefore "DIO1 pulse rate (camera FPS)" programs DIO1 and participates in
+    a camera feasibility check, but it does not currently prove or enforce
+    DIO1-to-exposure synchronization.
+
+The exact camera-image positions cannot honestly be placed at DIO pulse times
+until DIO1 and a camera exposure monitor have been measured together. The
+saved camera timestamps are the best available per-frame timing evidence, but
+they are not currently transformed into the AD2 t = 0 clock domain.
+
+
+E. Completion wait
+
+There is no independent "AD2 completion wait" GUI value. It is derived from:
+
+    enabled WFG channel Start delay + Run duration values
+    DIO1 start delay
+    Frames / Camera FPS
+    actual elapsed frame-acquisition time
+
+
+6. WORKED ONE-REPEAT EXAMPLE
+----------------------------
+
+Illustrative GUI values:
+
+    WFG channel 0: enabled, Start delay = 1.0 s, Run duration = 4.0 s
+    WFG channel 1: enabled, Start delay = 2.0 s, Run duration = 5.0 s
+    Camera FPS:    10 fps
+    Frames:        30
+    DIO1 start:    0.5 s
+
+Calculated times:
+
+    WFG0: 1.0 s -> 5.0 s
+    WFG1: 2.0 s -> 7.0 s
+    DIO1 duration = 30 / 10 = 3.0 s
+    DIO1: 0.5 s -> 3.5 s
+    DIO1 pulse period = 1 / 10 = 0.1 s
+    Shared AD2 completion = max(5.0, 7.0, 3.5) = 7.0 s
+
+Approximate drawing of the programmed requests:
+
+    Time (s)       0       1       2       3       4       5       6       7
+                   |-------|-------|-------|-------|-------|-------|-------|
+    WFG CH0        ........[===============================]
+                            1.0                             5.0
+
+    WFG CH1        ................[=======================================]
+                                    2.0                                   7.0
+
+    DIO1 laser     ....[=======================]
+                       0.5                     3.5
+
+    Camera images  ????????????????????????????????????????????????????????
+                   armed before t=0; Internal trigger; exact t-values unknown
+
+    AD2 wait       begins only when camera collection returns, and ends at
+                   7.0 s if any remaining time exists.
+
+
+7. FLUSH SEQUENCE - SHOWN SEPARATELY
+------------------------------------
+
+Flush occurs only after camera capture and the required AD2 completion wait.
+It is not simultaneous with the sound, DIO1, or image-acquisition windows.
+
+The current flush order is:
+
+    Validate requested volume, flow rate, syringe capacity, and tracked fill
+          |
+          v
+    Command valve position P01
+          |
+          v
+    Wait until valve ready, with a 1.0 s timeout
+          |
+          v
+    Command pump to dispense the requested volume at the requested flow rate
+          |
+          v
+    Poll pump status until complete or until the movement timeout
+          |
+          v
+    Command valve position P02
+          |
+          v
+    Wait until valve ready, with a 1.0 s timeout
+          |
+          v
+    Wait for the configured WaitAfterFlush duration
+          |
+          v
+    Re-apply/finalize the tracked pump target level
+          |
+          v
+    FlushComplete
+
+Use a separate local flush time origin because the first valve-ready time is
+not known in advance:
+
+    tF = 0 is the pump-dispense command, after P01 reports ready.
+
+Nominal pump movement time:
+
+    Pump_nominal_s = (Flush_volume_ml * 1000 / Flow_rate_uL_per_min) * 60
+
+Pump timeout:
+
+    Pump_timeout_s = Pump_nominal_s + 5.0 s safety margin
+
+Separate flush timeline:
+
+    Before tF=0    o command P01
+                   ---------- wait for P01 ready, maximum 1.0 s
+
+    Pump           tF=0 [========== actual pump motion ==========]
+                         nominal duration = Pump_nominal_s
+                         hard deadline    = Pump_timeout_s
+
+    Valve P02             ? o command after actual pump completion
+                           ---------- wait for P02 ready, maximum 1.0 s
+
+    Post-flush wait          [ configured WaitAfterFlush ]
+                             starts after P02 reports ready
+
+    Finalize                 o final pump-level update, then FlushComplete
+
+Pump completion and valve-ready times are status-driven, so the absolute P02
+and post-flush-wait positions cannot be known exactly before the run.
+
+
+GUI settings under Fluidics / Flush settings:
+
+    Flush after capture
+        Enables or disables the complete flush sequence for every repeat.
+
+    Flush Flow Rate (uL/min)
+        Changes nominal pump time and timeout.
+
+    flush volume (ml)
+        Changes nominal pump time, timeout, and final tracked fill.
+
+    WaitAfterFlush
+        Exact configured waiting duration after P02 reports ready.
+
+    Selected syringe capacity
+        Used for the capacity safety check. It does not directly change the
+        nominal movement formula.
+
+Pump and Valve must both be enabled. If either is disabled, the automated
+runtime skips the flush and records the instrument-enabled state.
+
+
+Worked flush example:
+
+    Flush volume = 0.05 ml
+    Flow rate    = 200 uL/min
+    WaitAfterFlush = 2.0 s
+
+    Pump_nominal_s = (0.05 * 1000 / 200) * 60 = 15.0 s
+    Pump_timeout_s = 15.0 + 5.0 = 20.0 s
+
+    P01 readiness occurs before tF=0 and may take up to 1.0 s.
+    Pump command is issued at tF=0.
+    P02 is commanded when the pump actually reports completion.
+    After P02 reports ready, the program waits exactly 2.0 configured seconds.
+
+
+8. SETTINGS THAT CHANGE CONTENT BUT NOT THE BASIC ORDER
+-------------------------------------------------------
+
+The following settings change what happens inside a repeat without changing
+the sequence order shown above:
+
+    WFG frequency/amplitude/function/offset/symmetry/phase
+    FM sweep within a repeat
+    Frequency scan value selected for each repeat
+    Camera ROI (changes readout time and therefore FPS feasibility)
+    Output path (changes where files are written)
+    Simulation/enabled state of each device (may replace or skip hardware calls)
+
+
+9. SOURCE LOCATIONS
+-------------------
+
+The sequence described here is traced from:
+
+    src/thermo_acoustic/application.py
+        Application.run_experiment2()
+        Application._ad2_completion_wait_seconds()
+        Application.flush()
+        Application.run_temperature_series()
+
+    src/thermo_acoustic/qt_ui.py
+        MainWindow._build_experiment_series()
+        MainWindow._experiment_do_clock_config()
+        MainWindow._experiment_wfg_config()
+
+    src/thermo_acoustic/qt_ui_v3.py
+        v3 labels, grouping, derived timing summaries, and GUI relationships
+
+    src/thermo_acoustic/workflows.py
+        Experiment2
+        ExperimentSeries2
+        FlushSettings.timeout_s
+
+    src/thermo_acoustic/hamamatsu_dcam.py
+        camera sequence and trigger property application
