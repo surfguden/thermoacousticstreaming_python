@@ -121,7 +121,7 @@ operation.
 
 | Software | AD2 | Digilent BNC Adapter | External route | Current classification |
 | --- | --- | --- | --- | --- |
-| Project Ch1 / `exp_ad2_channels[0]` / WaveForms API index 0 | W1 | W1 BNC `J4`; `JP4` selects direct or approximately 49.9-ohm series path | Acoustic amplifier -> transducer | Software mapping, official connector semantics, owner wiring, and physical connector confirmed. Installed termination and downstream loaded voltage unverified. |
+| Project Ch1 / `exp_ad2_channels[0]` / WaveForms API index 0 | W1 | W1 BNC `J4`; `JP4` selects direct or 49.9-ohm series path | Acoustic amplifier -> transducer | Software mapping, official connector semantics, owner wiring, and physical connector confirmed. Installed JP4 position, amplifier identity/input impedance/gain, current transducer identity, and downstream voltage are unverified; W1 commissioning is blocked. |
 | Project Ch2 / `exp_ad2_channels[1]` / WaveForms API index 1 | W2 | W2 BNC `J5`; `JP5` selects direct or approximately 49.9-ohm series path | TOPTICA laser Analog In | Physical route confirmed by owner evidence; exact input range, impedance, transfer function, polarity, and enable semantics unresolved. Normal production fails closed if W2 is enabled. |
 | No normal-production digital-output request | DIO0, pink | `J6` pass-through; no BNC or AWG jumper | Camera `EXT.TRIG` | Physically connected but unused in normal Internal-trigger acquisition. External/transient timing deferred. |
 | Explicit disabled normal-production digital-output payload | DIO1, green | `J6` pass-through; no BNC or AWG jumper | TOPTICA laser Digital In | Physically connected but unprogrammed. Installed digital-option/configuration and active semantics unresolved. |
@@ -139,16 +139,187 @@ is derived or measured.
 
 | Subsystem | Current identity/path | What remains unproven |
 | --- | --- | --- |
-| Camera | Hamamatsu ORCA-Fusion BT `C15440-20UP`, S/N `500478`; photograph, Windows enumeration, and bounded read-only open/close evidence | Physical trigger/exposure timing; normal mode remains Internal |
-| AD2 | Analog Discovery 2, retained enumeration `SN:210321A18CE2`; W1 acoustic route; official BNC Adapter family | Current USB route, JP4/JP5 positions, loaded downstream voltage, acoustic pressure, physical timing |
-| Laser | TOPTICA `iBEAM-SMART-785-S-HP`, approximately 785/787-nm class, Class 3B | Exact Analog/Digital input semantics and actual optical power; safety label is not power evidence |
+| Camera | Hamamatsu ORCA-Fusion BT `C15440-20UP`, S/N `500478`; photograph, Windows enumeration, and fresh 2026-09-02 USB3 identity plus bounded camera-only acquisition evidence | Physical trigger/exposure timing; normal mode remains Internal |
+| AD2 | Analog Discovery 2, freshly enumerated 2026-09-02 as `SN:210321A18CE2`; W1 acoustic route; official BNC Adapter family | JP4/JP5 positions, loaded downstream voltage, acoustic pressure, physical timing |
+| Acoustic amplifier | Owner route says W1/J4 -> amplifier -> transducer; no exact manufacturer/model, settings, input impedance, gain, or output/load specification is retained | All electrical limits and transfer behavior needed before energized W1 |
+| Acoustic transducer | Lund apparatus used Ferroperm/Meggitt Pz26, `30 x 4.0 x 1.0 mm`, bonded to the chip glass lid; this is a prior-apparatus candidate, not current physical identity | Owner confirmation that the installed element is that part; assembled impedance/resonance and safe-drive evidence |
+| Laser | TOPTICA `iBEAM-SMART-785-S-HP`, nominal 785-nm family, Class 3B; exact model string is owner-label evidence | Exact installed rated power/options, Analog/Digital electrical input semantics, and actual optical power; safety/model label is not power-at-sample evidence |
 | Pump | One CETONI Low-pressure module 14:1: `NEM-B101-02 E 5`, `CET-003455-1505`; logical node `neMESYS_Low_Pressure_1_Pump`, node 2 | Exact base/interface identity, installed syringe/loading/travel, harmless route, fill truth, stop latency, bounded motion |
-| Valve | `COM5`, 19200 baud, MX Series II protocol; software position 1 -> `P01`, position 2 -> `P02`; owner route truth: P01 through-chip, P02 bypass | Exact SKU and independent physical observation of each route |
+| Valve | `COM5`, 19200 baud, IDEX/Rheodyne MX Series II protocol family; software position 1 -> `P01`, position 2 -> `P02`; owner route truth: P01 through-chip, P02 bypass | `MODEL_IDENTITY_REQUIRED`: readable manufacturer/model/part/serial label; independent physical observation of each route |
 | Z | Current manual path is Thorlabs `PPC001`/`PFM450E` through Kinesis; candidate controller serial `44533854` | Fresh identity, direction, scale, travel, and microscope physical datum. Prior/COM7 is historical compatibility only. |
-| TEC | Meerstetter `TEC 1123-HV` candidate identity on `COM6`; read-only status and narrowly authorized dual-channel Static OFF evidence retained | Fresh exact identity and any active target behavior beyond the retained scope; controller stability is not imaging-plane equilibrium |
+| TEC | Meerstetter `TEC-1123-HV`, retained photo-confirmed identity with SDK-reported type 1123/serial beginning `509...`, firmware 5.10, on `COM6`; read-only status and narrowly authorized dual-channel Static OFF evidence retained | Any active target behavior beyond retained scope; controller stability is not imaging-plane equilibrium |
 
 Do not reinterpret device label strings as serial/article numbers unless the
 retained evidence explicitly establishes that meaning.
+
+### 2026-09-02 minimal-commissioning electrical closure
+
+Camera-only Gate 2 is accepted and must not be repeated. The bounded run used
+the real USB3 camera with simulated AD2, Internal trigger, one repeat, three
+frames at requested 10 FPS, requested ROI `x=0, y=792, 2304 x 740`, and requested
+40 ms exposure. Fresh readback retained the requested ROI and an applied
+exposure of approximately 40.0005 ms; the run completed with three TIFFs and no
+primary or cleanup failure. This proves bounded acquisition/save behavior, not
+sample visibility, synchronization, or acoustic streaming.
+
+The following exact-model facts are established from official manufacturer
+documentation:
+
+- The ORCA-Fusion BT `C15440-20UP` is a 2304 x 2304, 6.5-micrometre-pixel,
+  C-mount camera. In Normal Area Mode with DCAM-API, horizontal and vertical ROI
+  size and position have four-pixel/four-line minimum steps. USB3 full-frame
+  Fast scan is limited by the documented transfer modes; this does not replace
+  fresh requested/applied timing evidence.
+- Camera power is 12 VDC at the camera; the supplied AC adapter accepts
+  100-240 VAC, 50/60 Hz. USB3 and CoaXPress must not be connected
+  simultaneously, and changing between them requires closing the application
+  and powering the camera off. `EXT.TRIG` accepts TTL or 3.3 V LVCMOS into
+  10 kohm and supports selectable rising/falling polarity. Normal Area Mode
+  supports edge, level, global-reset edge/level, synchronous-readout, and start
+  triggering as documented; current production intentionally uses Internal.
+  `TIMING 1/2/3` are 3.3 V LVCMOS outputs with 33-ohm output impedance and
+  cable-dependent termination. Exposure ranges are 17 microseconds-10 seconds
+  Fast, 65 microseconds-10 seconds Standard, and 280 microseconds-10 seconds
+  Ultra Quiet; actual exposure is quantized upward, which agrees with the
+  requested/applied distinction already retained by production. Initialization
+  is indicated by blinking orange before steady green. DCAM device strings
+  provide bus/model/camera ID; current fresh evidence resolves USB3,
+  `C15440-20UP`, and S/N `500478` without relying on device index alone.
+- Analog Discovery 2 W1/W2 are single-ended 14-bit, 100 MS/s waveform outputs.
+  The recommended operating range is within approximately +/-5 V, with
+  approximately 10 mA recommended output current and 4 MHz 0.5 dB bandwidth.
+  Absolute limits are not commissioning targets. A near-2 MHz carrier is
+  inside the nominal bandwidth but its delivered voltage remains load- and
+  frequency-dependent.
+- Native W1/W2 output impedance is nominally zero ohm. Disabled/closed output
+  is near 0 V, not high impedance. Carrier amplitude is peak amplitude (the
+  official 1 V sample is 2 V peak-to-peak); offset plus instantaneous amplitude
+  must remain inside the available output range. DIO is 3.3 V LVCMOS with 4 mA
+  drive, 220-ohm series PTC protection, and push-pull/open-drain/open-source/
+  tri-state modes; protection ratings are not normal operating levels. The SDK
+  exposes device name and a unique serial through `FDwfEnumDeviceName` and
+  `FDwfEnumSN`, matching the repository enumeration path. The AD2 carrier
+  buffer is up to 16 KiS and its two-channel AM/FM buffer is 2 KiS.
+- The official Digilent BNC Adapter is SKU `410-263`; the published schematic
+  is document/assembly `500-263`, circuit revision `C.0`. `J4` is W1, `J5` is
+  W2, and `J1`/`J3` are Scope Ch1/Ch2. The 30-pin header passes through DIO,
+  trigger, supply, and remaining ground signals. The board is passive:
+  scope jumpers select coupling, while `JP4` and `JP5` select a direct path or
+  a path through `R1`/`R2 = 49.9 ohm` in series with W1/W2. It does not provide
+  gain, isolation, or a 50-ohm shunt load.
+
+Official SDK reconciliation also found a pre-output software blocker. The
+installed Digilent WaveForms/SDK 3.22.1 manual confirms carrier amplitude is in
+volts while FM-node amplitude is modulation index in percent; the installed
+official `analogout_sweep.cpp` computes a start-to-stop sweep index as:
+
+```text
+100 * (stop_hz - start_hz) / (start_hz + stop_hz)
+= 100 * total_width_hz / (2 * center_hz)
+```
+
+`FmSweepSettings.fm_amplitude_pct` currently computes
+`100 * total_width_hz / center_hz`. Under the same total-width definition used
+by its own `top_hz`/`bottom_hz`, that is twice the official SDK formula: a
+requested 50 kHz total span around 1.934 MHz would request approximately a
+100 kHz total span. Triangle/RampUp/RampDown enum values and FM node 1 are
+otherwise confirmed against the official installed `dwf.h`. This closure does
+not authorize production development, so implementation is unchanged; the
+factor-of-two defect must be corrected and offline-tested before Gate 3/Gate 4.
+
+For a sinusoidal source command represented by open/high-impedance amplitude
+`V_source`, the simple downstream amplifier-input model is:
+
+```text
+V_amplifier_input = V_source * Z_input / (R_source + Z_input)
+R_source = approximately 0 ohm or 49.9 ohm according to installed JP4
+```
+
+`Z_input` is generally complex and frequency-dependent. A high-impedance input
+receives nearly the commanded voltage in either jumper position; a nominal
+50-ohm input receives approximately half the source voltage through the 49.9-ohm
+path. Amplifier gain and output/load interaction are then required to estimate
+transducer voltage. Acoustic pressure additionally requires a calibrated
+electro-acoustic model or measurement. None of those downstream quantities may
+be inferred from the AD2 command alone.
+
+The 2025 Lund apparatus paper identifies a Ferroperm/Meggitt Pz26 element,
+`30 x 4.0 x 1.0 mm`, bonded to the glass lid and reports a function-generator
+setting of 3 Vpp near 2 MHz. It does not identify or describe an amplifier.
+Therefore 3 Vpp is `PRIOR_LUND_APPARATUS`, not evidence for the present
+W1 -> BNC Adapter -> amplifier -> transducer chain. The historical project
+0.1 V bounded AD2 output is `PRIOR_PROJECT_HARDWARE_OUTPUT`, but retained
+evidence does not establish the same amplifier settings, load, JP4 state, or
+transducer. The historical 2 V configuration is software/screenshot evidence
+only and was explicitly marked do-not-run. None of these values establishes a
+defensible first energized amplitude for the current chain.
+
+Commissioning is therefore stopped before Gate 3/Gate 4 and before any W1
+output. Closure requires all of the following retained owner/physical evidence:
+
+1. readable amplifier manufacturer/model and front/rear labels, including the
+   active input, output, gain/range/mode settings, and any 50-ohm termination;
+2. an exact-manual value for amplifier input impedance and gain/transfer limits
+   at approximately 1.9-2.0 MHz, plus compatible output/load limits;
+3. a powered-down cable trace from BNC Adapter `J4` through the amplifier to the
+   bonded transducer, including cable/termination details;
+4. a readable close-up of installed `JP4` relative to its PCB silkscreen and
+   the adapter PCB revision;
+5. owner confirmation or retained order/build evidence identifying the current
+   bonded transducer, including whether it is the Lund Pz26
+   `30 x 4.0 x 1.0 mm` element; and
+6. same-chain prior-use evidence or an owner-approved, electrically derived
+   first-run amplitude stated unambiguously as AD2 peak, peak-to-peak, or RMS,
+   with frequency/sweep, duration, amplifier settings, and termination.
+
+Primary sources: [Hamamatsu C15440-20UP/-20UP01 instruction manual](https://camera.hamamatsu.com/content/dam/hamamatsu-photonics/sites/static/sys/en/manual/C15440-20UP,-20UP01_IM_En.pdf),
+[Digilent Analog Discovery 2 reference manual](https://digilent.com/reference/_media/reference/test-and-measurement/analog-discovery-2/ad2_rm.pdf),
+[Digilent Analog Discovery 2 getting-started specifications](https://files.digilent.com/manuals/WaveForms/3.25.1/start3.html),
+[Digilent BNC Adapter product page](https://digilent.com/shop/bnc-adapter-for-analog-discovery/),
+[Digilent Discovery BNC schematic](https://digilent.com/reference/_media/reference/test-and-measurement/bnc-adapter-board/discovery_bnc_sch.pdf),
+[Ferroperm Pz26 datasheet](https://www.ferropermpiezoceramics.com/wp-content/uploads/2021/10/Datasheet-hard-pz26.pdf), and
+[Lund/APS apparatus paper](https://journals.aps.org/prapplied/pdf/10.1103/PhysRevApplied.23.024043).
+The exact FM formula and enum evidence also comes from the locally installed
+official Digilent WaveForms SDK 3.22.1 reference manual, `dwf.h`, and
+`samples/c/analogout_sweep.cpp`; no device was opened to inspect them.
+
+### Deferred-device remote closure
+
+- TOPTICA's current official iBeam smart family documentation establishes
+  nominal 785 nm family availability, analog modulation on all family units up
+  to 1 MHz, user-configurable high/low-active behavior, mixed analog/digital
+  modulation capability, electronic-shutter complete-off behavior, RS232 up to
+  115200 baud, and 12 VDC supply. Digital modulation is explicitly optional;
+  family capability does not prove it is installed. Public material does not
+  establish the exact Analog In range/impedance or the installed unit's option
+  set. Resolve those later without emission through a serial-specific manual or
+  configuration record, TOPAS/RS232 read-only option/configuration query, or
+  TOPTICA support. Laser remains disabled and is not an acoustic-run blocker.
+- The exact retained CETONI pump label is `NEM-B101-02 E 5`,
+  `CET-003455-1505`, 14:1. The official Low Pressure manual covers
+  `NEM-B101-02 E`, specifies 24 VDC/0.3 A/7 W, CAN at 1 Mbit/s, optional RS232
+  at 115200 8-N-1 with no flow control, 6-30 mm syringe outside diameter, and
+  piston travel up to 65 mm. These model limits support existing software
+  bounds but do not establish installed syringe, position, fill, or harmless
+  route. H2B is not reopened.
+- The external COM5 MX Series II valve's protocol family and commands are
+  retained, but no exact SKU is present in repository evidence; its label is
+  still `MODEL_IDENTITY_REQUIRED`. This does not block a run with refresh off.
+- Thorlabs documentation identifies the `PFM450E` as a matched 450-micrometre
+  objective focus mount/controller set using `PPC001`; retained serial
+  `44533854` remains historical identity evidence. Direction, scale, travel,
+  and microscope datum remain physical-only and deferred with Z disabled.
+- Retained photo/SDK evidence already closes the TEC model as
+  Meerstetter `TEC-1123-HV`, not merely a candidate. Official specifications
+  identify dual +/-16 A, 0-30 V channels, 12-36 VDC input, USB/RS485, and
+  supported temperature-probe families. These are model limits, not measured
+  present output. TEC remains disabled and imaging-plane equilibrium remains
+  unresolved.
+
+Deferred-device sources: [TOPTICA iBeam smart official specifications](https://www.toptica.com/fileadmin/Editors_English/11_brochures_datasheets/01_brochures/toptica_iBeam_smart_sp.pdf),
+[CETONI neMESYS Low Pressure hardware manual](https://cetoni.com/downloads/manuals/Manual_Hardware_Nemesys_LowPressure_EN.pdf),
+[Thorlabs PFM450E/PPC001 manual](https://media.thorlabs.com/contentassets/e92d618c92c94cea9096b3f231859611/etn018233-d02.pdf), and
+[Meerstetter TEC-1123-HV specifications](https://www.meerstetter.ch/products/tec-controllers/tec-1123-hv).
 
 ### Pump and refresh boundary
 
@@ -263,21 +434,20 @@ Do not reopen these without new contradictory evidence:
 
 ## Current readiness and next step
 
-Offline software status: the camera+AD2 steady/quasi-steady path is ready for an
-independent pre-hardware readiness review. This statement is not hardware
-authorization and does not claim physical calibration.
+Camera-only Gate 2 is accepted. Acoustic commissioning is not ready for two
+independent reasons: exact amplifier/load/termination/current-transducer
+evidence is insufficient to select a defensible first W1 amplitude, and the
+current FM total-width translation is twice the official SDK formula. No W1
+output is allowed until both are closed.
 
 ### Next real project step
 
-Perform the separately requested **PRE-HARDWARE READINESS REVIEW** against the
-clean pushed Documentation Convergence checkpoint. Its only gate question is
-whether a concrete software defect makes one minimal real Internal-trigger
-camera + finite Acoustic/W1 fast-FM run unsafe, uninterpretable, or
-undiagnosable. Do not start hardware as part of that review.
-
-If that review returns ready, the next action is a separately authorized minimal
-real camera+AD2 run with laser software control, DIO, pump/refresh, TEC, and Z
-disabled.
+Obtain and retain the six amplifier/transducer/JP4 facts listed in the
+2026-09-02 electrical-closure section, and separately authorize correction and
+offline validation of the FM factor-of-two defect. Then derive and
+independently review a first-run AD2 amplitude against the exact chain. Do not
+energize W1 or resume Gate 3/Gate 4 until both closures are explicit and the
+hardware run is separately authorized.
 
 ### Deferred capabilities
 
