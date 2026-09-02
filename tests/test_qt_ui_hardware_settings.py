@@ -2580,7 +2580,7 @@ def test_zscan_uses_the_initialized_application_stage_and_never_constructs_a_def
     assert window._zscan_active is False
 
 
-def test_zscan_and_manual_focus_interlock_and_unavailable_owned_stage_fail_closed(monkeypatch, tmp_path):
+def test_zscan_and_focus_interlock_and_unavailable_owned_stage_fail_closed(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
     window._zscan_active = True
     window._update_manual_focus_controls()
