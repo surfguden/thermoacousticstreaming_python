@@ -605,13 +605,24 @@ class Experiment2:
                 "FMSweepEnabled": False,
                 "FMSweepCenterHz": "",
                 "FMSweepWidthKHz": "",
+                "FMSweepStartHz": "",
+                "FMSweepStopHz": "",
+                "FMSweepTotalSpanHz": "",
+                "FMSweepHalfDeviationHz": "",
+                "FMSweepModulationIndexPercent": "",
                 "FMSweepTimeMs": "",
                 "FMSweepType": "",
             }
         return {
             "FMSweepEnabled": True,
             "FMSweepCenterHz": self.fm_sweep.center_hz,
-            "FMSweepWidthKHz": self.fm_sweep.width_hz / 1000.0,
+            # Retained compatibility field; Width means total start-to-stop span.
+            "FMSweepWidthKHz": self.fm_sweep.total_span_hz / 1000.0,
+            "FMSweepStartHz": self.fm_sweep.start_hz,
+            "FMSweepStopHz": self.fm_sweep.stop_hz,
+            "FMSweepTotalSpanHz": self.fm_sweep.total_span_hz,
+            "FMSweepHalfDeviationHz": self.fm_sweep.half_deviation_hz,
+            "FMSweepModulationIndexPercent": self.fm_sweep.fm_modulation_index_pct,
             "FMSweepTimeMs": self.fm_sweep.sweep_time_ms,
             "FMSweepType": str(self.fm_sweep.sweep_type),
         }

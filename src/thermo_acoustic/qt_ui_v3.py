@@ -1015,7 +1015,8 @@ class MainWindowV3(MainWindowV2):
         fm_page = QWidget()
         fm_layout = QVBoxLayout(fm_page)
         fm_note = QLabel(
-            "Equivalent inputs: Start / Stop ↔ Center / Width. Editing either pair synchronizes the other."
+            "Start / Stop are authoritative. Center and Total Span (stop − start) are equivalent "
+            "derived inputs; AD2 FM index uses half-deviation (Total Span ÷ 2)."
         )
         fm_note.setObjectName("v3FmEquivalentInputsNote")
         fm_note.setWordWrap(True)
@@ -1435,6 +1436,11 @@ class MainWindowV3(MainWindowV2):
             self.exp_freq_scan_step_khz,
             self.exp_freq_scan_start_khz,
             self.exp_freq_scan_stop_khz,
+            self.exp_sweep_start_khz,
+            self.exp_sweep_stop_khz,
+            self.exp_sweep_center_khz,
+            self.exp_sweep_width_khz,
+            self.exp_sweep_time_ms,
             self.exp_flush_flowrate,
             self.exp_flush_volume,
             self.exp_wait_after_flush,
@@ -1460,6 +1466,7 @@ class MainWindowV3(MainWindowV2):
         self.series_path.textChanged.connect(self._refresh_v3_relationships)
         self.exp_tec_points.textChanged.connect(self._refresh_v3_relationships)
         self.exp_tec_points_ch2.textChanged.connect(self._refresh_v3_relationships)
+        self.exp_sweep_type.currentTextChanged.connect(self._refresh_v3_relationships)
 
     @staticmethod
     def _v3_seconds(value: float) -> str:
@@ -2114,9 +2121,13 @@ class MainWindowV3(MainWindowV2):
             f"start {channel0['sec_wait'].value():g} s, run {channel0['sec_run'].value():g} s."
         )
         if self.exp_sweep_enable.isChecked():
+            sweep = self._experiment_fm_sweep_settings()
             acoustic_request += (
                 f" Fast FM sweep {self.exp_sweep_start_khz.value():g}–{self.exp_sweep_stop_khz.value():g} kHz, "
-                f"{self.exp_sweep_time_ms.value():g} ms, {self.exp_sweep_type.currentText()}."
+                f"total span {sweep.total_span_hz / 1000.0:g} kHz, "
+                f"±{sweep.half_deviation_hz / 1000.0:g} kHz, AD2 FM index "
+                f"{sweep.fm_modulation_index_pct:.6g}%, {self.exp_sweep_time_ms.value():g} ms, "
+                f"{self.exp_sweep_type.currentText()}."
             )
         elif scan_enabled:
             acoustic_request += f" Frequency scan across {scan_count} repeat(s)."

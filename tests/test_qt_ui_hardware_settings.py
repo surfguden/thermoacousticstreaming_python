@@ -1874,7 +1874,7 @@ def test_frequency_fields_display_khz_but_round_trip_to_correct_hz_hardware_valu
     manual_state["sweep_stop_khz"].setValue(1959.0)
     sweep = window._fm_sweep_settings_from_state(manual_state)
     assert sweep.center_hz == 1_934_000.0
-    assert sweep.width_hz == 50_000.0
+    assert sweep.total_span_hz == 50_000.0
 
     # Experiment tab: Carrier "Frequency (kHz)" and Sweep "Start/Stop Frequency (kHz)".
     window.exp_ch1_freq.setValue(1900.0)
@@ -1885,7 +1885,7 @@ def test_frequency_fields_display_khz_but_round_trip_to_correct_hz_hardware_valu
     window.exp_sweep_stop_khz.setValue(1959.0)
     experiment_sweep = window._experiment_fm_sweep_settings()
     assert experiment_sweep.center_hz == 1_934_000.0
-    assert experiment_sweep.width_hz == 50_000.0
+    assert experiment_sweep.total_span_hz == 50_000.0
 
 
 def test_fm_sweep_toggle_off_preserves_existing_experiment_behavior(monkeypatch, tmp_path):
@@ -1929,18 +1929,23 @@ def test_fm_sweep_toggle_on_carries_settings_into_experiment_wfg_config(monkeypa
     assert ch0.carrier.enable is True
     assert ch0.fm_mod.enable is True
     assert ch0.fm_mod.frequency_hz == 1000.0
-    assert ch0.fm_mod.amplitude_v == pytest.approx(2.585, abs=1e-3)
+    assert ch0.fm_mod.amplitude_v == pytest.approx(1.2926577)
     assert ch0.fm_mod.function == qt_ui.WaveformFunction.TRIANGLE
 
     assert experiment.fm_sweep is not None
     assert experiment.fm_sweep.center_hz == 1_934_000.0
-    assert experiment.fm_sweep.width_hz == 50_000.0
+    assert experiment.fm_sweep.total_span_hz == 50_000.0
     assert experiment.fm_sweep.sweep_time_ms == 1.0
 
     properties = experiment._settings_properties()
     assert properties["FMSweepEnabled"] is True
     assert properties["FMSweepCenterHz"] == 1_934_000.0
     assert properties["FMSweepWidthKHz"] == 50.0
+    assert properties["FMSweepStartHz"] == 1_909_000.0
+    assert properties["FMSweepStopHz"] == 1_959_000.0
+    assert properties["FMSweepTotalSpanHz"] == 50_000.0
+    assert properties["FMSweepHalfDeviationHz"] == 25_000.0
+    assert properties["FMSweepModulationIndexPercent"] == pytest.approx(1.2926577)
     assert properties["FMSweepTimeMs"] == 1.0
     assert properties["FMSweepType"] == "Symmetric"
 
@@ -1969,7 +1974,7 @@ def test_fm_sweep_dual_mode_start_stop_and_center_width_stay_in_sync(monkeypatch
     manual_state["sweep_width_khz"].setValue(50.0)
     sweep = window._fm_sweep_settings_from_state(manual_state)
     assert sweep.center_hz == 1_934_000.0
-    assert sweep.width_hz == 50_000.0
+    assert sweep.total_span_hz == 50_000.0
 
     # Experiment tab.
     window.exp_sweep_start_khz.setValue(1909.0)
@@ -1983,7 +1988,7 @@ def test_fm_sweep_dual_mode_start_stop_and_center_width_stay_in_sync(monkeypatch
     assert window.exp_sweep_stop_khz.value() == pytest.approx(1959.0)
     experiment_sweep = window._experiment_fm_sweep_settings()
     assert experiment_sweep.center_hz == 1_934_000.0
-    assert experiment_sweep.width_hz == 50_000.0
+    assert experiment_sweep.total_span_hz == 50_000.0
 
 
 def test_frequency_scanning_off_keeps_wfg_config_identical_across_repeats(monkeypatch, tmp_path):

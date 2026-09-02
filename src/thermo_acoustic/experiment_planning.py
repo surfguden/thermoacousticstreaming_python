@@ -115,6 +115,7 @@ class ExperimentRequest:
     flush_settings: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 60.0)
     exposure_ms: float = 0.0
     trigger_global_exposure: bool = False
+    # Authoritative tuple: (start_hz, stop_hz, sweep_time_ms, sweep_type).
     fm_sweep: tuple[float, float, float, str] | None = None
 
     def __post_init__(self) -> None:
@@ -177,6 +178,7 @@ class RunCondition:
     flush_enabled: bool
     exposure_ms: float
     trigger_global_exposure: bool
+    # Authoritative tuple: (start_hz, stop_hz, sweep_time_ms, sweep_type).
     fm_sweep: tuple[float, float, float, str] | None
 
     def normalized(self) -> dict[str, Any]:
@@ -330,6 +332,11 @@ def build_independent_run_plan(request: ExperimentRequest) -> RunPlan:
         raise ValueError(
             "FM Sweep requires Channel 0 to be explicitly enabled and the waveform generator to be running."
         )
+    sweep = None
+    if request.fm_sweep_enabled and request.channel0_waveform_function != "DC":
+        if request.fm_sweep is None:
+            raise ValueError("FM Sweep is enabled but no start/stop sweep request was supplied.")
+        sweep = FmSweepSettings.from_endpoints(*request.fm_sweep)
     if (
         wfg_template.running
         and channel0 is not None
@@ -367,6 +374,9 @@ def build_independent_run_plan(request: ExperimentRequest) -> RunPlan:
             selected = request.frequency_values_hz[repeat_id] if scan_effective else None
             if selected is not None:
                 wfg["channels"][0]["carrier"]["frequency_hz"] = selected
+            if sweep is not None:
+                wfg["channels"][0]["carrier"]["frequency_hz"] = sweep.center_hz
+                wfg["channels"][0]["fm_mod"] = asdict(sweep.fm_mod_settings())
             sequence = {key: _thaw(value) for key, value in request.sequence_settings}
             # Camera FPS is experiment-planning truth, not a DIO-clock
             # property. Normal production disables DIO0/DIO1 but still needs
@@ -380,7 +390,7 @@ def build_independent_run_plan(request: ExperimentRequest) -> RunPlan:
                 tuple((key, _freeze_value(value)) for key, value in sequence.items()),
                 request.flush_settings, request.flush_enabled,
                 request.exposure_ms, request.trigger_global_exposure,
-                request.fm_sweep if request.fm_sweep_enabled and request.channel0_waveform_function != "DC" else None))
+                request.fm_sweep if sweep is not None else None))
     return RunPlan(request.output_path, tuple(conditions), tuple([request.repeats_per_group] * len(targets)), request.frames * len(conditions))
 
 
@@ -402,7 +412,7 @@ def legacy_series_from_run_plan(plan: RunPlan) -> list[ExperimentSeries2]:
                 sequence_settings={key: _thaw(value) for key, value in condition.sequence_settings},
                 wfg_config=_thaw(condition.wfg_config),
                 do_clock_settings=coerce_do_config(_thaw(condition.do_config)),
-                fm_sweep=(FmSweepSettings(*condition.fm_sweep) if condition.fm_sweep is not None else None),
+                fm_sweep=(FmSweepSettings.from_endpoints(*condition.fm_sweep) if condition.fm_sweep is not None else None),
                 tec_target_c=dict(condition.temperature_targets_c).get(1),
                 tec_targets_c=dict(condition.temperature_targets_c) or None,
             ))

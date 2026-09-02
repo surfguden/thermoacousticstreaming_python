@@ -1398,9 +1398,9 @@ class MainWindow(QMainWindow):
         )
         self.exp_sweep_type = _combo(["Symmetric", "RampUp", "RampDown"], "Symmetric")
         exp_sweep_dual_mode_tip = (
-            "Start/Stop and Center/Width are both live inputs for the same underlying value -- "
+            "Start/Stop and Center/Total Span are both live inputs for the same underlying value -- "
             "editing either pair updates the other to match (center_hz=(start+stop)/2, "
-            "width_hz=|stop-start|). Unlike the manual WFG tab's own Sweep group, enabling this "
+            "total_span_hz=stop-start; half-deviation=total span/2). Unlike the manual WFG tab's own Sweep group, enabling this "
             "one DOES apply to real automated Experiment runs (Session 16)."
         )
         for widget in (self.exp_sweep_start_khz, self.exp_sweep_stop_khz, self.exp_sweep_center_khz, self.exp_sweep_width_khz):
@@ -1802,9 +1802,9 @@ class MainWindow(QMainWindow):
             "this section's own header note."
         )
         sweep_dual_mode_tip = (
-            "Start/Stop and Center/Width are both live inputs for the same underlying value -- "
+            "Start/Stop and Center/Total Span are both live inputs for the same underlying value -- "
             "editing either pair updates the other to match (center_hz=(start+stop)/2, "
-            "width_hz=|stop-start|). Continuous ms-scale sweep within a single acoustic drive, "
+            "total_span_hz=stop-start; half-deviation=total span/2). Continuous ms-scale sweep within a single acoustic drive, "
             "distinct from Frequency Scanning's discrete per-repeat substitution."
         )
         for key in ("sweep_start_khz", "sweep_stop_khz", "sweep_center_khz", "sweep_width_khz"):
@@ -2322,17 +2322,15 @@ class MainWindow(QMainWindow):
         sync_center_width_from_start_stop()
 
     def _fm_sweep_settings_from_state(self, state: dict[str, object]) -> FmSweepSettings:
-        # Start/Stop and Center/Width are kept in sync (see
+        # Start/Stop and Center/Total Span are kept in sync (see
         # _connect_sweep_dual_mode_refresh()); reading Start/Stop here is
-        # equivalent to reading Center/Width. FmSweepSettings' own FM-node
-        # math is unchanged from Session 16 either way.
+        # equivalent to reading Center/Total Span. Endpoints are authoritative
+        # so the AD2 modulation index cannot silently reinterpret total span as
+        # a one-sided deviation.
         start_hz = state["sweep_start_khz"].value() * 1000.0
         stop_hz = state["sweep_stop_khz"].value() * 1000.0
-        return FmSweepSettings(
-            center_hz=(start_hz + stop_hz) / 2.0,
-            width_hz=abs(stop_hz - start_hz),
-            sweep_time_ms=state["sweep_time_ms"].value(),
-            sweep_type=state["sweep_type"].currentText(),
+        return FmSweepSettings.from_endpoints(
+            start_hz, stop_hz, state["sweep_time_ms"].value(), state["sweep_type"].currentText()
         )
 
     def _mso_tab(self) -> QWidget:
@@ -3383,7 +3381,7 @@ class MainWindow(QMainWindow):
             sweep.addRow(f"{channel_label} Sweep Start Frequency (kHz)", self.exp_sweep_start_khz)
             sweep.addRow(f"{channel_label} Sweep Stop Frequency (kHz)", self.exp_sweep_stop_khz)
             sweep.addRow(f"{channel_label} Sweep Center Frequency (kHz)", self.exp_sweep_center_khz)
-            sweep.addRow(f"{channel_label} Sweep Width (kHz)", self.exp_sweep_width_khz)
+            sweep.addRow(f"{channel_label} Total Span, Start-to-Stop (kHz)", self.exp_sweep_width_khz)
             sweep.addRow(f"{channel_label} Sweep Time (ms)", self.exp_sweep_time_ms)
             sweep.addRow(f"{channel_label} Sweep Type", self.exp_sweep_type)
             # Unlike the manual WFG tab's own Sweep group, enabling this one
@@ -3555,7 +3553,7 @@ class MainWindow(QMainWindow):
         form.addRow("Sweep Start Frequency (kHz)", self.exp_sweep_start_khz)
         form.addRow("Sweep Stop Frequency (kHz)", self.exp_sweep_stop_khz)
         form.addRow("Sweep Center Frequency (kHz)", self.exp_sweep_center_khz)
-        form.addRow("Sweep Width (kHz)", self.exp_sweep_width_khz)
+        form.addRow("Total Span, Start-to-Stop (kHz)", self.exp_sweep_width_khz)
         form.addRow("Sweep Time (ms)", self.exp_sweep_time_ms)
         form.addRow("Sweep Type", self.exp_sweep_type)
         # v1's own call lives inside _add_experiment_channel_sections(), which
@@ -3785,17 +3783,14 @@ class MainWindow(QMainWindow):
         return [start_hz + step * index for index in range(count)]
 
     def _experiment_fm_sweep_settings(self) -> FmSweepSettings:
-        # Start/Stop and Center/Width are kept in sync by
+        # Start/Stop and Center/Total Span are kept in sync by
         # _connect_sweep_dual_mode_refresh(); reading Start/Stop here is
-        # equivalent to reading Center/Width. FmSweepSettings and everything
-        # downstream of it are unchanged from Session 16.
+        # equivalent to reading Center/Total Span. Endpoints remain
+        # authoritative through planning and AD2 translation.
         start_hz = self.exp_sweep_start_khz.value() * 1000.0
         stop_hz = self.exp_sweep_stop_khz.value() * 1000.0
-        return FmSweepSettings(
-            center_hz=(start_hz + stop_hz) / 2.0,
-            width_hz=abs(stop_hz - start_hz),
-            sweep_time_ms=self.exp_sweep_time_ms.value(),
-            sweep_type=self.exp_sweep_type.currentText(),
+        return FmSweepSettings.from_endpoints(
+            start_hz, stop_hz, self.exp_sweep_time_ms.value(), self.exp_sweep_type.currentText()
         )
 
     _SYRINGE_VOLUMES_ML = {
@@ -4458,7 +4453,7 @@ class MainWindow(QMainWindow):
         fm_sweep = None
         if self.exp_sweep_enable.isChecked() and self.exp_ch1_function.currentText() != WaveformFunction.DC.value:
             sweep = self._experiment_fm_sweep_settings()
-            fm_sweep = (sweep.center_hz, sweep.width_hz, sweep.sweep_time_ms, sweep.sweep_type)
+            fm_sweep = (sweep.start_hz, sweep.stop_hz, sweep.sweep_time_ms, sweep.sweep_type)
         sequence = self._experiment_camera_defaults().sequence_settings(
             frames=self.exp_frames.value(), trigger_source_override="Internal"
         )

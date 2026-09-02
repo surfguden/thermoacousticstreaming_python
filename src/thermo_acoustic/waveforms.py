@@ -464,6 +464,24 @@ class WaveFormsBackend:
                 effective_fm: dict[str, object] | None = None
                 if channel.fm_mod.enable:
                     fm_out_of_range, effective_fm = self._configure_analog_node(h, idx, 1, channel.fm_mod)
+                    # Node 1's shared ``amplitude_v`` storage is not volts in
+                    # FM mode; Digilent defines it as modulation index (%).
+                    # These derived endpoints use the post-clamp SDK values
+                    # and are not a measured electrical-output claim.
+                    fm_index_pct = float(effective_fm["amplitude_v"])
+                    carrier_center_hz = float(effective_carrier["frequency_hz"])
+                    half_deviation_hz = carrier_center_hz * abs(fm_index_pct) / 100.0
+                    effective_fm.update(
+                        {
+                            "node_quantity": "fm_modulation_index_percent",
+                            "modulation_index_percent": fm_index_pct,
+                            "derived_start_hz": carrier_center_hz - half_deviation_hz,
+                            "derived_stop_hz": carrier_center_hz + half_deviation_hz,
+                            "derived_total_span_hz": 2.0 * half_deviation_hz,
+                            "derived_half_deviation_hz": half_deviation_hz,
+                            "derivation_scope": "SOFTWARE_FROM_EFFECTIVE_SDK_PARAMETERS_NOT_MEASURED",
+                        }
+                    )
                 # Session 51: never assigned True anywhere before this -- WfgConfig.
                 # check_valid()/wfg_check_config_valid() existed but had no producer,
                 # so they always reported "valid" regardless of what was actually

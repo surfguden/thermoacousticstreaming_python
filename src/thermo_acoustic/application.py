@@ -1010,6 +1010,11 @@ class Application:
                     "requested_exposure_ms": experiment.requested_exposure_ms,
                     "sequence_settings": experiment.sequence_settings,
                     "wfg_config": experiment.wfg_config,
+                    "fm_sweep": (
+                        experiment.fm_sweep.requested_evidence()
+                        if hasattr(experiment.fm_sweep, "requested_evidence")
+                        else experiment.fm_sweep
+                    ),
                     "flush_enabled": experiment.flush_enabled,
                     "flush_settings": experiment.flush_settings,
                 },

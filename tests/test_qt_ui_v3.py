@@ -357,11 +357,11 @@ def test_v3_main_ad2_settings_use_channel_tabs_without_horizontal_overflow(monke
             "Sweep Start Frequency (kHz)",
             "Sweep Stop Frequency (kHz)",
             "Sweep Center Frequency (kHz)",
-            "Sweep Width (kHz)",
+            "Total Span, Start-to-Stop (kHz)",
             "Number of Frequencies",
             "Step size (kHz) [0 = Count]",
         } <= modulation_labels
-        assert "Equivalent inputs: Start / Stop ↔ Center / Width" in window.findChild(
+        assert "Start / Stop are authoritative" in window.findChild(
             QLabel, "v3FmEquivalentInputsNote"
         ).text()
         assert "Step Size > 0 derives Number of Frequencies" in window.findChild(
@@ -702,6 +702,13 @@ def test_v3_plan_exposes_axes_sequence_camera_request_and_evidence_boundaries(mo
         assert "FM Sweep and Frequency Scan cannot be enabled together" in warnings.text()
         window.exp_freq_scan_enable.setChecked(False)
         assert "FM Sweep requires Channel 0 to be explicitly enabled" in warnings.text()
+        window.exp_ad2_channels[0]["enable"].setChecked(True)
+        window.exp_sweep_start_khz.setValue(1909.0)
+        window.exp_sweep_stop_khz.setValue(1959.0)
+        assert "1909–1959 kHz" in acoustic.text()
+        assert "total span 50 kHz" in acoustic.text()
+        assert "±25 kHz" in acoustic.text()
+        assert "AD2 FM index 1.29266%" in acoustic.text()
     finally:
         window.close()
 

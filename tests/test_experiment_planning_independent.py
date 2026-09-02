@@ -79,7 +79,7 @@ def test_independent_plan_adapter_preserves_static_execution_semantics(
         fm_sweep_enabled=fm, dynamic_camera_start=dynamic,
         tec_scan_enabled=bool(tec_targets), temperature_targets_c=tec_targets,
         flush_enabled=flush, device_modes=device_modes, wfg_templates=(_wfg(function),),
-        fm_sweep=(100_000.0, 20_000.0, 2.0, "Symmetric") if fm and function != "DC" else None,
+        fm_sweep=(90_000.0, 110_000.0, 2.0, "Symmetric") if fm and function != "DC" else None,
     )
     plan = build_independent_run_plan(request)
     series = legacy_series_from_run_plan(plan)
@@ -176,6 +176,34 @@ def test_fm_sweep_rejects_frequency_scan_and_requires_explicit_channel0_enable()
     not_running["running"] = False
     with pytest.raises(ValueError, match="waveform generator to be running"):
         build_independent_run_plan(_request(fm_sweep_enabled=True, wfg_templates=(not_running,)))
+
+
+def test_fm_sweep_endpoints_are_authoritative_through_plan_and_adapter():
+    plan = build_independent_run_plan(
+        _request(
+            fm_sweep_enabled=True,
+            fm_sweep=(1_909_000.0, 1_959_000.0, 1.0, "Symmetric"),
+            wfg_templates=(_wfg(),),
+        )
+    )
+
+    condition = plan.conditions[0]
+    channel = condition.wfg_config.value_for("channels").values[0]
+    experiment = legacy_series_from_run_plan(plan)[0].experiments[0]
+    assert condition.fm_sweep == (1_909_000.0, 1_959_000.0, 1.0, "Symmetric")
+    assert channel.value_for("carrier").value_for("frequency_hz") == 1_934_000.0
+    assert channel.value_for("fm_mod").value_for("amplitude_v") == pytest.approx(1.2926577)
+    assert experiment.fm_sweep.start_hz == 1_909_000.0
+    assert experiment.fm_sweep.stop_hz == 1_959_000.0
+
+
+def test_fm_sweep_plan_rejects_missing_or_zero_width_endpoint_request():
+    with pytest.raises(ValueError, match="no start/stop"):
+        build_independent_run_plan(_request(fm_sweep_enabled=True, fm_sweep=None))
+    with pytest.raises(ValueError, match="stop must be greater than start"):
+        build_independent_run_plan(
+            _request(fm_sweep_enabled=True, fm_sweep=(1_934_000.0, 1_934_000.0, 1.0, "Symmetric"))
+        )
 
 
 def test_run_plan_contains_no_legacy_experiment_objects():

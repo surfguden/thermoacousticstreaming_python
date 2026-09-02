@@ -121,7 +121,7 @@ operation.
 
 | Software | AD2 | Digilent BNC Adapter | External route | Current classification |
 | --- | --- | --- | --- | --- |
-| Project Ch1 / `exp_ad2_channels[0]` / WaveForms API index 0 | W1 | W1 BNC `J4`; `JP4` selects direct or 49.9-ohm series path | Acoustic amplifier -> transducer | Software mapping, official connector semantics, owner wiring, and physical connector confirmed. Installed JP4 position, amplifier identity/input impedance/gain, current transducer identity, and downstream voltage are unverified; W1 commissioning is blocked. |
+| Project Ch1 / `exp_ad2_channels[0]` / WaveForms API index 0 | W1 | W1 BNC `J4`; `JP4` selects direct or 49.9-ohm series path | Custom laboratory acoustic amplifier -> transducer | Software mapping, official connector semantics, owner wiring, and current custom-amplifier enclosure are owner/photo confirmed. Installed JP4 position, exact external connector roles, amplifier input impedance/gain/output envelope, current transducer identity, and downstream voltage are unverified; W1 commissioning is blocked. |
 | Project Ch2 / `exp_ad2_channels[1]` / WaveForms API index 1 | W2 | W2 BNC `J5`; `JP5` selects direct or approximately 49.9-ohm series path | TOPTICA laser Analog In | Physical route confirmed by owner evidence; exact input range, impedance, transfer function, polarity, and enable semantics unresolved. Normal production fails closed if W2 is enabled. |
 | No normal-production digital-output request | DIO0, pink | `J6` pass-through; no BNC or AWG jumper | Camera `EXT.TRIG` | Physically connected but unused in normal Internal-trigger acquisition. External/transient timing deferred. |
 | Explicit disabled normal-production digital-output payload | DIO1, green | `J6` pass-through; no BNC or AWG jumper | TOPTICA laser Digital In | Physically connected but unprogrammed. Installed digital-option/configuration and active semantics unresolved. |
@@ -141,7 +141,7 @@ is derived or measured.
 | --- | --- | --- |
 | Camera | Hamamatsu ORCA-Fusion BT `C15440-20UP`, S/N `500478`; photograph, Windows enumeration, and fresh 2026-09-02 USB3 identity plus bounded camera-only acquisition evidence | Physical trigger/exposure timing; normal mode remains Internal |
 | AD2 | Analog Discovery 2, freshly enumerated 2026-09-02 as `SN:210321A18CE2`; W1 acoustic route; official BNC Adapter family | JP4/JP5 positions, loaded downstream voltage, acoustic pressure, physical timing |
-| Acoustic amplifier | Owner route says W1/J4 -> amplifier -> transducer; no exact manufacturer/model, settings, input impedance, gain, or output/load specification is retained | All electrical limits and transfer behavior needed before energized W1 |
+| Acoustic amplifier | Custom/home-built mains-powered laboratory unit. Owner-supplied current photographs show a metal enclosure with IEC entry/switch, external coax/BNC-type connectors, and handwritten engineering annotations; no commercial manufacturer/model label is visible. | `CUSTOM_ACOUSTIC_AMPLIFIER_CHARACTERIZATION_REQUIRED`: external input/output connector roles, controls, approximate input impedance and gain near 1.9-2.0 MHz, plausible output range/load, limiting/clipping indication, and same-chain history/build evidence needed before energized W1. Blurry annotation values are not evidence. |
 | Acoustic transducer | Lund apparatus used Ferroperm/Meggitt Pz26, `30 x 4.0 x 1.0 mm`, bonded to the chip glass lid; this is a prior-apparatus candidate, not current physical identity | Owner confirmation that the installed element is that part; assembled impedance/resonance and safe-drive evidence |
 | Laser | TOPTICA `iBEAM-SMART-785-S-HP`, nominal 785-nm family, Class 3B; exact model string is owner-label evidence | Exact installed rated power/options, Analog/Digital electrical input semantics, and actual optical power; safety/model label is not power-at-sample evidence |
 | Pump | One CETONI Low-pressure module 14:1: `NEM-B101-02 E 5`, `CET-003455-1505`; logical node `neMESYS_Low_Pressure_1_Pump`, node 2 | Exact base/interface identity, installed syringe/loading/travel, harmless route, fill truth, stop latency, bounded motion |
@@ -208,7 +208,8 @@ documentation:
   a path through `R1`/`R2 = 49.9 ohm` in series with W1/W2. It does not provide
   gain, isolation, or a 50-ohm shunt load.
 
-Official SDK reconciliation also found a pre-output software blocker. The
+Official SDK reconciliation found and the current offline correction closes a
+pre-output software blocker. The
 installed Digilent WaveForms/SDK 3.22.1 manual confirms carrier amplitude is in
 volts while FM-node amplitude is modulation index in percent; the installed
 official `analogout_sweep.cpp` computes a start-to-stop sweep index as:
@@ -218,14 +219,28 @@ official `analogout_sweep.cpp` computes a start-to-stop sweep index as:
 = 100 * total_width_hz / (2 * center_hz)
 ```
 
-`FmSweepSettings.fm_amplitude_pct` currently computes
-`100 * total_width_hz / center_hz`. Under the same total-width definition used
-by its own `top_hz`/`bottom_hz`, that is twice the official SDK formula: a
-requested 50 kHz total span around 1.934 MHz would request approximately a
-100 kHz total span. Triangle/RampUp/RampDown enum values and FM node 1 are
-otherwise confirmed against the official installed `dwf.h`. This closure does
-not authorize production development, so implementation is unchanged; the
-factor-of-two defect must be corrected and offline-tested before Gate 3/Gate 4.
+The corrected production model now carries authoritative start/stop endpoints
+through `ExperimentRequest`, immutable `RunCondition`, the compatibility
+adapter, and `Experiment2`. `FmSweepSettings` names total span and half
+deviation explicitly and computes `100 * half_deviation_hz / center_hz`.
+For 1.909--1.959 MHz this is a 50 kHz total span, +/-25 kHz deviation, and
+approximately 1.2926577 percent AD2 FM index. V3 presents all four quantities;
+planned/action and TDMS evidence preserve endpoints, total span, half
+deviation, and index. Backend effective evidence derives post-clamp endpoints
+from the SDK parameters and labels them software/protocol-derived, not measured.
+Zero or reversed endpoint spans fail closed. Triangle/RampUp/RampDown enum
+values and FM node 1 remain confirmed against official installed `dwf.h`.
+
+Historical impact: the factor-of-two formula entered production source in
+commit `d30be02dfd45d9a0f1c79ecb53bc27ed274160d9` (2026-07-23) and remained
+through pre-correction HEAD `09c6810719badb472304faab050820987c31f540`.
+Any FM-enabled run made by that code requested an SDK modulation index twice
+the intended index under the project's total-span UI semantics, subject to
+device clamping and whether hardware output was actually enabled. Existing
+metadata may preserve the nominal 50 kHz width while the configured API intent
+was approximately 100 kHz total span; it must not be treated as proof of a
+measured acoustic sweep. No tracked TDMS/action-log run artifact was found to
+reclassify automatically.
 
 For a sinusoidal source command represented by open/high-impedance amplitude
 `V_source`, the simple downstream amplifier-input model is:
@@ -254,23 +269,36 @@ transducer. The historical 2 V configuration is software/screenshot evidence
 only and was explicitly marked do-not-run. None of these values establishes a
 defensible first energized amplitude for the current chain.
 
-Commissioning is therefore stopped before Gate 3/Gate 4 and before any W1
-output. Closure requires all of the following retained owner/physical evidence:
+Commissioning remains stopped before Gate 3/Gate 4 and before any W1 output.
+The current photographs are `OWNER_SUPPLIED / PHOTO_CONFIRMED_CURRENT_UNIT`
+evidence for the custom enclosure and visible external construction only. No
+blurry handwritten number is promoted to gain, bandwidth, impedance, or output
+limit. Do not continue looking for a nonexistent commercial model unless a
+repository/build record independently names one.
 
-1. readable amplifier manufacturer/model and front/rear labels, including the
-   active input, output, gain/range/mode settings, and any 50-ohm termination;
-2. an exact-manual value for amplifier input impedance and gain/transfer limits
-   at approximately 1.9-2.0 MHz, plus compatible output/load limits;
-3. a powered-down cable trace from BNC Adapter `J4` through the amplifier to the
-   bonded transducer, including cable/termination details;
-4. a readable close-up of installed `JP4` relative to its PCB silkscreen and
-   the adapter PCB revision;
-5. owner confirmation or retained order/build evidence identifying the current
-   bonded transducer, including whether it is the Lund Pz26
-   `30 x 4.0 x 1.0 mm` element; and
-6. same-chain prior-use evidence or an owner-approved, electrically derived
-   first-run amplitude stated unambiguously as AD2 peak, peak-to-peak, or RMS,
-   with frequency/sweep, duration, amplifier settings, and termination.
+First-run closure requires only the minimum useful engineering envelope:
+
+1. powered-down external cable trace identifying the AD2/J4 input connector and
+   the transducer output connector, including cable/termination details;
+2. visible gain/range/termination controls and limiting/clipping/current-limit
+   indicators, or explicit confirmation that none exists;
+3. approximate input impedance and gain/transfer near 1.9-2.0 MHz, plausible
+   output-voltage/load range, and any limiting behavior, supported by a
+   schematic, PCB/build note, component marking, old Lund/project note, or a
+   later bounded electrical characterization;
+4. readable installed `JP4` position relative to PCB silkscreen and adapter
+   revision;
+5. current bonded-transducer identity or the best retained build evidence,
+   including whether it is the Lund Pz26 `30 x 4.0 x 1.0 mm` element; and
+6. same-chain historical input amplitude or an electrically justified safe
+   starting input, stated unambiguously as AD2 peak, peak-to-peak, or RMS with
+   frequency/sweep, duration, amplifier controls, JP4/termination, and load.
+
+A full commercial datasheet is not required. If build documentation is absent,
+use a separately reviewed bounded electrical-characterization plan. Because
+the custom enclosure is mains powered, any internal photograph, PCB inspection,
+or component-marking check must be performed by owner/lab personnel only while
+powered down and disconnected from mains; opening it energized is prohibited.
 
 Primary sources: [Hamamatsu C15440-20UP/-20UP01 instruction manual](https://camera.hamamatsu.com/content/dam/hamamatsu-photonics/sites/static/sys/en/manual/C15440-20UP,-20UP01_IM_En.pdf),
 [Digilent Analog Discovery 2 reference manual](https://digilent.com/reference/_media/reference/test-and-measurement/analog-discovery-2/ad2_rm.pdf),

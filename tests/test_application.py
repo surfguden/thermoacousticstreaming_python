@@ -52,6 +52,7 @@ from thermo_acoustic.instruments import (
     ValveError,
     ZStage,
 )
+from thermo_acoustic.hw_logging import action_scope
 from thermo_acoustic.messages import Message, MessageName
 from thermo_acoustic.qmix_backend import (
     MAX_SYRINGE_INNER_DIAMETER_MM,
@@ -431,34 +432,51 @@ def test_serial_imaq_and_typedef_ports(tmp_path):
 def test_fm_sweep_settings_match_martens_et_al_reference_case():
     # Martens et al., PhysRevApplied.23.024043: "actuation frequency centered
     # at 1.934 MHz with a sweep of 50 kHz and a sweep time of 1 ms."
-    sweep = FmSweepSettings(center_hz=1_934_000.0, width_hz=50_000.0, sweep_time_ms=1.0)
+    sweep = FmSweepSettings(center_hz=1_934_000.0, total_span_hz=50_000.0, sweep_time_ms=1.0)
 
-    assert sweep.fm_amplitude_pct == pytest.approx(2.585, abs=1e-3)
+    assert sweep.fm_modulation_index_pct == pytest.approx(1.2926577)
+    assert sweep.half_deviation_hz == 25_000.0
     assert sweep.fm_frequency_hz == 1000.0
     assert sweep.top_hz == pytest.approx(1_959_000.0)
     assert sweep.bottom_hz == pytest.approx(1_909_000.0)
 
     fm_mod = sweep.fm_mod_settings()
     assert fm_mod.frequency_hz == 1000.0
-    assert fm_mod.amplitude_v == pytest.approx(2.585, abs=1e-3)
+    assert fm_mod.amplitude_v == pytest.approx(1.2926577)
     assert fm_mod.function == WaveformFunction.TRIANGLE
     assert fm_mod.enable is True
 
 
 def test_fm_sweep_settings_rejects_non_positive_sweep_time():
     try:
-        FmSweepSettings(center_hz=1_934_000.0, width_hz=50_000.0, sweep_time_ms=0.0)
+        FmSweepSettings(center_hz=1_934_000.0, total_span_hz=50_000.0, sweep_time_ms=0.0)
     except ValueError as exc:
         assert "Sweep Time" in str(exc)
     else:
         raise AssertionError("expected a clear ValueError, not a silent division by zero")
 
     try:
-        FmSweepSettings(center_hz=1_934_000.0, width_hz=50_000.0, sweep_time_ms=-1.0)
+        FmSweepSettings(center_hz=1_934_000.0, total_span_hz=50_000.0, sweep_time_ms=-1.0)
     except ValueError as exc:
         assert "Sweep Time" in str(exc)
     else:
         raise AssertionError("expected a clear ValueError for negative sweep time too")
+
+
+def test_fm_sweep_endpoint_contract_rejects_zero_or_reversed_span():
+    for start_hz, stop_hz in ((1_934_000.0, 1_934_000.0), (1_959_000.0, 1_909_000.0)):
+        with pytest.raises(ValueError, match="stop must be greater than start"):
+            FmSweepSettings.from_endpoints(start_hz, stop_hz, 1.0)
+
+
+def test_fm_sweep_requested_evidence_names_total_span_half_deviation_and_index():
+    evidence = FmSweepSettings.from_endpoints(1_909_000.0, 1_959_000.0, 1.0).requested_evidence()
+
+    assert evidence["start_hz"] == 1_909_000.0
+    assert evidence["stop_hz"] == 1_959_000.0
+    assert evidence["total_span_hz"] == 50_000.0
+    assert evidence["half_deviation_hz"] == 25_000.0
+    assert evidence["fm_modulation_index_percent"] == pytest.approx(1.2926577)
 
 
 def test_flush_sets_valve_and_status():
@@ -3713,6 +3731,26 @@ def test_configure_wfg_checks_fm_mod_node_too_when_enabled():
     backend.configure_wfg(123, config)
 
     assert channel.out_of_range is True, "an out-of-range FM Mod node must flag the channel too, not just Carrier"
+
+
+def test_configure_wfg_effective_log_names_fm_index_and_derived_endpoints(tmp_path):
+    fake = FakeAD2ConfigureDwf(frequency_range=(1.0, 3_000_000.0), amplitude_range=(-200.0, 200.0))
+    backend = WaveFormsBackend(dwf=fake)
+    sweep = FmSweepSettings.from_endpoints(1_909_000.0, 1_959_000.0, 1.0)
+    channel = WfgChannelConfig(0, carrier=CarrierSettings(frequency_hz=sweep.center_hz))
+    channel.fm_mod = sweep.fm_mod_settings()
+    log_path = tmp_path / "action_log.jsonl"
+
+    with action_scope(log_path, run_id="fm-test", condition="condition-1", repeat=1):
+        backend.configure_wfg(123, WfgConfig(running=True, channels=[channel]))
+
+    record = json.loads(log_path.read_text(encoding="utf-8").splitlines()[-1])
+    effective_fm = record["effective"]["channels"][0]["fm_mod"]
+    assert effective_fm["node_quantity"] == "fm_modulation_index_percent"
+    assert effective_fm["modulation_index_percent"] == pytest.approx(1.2926577)
+    assert effective_fm["derived_start_hz"] == pytest.approx(1_909_000.0)
+    assert effective_fm["derived_stop_hz"] == pytest.approx(1_959_000.0)
+    assert effective_fm["derivation_scope"].endswith("NOT_MEASURED")
 
 
 def test_write_tdms_verification_catches_truncated_write(tmp_path, monkeypatch):

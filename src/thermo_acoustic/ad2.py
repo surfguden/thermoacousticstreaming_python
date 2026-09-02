@@ -208,50 +208,100 @@ class FmSweepSettings:
 
     Reference test case (Martens et al., PhysRevApplied.23.024043):
     "actuation frequency centered at 1.934 MHz with a sweep of 50 kHz and
-    a sweep time of 1 ms" -> center_hz=1_934_000, width_hz=50_000,
-    sweep_time_ms=1.0.
+    a sweep time of 1 ms" is represented by the project-authoritative
+    endpoints 1.909--1.959 MHz: center_hz=1_934_000,
+    total_span_hz=50_000, sweep_time_ms=1.0.
+
+    Digilent's FM node amplitude is a modulation index in percent.  For a
+    symmetric sweep, index = 100 * half_deviation / center, not
+    100 * total_span / center.  The latter would double the requested span.
 
     Distinct from Frequency Scanning / Dynamic Frequency, which runs one
     full experiment per discrete frequency point across Repeats -- this
     sweeps continuously within a single acoustic drive.
 
-    Unverified against real hardware or LabVIEW's compiled block diagram
-    (investigation could only read front-panel control names, not wiring
-    logic -- see WfgConfigureSweepCh1.vi / BasicSweepSettings.ctl):
-    - The exact Sweep Type -> Function 2 enum correspondence below
-      (Symmetric->Triangle, RampUp->RampUp, RampDown->RampDown) is the
-      most architecturally plausible mapping, not a confirmed one.
-    - Whether enabling the sweep should force Carrier.enable=True in
-      addition to fm_mod.enable=True (this class's own convention, per
-      this feature's spec) matches LabVIEW's actual wiring.
+    The installed official Digilent SDK confirms FM node 1, modulation index
+    percentage semantics, and the Triangle/RampUp/RampDown function enums.
+    This is software/API configuration evidence, not physical output readback.
+    Normal production separately requires the carrier/output channel to be
+    explicitly enabled before an FM sweep is accepted.
     """
 
     center_hz: float
-    width_hz: float
+    total_span_hz: float
     sweep_time_ms: float
     sweep_type: str = "Symmetric"
 
     def __post_init__(self) -> None:
+        if self.center_hz <= 0:
+            raise ValueError(f"Sweep center must be greater than 0 Hz; got {self.center_hz}.")
+        if self.total_span_hz <= 0:
+            raise ValueError(f"Sweep total span must be greater than 0 Hz; got {self.total_span_hz}.")
+        if self.start_hz < 0:
+            raise ValueError("Sweep start frequency must not be negative.")
         if self.sweep_time_ms <= 0:
             raise ValueError(f"Sweep Time must be greater than 0 ms; got {self.sweep_time_ms}.")
 
+    @classmethod
+    def from_endpoints(
+        cls, start_hz: float, stop_hz: float, sweep_time_ms: float, sweep_type: str = "Symmetric"
+    ) -> "FmSweepSettings":
+        if stop_hz <= start_hz:
+            raise ValueError(
+                f"Sweep stop must be greater than start; got {start_hz}--{stop_hz} Hz."
+            )
+        return cls(
+            center_hz=(start_hz + stop_hz) / 2.0,
+            total_span_hz=stop_hz - start_hz,
+            sweep_time_ms=sweep_time_ms,
+            sweep_type=sweep_type,
+        )
+
+    @property
+    def half_deviation_hz(self) -> float:
+        return self.total_span_hz / 2.0
+
+    @property
+    def start_hz(self) -> float:
+        return self.center_hz - self.half_deviation_hz
+
+    @property
+    def stop_hz(self) -> float:
+        return self.center_hz + self.half_deviation_hz
+
     @property
     def top_hz(self) -> float:
-        return self.center_hz + self.width_hz / 2.0
+        return self.stop_hz
 
     @property
     def bottom_hz(self) -> float:
-        return self.center_hz - self.width_hz / 2.0
+        return self.start_hz
 
     @property
     def fm_frequency_hz(self) -> float:
         return 1000.0 / self.sweep_time_ms
 
     @property
+    def fm_modulation_index_pct(self) -> float:
+        return (self.half_deviation_hz / self.center_hz) * 100.0
+
+    @property
     def fm_amplitude_pct(self) -> float:
-        if self.center_hz == 0:
-            raise ValueError("Center Frequency must be non-zero to compute sweep amplitude.")
-        return (self.width_hz / self.center_hz) * 100.0
+        """Compatibility name for the AD2 FM modulation index percentage."""
+        return self.fm_modulation_index_pct
+
+    def requested_evidence(self) -> dict[str, float | str]:
+        return {
+            "start_hz": self.start_hz,
+            "stop_hz": self.stop_hz,
+            "center_hz": self.center_hz,
+            "total_span_hz": self.total_span_hz,
+            "half_deviation_hz": self.half_deviation_hz,
+            "fm_modulation_index_percent": self.fm_modulation_index_pct,
+            "sweep_time_ms": self.sweep_time_ms,
+            "fm_frequency_hz": self.fm_frequency_hz,
+            "sweep_type": self.sweep_type,
+        }
 
     @property
     def fm_function(self) -> WaveformFunction:
@@ -263,7 +313,9 @@ class FmSweepSettings:
     def fm_mod_settings(self) -> CarrierSettings:
         return CarrierSettings(
             frequency_hz=self.fm_frequency_hz,
-            amplitude_v=self.fm_amplitude_pct,
+            # CarrierSettings is shared with voltage-bearing nodes; for the FM
+            # node this field is the dimensionless modulation index in percent.
+            amplitude_v=self.fm_modulation_index_pct,
             offset_v=0.0,
             symmetry_percent=50.0,
             phase_deg=0.0,
