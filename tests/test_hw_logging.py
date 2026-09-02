@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 
 import pytest
@@ -40,6 +41,24 @@ def test_log_transaction_records_a_successful_call(_redirect_log):
     assert "OK" in lines[0]
     assert "cmd='S'" in lines[0]
     assert "resp='01'" in lines[0]
+    assert "phase=MANUAL_SERVICE" in lines[0]
+
+
+def test_text_log_labels_setup_context_without_creating_an_action_file(_redirect_log):
+    with hw_logging.action_scope(
+        None,
+        run_id="application_session",
+        condition="camera",
+        repeat=None,
+        phase="SETUP",
+    ):
+        hw_logging.log_transaction("camera", "open_camera", response="opened")
+
+    line = _read_log(_redirect_log)[0]
+    assert "phase=SETUP" in line
+    assert "run_id=application_session" in line
+    assert "condition=camera" in line
+    assert "repeat=None" in line
 
 
 def test_log_transaction_records_a_failed_call_with_error_detail(_redirect_log):
@@ -129,3 +148,93 @@ def test_synchronous_logging_overhead_is_negligible_for_real_call_frequency(_red
     elapsed_s = time.perf_counter() - start
 
     assert elapsed_s < 0.25, f"500 synchronous log calls took {elapsed_s:.3f}s -- reconsider the sync-only design"
+
+
+def test_action_scope_records_command_and_protocol_result_with_correlation(tmp_path):
+    action_log = tmp_path / "series" / "action_log.jsonl"
+
+    with hw_logging.action_scope(
+        action_log,
+        run_id="series-001",
+        condition="frequency_hz=1934000",
+        repeat=2,
+    ):
+        with hw_logging.log_call("ad2", "configure_wfg", command={"amplitude_v": 6.0}) as result:
+            result["effective"] = {"amplitude_v": 5.0}
+            result["response"] = "applied with clamp"
+
+    records = [json.loads(line) for line in action_log.read_text(encoding="utf-8").splitlines()]
+    assert [record["evidence_stage"] for record in records] == [
+        "COMMAND_SENT",
+        "PROTOCOL_ACKNOWLEDGED",
+    ]
+    assert [record["status"] for record in records] == ["ATTEMPTED", "OK"]
+    assert all(record["run_id"] == "series-001" for record in records)
+    assert all(record["condition"] == "frequency_hz=1934000" for record in records)
+    assert all(record["repeat"] == 2 for record in records)
+    assert records[0]["requested"] == {"amplitude_v": 6.0}
+    assert records[1]["effective"] == {"amplitude_v": 5.0}
+    assert records[1]["result"] == "applied with clamp"
+    assert all(record["elapsed_s"] >= 0.0 for record in records)
+    assert all(record["verification_scope"] == "PROTOCOL" for record in records)
+    assert "physical_verified" not in records[1]
+
+
+def test_action_scope_retains_failed_command_and_cleanup_phase(tmp_path):
+    action_log = tmp_path / "action_log.jsonl"
+
+    with hw_logging.action_scope(
+        action_log,
+        run_id="failed-run",
+        condition="default",
+        repeat=1,
+    ):
+        with pytest.raises(RuntimeError, match="transport lost"):
+            with hw_logging.log_call("valve", "write", command="P01"):
+                raise RuntimeError("transport lost")
+        with hw_logging.action_phase("CLEANUP"):
+            hw_logging.log_action(
+                "valve",
+                "close",
+                evidence_stage="OBSERVED",
+                verification_scope="SOFTWARE",
+                status="FAILED",
+                error="close timed out",
+            )
+
+    records = [json.loads(line) for line in action_log.read_text(encoding="utf-8").splitlines()]
+    assert records[0]["status"] == "ATTEMPTED"
+    assert records[1]["status"] == "FAILED"
+    assert records[1]["evidence_stage"] == "COMMAND_SENT"
+    assert records[1]["error"] == "transport lost"
+    assert records[2]["phase"] == "CLEANUP"
+    assert records[2]["error"] == "close timed out"
+
+
+def test_action_log_failure_never_changes_wrapped_operation(tmp_path):
+    blocking_file = tmp_path / "not-a-directory"
+    blocking_file.write_text("blocks child creation", encoding="utf-8")
+
+    with hw_logging.action_scope(
+        blocking_file / "action_log.jsonl",
+        run_id="logging-failure",
+        condition="default",
+        repeat=1,
+    ):
+        with hw_logging.log_call("camera", "start_capture") as result:
+            result["response"] = "started"
+
+    assert blocking_file.read_text(encoding="utf-8") == "blocks child creation"
+
+
+def test_global_log_configuration_failure_never_changes_wrapped_operation(monkeypatch):
+    monkeypatch.setattr(
+        hw_logging,
+        "_ensure_configured",
+        lambda: (_ for _ in ()).throw(OSError("log directory unavailable")),
+    )
+
+    with hw_logging.log_call("camera", "start_capture") as result:
+        result["response"] = "started"
+
+    assert result["response"] == "started"

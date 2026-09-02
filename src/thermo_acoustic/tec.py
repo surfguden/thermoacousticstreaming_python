@@ -6,7 +6,7 @@ import math
 import time
 from typing import Callable, Protocol
 
-from .hw_logging import run_with_timeout
+from .hw_logging import log_call, run_with_timeout
 
 
 TEC_TARGET_MIN_C = 0.0
@@ -182,75 +182,92 @@ class MeerstetterTecBackend:
     client: object | None = None
 
     def connect(self) -> None:
-        if self.client is None:
-            if self.client_factory is None:
-                raise TecError(
-                    "No Meerstetter TEC client is configured; no device connection was attempted. "
-                    "Confirm the controller model/firmware, MeCom Python package/API, and register map "
-                    "before adding a reviewed real integration."
-                )
-            self.client = self.client_factory(self.port)
-        connect = getattr(self.client, "connect", None)
-        if callable(connect):
-            connect()
+        with log_call("tec", "connect", command={"port": self.port}) as result:
+            if self.client is None:
+                if self.client_factory is None:
+                    raise TecError(
+                        "No Meerstetter TEC client is configured; no device connection was attempted. "
+                        "Confirm the controller model/firmware, MeCom Python package/API, and register map "
+                        "before adding a reviewed real integration."
+                    )
+                self.client = self.client_factory(self.port)
+            connect = getattr(self.client, "connect", None)
+            if callable(connect):
+                connect()
+            result["response"] = "connected"
 
     def close(self) -> None:
-        if self.client is None:
-            return
-        close = getattr(self.client, "close", None)
-        if callable(close):
-            close()
-        self.client = None
+        with log_call("tec", "close") as result:
+            if self.client is not None:
+                close = getattr(self.client, "close", None)
+                if callable(close):
+                    close()
+                self.client = None
+            result["response"] = "closed"
 
     def read_status(self, channels: tuple[int, ...]) -> dict[int, TecStatus]:
-        client = self._client()
-        read_status = getattr(client, "read_status", None)
-        if not callable(read_status):
-            raise TecError("Configured Meerstetter TEC client has no read_status() method.")
-        result = read_status(channels)
-        if not isinstance(result, dict):
-            raise TecError(f"Unsupported TEC status response: {result!r}")
-        normalized: dict[int, TecStatus] = {}
-        for channel in channels:
-            status = result.get(channel)
-            if isinstance(status, TecStatus):
-                normalized[channel] = status
-            elif isinstance(status, dict):
-                normalized[channel] = TecStatus(
-                    channel=channel,
-                    current_temperature_c=status.get("current_temperature_c"),
-                    target_temperature_c=status.get("target_temperature_c"),
-                    output_stage_static_on=bool(status.get("output_stage_static_on", False)),
-                    ready=bool(status.get("ready", False)),
-                    error_state=status.get("error_state"),
-                )
-            else:
-                raise TecError(f"Unsupported TEC status response for channel {channel}: {status!r}")
+        with log_call(
+            "tec", "read_status", command={"channels": channels}, response_stage="OBSERVED"
+        ) as log_result:
+            client = self._client()
+            read_status = getattr(client, "read_status", None)
+            if not callable(read_status):
+                raise TecError("Configured Meerstetter TEC client has no read_status() method.")
+            result = read_status(channels)
+            if not isinstance(result, dict):
+                raise TecError(f"Unsupported TEC status response: {result!r}")
+            normalized: dict[int, TecStatus] = {}
+            for channel in channels:
+                status = result.get(channel)
+                if isinstance(status, TecStatus):
+                    normalized[channel] = status
+                elif isinstance(status, dict):
+                    normalized[channel] = TecStatus(
+                        channel=channel,
+                        current_temperature_c=status.get("current_temperature_c"),
+                        target_temperature_c=status.get("target_temperature_c"),
+                        output_stage_static_on=bool(status.get("output_stage_static_on", False)),
+                        ready=bool(status.get("ready", False)),
+                        error_state=status.get("error_state"),
+                    )
+                else:
+                    raise TecError(f"Unsupported TEC status response for channel {channel}: {status!r}")
+            log_result["response"] = normalized
         return normalized
 
     def set_output_stage_static_on(self, channel: int) -> None:
-        action = getattr(self._client(), "set_output_stage_static_on", None)
-        if not callable(action):
-            raise TecError("Configured Meerstetter TEC client has no set_output_stage_static_on() method.")
-        action(channel)
+        with log_call("tec", "set_output_stage_static_on", command={"channel": channel}) as result:
+            action = getattr(self._client(), "set_output_stage_static_on", None)
+            if not callable(action):
+                raise TecError("Configured Meerstetter TEC client has no set_output_stage_static_on() method.")
+            action(channel)
+            result["response"] = "API accepted; output state requires readback"
 
     def set_output_stage_static_off(self, channel: int) -> None:
-        action = getattr(self._client(), "set_output_stage_static_off", None)
-        if not callable(action):
-            raise TecError("Configured Meerstetter TEC client has no set_output_stage_static_off() method.")
-        action(channel)
+        with log_call("tec", "set_output_stage_static_off", command={"channel": channel}) as result:
+            action = getattr(self._client(), "set_output_stage_static_off", None)
+            if not callable(action):
+                raise TecError("Configured Meerstetter TEC client has no set_output_stage_static_off() method.")
+            action(channel)
+            result["response"] = "API accepted; output state requires readback"
 
     def set_target_temperature(self, channel: int, temperature_c: float) -> None:
-        action = getattr(self._client(), "set_target_temperature", None)
-        if not callable(action):
-            raise TecError("Configured Meerstetter TEC client has no set_target_temperature() method.")
-        action(channel, float(temperature_c))
+        with log_call(
+            "tec", "set_target_temperature", command={"channel": channel, "temperature_c": temperature_c}
+        ) as result:
+            action = getattr(self._client(), "set_target_temperature", None)
+            if not callable(action):
+                raise TecError("Configured Meerstetter TEC client has no set_target_temperature() method.")
+            action(channel, float(temperature_c))
+            result["response"] = "API accepted; target/device state requires readback"
 
     def write_config(self) -> None:
-        action = getattr(self._client(), "write_config", None)
-        if not callable(action):
-            raise TecError("Configured Meerstetter TEC client has no write_config() method.")
-        action()
+        with log_call("tec", "apply_ram_configuration") as result:
+            action = getattr(self._client(), "write_config", None)
+            if not callable(action):
+                raise TecError("Configured Meerstetter TEC client has no write_config() method.")
+            action()
+            result["response"] = "RAM-only apply path completed; no flash persistence command"
 
     def _client(self) -> object:
         if self.client is None:

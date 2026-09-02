@@ -21,6 +21,14 @@ a synchronous file write is microseconds by comparison (see
 here would be solving a problem that doesn't exist for this call
 frequency.
 
+During a normal experiment, `action_scope()` also points these same primitives
+at one bounded series-local JSONL action stream. That stream adds
+run/condition/repeat/phase correlation and explicit evidence stages without
+creating another hardware wrapper or writing inside per-frame loops. The
+rotating text log remains the global transport diagnostic timeline; per-repeat
+TDMS and the series lifecycle manifest retain their existing scientific and
+aggregate authority.
+
 `run_with_timeout()` below is a separate, unrelated utility that DOES use a
 background thread -- shared home in this module because it's the other
 piece of cross-cutting hardware infrastructure (the standard
@@ -31,13 +39,19 @@ docs/hardware_safety_patterns.md).
 
 from __future__ import annotations
 
+from contextvars import ContextVar, copy_context
+from dataclasses import asdict, is_dataclass
+from datetime import datetime, timezone
+from enum import Enum
+import json
 import logging
 import queue
 import threading
+import time
 from contextlib import contextmanager
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import Any, Callable, Iterator
 
 DEFAULT_LOG_DIR = Path(__file__).resolve().parent.parent.parent / "logs"
 DEFAULT_LOG_FILE = DEFAULT_LOG_DIR / "hardware_transactions.log"
@@ -48,6 +62,154 @@ _logger.propagate = False  # never leak onto the root logger / stderr
 
 _lock = threading.Lock()
 _configured_path: Path | None = None
+_action_lock = threading.Lock()
+_action_context: ContextVar[dict[str, Any] | None] = ContextVar(
+    "thermo_acoustic_action_context", default=None
+)
+
+
+@contextmanager
+def action_scope(
+    log_file: Path | None,
+    *,
+    run_id: str,
+    condition: str,
+    repeat: int | None,
+    phase: str = "RUN",
+) -> Iterator[None]:
+    """Bind durable action-log correlation to the current execution context.
+
+    The scope is intentionally local to one run/repeat. Existing backend
+    ``log_call`` sites inherit it without receiving new control parameters,
+    and a missing/unwritable action log can never change hardware behavior.
+    ``elapsed_s`` is host monotonic duration since this scope began; it is
+    diagnostic chronology, not a hardware-synchronization measurement.
+    """
+
+    context = {
+        "log_file": None if log_file is None else Path(log_file),
+        "run_id": str(run_id),
+        "condition": str(condition),
+        "repeat": None if repeat is None else int(repeat),
+        "phase": str(phase),
+        "started_monotonic": time.monotonic(),
+    }
+    token = _action_context.set(context)
+    try:
+        yield
+    finally:
+        _action_context.reset(token)
+
+
+@contextmanager
+def action_phase(phase: str) -> Iterator[None]:
+    """Temporarily refine the current action phase (for example CLEANUP)."""
+
+    current = _action_context.get()
+    if current is None:
+        yield
+        return
+    updated = dict(current)
+    updated["phase"] = str(phase)
+    token = _action_context.set(updated)
+    try:
+        yield
+    finally:
+        _action_context.reset(token)
+
+
+def _json_safe(value: object, *, depth: int = 0) -> object:
+    """Bound action payloads to concise JSON-safe scientific evidence."""
+
+    if value is None or isinstance(value, (str, int, float, bool)):
+        if isinstance(value, str) and len(value) > 2_000:
+            return value[:2_000] + "...<truncated>"
+        return value
+    if depth >= 6:
+        return f"<{type(value).__name__}>"
+    if isinstance(value, Enum):
+        return _json_safe(value.value, depth=depth + 1)
+    if isinstance(value, Path):
+        return str(value)
+    if is_dataclass(value) and not isinstance(value, type):
+        return _json_safe(asdict(value), depth=depth + 1)
+    if isinstance(value, dict):
+        return {
+            str(key): _json_safe(item, depth=depth + 1)
+            for key, item in list(value.items())[:100]
+        }
+    if isinstance(value, (list, tuple, set, frozenset)):
+        items = list(value)
+        bounded = [_json_safe(item, depth=depth + 1) for item in items[:100]]
+        if len(items) > 100:
+            bounded.append(f"...<{len(items) - 100} more>")
+        return bounded
+    scalar = getattr(value, "item", None)
+    if callable(scalar):
+        try:
+            return _json_safe(scalar(), depth=depth + 1)
+        except Exception:
+            pass
+    return _json_safe(str(value), depth=depth + 1)
+
+
+def log_action(
+    subsystem: str,
+    operation: str,
+    *,
+    evidence_stage: str,
+    status: str,
+    requested: object = None,
+    effective: object = None,
+    result: object = None,
+    error: object = None,
+    verification_scope: str = "SOFTWARE",
+    source: str | None = None,
+) -> None:
+    """Append one concise structured action record for the active repeat.
+
+    The evidence vocabulary deliberately keeps REQUESTED, PLANNED,
+    EFFECTIVE, COMMAND_SENT, PROTOCOL_ACKNOWLEDGED, OBSERVED, and
+    PHYSICAL_VERIFIED distinct. Callers must not use PHYSICAL_VERIFIED for a
+    software/API result. This function never raises: evidence persistence
+    failure must not trigger or interrupt hardware.
+    """
+
+    context = _action_context.get()
+    if context is None or context.get("log_file") is None:
+        return
+    payload: dict[str, object] = {
+        "schema_version": 1,
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "elapsed_s": max(time.monotonic() - float(context["started_monotonic"]), 0.0),
+        "run_id": context["run_id"],
+        "condition": context["condition"],
+        "repeat": context["repeat"],
+        "phase": context["phase"],
+        "subsystem": str(subsystem),
+        "operation": str(operation),
+        "evidence_stage": str(evidence_stage).upper(),
+        "verification_scope": str(verification_scope).upper(),
+        "status": str(status).upper(),
+    }
+    optional = {
+        "requested": requested,
+        "effective": effective,
+        "result": result,
+        "error": error,
+        "source": source,
+    }
+    payload.update({key: _json_safe(value) for key, value in optional.items() if value is not None})
+    try:
+        target = Path(context["log_file"])
+        with _action_lock:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("a", encoding="utf-8", newline="\n") as handle:
+                json.dump(payload, handle, separators=(",", ":"), sort_keys=True)
+                handle.write("\n")
+                handle.flush()
+    except Exception:  # pragma: no cover - logging must never alter hardware behavior
+        pass
 
 
 def configure(log_file: Path | None = None, *, max_bytes: int = 5_000_000, backup_count: int = 5) -> Path:
@@ -82,16 +244,31 @@ def log_transaction(
     *,
     command: object = None,
     response: object = None,
+    effective: object = None,
     success: bool = True,
     error: str | None = None,
+    evidence_stage: str = "PROTOCOL_ACKNOWLEDGED",
+    verification_scope: str = "PROTOCOL",
+    record_requested: bool = True,
 ) -> None:
     """One structured record per hardware transaction: which device, what
     operation, what was sent, what came back (or the error), and whether
     it succeeded. Fire-and-forget from the caller's perspective -- never
     raises (a logging failure must never take down a real hardware call)."""
-    _ensure_configured()
     outcome = "OK" if success else "FAIL"
     parts = [f"{device:<10}", f"{operation:<28}", outcome]
+    context = _action_context.get()
+    if context is None:
+        parts.append("phase=MANUAL_SERVICE")
+    else:
+        parts.extend(
+            [
+                f"phase={context['phase']}",
+                f"run_id={context['run_id']}",
+                f"condition={context['condition']}",
+                f"repeat={context['repeat']}",
+            ]
+        )
     if command is not None:
         parts.append(f"cmd={command!r}")
     if response is not None:
@@ -99,13 +276,33 @@ def log_transaction(
     if error is not None:
         parts.append(f"error={error}")
     try:
+        _ensure_configured()
         _logger.info(" | ".join(parts))
     except Exception:  # pragma: no cover - logging must never break a hardware call
         pass
+    log_action(
+        device,
+        operation,
+        evidence_stage=evidence_stage if success else "COMMAND_SENT",
+        verification_scope=verification_scope,
+        status="OK" if success else "FAILED",
+        requested=command if record_requested else None,
+        effective=effective,
+        result=response,
+        error=error,
+        source="hw_logging.log_transaction",
+    )
 
 
 @contextmanager
-def log_call(device: str, operation: str, *, command: object = None) -> Iterator[dict]:
+def log_call(
+    device: str,
+    operation: str,
+    *,
+    command: object = None,
+    response_stage: str = "PROTOCOL_ACKNOWLEDGED",
+    verification_scope: str = "PROTOCOL",
+) -> Iterator[dict]:
     """Wrap one real hardware call: logs success with whatever the caller
     stores in `result["response"]` before the block ends, or logs failure
     (with the exception's message) and re-raises if the block raises.
@@ -114,14 +311,42 @@ def log_call(device: str, operation: str, *, command: object = None) -> Iterator
         with log_call("valve", "query_status", command=cmd) as result:
             result["response"] = self.port.read_until(...)
     """
-    result: dict = {"response": None}
+    result: dict = {"response": None, "effective": None}
+    log_action(
+        device,
+        operation,
+        evidence_stage="COMMAND_SENT",
+        verification_scope=verification_scope,
+        status="ATTEMPTED",
+        requested=command,
+        source="hw_logging.log_call",
+    )
     try:
         yield result
     except Exception as exc:
-        log_transaction(device, operation, command=command, success=False, error=str(exc))
+        log_transaction(
+            device,
+            operation,
+            command=command,
+            effective=result.get("effective"),
+            success=False,
+            error=str(exc),
+            verification_scope=verification_scope,
+            record_requested=False,
+        )
         raise
     else:
-        log_transaction(device, operation, command=command, response=result["response"], success=True)
+        log_transaction(
+            device,
+            operation,
+            command=command,
+            response=result["response"],
+            effective=result.get("effective"),
+            success=True,
+            evidence_stage=response_stage,
+            verification_scope=verification_scope,
+            record_requested=False,
+        )
 
 
 def run_with_timeout(action: Callable[[], None], name: str, timeout_s: float) -> str | None:
@@ -147,10 +372,11 @@ def run_with_timeout(action: Callable[[], None], name: str, timeout_s: float) ->
             errors.append(error)
     """
     result_queue: queue.Queue[BaseException | None] = queue.Queue(maxsize=1)
+    caller_context = copy_context()
 
     def run() -> None:
         try:
-            action()
+            caller_context.run(action)
         except BaseException as exc:  # pragma: no cover - defensive hardware cleanup path
             result_queue.put(exc)
         else:

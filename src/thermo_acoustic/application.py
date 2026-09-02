@@ -9,7 +9,7 @@ import time
 from typing import Callable
 
 from .ad2 import coerce_do_config, coerce_wfg_config
-from .hw_logging import run_with_timeout
+from .hw_logging import action_phase, action_scope, log_action, run_with_timeout
 from .instruments import AD2Sdk, CetoniPump, HamamatsuCamera, SimulatedAD2Sdk, Valve, ZStage
 from .messages import Message, MessageName, QueueResult, UiEvent
 from .queues import LabViewQueue
@@ -92,15 +92,40 @@ def _report_step(progress: Callable[[str, object], None] | None, name: str):
     completion but the overall experiment still stopped" apart from "step
     itself raised" by also watching the existing status-event stream.
     """
+    log_action(
+        "run",
+        name,
+        evidence_stage="OBSERVED",
+        verification_scope="SOFTWARE",
+        status="STARTED",
+        source="application._report_step",
+    )
     if progress:
         progress("step_started", name)
     try:
         yield
     except Exception as exc:
+        log_action(
+            "run",
+            name,
+            evidence_stage="OBSERVED",
+            verification_scope="SOFTWARE",
+            status="FAILED",
+            error=str(exc),
+            source="application._report_step",
+        )
         if progress:
             progress("step_failed", (name, str(exc)))
         raise
     else:
+        log_action(
+            "run",
+            name,
+            evidence_stage="OBSERVED",
+            verification_scope="SOFTWARE",
+            status="COMPLETED",
+            source="application._report_step",
+        )
         if progress:
             progress("step_completed", name)
 
@@ -171,6 +196,15 @@ class Application:
 
     def emit_event(self, event: RuntimeEvent, *, update_legacy_status: bool = True) -> RuntimeEvent:
         self.runtime_events.append(event)
+        log_action(
+            event.subsystem,
+            event.operation,
+            evidence_stage="OBSERVED",
+            verification_scope="SOFTWARE",
+            status=event.severity.value,
+            result=event.message,
+            source="application.emit_event",
+        )
         if update_legacy_status:
             self.status = event.message
             self.status_events.append(event.message)
@@ -476,7 +510,14 @@ class Application:
             if progress:
                 progress("init_device", (display_name, "In Progress"))
             try:
-                instrument.initialize()
+                with action_scope(
+                    None,
+                    run_id="application_session",
+                    condition=name,
+                    repeat=None,
+                    phase="SETUP",
+                ):
+                    instrument.initialize()
             except Exception as exc:
                 if progress:
                     progress("init_device", (display_name, "Failed"))
@@ -577,7 +618,14 @@ class Application:
                 errors.append(message)
                 continue
             timeout_s = min(max(self.cleanup_device_timeout_s, 0.0), remaining_s)
-            error = self._run_cleanup_call_with_timeout(name, instrument.cleanup, timeout_s)
+            with action_scope(
+                None,
+                run_id="application_session",
+                condition=name,
+                repeat=None,
+                phase="CLEANUP",
+            ):
+                error = self._run_cleanup_call_with_timeout(name, instrument.cleanup, timeout_s)
             if error is not None:
                 logger.error(error)
                 self.check_loop_error(error)
@@ -899,36 +947,95 @@ class Application:
         terminal outcome explicit when the initial record was successfully
         created; it does not convert requested metadata into applied evidence.
         """
-        self._active_experiment = None
-        try:
-            completed = self._run_experiment2_unfinalized(progress=progress)
-        except BaseException as exc:
-            experiment = self._active_experiment
-            if experiment is not None and experiment._record_created:
-                cleanup_failure = experiment._tdms_properties.get("CleanupFailure") or None
-                experiment.finalize_record(
-                    "FAILED",
-                    primary_failure=(None if cleanup_failure == str(exc) else exc),
-                    cleanup_failure=cleanup_failure,
-                )
-            raise
-        else:
-            experiment = self._active_experiment
-            if experiment is not None and experiment._record_created:
-                if completed:
-                    experiment.finalize_record("COMPLETED")
-                else:
-                    experiment.finalize_record("FAILED", primary_failure=self.status)
-            return completed
-        finally:
-            self._active_experiment = None
-
-    def _run_experiment2_unfinalized(self, progress: Callable[[str, object], None] | None = None) -> bool:
         experiment, timed_out = self.experiment_series.dequeue_experiment()
         if timed_out or experiment is None:
             self.fire_status_event("NoExperiment")
             return False
         self._active_experiment = experiment
+        with action_scope(
+            experiment.action_log_path,
+            run_id=experiment.action_run_id,
+            condition=experiment.action_condition,
+            repeat=experiment.repeat_id + 1,
+        ):
+            log_action(
+                "run",
+                "condition_planned",
+                evidence_stage="PLANNED",
+                verification_scope="SOFTWARE",
+                status="READY",
+                requested={
+                    "experiment_folder": experiment.experiment_folder,
+                    "tdms_path": experiment.tdms_path,
+                    "planned_repeat_count": experiment.planned_repeat_count,
+                    "temperature_point_index": experiment.temperature_point_index,
+                    "tec_targets_c": experiment.tec_targets_c,
+                    "frequency_scan_selected_hz": experiment.frequency_scan_selected_hz,
+                    "requested_exposure_ms": experiment.requested_exposure_ms,
+                    "sequence_settings": experiment.sequence_settings,
+                    "wfg_config": experiment.wfg_config,
+                    "flush_enabled": experiment.flush_enabled,
+                    "flush_settings": experiment.flush_settings,
+                },
+                source="application.run_experiment2",
+            )
+            try:
+                completed = self._run_experiment2_unfinalized(experiment, progress=progress)
+            except BaseException as exc:
+                cleanup_failure = experiment._tdms_properties.get("CleanupFailure") or None
+                primary_failure = None if cleanup_failure == str(exc) else exc
+                if experiment._record_created:
+                    experiment.finalize_record(
+                        "FAILED",
+                        primary_failure=primary_failure,
+                        cleanup_failure=cleanup_failure,
+                    )
+                if primary_failure is not None:
+                    log_action(
+                        "run",
+                        "primary_failure",
+                        evidence_stage="OBSERVED",
+                        verification_scope="SOFTWARE",
+                        status="FAILED",
+                        error=str(primary_failure),
+                        source="application.run_experiment2",
+                    )
+                if cleanup_failure is not None:
+                    with action_phase("CLEANUP"):
+                        log_action(
+                            "run",
+                            "cleanup_failure",
+                            evidence_stage="OBSERVED",
+                            verification_scope="SOFTWARE",
+                            status="FAILED",
+                            error=str(cleanup_failure),
+                            source="application.run_experiment2",
+                        )
+                raise
+            else:
+                if experiment._record_created:
+                    if completed:
+                        experiment.finalize_record("COMPLETED")
+                    else:
+                        experiment.finalize_record("FAILED", primary_failure=self.status)
+                log_action(
+                    "run",
+                    "repeat_outcome",
+                    evidence_stage="OBSERVED",
+                    verification_scope="SOFTWARE",
+                    status="COMPLETED" if completed else "FAILED",
+                    result={"record_outcome": "COMPLETED" if completed else "FAILED", "status": self.status},
+                    source="application.run_experiment2",
+                )
+                return completed
+            finally:
+                self._active_experiment = None
+
+    def _run_experiment2_unfinalized(
+        self,
+        experiment: Experiment2,
+        progress: Callable[[str, object], None] | None = None,
+    ) -> bool:
 
         # Explicit reset before this repeat's first step is marked active --
         # not left for step_started(STEP_INITIALIZE_EXPERIMENT) below to imply
@@ -992,8 +1099,34 @@ class Application:
                 # inside AD2Sdk, so retaining the original would save stale
                 # pre-clamp values.
                 experiment.wfg_config = self.ad2.get_wfg_config()
+                log_action(
+                    "acoustic_laser_control",
+                    "wfg_configuration_effective",
+                    evidence_stage="EFFECTIVE",
+                    verification_scope=("SOFTWARE" if experiment.sim_ad2 else "PROTOCOL"),
+                    status="APPLIED",
+                    effective={
+                        "project_ch1_api_0_w1_role": "acoustic amplifier and transducer",
+                        "project_ch2_api_1_w2_role": "laser Analog In electrical control",
+                        "configuration": experiment.wfg_config,
+                        "dio0_camera_trigger": "CONNECTED_BUT_CURRENTLY_UNUSED",
+                        "dio1_laser_trigger": "DISABLED_NOT_PROGRAMMED_BY_PRODUCTION",
+                        "physical_acoustic_pressure_verified": False,
+                        "optical_emission_verified": False,
+                    },
+                    source="application._run_experiment2_unfinalized",
+                )
             else:
                 self.fire_status_event("AD2Disabled -- WFG configuration skipped; DIO1 disabled")
+                log_action(
+                    "acoustic_laser_control",
+                    "wfg_configuration_effective",
+                    evidence_stage="EFFECTIVE",
+                    verification_scope="SOFTWARE",
+                    status="DISABLED",
+                    effective={"wfg": "not attempted", "dio1_laser_trigger": "not attempted"},
+                    source="application._run_experiment2_unfinalized",
+                )
 
             # Re-snapshot settings now that config_wfg() has run. The first
             # save_settings() call above is deliberately kept (not replaced) so a
@@ -1048,8 +1181,38 @@ class Application:
                 )
                 self.camera.configure_trigger_global_exposure(experiment.trigger_global_exposure)
                 self._check_camera_timing_budget(experiment)
+                log_action(
+                    "camera",
+                    "acquisition_settings_effective",
+                    evidence_stage="EFFECTIVE",
+                    verification_scope=("SOFTWARE" if experiment.sim_camera else "PROTOCOL"),
+                    status="APPLIED",
+                    requested={
+                        "roi": requested_roi,
+                        "exposure_ms": requested_exposure_ms,
+                        "sequence": camera_sequence_settings,
+                        "trigger_global_exposure": experiment.trigger_global_exposure,
+                    },
+                    effective={
+                        "roi": self.camera.get_sub_region(),
+                        "exposure_ms": experiment.applied_exposure_ms,
+                        "sequence": self.camera.sequence_config,
+                        "trigger_source": camera_sequence_settings.get("trigger_source"),
+                        "dio0_physical_connection_used": False,
+                    },
+                    source="application._run_experiment2_unfinalized",
+                )
             else:
                 self.fire_status_event("CameraDisabled -- camera configuration skipped")
+                log_action(
+                    "camera",
+                    "acquisition_settings_effective",
+                    evidence_stage="EFFECTIVE",
+                    verification_scope="SOFTWARE",
+                    status="DISABLED",
+                    effective="camera calls not attempted",
+                    source="application._run_experiment2_unfinalized",
+                )
 
         # Safety-behavior change (2026-08-04): once a repeat has started
         # (past this point), it always runs to full completion -- through
@@ -1133,6 +1296,24 @@ class Application:
                     self.fire_status_event("ExperimentFlushFailed")
                     experiment.cleanup()
                     return False
+                log_action(
+                    "sample_refresh",
+                    "repeat_to_repeat_refresh",
+                    evidence_stage="OBSERVED",
+                    verification_scope=(
+                        "SOFTWARE" if experiment.sim_pump or experiment.sim_valve else "PROTOCOL"
+                    ),
+                    status="COMPLETED",
+                    requested=experiment.flush_settings,
+                    result={
+                        "p01_confirmed_by_protocol": True,
+                        "pump_refresh_completed_by_software": True,
+                        "p02_confirmed_by_protocol": True,
+                        "wait_after_flush_s": experiment.flush_settings.wait_after_flush_s,
+                        "physical_fluid_refresh_verified": False,
+                    },
+                    source="application._run_experiment2_unfinalized",
+                )
             else:
                 # Flush requires both the pump and the valve -- flush() moves
                 # fluid via the pump between two valve positions, it isn't
@@ -1142,6 +1323,16 @@ class Application:
                 # was requested) is what distinguishes this from either "flush
                 # wasn't requested" or "flush was requested and failed."
                 self.fire_status_event("FlushSkippedInstrumentDisabled")
+                log_action(
+                    "sample_refresh",
+                    "repeat_to_repeat_refresh",
+                    evidence_stage="EFFECTIVE",
+                    verification_scope="SOFTWARE",
+                    status="DISABLED",
+                    requested=experiment.flush_settings,
+                    result="pump and/or valve disabled; no refresh command attempted",
+                    source="application._run_experiment2_unfinalized",
+                )
 
         with _report_step(progress, STEP_SAVE_RESULTS):
             if self.camera.enabled:
@@ -1158,6 +1349,20 @@ class Application:
                 experiment.save_image_data(image_data, frame_timestamps=frame_timestamps)
                 experiment.save_camera_settings({"buffer_size": 0, "sub_region": {}, "readout_time": 0.0})
             experiment.cleanup()
+            log_action(
+                "run",
+                "results_saved",
+                evidence_stage="OBSERVED",
+                verification_scope="SOFTWARE",
+                status="COMPLETED",
+                result={
+                    "experiment_folder": experiment.experiment_folder,
+                    "tdms_path": experiment.tdms_path,
+                    "frame_count": len(image_data),
+                    "camera_timestamp_count": len(frame_timestamps),
+                },
+                source="application._run_experiment2_unfinalized",
+            )
 
         self.fire_status_event("ExperimentComplete")
         return True
@@ -1237,6 +1442,23 @@ class Application:
             target = temperature_series.target_at(group_index - 1)
             target_label = f"{target:.3f} C" if isinstance(target, float) else (
                 ", ".join(f"ch{channel}={value:.3f}C" for channel, value in target.items())
+            )
+            log_action(
+                "tec",
+                "temperature_condition_planned",
+                evidence_stage="PLANNED",
+                verification_scope="SOFTWARE",
+                status="READY",
+                requested={
+                    "group_index": group_index,
+                    "group_count": len(experiment_groups),
+                    "target": target,
+                    "tolerance_c": temperature_series.tolerance_c,
+                    "min_settle_s": temperature_series.min_settle_s,
+                    "max_wait_s": temperature_series.max_wait_s,
+                    "post_stable_hold_s": temperature_series.post_stable_hold_s,
+                },
+                source="application.run_temperature_series",
             )
             self.fire_status_event(f"Setting TEC {target_label}")
             with _report_step(progress, STEP_SET_TEC_TARGET):

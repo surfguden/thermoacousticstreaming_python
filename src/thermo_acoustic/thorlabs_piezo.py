@@ -231,7 +231,7 @@ class PiezoStage:
                 f"PiezoStage is in {self.position_control_mode!r}, not ClosedLoop -- "
                 "position readback is not meaningful until switch_to_closed_loop() is confirmed."
             )
-        with log_call("piezo", "get_position") as result:
+        with log_call("piezo", "get_position", response_stage="OBSERVED") as result:
             position_um = _decimal_to_float(channel.GetPosition())
             result["response"] = position_um
         return position_um
@@ -250,7 +250,10 @@ class PiezoStage:
         if self.max_travel_um is None:
             raise PiezoStageError("MaxTravel was never read from the device -- cannot soft-limit a move.")
         clamped_um = max(0.0, min(float(target_um), self.max_travel_um))
-        with log_call("piezo", "set_position", command=clamped_um) as result:
+        with log_call(
+            "piezo", "set_position", command=target_um, response_stage="EFFECTIVE"
+        ) as result:
             channel.SetPosition(self.decimal_type(clamped_um))
             result["response"] = clamped_um
+            result["effective"] = clamped_um
         return clamped_um

@@ -67,6 +67,7 @@ from .experiment_planning import (
 )
 from .hardware_factory import HardwareRuntimeConfig, apply_hardware_bundle, build_hardware_bundle
 from .hardware_config import ZStageBackend, default_hardware_config
+from .hw_logging import action_scope
 from .instruments import SimulatedAD2Sdk
 from .tec import TEC_TARGET_MAX_C, TEC_TARGET_MIN_C
 from .workflows import Experiment2, ExperimentSeries2, FlushSettings, SeriesLifecycleManifest, TemperatureSeries
@@ -4707,12 +4708,19 @@ class MainWindow(QMainWindow):
             # just below it in this file: `progress` was previously dropped
             # here too, so a TEC scan never fired step_started/step_completed/
             # step_failed either -- the v2 breadcrumb (2026-08-04) needs this.
-            completed = self.app.run_temperature_series(
-                temperature_series,
-                groups,
-                progress=timed_progress if progress else None,
-                lifecycle_manifest=lifecycle_manifest,
-            )
+            with action_scope(
+                series_path / "action_log.jsonl",
+                run_id=series_path.name or "temperature_series",
+                condition="temperature_series",
+                repeat=None,
+                phase="PRE_RUN",
+            ):
+                completed = self.app.run_temperature_series(
+                    temperature_series,
+                    groups,
+                    progress=timed_progress if progress else None,
+                    lifecycle_manifest=lifecycle_manifest,
+                )
             if not completed:
                 if lifecycle_manifest.outcome == "IN_PROGRESS":
                     lifecycle_manifest.finalize(

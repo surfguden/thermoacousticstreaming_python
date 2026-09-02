@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import json
 import sys
 import threading
 import time
@@ -9,6 +10,7 @@ import numpy as np
 import pytest
 
 from thermo_acoustic.hamamatsu_dcam import HamamatsuDcamBackend, HamamatsuDcamError
+from thermo_acoustic import hw_logging
 
 
 class FakeFrame:
@@ -415,18 +417,30 @@ def test_image_sequence_saves_partial_capture_on_mid_sequence_fault(tmp_path):
     backend.dcam_module = FakeMidSequenceFaultDcamModule
     backend.dcamapi = FakeDcamApi
 
-    try:
-        backend.image_sequence(5, partial_capture_folder=tmp_path)
-    except HamamatsuDcamError as exc:
-        assert "wait frame ready failed" in str(exc)
-    else:
-        raise AssertionError("expected the mid-sequence fault to propagate")
-    finally:
-        backend.close()
+    action_log = tmp_path / "action_log.jsonl"
+    with hw_logging.action_scope(
+        action_log,
+        run_id="partial-run",
+        condition="default",
+        repeat=1,
+    ):
+        try:
+            backend.image_sequence(5, partial_capture_folder=tmp_path)
+        except HamamatsuDcamError as exc:
+            assert "wait frame ready failed" in str(exc)
+        else:
+            raise AssertionError("expected the mid-sequence fault to propagate")
+        finally:
+            backend.close()
 
     partial_dir = tmp_path / "partial_2_of_5"
     saved_files = sorted(partial_dir.glob("frame_*.tiff"))
     assert len(saved_files) == 2, "the 2 frames captured before the fault should be saved, tagged as partial"
+    records = [json.loads(line) for line in action_log.read_text(encoding="utf-8").splitlines()]
+    partial = next(record for record in records if record["operation"] == "partial_acquisition")
+    assert partial["result"]["captured_frames"] == 2
+    assert partial["result"]["expected_frames"] == 5
+    assert partial["status"] == "FAILED"
 
 
 def test_wait_frame_timeout_stops_capture_releases_buffer_and_raises():

@@ -90,7 +90,9 @@ class SerialTextCommandBackend:
             result["response"] = "sent"
 
     def query(self, command: str) -> str:
-        with log_call(self.device_name, "query", command=command) as result:
+        with log_call(
+            self.device_name, "query", command=command, response_stage="OBSERVED"
+        ) as result:
             self._send(command)
             if self.port is None:
                 raise RuntimeError("Serial port is not open.")

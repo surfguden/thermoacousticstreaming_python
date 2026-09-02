@@ -33,6 +33,73 @@ after camera configuration. The Experiment-tab `WaitAfterFlush` is the one
 operator-selected stabilization delay for that automated request; the manual
 Pump&Valve-tab value remains a separate manual-operation setting.
 
+## CURRENT ACTION LOGGING AND EXPERIMENT TRACEABILITY
+
+Normal production now retains three complementary durable records rather than
+claiming that one sink proves everything:
+
+| Sink | Authority and durability | Content / correlation |
+| --- | --- | --- |
+| `<series>/action_log.jsonl` | Durable, structured, append-only low-frequency action stream for V3/operator and diagnostic consumption | UTC wall-clock plus host-monotonic elapsed time, run ID, condition, one-based repeat, phase, subsystem, operation, evidence stage, verification scope, status, and only materially useful requested/effective/result/error fields. No per-frame disk logging is added. |
+| `<repeat>/data.tdms` | Authoritative per-repeat scientific settings/data and terminal repeat outcome | Requested/planned settings, applied camera ROI/exposure, waveform/trigger configuration, enabled/simulated state, frame metadata, flush outcome, and separate `PrimaryFailure` / `CleanupFailure`. `ActionLogPath`, `ActionLogRunID`, and `ActionLogCondition` link the repeat to its action stream. |
+| `<series>/series_manifest.json` | Authoritative aggregate lifecycle record, atomically replaced | Requested/started/completed/failed repeat counts, TEC point counts, abort/final outcome, timestamps, and `action_log_path`. It deliberately does not duplicate configuration. |
+| `logs/hardware_transactions.log` | Durable rotating global diagnostic transport/API timeline | Existing real backend calls and responses, now labeled with `SETUP`, correlated `RUN`, `CLEANUP`, or default `MANUAL_SERVICE` phase. Setup/manual calls outside a series remain global rather than being retroactively attributed to a run. |
+
+`Application.runtime_events` / `status_events` and Qt progress/status surfaces
+remain transient operator views. Python module logging remains diagnostic and
+is not scientific run authority. Retained manual records under `runs/` remain
+point-in-time hardware-validation evidence, not normal production output.
+
+The structured evidence stages are deliberately non-interchangeable:
+`REQUESTED`, `PLANNED`, `EFFECTIVE`, `COMMAND_SENT`,
+`PROTOCOL_ACKNOWLEDGED`, `OBSERVED`, and `PHYSICAL_VERIFIED`. Every action also
+has a verification scope (`SOFTWARE`, `PROTOCOL`, or `PHYSICAL`). Current
+production emits no `PHYSICAL_VERIFIED` action: API success/readback, software
+state, serial acknowledgement, camera timestamps, and controller stability do
+not independently prove acoustic pressure, optical emission, fluid route,
+microscope physical zero, imaging-plane equilibrium, or hardware
+synchronization.
+
+The operator-level vocabulary is intentionally small: run step started /
+completed / failed, camera settings applied, acoustic/laser-control WFG
+configuration applied or disabled, acquisition status, sample refresh status,
+results saved, repeat outcome, primary failure, and cleanup failure. Detailed
+transport commands stay in the same record only where they are already emitted
+by a backend wrapper. JSONL persistence failure is fail-open with respect to
+control behavior: it cannot initiate hardware or change canonical planning.
+
+Current-path coverage is sufficient for the next V3 UX review:
+
+| Subsystem | Current action coverage | Classification |
+| --- | --- | --- |
+| Camera | Open/configure/capture/stop backend transactions; requested/applied ROI and exposure; sequence/trigger; capture completion/partial failure; save and cleanup; TDMS linkage | ADEQUATE |
+| AD2 / acoustic | Open, requested and exact range-clamped W1 configuration, trigger source/wait/run/repeat, start/PC-trigger/stop outcomes; no acoustic-pressure inference | ADEQUATE |
+| Laser electrical control | W2 is production-disabled; DIO1 is not programmed; records use electrical-control wording and explicitly set optical-emission verification false | ADEQUATE for current disabled path; DEFER_UNTIL_FEATURE_USED for real control |
+| Valve / sample refresh | P01/P02 requests, serial/API result, recognized status responses, pump action, WaitAfterFlush, and refresh outcome are ordered under repeat correlation; physical route remains unverified | ADEQUATE for software/protocol reconstruction |
+| Qmix pump | Backend initialize/fault/readiness/enable/configure/flow/status/stop/close transactions and separate failures are retained; reference-timeout stop remains the existing hardware-gated concern | ADEQUATE for current reachable run; deferred pump-motion evidence remains unchanged |
+| Z | Kinesis connect/mode/requested target/effective clamp/API result/position readback/disconnect are retained; normal experiment does not move Z and controller zero is not physical microscope zero | ADEQUATE for current disabled/deferred run path |
+| TEC | Real backend connect/ON/OFF/target/RAM apply/readback/close calls and condition/stability events are retained; controller stability is not imaging-plane equilibrium | ADEQUATE for software/protocol reconstruction |
+
+Timestamp semantics: `timestamp_utc` orders durable events in wall-clock time;
+`elapsed_s` uses `time.monotonic()` from the current action scope for timeout and
+duration diagnosis. Neither is a high-resolution physical synchronization
+measurement. A backend call emits `COMMAND_SENT` before entering the API and a
+success/failure result afterward; read operations may emit `OBSERVED` with
+`PROTOCOL` scope. Primary workflow failure and cleanup failure are separate
+action records and remain separate TDMS fields.
+
+The reproducibility cross-check used the same primary evidence already linked
+below. The Lund steady thermoacoustic method makes camera exposure/frame rate,
+ROI/frame count, acoustic center/span/sweep period/type/amplitude setting,
+trigger semantics, repeat/condition identity, fixed laser-control state, and
+stabilization/sample-refresh delays materially reconstructable; it does not
+justify inventing unreported metadata or equating AD2 voltage with acoustic
+pressure. Digilent's WaveForms manuals establish generator
+Trigger/Wait/Run/Repeat and `trigsrcNone`/`trigsrcPC` software semantics.
+Hamamatsu's C15440-20UP documentation establishes exposure and external-trigger
+configuration capabilities. Neither vendor source turns host timestamps into a
+measurement of cross-device synchronization, so that claim remains deferred.
+
 ## CURRENT OWNER-SUPPLIED AD2 WIRING AND VERIFIED SOFTWARE MAPPING
 
 The owner physically inspected and photographed the current wiring on
@@ -208,6 +275,19 @@ Current system-level USB topology:
 
 ## READY
 
+- **SW-ACTION-TRACE-001:** each normal repeat now creates a bounded structured
+  action stream linked from TDMS and the lifecycle manifest. It retains
+  requested/planned/effective/command/protocol/readback distinctions,
+  run/condition/repeat/phase correlation, UTC and monotonic diagnostic time,
+  and separate primary/cleanup failures. Backend transactions remain the
+  detailed diagnostic layer; runtime events remain the concise operator layer.
+  Final affected-suite evidence: 469 passed, 1 skipped. The broad suite
+  reported 665 passed, 1 skipped, and the same two documented
+  PySide/Shiboken lifetime-family failures; both failures passed immediately in
+  isolated fresh processes. Compileall, repository hygiene, change-surface
+  audit, and `git diff --check` passed. This is offline readiness for the
+  planned V3 UX review, not physical action or synchronization evidence; no
+  device was accessed.
 - **SW-ACQ-DETERMINISM-001:** the camera+AD2 normal path is offline-ready for a
   separately authorized minimal experiment. Requested ROI is distinct from
   fresh applied ROI metadata; CH0 Repeat must equal 1; FM Sweep cannot coexist
@@ -353,6 +433,11 @@ Current system-level USB topology:
   value 0 to both channels, read both back OFF, and closed cleanly.
 
 ## NEXT CHECKPOINT
+
+The next software round is the separately requested V3 commercial
+scientific-instrument UX review, using the action stream as a trustworthy
+status/event source. That review has not started here. Documentation
+Convergence and any real experiment also remain separate tasks.
 
 The independent request/plan DTO and legacy-adapter seam has immutable
 planning data, a bounded semantic-equivalence matrix, and a series-local

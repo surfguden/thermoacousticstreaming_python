@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 import sys
 import threading
@@ -922,6 +923,9 @@ def test_run_experiment2_finalizes_completed_record_with_explicit_identity(tmp_p
     assert properties["OutputRoot"] == str(tmp_path / "series")
     assert properties["ExperimentFolder"] == str(experiment.experiment_folder)
     assert properties["TDMSPath"] == str(experiment.tdms_path)
+    assert properties["ActionLogPath"] == str(tmp_path / "series" / "action_log.jsonl")
+    assert properties["ActionLogRunID"] == "series"
+    assert properties["ActionLogCondition"] == "temperature_point_3:series"
     assert properties["TemperaturePointIndex"] == 2
     assert properties["FrequencyScanSelectedHz"] == 125_000.0
     assert properties["CameraStartMode"] == "dynamic"
@@ -1037,6 +1041,28 @@ def test_run_experiment2_records_real_wfg_clamping_in_final_tdms(tmp_path, monke
         "happened during config_wfg() -- not the pre-configure default captured by the first, "
         "early save_settings() call"
     )
+    assert experiment_group.properties["WFGAmpCh1"] == 10.0
+    action_records = [
+        json.loads(line)
+        for line in (tmp_path / "action_log.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    wfg_attempt = next(
+        record
+        for record in action_records
+        if record["subsystem"] == "ad2"
+        and record["operation"] == "configure_wfg"
+        and record["status"] == "ATTEMPTED"
+    )
+    wfg_result = next(
+        record
+        for record in action_records
+        if record["subsystem"] == "ad2"
+        and record["operation"] == "configure_wfg"
+        and record["status"] == "OK"
+    )
+    assert wfg_result["evidence_stage"] == "EFFECTIVE"
+    assert wfg_attempt["requested"]["channels"][0]["carrier"]["amplitude_v"] == 10.0
+    assert wfg_result["effective"]["channels"][0]["carrier"]["amplitude_v"] == 5.0
 
 
 def test_run_experiment2_records_real_wfg_clamping_in_final_tdms_when_wfg_config_is_a_dict(tmp_path, monkeypatch):

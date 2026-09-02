@@ -9,7 +9,7 @@ import time
 from typing import Any
 
 from .camera import MinMaxInc, SubRegion, SubRegionLimits
-from .hw_logging import log_call, log_transaction
+from .hw_logging import log_action, log_call, log_transaction
 
 
 class HamamatsuDcamError(RuntimeError):
@@ -107,11 +107,14 @@ class HamamatsuDcamBackend:
         # ever had the requested value to work with, never confirmation of
         # what was really applied.
         self.open_camera()
-        with log_call("camera", "configure_exposure_time", command=exposure_ms) as log_result:
+        with log_call(
+            "camera", "configure_exposure_time", command=exposure_ms, response_stage="EFFECTIVE"
+        ) as log_result:
             result = self.dcam.prop_setgetvalue(self.dcam_module.DCAM_IDPROP.EXPOSURETIME, max(exposure_ms, 0.0) / 1000.0)
             self._check(result, "set EXPOSURETIME")
             applied_ms = result * 1000.0
             log_result["response"] = applied_ms
+            log_result["effective"] = applied_ms
         return applied_ms
 
     def configure_roi(self, roi: SubRegion | dict | None) -> None:
@@ -353,7 +356,9 @@ class HamamatsuDcamBackend:
     def image_sequence(self, frame_count: int = 0, partial_capture_folder: Path | None = None) -> list[object]:
         self.open_camera()
         count = max(int(frame_count), 1)
-        with log_call("camera", "image_sequence", command=count) as log_result:
+        with log_call(
+            "camera", "image_sequence", command=count, response_stage="OBSERVED"
+        ) as log_result:
             frames: list[object] = []
             timestamps: list[str | None] = []
             started_here = False
@@ -368,8 +373,22 @@ class HamamatsuDcamBackend:
                     pixel_copy, timestamp = self._last_frame_copy()
                     frames.append(pixel_copy)
                     timestamps.append(timestamp)
-            except Exception:
+            except Exception as exc:
                 if frames and partial_capture_folder is not None:
+                    log_action(
+                        "camera",
+                        "partial_acquisition",
+                        evidence_stage="OBSERVED",
+                        verification_scope="PROTOCOL",
+                        status="FAILED",
+                        result={
+                            "captured_frames": len(frames),
+                            "expected_frames": count,
+                            "partial_folder": partial_capture_folder / f"partial_{len(frames)}_of_{count}",
+                        },
+                        error=str(exc),
+                        source="hamamatsu_dcam.image_sequence",
+                    )
                     self._save_partial_capture(frames, len(frames), count, partial_capture_folder)
                 raise
             finally:
@@ -422,7 +441,9 @@ class HamamatsuDcamBackend:
 
     def read_subregion_limits_and_value(self) -> tuple[SubRegionLimits, SubRegion | dict]:
         self.open_camera()
-        with log_call("camera", "read_subregion_limits_and_value") as log_result:
+        with log_call(
+            "camera", "read_subregion_limits_and_value", response_stage="OBSERVED"
+        ) as log_result:
             props = self.dcam_module.DCAM_IDPROP
             limits = SubRegionLimits(
                 horizontal_offset=self._minmaxinc(props.SUBARRAYHPOS),
@@ -472,7 +493,7 @@ class HamamatsuDcamBackend:
             err = self.dcam.lasterr()
             log_transaction("camera", "read_readout_time", success=False, error=str(err))
             return None
-        with log_call("camera", "read_readout_time") as result:
+        with log_call("camera", "read_readout_time", response_stage="OBSERVED") as result:
             readout_s = float(value)
             result["response"] = readout_s
         return readout_s

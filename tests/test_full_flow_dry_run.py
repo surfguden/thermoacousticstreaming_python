@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 
 import pytest
@@ -331,6 +332,74 @@ def test_application_full_flow_dry_run_skips_flush_by_default(tmp_path):
 
     assert isinstance(app.pump, FakePump)
     assert isinstance(app.valve, FakeValve)
+
+
+def test_full_flow_writes_correlated_operator_action_stream(tmp_path):
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+    experiment = make_recording_experiment(calls, tmp_path)
+    app.experiment_series.enqueue_experiments([experiment])
+
+    assert app.run_experiment2() is True
+
+    action_log = tmp_path / "action_log.jsonl"
+    records = [json.loads(line) for line in action_log.read_text(encoding="utf-8").splitlines()]
+    assert records
+    assert all(record["run_id"] == tmp_path.name for record in records)
+    assert all(record["condition"] == "default" for record in records)
+    assert all(record["repeat"] == 1 for record in records)
+    assert all(record["timestamp_utc"].endswith("+00:00") for record in records)
+
+    operations = [(record["operation"], record["status"]) for record in records]
+    assert operations[0] == ("condition_planned", "READY")
+    assert ("InitializeExperiment", "STARTED") in operations
+    assert ("InitializeExperiment", "COMPLETED") in operations
+    assert ("wfg_configuration_effective", "APPLIED") in operations
+    assert ("acquisition_settings_effective", "APPLIED") in operations
+    assert ("results_saved", "COMPLETED") in operations
+    assert operations[-1] == ("repeat_outcome", "COMPLETED")
+
+    camera_record = next(
+        record for record in records if record["operation"] == "acquisition_settings_effective"
+    )
+    assert camera_record["requested"]["exposure_ms"] == 12.5
+    assert camera_record["effective"]["exposure_ms"] == 12.5
+    assert camera_record["effective"]["dio0_physical_connection_used"] is False
+    acoustic_record = next(
+        record for record in records if record["operation"] == "wfg_configuration_effective"
+    )
+    assert acoustic_record["effective"]["physical_acoustic_pressure_verified"] is False
+    assert acoustic_record["effective"]["optical_emission_verified"] is False
+
+
+def test_full_flow_separates_primary_and_cleanup_failures_in_action_stream(tmp_path):
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+    experiment = make_recording_experiment(calls, tmp_path)
+    app.experiment_series.enqueue_experiments([experiment])
+
+    def fail_capture(*_args, **_kwargs):
+        raise RuntimeError("simulated primary capture failure")
+
+    def fail_stop():
+        raise RuntimeError("simulated cleanup stop failure")
+
+    app.camera.image_sequence = fail_capture
+    app.camera.stop_capture = fail_stop
+
+    with pytest.raises(RuntimeError, match="simulated primary capture failure"):
+        app.run_experiment2()
+
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "action_log.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    primary = next(record for record in records if record["operation"] == "primary_failure")
+    cleanup = next(record for record in records if record["operation"] == "cleanup_failure")
+    assert primary["phase"] == "RUN"
+    assert "primary capture failure" in primary["error"]
+    assert cleanup["phase"] == "CLEANUP"
+    assert "cleanup stop failure" in cleanup["error"]
 
 
 def test_camera_roi_is_applied_read_back_and_saved_before_capture(tmp_path):

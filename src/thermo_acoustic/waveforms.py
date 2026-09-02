@@ -452,14 +452,18 @@ class WaveFormsBackend:
             result["response"] = "applied"
 
     def configure_wfg(self, handle: int, config: WfgConfig) -> None:
-        with log_call("ad2", "configure_wfg", command=f"{len(config.channels)} channel(s), running={config.running}") as result:
+        with log_call(
+            "ad2", "configure_wfg", command=config, response_stage="EFFECTIVE"
+        ) as result:
             h = c_int(handle)
+            effective_channels: list[dict[str, object]] = []
             for channel in config.channels:
                 idx = c_int(channel.channel_index)
-                carrier_out_of_range = self._configure_analog_node(h, idx, 0, channel.carrier)
+                carrier_out_of_range, effective_carrier = self._configure_analog_node(h, idx, 0, channel.carrier)
                 fm_out_of_range = False
+                effective_fm: dict[str, object] | None = None
                 if channel.fm_mod.enable:
-                    fm_out_of_range = self._configure_analog_node(h, idx, 1, channel.fm_mod)
+                    fm_out_of_range, effective_fm = self._configure_analog_node(h, idx, 1, channel.fm_mod)
                 # Session 51: never assigned True anywhere before this -- WfgConfig.
                 # check_valid()/wfg_check_config_valid() existed but had no producer,
                 # so they always reported "valid" regardless of what was actually
@@ -488,10 +492,32 @@ class WaveFormsBackend:
                     self._dwf.FDwfAnalogOutConfigure(h, idx, c_int(int(config.running))),
                     "FDwfAnalogOutConfigure",
                 )
+                effective_channels.append(
+                    {
+                        "channel_index": channel.channel_index,
+                        "carrier": effective_carrier,
+                        "fm_mod": effective_fm,
+                        "trigger": channel.trigger,
+                        "running": config.running,
+                        "out_of_range": channel.out_of_range,
+                    }
+                )
             result["response"] = f"applied, out_of_range={[c.out_of_range for c in config.channels]}"
+            result["effective"] = {"channels": effective_channels, "running": config.running}
 
-    def _configure_analog_node(self, handle: c_int, channel_index: c_int, node: int, settings: object) -> bool:
+    def _configure_analog_node(
+        self, handle: c_int, channel_index: c_int, node: int, settings: object
+    ) -> tuple[bool, dict[str, object]]:
         policy = waveform_parameter_policy(settings.function)
+        effective: dict[str, object] = {
+            "enable": bool(settings.enable),
+            "function": settings.function,
+            "frequency_hz": settings.frequency_hz,
+            "amplitude_v": settings.amplitude_v,
+            "offset_v": settings.offset_v,
+            "symmetry_percent": settings.symmetry_percent,
+            "phase_deg": settings.phase_deg,
+        }
         node_id = c_int(node)
         self._check(
             self._dwf.FDwfAnalogOutNodeEnableSet(handle, channel_index, node_id, c_int(int(settings.enable))),
@@ -527,10 +553,12 @@ class WaveFormsBackend:
                 clamped_frequency_hz = min(max(settings.frequency_hz, frequency_min.value), frequency_max.value)
                 out_of_range |= clamped_frequency_hz != settings.frequency_hz
                 self._check(self._dwf.FDwfAnalogOutNodeFrequencySet(handle, channel_index, node_id, c_double(clamped_frequency_hz)), "FDwfAnalogOutNodeFrequencySet")
+                effective["frequency_hz"] = clamped_frequency_hz
             if policy.is_effective("amplitude"):
                 clamped_amplitude_v = min(max(settings.amplitude_v, amplitude_min.value), amplitude_max.value)
                 out_of_range |= clamped_amplitude_v != settings.amplitude_v
                 self._check(self._dwf.FDwfAnalogOutNodeAmplitudeSet(handle, channel_index, node_id, c_double(clamped_amplitude_v)), "FDwfAnalogOutNodeAmplitudeSet")
+                effective["amplitude_v"] = clamped_amplitude_v
         self._check(
             self._dwf.FDwfAnalogOutNodeOffsetSet(handle, channel_index, node_id, c_double(settings.offset_v)),
             "FDwfAnalogOutNodeOffsetSet",
@@ -539,7 +567,7 @@ class WaveFormsBackend:
             self._check(self._dwf.FDwfAnalogOutNodeSymmetrySet(handle, channel_index, node_id, c_double(settings.symmetry_percent)), "FDwfAnalogOutNodeSymmetrySet")
         if policy.is_effective("phase"):
             self._check(self._dwf.FDwfAnalogOutNodePhaseSet(handle, channel_index, node_id, c_double(settings.phase_deg)), "FDwfAnalogOutNodePhaseSet")
-        return out_of_range
+        return out_of_range, effective
 
     def configure_do(self, handle: int, config: DoConfig) -> None:
         with log_call("ad2", "configure_do", command=f"{len(config.channels)} channel(s), running={config.running}") as result:

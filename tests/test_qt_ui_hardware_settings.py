@@ -3278,6 +3278,7 @@ def test_series_manifest_records_completion_and_requested_count(monkeypatch, tmp
         assert window._run_experiment_series(series, 1, window._experiment_wfg_config()) == "ExperimentComplete"
         manifest = json.loads((tmp_path / "series_manifest.json").read_text(encoding="utf-8"))
         assert manifest["schema_version"] == 1
+        assert manifest["action_log_path"] == str(tmp_path / "action_log.jsonl")
         assert manifest["outcome"] == "COMPLETED"
         assert (manifest["requested_repeats"], manifest["started_repeats"], manifest["completed_repeats"], manifest["failed_repeats"]) == (2, 2, 2, 0)
         assert manifest["started_at"] and manifest["finalized_at"]

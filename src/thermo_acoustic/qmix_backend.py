@@ -141,14 +141,21 @@ class QmixPumpBackend:
         self.bus_started = False
         with log_call("pump", "initialize", command=str(configuration_path)) as result:
             try:
-                self.bus.open(str(configuration_path), 0)
+                with log_call("pump", "bus.open", command=str(configuration_path)) as bus_result:
+                    self.bus.open(str(configuration_path), 0)
+                    bus_result["response"] = "opened"
                 self.bus_opened = True
                 self.pump = self.qmixpump.Pump()
-                if self.pump_name:
-                    self.pump.lookup_by_name(self.pump_name)
-                else:
-                    self.pump.lookup_by_device_index(self.pump_index)
-                self.bus.start()
+                selection = {"pump_name": self.pump_name} if self.pump_name else {"pump_index": self.pump_index}
+                with log_call("pump", "select_pump", command=selection) as select_result:
+                    if self.pump_name:
+                        self.pump.lookup_by_name(self.pump_name)
+                    else:
+                        self.pump.lookup_by_device_index(self.pump_index)
+                    select_result["response"] = "selected"
+                with log_call("pump", "bus.start") as bus_result:
+                    self.bus.start()
+                    bus_result["response"] = "started"
                 self.bus_started = True
                 self._auto_clear_fault_on_initialize()
                 self._require_position_sensing_initialized_before_enable()
@@ -205,6 +212,7 @@ class QmixPumpBackend:
             },
             success=not fault_after_clear,
             error="fault remained after automatic clear" if fault_after_clear else None,
+            evidence_stage="OBSERVED",
         )
         if self.consecutive_init_fault_clears > 1:
             log_transaction(
@@ -265,7 +273,9 @@ class QmixPumpBackend:
     def _require_position_sensing_initialized_before_enable(self) -> None:
         """Fail closed unless the freshly connected pump reports valid position sensing."""
         pump = self._require_pump()
-        with log_call("pump", "check_position_sensing_initialized") as result:
+        with log_call(
+            "pump", "check_position_sensing_initialized", response_stage="OBSERVED"
+        ) as result:
             initialized = bool(pump.is_position_sensing_initialized())
             result["response"] = initialized
         if not initialized:
@@ -299,8 +309,21 @@ class QmixPumpBackend:
                 "Qmix pump remains in a fault state after initialization cleared its fault latch."
                 f"{detail} Inspect and resolve the fault in QmixElements before enabling the pump."
             )
-        if not pump.is_enabled():
-            pump.enable(True)
+        enabled_before = bool(pump.is_enabled())
+        if not enabled_before:
+            with log_call("pump", "enable", command=True, response_stage="OBSERVED") as result:
+                pump.enable(True)
+                enabled_after = bool(pump.is_enabled())
+                result["response"] = {"enabled_before": False, "enabled_after": enabled_after}
+                if not enabled_after:
+                    raise QmixPumpError("Qmix pump enable command returned but enabled readback remained false.")
+        else:
+            log_transaction(
+                "pump",
+                "read_enabled",
+                response={"enabled": True, "enable_command_sent": False},
+                evidence_stage="OBSERVED",
+            )
 
     def _fill_flow_rate(self, requested_ul_min: float | None = None) -> float:
         # Clamped to the currently-configured syringe's own live-reported
@@ -324,16 +347,23 @@ class QmixPumpBackend:
 
     def refill(self, flow_rate: float | None = None) -> None:
         pump = self._require_pump()
-        with log_call("pump", "refill") as result:
+        with log_call("pump", "refill", command={"requested_flow_rate_ul_min": flow_rate}) as result:
             max_volume = self.max_volume_ml if self.max_volume_ml is not None else float(pump.get_volume_max())
             self.max_volume_ml = max_volume
-            pump.set_fill_level(max_volume, self._fill_flow_rate(flow_rate))
+            effective_flow = self._fill_flow_rate(flow_rate)
+            pump.set_fill_level(max_volume, effective_flow)
             result["response"] = max_volume
+            result["effective"] = {
+                "target_fill_level_ml": max_volume,
+                "flow_rate_ul_min": effective_flow,
+            }
 
     def empty(self, flow_rate: float | None = None) -> None:
-        with log_call("pump", "empty") as result:
-            self._require_pump().set_fill_level(0.0, self._fill_flow_rate(flow_rate))
+        with log_call("pump", "empty", command={"requested_flow_rate_ul_min": flow_rate}) as result:
+            effective_flow = self._fill_flow_rate(flow_rate)
+            self._require_pump().set_fill_level(0.0, effective_flow)
             result["response"] = 0.0
+            result["effective"] = {"target_fill_level_ml": 0.0, "flow_rate_ul_min": effective_flow}
 
     def stop(self) -> None:
         if self.pump is not None:
@@ -367,7 +397,7 @@ class QmixPumpBackend:
             result["response"] = "applied"
 
     def read_fill_level(self) -> float:
-        with log_call("pump", "read_fill_level") as result:
+        with log_call("pump", "read_fill_level", response_stage="OBSERVED") as result:
             fill_level = float(self._require_pump().get_fill_level())
             result["response"] = fill_level
         return fill_level
@@ -465,7 +495,7 @@ class QmixPumpBackend:
     def read_status(self) -> bool:
         if self.pump is None:
             return False
-        with log_call("pump", "read_status") as result:
+        with log_call("pump", "read_status", response_stage="OBSERVED") as result:
             is_pumping = bool(self.pump.is_pumping())
             result["response"] = is_pumping
         return is_pumping
@@ -480,9 +510,19 @@ class QmixPumpBackend:
         if self.bus_started and self.pump is not None:
             errors.extend(self._run_close_step("pump stop", self.stop))
         if self.bus is not None and self.bus_started:
-            errors.extend(self._run_close_step("bus stop", self.bus.stop))
+            def stop_bus() -> None:
+                with log_call("pump", "bus.stop") as result:
+                    self.bus.stop()
+                    result["response"] = "stopped"
+
+            errors.extend(self._run_close_step("bus stop", stop_bus))
         if self.bus is not None and self.bus_opened:
-            errors.extend(self._run_close_step("bus close", self.bus.close))
+            def close_bus() -> None:
+                with log_call("pump", "bus.close") as result:
+                    self.bus.close()
+                    result["response"] = "closed"
+
+            errors.extend(self._run_close_step("bus close", close_bus))
         self.bus = None
         self.pump = None
         self.bus_opened = False

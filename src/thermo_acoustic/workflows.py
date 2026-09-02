@@ -97,6 +97,7 @@ class SeriesLifecycleManifest:
             "series_id": self.series_path.name,
             "series_path": str(self.series_path),
             "output_path": str(self.series_path),
+            "action_log_path": str(self.series_path / "action_log.jsonl"),
             "requested_repeats": self.requested_repeats,
             "started_repeats": self.started_repeats,
             "completed_repeats": self.completed_repeats,
@@ -434,6 +435,24 @@ class Experiment2:
     def tdms_path(self) -> Path:
         return self.experiment_folder / "data.tdms"
 
+    @property
+    def action_log_path(self) -> Path | None:
+        series_root = Path(self.output_root or self.experiment_folder.parent)
+        return None if series_root == Path() else series_root / "action_log.jsonl"
+
+    @property
+    def action_run_id(self) -> str:
+        series_root = Path(self.output_root or self.experiment_folder.parent)
+        return series_root.name or "unscoped_run"
+
+    @property
+    def action_condition(self) -> str:
+        if self.temperature_point_index is not None:
+            return f"temperature_point_{self.temperature_point_index + 1}:{self.experiment_folder.parent.name}"
+        if self.frequency_scan_selected_hz is not None:
+            return f"frequency_hz={self.frequency_scan_selected_hz:g}"
+        return "default"
+
     def _settings_properties(self) -> dict[str, Any]:
         wfg = coerce_wfg_config(self.wfg_config)
         do_clock = coerce_do_config(self.do_clock_settings)
@@ -461,6 +480,9 @@ class Experiment2:
             "OutputRoot": "" if self.output_root is None else str(self.output_root),
             "ExperimentFolder": str(self.experiment_folder),
             "TDMSPath": str(self.tdms_path),
+            "ActionLogPath": "" if self.action_log_path is None else str(self.action_log_path),
+            "ActionLogRunID": self.action_run_id,
+            "ActionLogCondition": self.action_condition,
             "TemperaturePointIndex": "" if self.temperature_point_index is None else self.temperature_point_index,
             "FrequencyScanSelectedHz": (
                 "" if self.frequency_scan_selected_hz is None else self.frequency_scan_selected_hz
