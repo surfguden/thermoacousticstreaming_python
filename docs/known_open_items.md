@@ -32,6 +32,7 @@ below; the table does not replace their history.
 | SW-ACQ-DETERMINISM-001 | RESOLVED OFFLINE | Camera ROI / AD2 preflight | Stale ROI, infinite/unsupported CH0 repeat, and inconsistent sweep requests could make data scientifically ambiguous | Canonical plans carry requested ROI; runtime applies it, performs fresh readback, and saves applied ROI. Enabled CH0 requires Repeat=1. FM Sweep plus Frequency Scan and FM Sweep without explicit CH0 enable/running state fail before hardware configuration. Focused fake/planner/UI tests cover each boundary | Preserve these gates during hardware validation; do not rewrite persisted Repeat=0 behind the operator's back | One separately authorized minimal run confirms the software evidence model against current camera/AD2 hardware |
 | SW-SCI-INTEGRITY-001 | RESOLVED OFFLINE | Camera timing / experiment metadata / refresh semantics | A disabled production DO clock previously removed the camera FPS timing gate, and TDMS did not retain exposure quantization provenance | `ExperimentRequest.camera_fps` is carried into sequence planning and drives the applied-exposure plus fresh-readout budget with DIO disabled. TDMS retains requested and applied exposure plus compatible `ExposureTime`. The automated request has one `WaitAfterFlush` value, consumed once after P02; the manual-tab delay is separate. `trigsrcNone`/`trigsrcPC` help text follows Digilent's generator state semantics without claiming physical timing. Final affected suite: 410 passed; broad suite: 659 passed, 1 skipped, plus two known PySide lifetime failures that passed in isolation | Preserve the Internal-trigger/no-DIO default and re-run offline timing/metadata tests when these fields change | A separately authorized run can compare saved requested/applied metadata with the current camera; physical synchronization remains HW-TIMING-001, not part of this software closure |
 | SW-ACTION-TRACE-001 | RESOLVED OFFLINE | Experiment action logging / traceability | The global free-text hardware log, per-repeat TDMS, lifecycle manifest, and transient UI events could not by themselves reconstruct one correlated repeat timeline | The existing `hw_logging` path now emits a bounded series-local `action_log.jsonl` under explicit run/condition/repeat/phase context. Backend calls separate `COMMAND_SENT` from protocol/readback outcomes; application steps/events retain operator chronology; TDMS and manifest link to the stream; wall-clock and monotonic timestamps have explicit non-physical semantics; primary and cleanup failures remain separate. No frame-loop logging, hardware calls, planning changes, or V3 redesign were introduced | Keep the record vocabulary bounded and preserve evidence-stage/verification-scope distinctions. Setup/manual calls remain explicitly phased in the global rotating transaction log; add series-local detail only when a currently used feature requires it | A fake full-flow record reconstructs condition planning, effective camera/acoustic state, capture/save/refresh order, terminal outcome, and separate primary/cleanup failure without relying on console order |
+| SW-V3-UX-001 | RESOLVED OFFLINE / HARDWARE EVALUATION DEFERRED | V3 operator workflow | The accepted opt-in UI mixed experiment setup, operation, manual/service actions, diagnostics, and stale migration assumptions on one dashboard | V3 now has persistent instrument state and run controls plus separate Experiment, Monitor, Manual & Service, and Diagnostics workspaces. Start review exposes the current shared-preflight blockers, production-disabled W2/DIO behavior, requested/effective evidence, required devices, output, and per-repeat order. Runtime events and the existing bounded action stream are presentation sources, not new authorities. The broad offline suite reported 669 passed, 1 skipped, plus two documented PySide lifetime failures that passed immediately in isolation; offscreen geometry was reviewed and no device was accessed | Preserve the canonical planner/runtime boundary and the configure/operate/manual-service separation. Re-evaluate on current hardware only under a separate authorization; keep V3 opt-in until the owner separately decides promotion | Offline validation shows the common path is understandable and fail-closed, requested/applied discrepancies remain explicit, advanced features are discoverable without dominating setup, and no presentation action initiates hardware I/O |
 | SCI-RHB-CAL-001 | DEFERRED / NONBLOCKING | Fluorescence thermometry provenance | A later Rhodamine-B temperature result would be scientifically ambiguous without an explicit calibration link | No active RhB calibration workflow is connected to experiment records | Before enabling RhB thermometry, define a calibration identifier/date and compatibility contract covering illumination, requested/applied exposure, relevant camera mode/gain, filters, and experimental condition | A saved experiment references a compatible retained calibration without inferring compatibility from filenames or chronology |
 | SCI-TEC-EQUIL-001 | DEFERRED / NONBLOCKING | Temperature-controlled imaging | TEC controller stability does not prove fluid at the imaging plane is equilibrated | Current TEC settling observes controller channels only; no imaging-plane thermal measurement or validated transfer-time model exists | Before temperature-controlled scientific claims, define and validate an imaging-plane equilibration criterion; do not add an arbitrary universal hold here | Retained evidence links controller stability to an experimentally justified imaging-plane equilibrium criterion |
 | HW-VALVE-001 | OPEN FOR OPTIONAL DIRECT PHYSICAL CONFIRMATION | Valve / fluidics | Software position/command correspondence and owner-supplied route names are resolved; direct physical actuation evidence is not retained | Owner-supplied experimental hardware truth defines position 1 / `P01` as through-chip liquid exchange and position 2 / `P02` as chip bypass. Current `Valve.set_position()` maps 1 directly to `P01` and 2 directly to `P02`; the serial backend adds carriage return on transmission | If direct confirmation is desired, run one separately authorized, pump-inactive valve command and `S` readback at a time while observing the expected route; one position does not authorize the other | Both positions have separate requested, protocol-confirmed, and physically observed route records; until then retain the owner-supplied provenance explicitly |
@@ -229,7 +230,7 @@ historical notes. This document is a live issue register, whereas
   the WFG panel above) was explicitly out of scope for the Session 103 fix
   and remains open if wanted.
 
-- **V3 acceptance records repository status, not completed validation.** A
+- **V3 acceptance records repository status, not real-hardware validation.** A
   fresh code assessment in the acceptance pass confirmed that `MainWindowV3`
   subclasses `MainWindowV2` and shares the same `Application`/hardware
   backends while rebuilding substantial experiment, pump, camera, WFG, MSO,
@@ -242,8 +243,31 @@ historical notes. This document is a live issue register, whereas
   auto-clear followed by the final fault gate. Commit `2c0ffc6` closed the two
   previously recorded capability gaps by adding a prominent v3 graceful-stop
   control and a v3 presentation of the shared manual Qmix recovery action.
-  **Status: ACCEPTED AND TRACKED; OPEN for independent real-hardware
-  evaluation.**
+  The 2026-09-02 offline UX round subsequently replaced the mixed dashboard
+  with explicit Experiment, Monitor, Manual & Service, and Diagnostics
+  workspaces, persistent instrument/run state, actionable preflight, and
+  requested-versus-applied action evidence. It did not alter the canonical
+  request/plan/adapter/runtime path or open hardware. **Status: ACCEPTED,
+  TRACKED, AND OFFLINE-UX-REVIEWED; OPEN only for separately authorized
+  real-hardware/operator evaluation and any later default-UI decision.**
+
+- **V3 migration assumptions were reclassified against current evidence.**
+  The historical generic/unused CH2 story is superseded by owner-confirmed W2
+  laser Analog In routing, while production W2 remains blocked because its
+  electrical transfer semantics are unresolved. The historical generic DIO1
+  timing role is superseded by its owner-confirmed laser Digital In connection,
+  but it remains deliberately unprogrammed. DIO0 remains physically connected
+  to camera `EXT.TRIG` and intentionally unused by normal Internal-trigger
+  acquisition. Historical two-pump and PriorZMotor/COM7 assumptions are
+  migration artifacts, not current operator choices. A fixed-frequency-only
+  assumption is superseded by the intentional FM and across-repeat frequency
+  programs, with their conflict/enable gates preserved. Owner-defined
+  cleaning/loading remains a manual/service concern; the one bounded
+  P01-pump-P02 `WaitAfterFlush` sequence remains the optional per-repeat sample
+  refresh. Requested settings, software-effective values, protocol/readback,
+  and physical verification remain separate evidence layers. **Status:
+  RESOLVED FOR V3 INFORMATION ARCHITECTURE; the underlying hardware-semantic
+  open items remain unchanged.**
 
 - **V3 tab-builder propagation gap.** `MainWindowV3._pump_tab()`,
   `_camera_tab()`, `_zscan_tab()`, and `_zscan_control_group()` replace the

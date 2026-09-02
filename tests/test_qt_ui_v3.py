@@ -9,7 +9,17 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QComboBox, QGroupBox, QLabel, QPushButton, QScrollArea, QTabWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QGroupBox,
+    QLabel,
+    QPlainTextEdit,
+    QPushButton,
+    QScrollArea,
+    QTabWidget,
+    QWidget,
+)
 
 from thermo_acoustic import qt_ui, qt_ui_v2, qt_ui_v3
 from thermo_acoustic.application import Application
@@ -99,7 +109,7 @@ def test_v3_is_a_layout_evolution_of_v2_and_v2_remains_available(monkeypatch, tm
         assert isinstance(v3, qt_ui_v2.MainWindowV2)
         assert type(v3) is qt_ui_v3.MainWindowV3
         assert type(v2) is qt_ui_v2.MainWindowV2
-        assert v3.windowTitle() == "Thermo Acoustic Streaming - UI v3 (shared hardware runtime)"
+        assert v3.windowTitle() == "Thermoacoustic Streaming — Instrument Control (V3)"
         assert v2.windowTitle() == "Thermo Acoustic Streaming - Transitional UI (shared hardware runtime)"
         assert any(action.text() == "Abort" for action in v3.menuBar().actions())
     finally:
@@ -126,7 +136,7 @@ def test_v3_waveform_policy_locks_dc_and_labels_square(monkeypatch, tmp_path):
         window.close()
 
 
-def test_v3_reuses_the_supplied_application_and_places_status_first(monkeypatch, tmp_path):
+def test_v3_reuses_the_supplied_application_and_separates_operator_workspaces(monkeypatch, tmp_path):
     app = Application()
     window = make_window(monkeypatch, tmp_path, app=app)
     window.show()
@@ -134,38 +144,39 @@ def test_v3_reuses_the_supplied_application_and_places_status_first(monkeypatch,
     try:
         assert window.app is app
         assert window.app.camera is app.camera
-        status = window.findChild(QGroupBox, "v3StatusFirst")
-        connections = window.findChild(QGroupBox, "v3ConnectionStrip")
+        instrument_bar = window.findChild(QGroupBox, "v3InstrumentBar")
+        workspaces = window.findChild(QTabWidget, "v3WorkspaceTabs")
         identity = window.findChild(QGroupBox, "v3ExperimentIdentity")
         plan = window.findChild(QGroupBox, "v3ExperimentPlan")
         run_control = window.findChild(QGroupBox, "v3PrimaryRunControl")
         setup_tabs = window.findChild(QTabWidget, "v3SetupTabs")
-        runtime = window.findChild(QScrollArea, "v3RuntimeMonitoring")
-        assert status is not None
-        assert connections is not None
+        assert instrument_bar is not None
+        assert workspaces is not None
         assert identity is not None
         assert plan is not None
         assert run_control is not None
         assert setup_tabs is not None
-        assert runtime is not None
-        assert connections.title() == "Hardware connection status"
-        assert status.title() == "Experiment status and progress"
-        connection_y = connections.mapTo(window.centralWidget(), connections.rect().topLeft()).y()
-        status_y = status.mapTo(window.centralWidget(), status.rect().topLeft()).y()
-        identity_y = identity.mapTo(window.centralWidget(), identity.rect().topLeft()).y()
-        plan_y = plan.mapTo(window.centralWidget(), plan.rect().topLeft()).y()
-        run_y = run_control.mapTo(window.centralWidget(), run_control.rect().topLeft()).y()
-        setup_y = setup_tabs.mapTo(window.centralWidget(), setup_tabs.rect().topLeft()).y()
-        assert connection_y < status_y < identity_y == plan_y < setup_y < run_y
-        assert runtime.width() >= 330
+        assert instrument_bar.title() == "Instrument state"
+        assert [workspaces.tabText(index) for index in range(workspaces.count())] == [
+            "Experiment",
+            "Monitor",
+            "Manual & Service",
+            "Diagnostics",
+        ]
+        assert window.findChild(QWidget, "v3ExperimentWorkspace") is not None
+        assert window.findChild(QWidget, "v3MonitorWorkspace") is not None
+        assert window.findChild(QWidget, "v3ManualServiceWorkspace") is not None
+        assert window.findChild(QWidget, "v3DiagnosticsWorkspace") is not None
         assert [setup_tabs.tabText(index) for index in range(setup_tabs.count())] == [
-            "AD2 Output",
-            "Camera",
-            "Fluidics",
-            "Temperature scan",
+            "Acquisition",
+            "Acoustic",
+            "Sample Refresh",
+            "Advanced",
         ]
         assert set(window._v3_connection_values) == {"AD2", "Camera", "Pump", "Valve", "TEC"}
-        assert all(dot.text() == "\u25cf" for dot in window._sidebar_status_dots.values())
+        assert set(window._v3_persistent_state) == {
+            "Readiness", "Run", "Alerts", "Acoustic", "Camera", "Laser", "Refresh", "Output"
+        }
         assert window._v3_connection_values["AD2"].text() == window.ad2_connection_status.text()
         assert window._v3_connection_values["Camera"].text() == window.camera_connection_status.text()
         assert window._v3_connection_values["Pump"].text() == window.pump_connection_status.text()
@@ -202,7 +213,11 @@ def test_v3_reuses_the_supplied_application_and_places_status_first(monkeypatch,
             "Average FPS",
         }.isdisjoint(labels)
         groups = {group.title() for group in window.findChildren(QGroupBox)}
-        assert {"Experiment acquisition", "Per-repeat camera-start metadata (s)"} <= groups
+        assert {
+            "Experiment acquisition",
+            "Per-repeat camera-start metadata (s)",
+            "Deferred camera metadata and trigger options",
+        } <= groups
         assert "metadata" in window.dynamic_camera_start.toolTip()
         assert "does not program DIO0 or DIO1" in window.dynamic_camera_start.toolTip()
         assert "unchanged" in window.global_exposure.toolTip()
@@ -210,9 +225,13 @@ def test_v3_reuses_the_supplied_application_and_places_status_first(monkeypatch,
         acquisition = next(
             group for group in window.findChildren(QGroupBox) if group.title() == "Experiment acquisition"
         )
+        advanced_camera = window.findChild(QGroupBox, "v3AdvancedCameraMetadata")
         assert identity.isAncestorOf(window.exp_repeats)
         assert not run_control.isAncestorOf(window.exp_repeats)
         assert not acquisition.isAncestorOf(window.exp_repeats)
+        assert advanced_camera.isAncestorOf(window.exp_camera_start)
+        assert advanced_camera.isAncestorOf(window.global_exposure)
+        assert not acquisition.isAncestorOf(window.exp_camera_start)
         button_texts = {button.text() for button in window.findChildren(QPushButton)}
         assert "Browse..." in button_texts
         assert "..." not in button_texts
@@ -293,8 +312,8 @@ def test_v3_main_ad2_settings_use_channel_tabs_without_horizontal_overflow(monke
         assert channels is not None
         assert scroll is not None
         assert [channels.tabText(index) for index in range(channels.count())] == [
-            "Channel 0 — W1 acoustic",
-            "Channel 1 — W2 laser (blocked)",
+            "Acoustic / W1",
+            "Laser / W2 (blocked)",
         ]
         assert window.exp_ch1_freq in channels.findChildren(type(window.exp_ch1_freq))
         assert window.exp_ch2_freq in channels.findChildren(type(window.exp_ch2_freq))
@@ -337,9 +356,13 @@ def test_v3_main_ad2_settings_use_channel_tabs_without_horizontal_overflow(monke
         assert "camera" not in channel1_note.text().lower()
         window.exp_sweep_enable.setChecked(True)
         window.exp_freq_scan_enable.setChecked(True)
-        assert "Scan selects each repeat's base carrier" in window.findChild(
+        assert "INVALID" in window.findChild(
             QLabel, "v3FrequencyProgramSummary"
         ).text()
+        assert "blocks Start" in window.findChild(QLabel, "v3FrequencyProgramSummary").text()
+        setup_tabs = window.findChild(QTabWidget, "v3SetupTabs")
+        setup_tabs.setCurrentIndex(1)
+        QApplication.processEvents()
         assert scroll.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         assert scroll.horizontalScrollBar().maximum() == 0
     finally:
@@ -587,6 +610,9 @@ def test_v3_plan_exposes_axes_sequence_camera_request_and_evidence_boundaries(mo
         axis = window.findChild(QLabel, "v3ExperimentAxisSummary")
         workflow = window.findChild(QLabel, "v3RepeatWorkflowSummary")
         camera = window.findChild(QLabel, "v3RequestedCameraSummary")
+        acoustic = window.findChild(QLabel, "v3RequestedAcousticSummary")
+        laser = window.findChild(QLabel, "v3LaserControlSummary")
+        refresh = window.findChild(QLabel, "v3RefreshSummary")
         requirements = window.findChild(QLabel, "v3HardwareRequirementsSummary")
         preview = window.findChild(QLabel, "v3FrequencyScanListPreview")
         warnings = window.findChild(QLabel, "v3PreRunWarnings")
@@ -598,6 +624,10 @@ def test_v3_plan_exposes_axes_sequence_camera_request_and_evidence_boundaries(mo
         assert "2.500 s acquisition duration" in camera.text()
         assert "10.000 ms exposure vs 50.000 ms frame interval" in camera.text()
         assert "Live DCAM readout margin is checked only at run start" in camera.text()
+        assert "Frequency scan across 3 repeat(s)" in acoustic.text()
+        assert "W2 / Project Ch2" in laser.text()
+        assert "production-disabled" in laser.text()
+        assert "no automatic repeat-to-repeat sample refresh" in refresh.text()
         assert "Software-known shared snapshot only; no hardware query" in requirements.text()
         assert "shared AD2 snapshot intentionally deferred" in requirements.text()
         assert "Output path: CONFIGURED" in requirements.text()
@@ -831,6 +861,95 @@ def test_v3_shadow_preflight_rejects_fm_without_explicit_channel0(monkeypatch, t
         assert shadow.plan is None
         assert "FM Sweep requires Channel 0 to be explicitly enabled" in shadow.preflight.blocking_issues[0].message
         assert shadow.preflight.output_path_state == "implicit_working_directory"
+    finally:
+        window.close()
+
+
+def test_v3_persistent_status_disables_start_for_shared_preflight_blockers(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        window.exp_camera_fps.setValue(20.0)
+        window.exp_ch1_function.setCurrentText("Sine")
+        window.exp_ad2_channels[0]["enable"].setChecked(True)
+        window.exp_sweep_enable.setChecked(True)
+        window.exp_freq_scan_enable.setChecked(True)
+        window._refresh_v3_relationships()
+
+        readiness = window.findChild(QLabel, "v3PersistentReadinessState")
+        start = window.findChild(QPushButton, "v3StartExperimentButton")
+        assert readiness.text().startswith("BLOCKED")
+        assert "issue(s)" in readiness.text()
+        assert not start.isEnabled()
+        assert "FM Sweep and Frequency Scan cannot be enabled together" in window._v3_plan_warnings.text()
+
+        window.exp_freq_scan_enable.setChecked(False)
+        window._refresh_v3_relationships()
+        assert not readiness.text().startswith("BLOCKED")
+        assert start.isEnabled()
+    finally:
+        window.close()
+
+
+def test_v3_operator_events_present_concise_runtime_truth(monkeypatch, tmp_path):
+    app = Application()
+    window = make_window(monkeypatch, tmp_path, app=app)
+    try:
+        app.fire_status_event("CameraSettingsApplied")
+        window._refresh_status()
+
+        stream = window.findChild(QPlainTextEdit, "v3OperatorEventStream")
+        assert stream is not None
+        assert "INFO  Application — CameraSettingsApplied" in stream.toPlainText()
+        assert "Traceback" not in stream.toPlainText()
+    finally:
+        window.close()
+
+
+def test_v3_action_log_surfaces_requested_effective_discrepancies(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        series = tmp_path / "series"
+        series.mkdir()
+        window.series_path.setText(str(series))
+        window.exp_exposure_ms.setValue(40.0)
+        window.exp_ch1_amp.setValue(6.0)
+        applied_roi = {
+            "horizontal_offset": 4,
+            "vertical_offset": 8,
+            "horizontal_size": 512,
+            "vertical_size": 256,
+        }
+        records = [
+            {
+                "operation": "acquisition_settings_effective",
+                "effective": {"exposure_ms": 39.998, "roi": applied_roi},
+                "run_id": "series",
+                "condition": "default",
+                "repeat": 1,
+                "evidence_stage": "EFFECTIVE",
+            },
+            {
+                "operation": "configure_wfg",
+                "effective": {"channels": [{"carrier": {"amplitude_v": 5.0}}]},
+                "run_id": "series",
+                "condition": "default",
+                "repeat": 1,
+                "evidence_stage": "EFFECTIVE",
+            },
+        ]
+        (series / "action_log.jsonl").write_text(
+            "\n".join(json.dumps(record) for record in records) + "\n",
+            encoding="utf-8",
+        )
+
+        window._refresh_v3_action_evidence(force=True)
+
+        assert "latest applied 39.998 ms — DIFFERENT" in window._v3_exposure_evidence.text()
+        assert "latest applied" in window._v3_roi_evidence.text()
+        assert "— DIFFERENT" in window._v3_roi_evidence.text()
+        assert "latest effective 5 V — LIMITED" in window._v3_amplitude_evidence.text()
+        assert "run series, condition default, repeat 1" in window._v3_evidence_source.text()
+        assert "Loaded 2 most recent record(s)" in window._v3_action_log_state.text()
     finally:
         window.close()
 
@@ -1305,11 +1424,21 @@ def test_v3_shell_controls_dispatch_to_shared_v1_v2_callbacks(monkeypatch, tmp_p
     window = make_window(monkeypatch, tmp_path)
     events.clear()  # MainWindow loads persisted settings during construction.
     try:
+        window.exp_camera_fps.setValue(20.0)
+        window._refresh_v3_relationships()
         buttons = {button.text(): button for button in window.findChildren(QPushButton)}
         buttons["Initialize hardware"].click()
         buttons["Start experiment"].click()
+        window._experiment_series_active = True
+        window._refresh_v3_relationships()
         buttons["Request graceful stop"].click()
-        for label in ("WFG", "MSO", "Pump & Valve", "Camera", "Z-Scan"):
+        for label in (
+            "Open Manual AD2 outputs",
+            "Open AD2 diagnostics",
+            "Open Pump & Valve",
+            "Open Camera",
+            "Open Z calibration scan",
+        ):
             buttons[label].click()
 
         actions = {action.text(): action for action in window.menuBar().actions()}

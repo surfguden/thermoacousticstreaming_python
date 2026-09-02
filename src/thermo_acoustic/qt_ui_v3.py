@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import deque
+import json
 import sys
 from pathlib import Path
 
@@ -12,6 +14,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -213,7 +216,7 @@ class MainWindowV3(MainWindowV2):
 
     def __init__(self, app: Application | None = None) -> None:
         super().__init__(app=app)
-        self.setWindowTitle("Thermo Acoustic Streaming - UI v3 (shared hardware runtime)")
+        self.setWindowTitle("Thermoacoustic Streaming — Instrument Control (V3)")
         self.connection_button.setText("Initialize hardware")
         self.connection_button.setStyleSheet("")
         self.connection_button.setToolTip(
@@ -233,47 +236,21 @@ class MainWindowV3(MainWindowV2):
 
     def _build_layout(self) -> None:
         self._build_menu_bar()
-
-        # Build the detailed monitoring column first because it owns the live
-        # connection labels mirrored by the compact summary strip below.
-        runtime = self._v3_runtime_column()
-
         root = QWidget()
         self.setCentralWidget(root)
-        root_layout = QHBoxLayout(root)
-        root_layout.addWidget(self._left_navigation(), 0)
+        root_layout = QVBoxLayout(root)
+        root_layout.setContentsMargins(8, 8, 8, 8)
+        root_layout.addWidget(self._v3_instrument_bar(), 0)
 
-        workspace = QWidget()
-        workspace_layout = QVBoxLayout(workspace)
-        workspace_layout.setContentsMargins(0, 0, 0, 0)
-
-        workspace_layout.addWidget(self._v3_connection_strip(), 0)
-
-        status = self._v2_status_progress_group()
-        status.setObjectName("v3StatusFirst")
-        workspace_layout.addWidget(status, 0)
-
-        planning = QWidget()
-        planning_layout = QHBoxLayout(planning)
-        planning_layout.setContentsMargins(0, 0, 0, 0)
-        planning_layout.addWidget(self._v3_experiment_identity_group(), 1)
-        planning_layout.addWidget(self._v3_experiment_plan_group(), 2)
-        workspace_layout.addWidget(planning, 0)
-
-        operational = QWidget()
-        operational_layout = QHBoxLayout(operational)
-        operational_layout.setContentsMargins(0, 0, 0, 0)
-        setup = QWidget()
-        setup_layout = QVBoxLayout(setup)
-        setup_layout.setContentsMargins(0, 0, 0, 0)
-        setup_layout.addWidget(self._v3_one_repeat_timing_plan(), 0)
-        setup_layout.addWidget(self._v3_setup_tabs(), 1)
-        operational_layout.addWidget(setup, 1)
-        operational_layout.addWidget(runtime, 0)
-        workspace_layout.addWidget(operational, 1)
-        workspace_layout.addWidget(self._v3_run_control_group(), 0)
-
-        root_layout.addWidget(workspace, 1)
+        workspaces = QTabWidget()
+        workspaces.setObjectName("v3WorkspaceTabs")
+        workspaces.addTab(self._v3_experiment_workspace(), "Experiment")
+        workspaces.addTab(self._v3_monitor_workspace(), "Monitor")
+        workspaces.addTab(self._v3_manual_service_workspace(), "Manual & Service")
+        workspaces.addTab(self._v3_diagnostics_workspace(), "Diagnostics")
+        self._v3_workspace_tabs = workspaces
+        root_layout.addWidget(workspaces, 1)
+        root_layout.addWidget(self._v3_run_control_group(), 0)
         self._connect_v3_relationship_refresh()
         self._refresh_v3_relationships()
 
@@ -331,19 +308,173 @@ class MainWindowV3(MainWindowV2):
             dialog.resize(*self._MANUAL_PANEL_INITIAL_SIZES[panel_name])
         return dialog
 
-    def _v3_connection_strip(self) -> QGroupBox:
-        group = QGroupBox("Hardware connection status")
-        group.setObjectName("v3ConnectionStrip")
-        layout = QHBoxLayout(group)
+    def _v3_instrument_bar(self) -> QGroupBox:
+        """Persistent high-value state, analogous to instrument settings badges."""
+
+        group = QGroupBox("Instrument state")
+        group.setObjectName("v3InstrumentBar")
+        layout = QGridLayout(group)
+        self.connection_button = QPushButton("Initialize hardware")
+        self.connection_button.setObjectName("v3InitializeHardwareButton")
+        self.connection_button.clicked.connect(self._open_initialization_dialog)
+        layout.addWidget(self.connection_button, 0, 0, 2, 1)
+
+        self._v3_persistent_state: dict[str, QLabel] = {}
+        captions = (
+            ("Readiness", "Readiness"),
+            ("Run", "Run"),
+            ("Alerts", "Alerts"),
+            ("Acoustic", "Acoustic / W1"),
+            ("Camera", "Camera"),
+            ("Laser", "Laser control"),
+            ("Refresh", "Sample refresh"),
+            ("Output", "Output"),
+        )
+        for column, (key, caption) in enumerate(captions, start=1):
+            heading = QLabel(caption)
+            heading.setStyleSheet("font-weight: bold;")
+            value = QLabel("UNKNOWN")
+            value.setObjectName(f"v3Persistent{key}State")
+            value.setWordWrap(True)
+            value.setMinimumWidth(105 if key != "Output" else 170)
+            self._v3_persistent_state[key] = value
+            layout.addWidget(heading, 0, column)
+            layout.addWidget(value, 1, column)
+        layout.setColumnStretch(len(captions), 1)
+        return group
+
+    def _v3_experiment_workspace(self) -> QWidget:
+        page = QWidget()
+        page.setObjectName("v3ExperimentWorkspace")
+        layout = QHBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        configure = QWidget()
+        configure_layout = QVBoxLayout(configure)
+        configure_layout.setContentsMargins(0, 0, 0, 0)
+        configure_layout.addWidget(self._v3_experiment_identity_group(), 0)
+        configure_layout.addWidget(self._v3_setup_tabs(), 1)
+        layout.addWidget(configure, 3)
+
+        review_content = QWidget()
+        review_layout = QVBoxLayout(review_content)
+        review_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        review_layout.addWidget(self._v3_experiment_plan_group())
+        details = QTabWidget()
+        details.setObjectName("v3ReviewDetails")
+        details.addTab(self._v3_group_page(self._v3_requested_effective_group()), "Evidence")
+        details.addTab(self._v3_scroll_page(self._v3_one_repeat_timing_plan(), "v3TimingReviewScroll"), "Timing")
+        review_layout.addWidget(details)
+        review_layout.addStretch(1)
+        review = QScrollArea()
+        review.setObjectName("v3PreRunReview")
+        review.setWidgetResizable(True)
+        review.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        review.setMinimumWidth(400)
+        review.setMaximumWidth(450)
+        review.setWidget(review_content)
+        layout.addWidget(review, 2)
+        return page
+
+    def _v3_monitor_workspace(self) -> QWidget:
+        page = QWidget()
+        page.setObjectName("v3MonitorWorkspace")
+        layout = QHBoxLayout(page)
+        status = self._v2_status_progress_group()
+        status.setObjectName("v3RunProgress")
+        left = QVBoxLayout()
+        left.addWidget(status)
+        left.addWidget(self._v3_operator_event_group(), 1)
+        layout.addLayout(left, 3)
+        right = QVBoxLayout()
+        right.addWidget(self._v2_waveform_group())
+        right.addStretch(1)
+        layout.addLayout(right, 2)
+        return page
+
+    def _v3_manual_service_workspace(self) -> QWidget:
+        page = QWidget()
+        page.setObjectName("v3ManualServiceWorkspace")
+        layout = QVBoxLayout(page)
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        warning = QLabel(
+            "Manual and service actions are outside the experiment plan and may act immediately on initialized "
+            "hardware. They are logged as MANUAL_SERVICE. Opening a panel is inert; each action retains its own "
+            "confirmation and safety gate."
+        )
+        warning.setObjectName("v3ManualServiceBoundary")
+        warning.setWordWrap(True)
+        warning.setStyleSheet("font-weight: bold; color: darkorange;")
+        layout.addWidget(warning)
+        actions = QGroupBox("Manual and service panels")
+        grid = QGridLayout(actions)
+        panels = (
+            ("Camera", "Camera", "Apply ROI/exposure, preview, and manual capture"),
+            ("PumpValve", "Pump & Valve", "Pump motion, valve switching, syringe setup, and recovery"),
+            ("WFG", "Manual AD2 outputs", "Manual waveform output; separate from experiment settings"),
+            ("ZScan", "Z calibration scan", "Manual motion/camera calibration workflow"),
+            ("MSO", "AD2 diagnostics", "Oscilloscope and digital diagnostic acquisition"),
+        )
+        for row, (panel_name, caption, description) in enumerate(panels):
+            button = QPushButton(f"Open {caption}")
+            button.setObjectName(f"v3Open{panel_name}Panel")
+            button.clicked.connect(
+                lambda checked=False, name=panel_name: self._open_manual_panel(name)
+            )
+            detail = QLabel(description)
+            detail.setWordWrap(True)
+            grid.addWidget(button, row, 0)
+            grid.addWidget(detail, row, 1)
+        grid.setColumnStretch(1, 1)
+        layout.addWidget(actions)
+        layout.addStretch(1)
+        return page
+
+    def _v3_diagnostics_workspace(self) -> QWidget:
+        page = QWidget()
+        page.setObjectName("v3DiagnosticsWorkspace")
+        layout = QHBoxLayout(page)
+        left = QVBoxLayout()
+        left.addWidget(self._v3_device_diagnostics_group())
+        left.addWidget(self._v3_action_log_group())
+        left.addStretch(1)
+        layout.addLayout(left, 2)
+        layout.addWidget(self._global_status_panel(), 3)
+        return page
+
+    def _v3_device_diagnostics_group(self) -> QGroupBox:
+        group = QGroupBox("Device state details")
+        group.setObjectName("v3DeviceDiagnostics")
+        form = QFormLayout(group)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self._v3_connection_values: dict[str, QLabel] = {}
         for name in ("AD2", "Camera", "Pump", "Valve", "TEC"):
-            layout.addWidget(QLabel(name))
             value = QLabel("Not connected")
             value.setObjectName(f"v3ConnectionStatus{name}")
-            value.setMinimumWidth(82)
+            value.setWordWrap(True)
             self._v3_connection_values[name] = value
-            layout.addWidget(value)
-        layout.addStretch(1)
+            form.addRow(name, value)
+        note = QLabel("Software/cached status only unless the label explicitly identifies protocol readback.")
+        note.setWordWrap(True)
+        form.addRow(note)
+        return group
+
+    def _v3_operator_event_group(self) -> QGroupBox:
+        group = QGroupBox("Operator events")
+        group.setObjectName("v3OperatorEvents")
+        layout = QVBoxLayout(group)
+        self._v3_operator_events = QPlainTextEdit()
+        self._v3_operator_events.setObjectName("v3OperatorEventStream")
+        self._v3_operator_events.setReadOnly(True)
+        self._v3_operator_events.document().setMaximumBlockCount(250)
+        self._v3_rendered_event_count = 0
+        layout.addWidget(self._v3_operator_events)
+        note = QLabel(
+            "Concise current-session events only. Durable run evidence is retained in action_log.jsonl; "
+            "transport details remain in the hardware transaction log."
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
         return group
 
     def _v3_experiment_identity_group(self) -> QGroupBox:
@@ -371,7 +502,7 @@ class MainWindowV3(MainWindowV2):
         return group
 
     def _v3_experiment_plan_group(self) -> QGroupBox:
-        group = QGroupBox("Derived experiment plan — configured state")
+        group = QGroupBox("Start will run")
         group.setObjectName("v3ExperimentPlan")
         form = QFormLayout(group)
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
@@ -381,6 +512,14 @@ class MainWindowV3(MainWindowV2):
         self._v3_repeat_workflow.setObjectName("v3RepeatWorkflowSummary")
         self._v3_camera_request_summary = QLabel()
         self._v3_camera_request_summary.setObjectName("v3RequestedCameraSummary")
+        self._v3_acoustic_request_summary = QLabel()
+        self._v3_acoustic_request_summary.setObjectName("v3RequestedAcousticSummary")
+        self._v3_laser_request_summary = QLabel()
+        self._v3_laser_request_summary.setObjectName("v3LaserControlSummary")
+        self._v3_refresh_request_summary = QLabel()
+        self._v3_refresh_request_summary.setObjectName("v3RefreshSummary")
+        self._v3_output_summary = QLabel()
+        self._v3_output_summary.setObjectName("v3OutputSummary")
         self._v3_requirements_summary = QLabel()
         self._v3_requirements_summary.setObjectName("v3HardwareRequirementsSummary")
         self._v3_plan_warnings = QLabel()
@@ -389,15 +528,73 @@ class MainWindowV3(MainWindowV2):
             self._v3_axis_summary,
             self._v3_repeat_workflow,
             self._v3_camera_request_summary,
+            self._v3_acoustic_request_summary,
+            self._v3_laser_request_summary,
+            self._v3_refresh_request_summary,
+            self._v3_output_summary,
             self._v3_requirements_summary,
             self._v3_plan_warnings,
         ):
             label.setWordWrap(True)
-        form.addRow("Acquisition axes", self._v3_axis_summary)
-        form.addRow("Per-repeat order", self._v3_repeat_workflow)
-        form.addRow("Camera request", self._v3_camera_request_summary)
-        form.addRow("Pre-run readiness", self._v3_requirements_summary)
-        form.addRow("Review", self._v3_plan_warnings)
+        form.addRow("Run scope", self._v3_axis_summary)
+        form.addRow("Per-repeat sequence", self._v3_repeat_workflow)
+        form.addRow("Camera", self._v3_camera_request_summary)
+        form.addRow("Acoustic / W1", self._v3_acoustic_request_summary)
+        form.addRow("Laser control", self._v3_laser_request_summary)
+        form.addRow("Sample refresh", self._v3_refresh_request_summary)
+        form.addRow("Output", self._v3_output_summary)
+        form.addRow("Required devices", self._v3_requirements_summary)
+        form.addRow("Blockers and warnings", self._v3_plan_warnings)
+        return group
+
+    def _v3_requested_effective_group(self) -> QGroupBox:
+        group = QGroupBox("Requested and latest applied evidence")
+        group.setObjectName("v3RequestedEffectiveEvidence")
+        form = QFormLayout(group)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        self._v3_exposure_evidence = QLabel("Requested value available; no applied record loaded")
+        self._v3_roi_evidence = QLabel("Requested value available; no applied record loaded")
+        self._v3_amplitude_evidence = QLabel("Requested value available; no effective record loaded")
+        self._v3_evidence_source = QLabel("No durable action record loaded")
+        for label in (
+            self._v3_exposure_evidence,
+            self._v3_roi_evidence,
+            self._v3_amplitude_evidence,
+            self._v3_evidence_source,
+        ):
+            label.setWordWrap(True)
+        form.addRow("Exposure", self._v3_exposure_evidence)
+        form.addRow("ROI", self._v3_roi_evidence)
+        form.addRow("Acoustic amplitude", self._v3_amplitude_evidence)
+        form.addRow("Evidence source", self._v3_evidence_source)
+        note = QLabel(
+            "Requested values come from the current canonical request. Applied/effective values appear only "
+            "when a matching durable action record exists; absence is shown as UNKNOWN, never inferred."
+        )
+        note.setWordWrap(True)
+        form.addRow(note)
+        return group
+
+    def _v3_action_log_group(self) -> QGroupBox:
+        group = QGroupBox("Durable action evidence")
+        group.setObjectName("v3ActionLogEvidence")
+        form = QFormLayout(group)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        self._v3_action_log_path = QLabel()
+        self._v3_action_log_path.setObjectName("v3ActionLogPath")
+        self._v3_action_log_path.setWordWrap(True)
+        self._v3_action_log_state = QLabel("Not loaded")
+        self._v3_action_log_state.setObjectName("v3ActionLogState")
+        self._v3_action_log_state.setWordWrap(True)
+        refresh = QPushButton("Refresh action evidence")
+        refresh.setObjectName("v3RefreshActionEvidence")
+        refresh.clicked.connect(lambda: self._refresh_v3_action_evidence(force=True))
+        form.addRow("Series action log", self._v3_action_log_path)
+        form.addRow("Latest evidence", self._v3_action_log_state)
+        form.addRow(refresh)
+        transport = QLabel("Detailed transport/API diagnostics: logs/hardware_transactions.log")
+        transport.setWordWrap(True)
+        form.addRow(transport)
         return group
 
     def _v3_run_control_group(self) -> QGroupBox:
@@ -412,6 +609,7 @@ class MainWindowV3(MainWindowV2):
             "derivation; the inherited Start path rebuilds the authoritative independent RunPlan."
         )
         start.clicked.connect(self._v3_start_experiment_with_shared_preflight)
+        self._v3_start_button = start
         stop = QPushButton("Request graceful stop")
         stop.setObjectName("v3RequestGracefulStopButton")
         stop.setMinimumHeight(44)
@@ -421,6 +619,7 @@ class MainWindowV3(MainWindowV2):
             "It does not stop hardware in the middle of an operation."
         )
         stop.clicked.connect(self._abort)
+        self._v3_stop_button = stop
         note = QLabel(
             "Start uses the plan above. Graceful stop finishes the active unit before halting; "
             "it is not an emergency hardware stop."
@@ -436,17 +635,17 @@ class MainWindowV3(MainWindowV2):
         tabs = QTabWidget()
         tabs.setObjectName("v3SetupTabs")
 
-        ad2_content = QWidget()
-        ad2_layout = QVBoxLayout(ad2_content)
-        ad2_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        ad2_layout.addWidget(self._v3_ad2_output_group())
-        tabs.addTab(self._v3_scroll_page(ad2_content, "v3Ad2SetupScroll"), "AD2 Output")
-
         camera_content = QWidget()
         camera_layout = QVBoxLayout(camera_content)
         camera_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         camera_layout.addWidget(self._v2_acquisition_group())
-        tabs.addTab(self._v3_scroll_page(camera_content, "v3CameraSetupScroll"), "Camera")
+        tabs.addTab(self._v3_scroll_page(camera_content, "v3CameraSetupScroll"), "Acquisition")
+
+        ad2_content = QWidget()
+        ad2_layout = QVBoxLayout(ad2_content)
+        ad2_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        ad2_layout.addWidget(self._v3_ad2_output_group())
+        tabs.addTab(self._v3_scroll_page(ad2_content, "v3Ad2SetupScroll"), "Acoustic")
 
         fluidics_content = QWidget()
         fluidics_layout = QVBoxLayout(fluidics_content)
@@ -471,24 +670,25 @@ class MainWindowV3(MainWindowV2):
         fluidics_layout.addWidget(flush_group)
         fluidics_layout.addWidget(self._v3_flush_summary_group())
         fluidics_layout.addStretch(1)
-        tabs.addTab(self._v3_scroll_page(fluidics_content, "v3FluidicsSetupScroll"), "Fluidics")
+        tabs.addTab(self._v3_scroll_page(fluidics_content, "v3FluidicsSetupScroll"), "Sample Refresh")
 
         advanced_content = QWidget()
         advanced_layout = QVBoxLayout(advanced_content)
         advanced_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        advanced_layout.addWidget(self._v3_camera_metadata_advanced_group)
         advanced_layout.addWidget(self._experiment_temperature_group())
         advanced_layout.addStretch(1)
-        tabs.addTab(self._v3_scroll_page(advanced_content, "v3AdvancedSetupScroll"), "Temperature scan")
+        tabs.addTab(self._v3_scroll_page(advanced_content, "v3AdvancedSetupScroll"), "Advanced")
         return tabs
 
     def _v3_ad2_output_group(self) -> QGroupBox:
-        group = QGroupBox("Experiment AD2 output")
+        group = QGroupBox("Experiment acoustic output")
         group.setObjectName("v3ExperimentAd2Output")
         layout = QVBoxLayout(group)
         channels = QTabWidget()
         channels.setObjectName("v3ExperimentAd2Channels")
         for index, state in enumerate(self.exp_ad2_channels):
-            title = "Channel 0 — W1 acoustic" if index == 0 else "Channel 1 — W2 laser (blocked)"
+            title = "Acoustic / W1" if index == 0 else "Laser / W2 (blocked)"
             channels.addTab(self._v3_ad2_channel_page(state, index), title)
         self._bind_dc_incompatible_experiment_features(self.exp_ch1_function)
         layout.addWidget(channels)
@@ -553,12 +753,12 @@ class MainWindowV3(MainWindowV2):
         return page
 
     def _v3_frequency_program_group(self) -> QGroupBox:
-        group = QGroupBox("Frequency program — channel 0")
+        group = QGroupBox("Frequency program — Acoustic / W1")
         group.setObjectName("v3FrequencyProgram")
         layout = QVBoxLayout(group)
         hierarchy = QLabel(
-            "Hierarchy: base carrier → optional FM sweep within each repeat → optional frequency-scan "
-            "base-carrier override for each repeat."
+            "Choose one frequency mode: static carrier, fast FM sweep within each repeat, or a "
+            "frequency scan across repeats. FM sweep and frequency scan are mutually exclusive."
         )
         hierarchy.setObjectName("v3FrequencyProgramHierarchy")
         hierarchy.setWordWrap(True)
@@ -631,18 +831,18 @@ class MainWindowV3(MainWindowV2):
         return group
 
     def _v3_one_repeat_timing_plan(self) -> QGroupBox:
-        group = QGroupBox("One-repeat AD2 timing plan (requested)")
+        group = QGroupBox("One-repeat output timing (requested)")
         group.setObjectName("v3OneRepeatTimingPlan")
         grid = QGridLayout(group)
         for column, text in enumerate(("Output", "Start (s)", "Run (s)", "End (s)")):
             grid.addWidget(QLabel(text), 0, column)
-        self._v3_timing_delta_header = QLabel("End delta vs CH0 (s)")
+        self._v3_timing_delta_header = QLabel("End delta vs Acoustic / W1 (s)")
         self._v3_timing_delta_header.setObjectName("v3TimingDeltaHeader")
         grid.addWidget(self._v3_timing_delta_header, 0, 4)
         self._v3_timing_labels: dict[str, dict[str, QLabel]] = {}
         rows = (
-            ("ch0", "WFG channel 0 / W1 acoustic"),
-            ("ch1", "WFG channel 1 / W2 laser (blocked)"),
+            ("ch0", "Acoustic / W1 / Project Ch1"),
+            ("ch1", "Laser analog control / W2 (blocked)"),
             ("dio1", "DIO1 laser trigger (disabled)"),
         )
         for row, (key, title) in enumerate(rows, start=1):
@@ -922,6 +1122,46 @@ class MainWindowV3(MainWindowV2):
             "the fixed value. The list has 10 slots. Normal production does not apply these values "
             "as camera delays and does not program DIO0 or DIO1."
         )
+        acquisition_grid = group.layout()
+        if not isinstance(acquisition_grid, QGridLayout):
+            raise RuntimeError("V3 expected Experiment acquisition to use a grid layout.")
+
+        def detach_grid_field(field: QWidget) -> QWidget:
+            grid, row, column = _grid_cell_containing(group, field)
+            item = grid.itemAtPosition(row, column)
+            wrapper = item.widget() if item is not None else None
+            caption_item = grid.itemAtPosition(row, 0)
+            caption = caption_item.widget() if caption_item is not None else None
+            if wrapper is None or not isinstance(caption, QLabel):
+                raise RuntimeError(f"V3 could not move advanced acquisition field {field!r}.")
+            grid.removeWidget(wrapper)
+            grid.removeWidget(caption)
+            field.setParent(None)
+            if wrapper is not field:
+                wrapper.deleteLater()
+            caption.deleteLater()
+            return field
+
+        fixed_start = detach_grid_field(self.exp_camera_start)
+        global_reset = detach_grid_field(self.global_exposure)
+        acquisition_grid.removeWidget(camera_start_group)
+        camera_start_group.setParent(None)
+        advanced_group = QGroupBox("Deferred camera metadata and trigger options")
+        advanced_group.setObjectName("v3AdvancedCameraMetadata")
+        advanced_form = QFormLayout(advanced_group)
+        advanced_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        advanced_form.addRow("Fixed camera-start metadata (s)", fixed_start)
+        advanced_form.addRow(camera_start_group)
+        advanced_form.addRow("Request global exposure reset", global_reset)
+        advanced_note = QLabel(
+            "Normal acquisition uses Internal trigger and programs neither DIO0 nor DIO1. Camera-start values "
+            "are retained as metadata only; GLOBALRESET applicability remains mode-dependent."
+        )
+        advanced_note.setWordWrap(True)
+        advanced_form.addRow(advanced_note)
+        self._add_tooltip_icons(advanced_form)
+        self._v3_camera_metadata_advanced_group = advanced_group
+
         summary = QGroupBox("Camera request and feasibility (DIO outputs disabled)")
         summary.setObjectName("v3DioTimingSummary")
         summary_form = QFormLayout(summary)
@@ -934,9 +1174,6 @@ class MainWindowV3(MainWindowV2):
         summary_form.addRow("Recorded start metadata", self._v3_dio_start_source)
         summary_form.addRow("Per-repeat slot budget", self._v3_dio_slot_budget)
         summary_form.addRow("Existing run-start check", self._v3_camera_feasibility)
-        acquisition_grid = group.layout()
-        if not isinstance(acquisition_grid, QGridLayout):
-            raise RuntimeError("V3 expected Experiment acquisition to use a grid layout.")
         acquisition_grid.addWidget(summary, 6, 0, 1, 3)
         self._v3_sync_uncertainty = QLabel(
             "Automated camera trigger is Internal. DIO0/pink is physically connected to camera trigger "
@@ -1021,9 +1258,192 @@ class MainWindowV3(MainWindowV2):
                 ),
                 update_legacy_status=False,
             )
+            self._render_v3_shared_preflight(result)
+            self._refresh_v3_operator_events()
+            return
         # BuildResult is presentation/audit derivation only. The inherited
         # authoritative Start path rebuilds its independent RunPlan and executes it.
+        if hasattr(self, "_v3_workspace_tabs"):
+            self._v3_workspace_tabs.setCurrentIndex(1)
         self._start_experiment()
+
+    def _v3_action_log_file(self) -> Path:
+        configured = self.series_path.text().strip()
+        root = Path(configured) if configured else Path.cwd()
+        return root / "action_log.jsonl"
+
+    def _refresh_v3_operator_events(self) -> None:
+        if not hasattr(self, "_v3_operator_events"):
+            return
+        events = self.app.runtime_events
+        if self._v3_rendered_event_count > len(events):
+            self._v3_operator_events.clear()
+            self._v3_rendered_event_count = 0
+        for event in events[self._v3_rendered_event_count:]:
+            time_text = event.timestamp_utc.astimezone().strftime("%H:%M:%S")
+            severity = event.severity.value.replace("_", " ").upper()
+            line = f"{time_text}  {severity}  {event.subsystem.title()} — {event.message}"
+            if event.operator_next_action:
+                line += f"  Next: {event.operator_next_action}"
+            self._v3_operator_events.appendPlainText(line)
+        self._v3_rendered_event_count = len(events)
+
+    @staticmethod
+    def _v3_latest_action_record(records: list[dict[str, object]], operation: str) -> dict[str, object] | None:
+        return next(
+            (record for record in reversed(records) if record.get("operation") == operation),
+            None,
+        )
+
+    def _refresh_v3_action_evidence(self, *, force: bool = False) -> None:
+        if not hasattr(self, "_v3_action_log_path"):
+            return
+        path = self._v3_action_log_file()
+        self._v3_action_log_path.setText(str(path))
+        requested_exposure = float(self.exp_exposure_ms.value())
+        requested_roi = {
+            "horizontal_offset": int(self.roi_h_offset.value()),
+            "vertical_offset": int(self.roi_v_offset.value()),
+            "horizontal_size": int(self.roi_h_size.value()),
+            "vertical_size": int(self.roi_v_size.value()),
+        }
+        requested_amplitude = float(self.exp_ch1_amp.value())
+        self._v3_exposure_evidence.setText(f"Requested {requested_exposure:.6g} ms; applied UNKNOWN")
+        self._v3_roi_evidence.setText(f"Requested {requested_roi}; applied UNKNOWN")
+        self._v3_amplitude_evidence.setText(f"Requested {requested_amplitude:.6g} V; effective UNKNOWN")
+        for label in (self._v3_exposure_evidence, self._v3_roi_evidence, self._v3_amplitude_evidence):
+            label.setStyleSheet("")
+        try:
+            modified_ns = path.stat().st_mtime_ns
+        except OSError:
+            self._v3_action_log_state.setText("No durable action log exists at the configured series path yet")
+            self._v3_evidence_source.setText("UNKNOWN — no action record loaded")
+            self._v3_last_action_log_signature = None
+            return
+        signature = (path, modified_ns)
+        if not force and getattr(self, "_v3_last_action_log_signature", None) == signature:
+            return
+        records: deque[dict[str, object]] = deque(maxlen=250)
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    try:
+                        record = json.loads(line)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                    if isinstance(record, dict):
+                        records.append(record)
+        except OSError as exc:
+            self._v3_action_log_state.setText(f"Could not read action evidence: {exc}")
+            self._v3_evidence_source.setText("UNKNOWN — action log read failed")
+            return
+        loaded = list(records)
+        self._v3_last_action_log_signature = signature
+        if not loaded:
+            self._v3_action_log_state.setText("Action log exists but contains no readable records")
+            self._v3_evidence_source.setText("UNKNOWN — no readable action record")
+            return
+
+        camera = self._v3_latest_action_record(loaded, "acquisition_settings_effective")
+        wfg = self._v3_latest_action_record(loaded, "configure_wfg")
+        if camera and isinstance(camera.get("effective"), dict):
+            effective = camera["effective"]
+            applied_exposure = effective.get("exposure_ms")
+            applied_roi = effective.get("roi")
+            if isinstance(applied_exposure, (int, float)):
+                different = abs(float(applied_exposure) - requested_exposure) > 1e-9
+                suffix = " — DIFFERENT" if different else ""
+                self._v3_exposure_evidence.setText(
+                    f"Requested {requested_exposure:.6g} ms; latest applied {float(applied_exposure):.6g} ms{suffix}"
+                )
+                self._v3_exposure_evidence.setStyleSheet(
+                    "color: darkorange; font-weight: bold;" if different else ""
+                )
+            if applied_roi is not None:
+                different = applied_roi != requested_roi
+                suffix = " — DIFFERENT" if different else ""
+                self._v3_roi_evidence.setText(
+                    f"Requested {requested_roi}; latest applied {applied_roi}{suffix}"
+                )
+                self._v3_roi_evidence.setStyleSheet(
+                    "color: darkorange; font-weight: bold;" if different else ""
+                )
+        if wfg and isinstance(wfg.get("effective"), dict):
+            channels = wfg["effective"].get("channels")
+            if isinstance(channels, list) and channels and isinstance(channels[0], dict):
+                carrier = channels[0].get("carrier")
+                applied_amplitude = carrier.get("amplitude_v") if isinstance(carrier, dict) else None
+                if isinstance(applied_amplitude, (int, float)):
+                    different = abs(float(applied_amplitude) - requested_amplitude) > 1e-9
+                    suffix = " — LIMITED" if different else ""
+                    self._v3_amplitude_evidence.setText(
+                        f"Requested {requested_amplitude:.6g} V; latest effective {float(applied_amplitude):.6g} V{suffix}"
+                    )
+                    self._v3_amplitude_evidence.setStyleSheet(
+                        "color: darkorange; font-weight: bold;" if different else ""
+                    )
+        latest = loaded[-1]
+        source = (
+            f"run {latest.get('run_id', 'unknown')}, condition {latest.get('condition', 'unknown')}, "
+            f"repeat {latest.get('repeat', 'unknown')}; latest stage {latest.get('evidence_stage', 'unknown')}"
+        )
+        self._v3_evidence_source.setText(source)
+        self._v3_action_log_state.setText(f"Loaded {len(loaded)} most recent record(s); {source}")
+
+    def _refresh_v3_persistent_status(self, result: BuildResult | None = None) -> None:
+        if not hasattr(self, "_v3_persistent_state"):
+            return
+        result = result or self._v3_shadow_build_result()
+        blocking = len(result.preflight.blocking_issues)
+        warnings = len(result.preflight.warnings)
+        readiness = self._v3_persistent_state["Readiness"]
+        if blocking:
+            readiness.setText(f"BLOCKED — {blocking} issue(s)")
+            readiness.setStyleSheet("color: darkred; font-weight: bold;")
+        elif warnings:
+            readiness.setText(f"REVIEW — {warnings} warning(s)")
+            readiness.setStyleSheet("color: darkorange; font-weight: bold;")
+        else:
+            readiness.setText("READY — software preflight")
+            readiness.setStyleSheet("color: green; font-weight: bold;")
+
+        active = bool(getattr(self, "_experiment_series_active", False))
+        stopping = bool(getattr(self, "_stopping_after_current_repeat", False))
+        run_state = "STOP REQUESTED" if stopping else "RUNNING" if active else "IDLE"
+        self._v3_persistent_state["Run"].setText(run_state)
+        self._v3_persistent_state["Run"].setStyleSheet(
+            "color: darkorange; font-weight: bold;" if active or stopping else ""
+        )
+        fault_count = sum(
+            event.severity in (RuntimeEventSeverity.HARDWARE_FAULT, RuntimeEventSeverity.BLOCKING_CONFIGURATION)
+            for event in self.app.runtime_events
+        )
+        self._v3_persistent_state["Alerts"].setText(
+            f"{fault_count} fault/blocking event(s)" if fault_count else "NONE"
+        )
+        self._v3_persistent_state["Alerts"].setStyleSheet(
+            "color: darkred; font-weight: bold;" if fault_count else ""
+        )
+        ad2_label = self._v3_connection_values.get("AD2")
+        camera_label = self._v3_connection_values.get("Camera")
+        ad2_text = ad2_label.text() if ad2_label is not None else "UNKNOWN"
+        camera_text = camera_label.text() if camera_label is not None else "UNKNOWN"
+        self._v3_persistent_state["Acoustic"].setText(ad2_text)
+        self._v3_persistent_state["Camera"].setText(camera_text)
+        self._v3_persistent_state["Laser"].setText("UNAVAILABLE — production blocked")
+        if not self.exp_flush_enabled.isChecked():
+            refresh_text = "OFF — not required"
+        elif self.app.pump.enabled and self.app.valve.enabled:
+            refresh_text = "SELECTED — protocol state only"
+        else:
+            refresh_text = "SELECTED — devices disabled"
+        self._v3_persistent_state["Refresh"].setText(refresh_text)
+        output = self.series_path.text().strip()
+        self._v3_persistent_state["Output"].setText(output or "UNSET — working directory")
+        if hasattr(self, "_v3_start_button"):
+            self._v3_start_button.setEnabled(not blocking and not active and self._busy_count == 0)
+        if hasattr(self, "_v3_stop_button"):
+            self._v3_stop_button.setEnabled(active)
 
     def _render_v3_shared_preflight(self, result: BuildResult) -> None:
         self._v3_last_build_result = result
@@ -1133,6 +1553,7 @@ class MainWindowV3(MainWindowV2):
             if preflight.blocking_issues
             else "color: darkorange; font-weight: bold;"
         )
+        self._refresh_v3_persistent_status(result)
 
     def _refresh_v3_relationships(self, _value=None) -> None:
         if not hasattr(self, "_v3_timing_labels"):
@@ -1274,6 +1695,36 @@ class MainWindowV3(MainWindowV2):
         else:
             camera_request = "Camera FPS must be greater than zero before acquisition duration can be derived."
         self._v3_camera_request_summary.setText(camera_request)
+        channel0 = self.exp_ad2_channels[0]
+        acoustic_state = "enabled" if channel0["enable"].isChecked() else "disabled"
+        acoustic_request = (
+            f"{acoustic_state}; {channel0['function'].currentText()} at {channel0['frequency'].value():g} kHz; "
+            f"requested {channel0['amplitude'].value():g} V; trigger {channel0['trigger_source'].currentText()}; "
+            f"start {channel0['sec_wait'].value():g} s, run {channel0['sec_run'].value():g} s."
+        )
+        if self.exp_sweep_enable.isChecked():
+            acoustic_request += (
+                f" Fast FM sweep {self.exp_sweep_start_khz.value():g}–{self.exp_sweep_stop_khz.value():g} kHz, "
+                f"{self.exp_sweep_time_ms.value():g} ms, {self.exp_sweep_type.currentText()}."
+            )
+        elif scan_enabled:
+            acoustic_request += f" Frequency scan across {scan_count} repeat(s)."
+        else:
+            acoustic_request += " Static carrier mode."
+        self._v3_acoustic_request_summary.setText(acoustic_request)
+        self._v3_laser_request_summary.setText(
+            "W2 / Project Ch2 analog control and DIO1 digital trigger are production-disabled. "
+            "No electrical command or optical-emission claim is planned."
+        )
+        if self.exp_flush_enabled.isChecked():
+            flush = self._flush_settings(experiment=True)
+            self._v3_refresh_request_summary.setText(
+                f"After each acquisition: P01 → dispense {flush.flush_volume_ml:g} ml at "
+                f"{flush.flush_flowrate:g} µl/min → P02 → wait {flush.wait_after_flush_s:g} s. "
+                "Protocol completion does not physically verify the fluid route."
+            )
+        else:
+            self._v3_refresh_request_summary.setText("Off — no automatic repeat-to-repeat sample refresh.")
         status = getattr(self, "_v3_connection_values", {})
         status_text = lambda name: status[name].text() if name in status else "status unavailable"
         selected = [
@@ -1304,6 +1755,9 @@ class MainWindowV3(MainWindowV2):
         else:
             selected.append("TEC: NOT REQUIRED (temperature scan off)")
         output_path = self.series_path.text().strip()
+        self._v3_output_summary.setText(
+            output_path if output_path else "UNSET — current behavior resolves to the working directory"
+        )
         selected.append(
             "Output path: CONFIGURED (writeability unverified until run)"
             if output_path
@@ -1329,7 +1783,9 @@ class MainWindowV3(MainWindowV2):
         if not self.app.camera.enabled:
             warnings.append("camera is disabled; the run will save no captured frames")
         if self.exp_sweep_enable.isChecked() and not self.exp_ad2_channels[0]["enable"].isChecked():
-            warnings.append("FM sweep enables channel 0 in the shared builder even though Channel output is unchecked")
+            warnings.append("FM sweep requires Acoustic / W1 to be explicitly enabled; run is blocked")
+        if self.exp_sweep_enable.isChecked() and self.exp_freq_scan_enable.isChecked():
+            warnings.append("FM sweep and frequency scan are mutually exclusive; run is blocked")
         if temperature_error is not None:
             warnings.append("TEC target list must be corrected")
         if self.exp_tec_scan_enable.isChecked() and not self.app.tec.enabled:
@@ -1351,7 +1807,7 @@ class MainWindowV3(MainWindowV2):
         fm = self.exp_sweep_enable.isChecked()
         scan = self.exp_freq_scan_enable.isChecked()
         if fm and scan:
-            program = "Scan selects each repeat's base carrier; FM sweep remains active within that repeat."
+            program = "INVALID: FM sweep and frequency scan are both selected; shared preflight blocks Start."
         elif fm:
             program = "FM sweep active within each repeat; frequency scan off."
         elif scan:
@@ -1415,6 +1871,8 @@ class MainWindowV3(MainWindowV2):
         self._v3_flush_fill_margin.setText(
             f"{remaining:.3f} ml = tracked {tracked_fill:.3f} ml − requested {settings.flush_volume_ml:.3f} ml"
         )
+        self._refresh_v3_action_evidence()
+        self._refresh_v3_persistent_status(self._v3_last_build_result)
 
     def _v2_waveform_group(self) -> QGroupBox:
         group = super()._v2_waveform_group()
@@ -1438,6 +1896,7 @@ class MainWindowV3(MainWindowV2):
 
     def _refresh_status(self) -> None:
         super()._refresh_status()
+        self._refresh_v3_operator_events()
         if hasattr(self, "connection_button"):
             # In v2 this action's text is derived from app.status being exactly
             # "System Initialized". Any later successful action changes that

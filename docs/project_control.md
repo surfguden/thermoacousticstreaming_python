@@ -33,6 +33,15 @@ after camera configuration. The Experiment-tab `WaitAfterFlush` is the one
 operator-selected stabilization delay for that automated request; the manual
 Pump&Valve-tab value remains a separate manual-operation setting.
 
+The opt-in V3 operator surface has now been reorganized offline around that
+frozen architecture. It presents four explicit workspaces -- Experiment,
+Monitor, Manual & Service, and Diagnostics -- beneath a persistent instrument
+state bar and above persistent run controls. Normal Start still delegates to
+the canonical `ExperimentRequest` -> `RunPlan` -> legacy-adapter path; V3's
+`BuildResult` is presentation-only preflight evidence and is not a second
+execution authority. This milestone is fake/offline UX readiness, not real
+hardware validation and not promotion of V3 to the default launcher.
+
 ## CURRENT ACTION LOGGING AND EXPERIMENT TRACEABILITY
 
 Normal production now retains three complementary durable records rather than
@@ -68,7 +77,7 @@ transport commands stay in the same record only where they are already emitted
 by a backend wrapper. JSONL persistence failure is fail-open with respect to
 control behavior: it cannot initiate hardware or change canonical planning.
 
-Current-path coverage is sufficient for the next V3 UX review:
+Current-path coverage is sufficient for V3's operator and diagnostic views:
 
 | Subsystem | Current action coverage | Classification |
 | --- | --- | --- |
@@ -99,6 +108,53 @@ Trigger/Wait/Run/Repeat and `trigsrcNone`/`trigsrcPC` software semantics.
 Hamamatsu's C15440-20UP documentation establishes exposure and external-trigger
 configuration capabilities. Neither vendor source turns host timestamps into a
 measurement of cross-device synchronization, so that claim remains deferred.
+
+## CURRENT V3 OPERATOR WORKFLOW
+
+V3 now separates work by operator intent instead of placing configuration,
+manual actions, runtime state, and diagnostics on one dashboard:
+
+| Workspace / persistent surface | Operator purpose | Evidence boundary |
+| --- | --- | --- |
+| Persistent instrument state | Read readiness, run state, alerts, Acoustic/W1, camera, laser-control, sample-refresh, and output state without changing workspace | High-level software/backend state only; it does not claim physical acoustic pressure, optical emission, fluid route, or synchronization |
+| Experiment | Define series identity and acquisition/acoustic/sample-refresh/advanced settings, then review exactly what Start will run | Blocking shared preflight issues disable Start; valid Start still uses the authoritative shared planner and retained runtime adapter |
+| Monitor | Follow progress, a concise operator event stream, and live display surfaces during a series | Renders existing runtime events; no new logging authority or high-rate disk stream |
+| Manual & Service | Open existing camera, pump/valve, AD2, Z, and diagnostic controls with an explicit immediate-action boundary | Merely opening a panel is inert; any later action uses the established initialized hardware paths and is logged as `MANUAL_SERVICE` |
+| Diagnostics | Inspect detailed device state, durable action-evidence location/state, and the existing diagnostic log | Diagnostic/readback evidence remains distinct from physical verification |
+| Persistent run controls | Start the reviewed plan or request graceful stop | Graceful stop remains a series/repeat boundary request, not an emergency hardware stop |
+
+The pre-run review translates the current request into operator terms: run
+scope, per-repeat order, camera, Acoustic/W1, production-disabled laser
+control, optional sample refresh, output destination, required devices, and
+blockers/warnings. Normal acquisition shows frames, requested FPS/exposure,
+ROI, and feasibility. Deferred camera-start metadata and temperature controls
+remain available under Advanced rather than competing with the common path.
+FM Sweep and Frequency Scan are visibly mutually exclusive, and FM Sweep does
+not imply or auto-enable Acoustic/W1.
+
+Requested and effective evidence is deliberately presented as a comparison,
+not collapsed into one number. V3 reads only the latest bounded records from
+the existing series-local `action_log.jsonl` to show requested versus latest
+applied camera exposure/ROI and requested versus effective acoustic amplitude.
+Missing evidence remains visibly unavailable; a discrepancy is labeled rather
+than silently normalized. The concise event stream separately renders the
+existing runtime chronology without exposing raw tracebacks as operator
+instructions.
+
+The information architecture follows current official scientific-instrument
+patterns without copying vendor styling: Tektronix documents persistent status
+badges with contextual settings and warnings; Keysight documents compact
+waveform/acquisition/trigger badges that open their settings; Rohde & Schwarz
+documents persistent instrument information, saved notifications, and progress
+indication; Andor describes guided acquisition workflows that unify setup,
+visualization, and data handling; and Coherent exposes explicit ready/running/
+wait/fault/interlock laser states. Sources:
+[Tektronix 2 Series MSO quick start](https://www.tek.com/tw/manual/oscilloscope/2-series-mso-quick-start-2-series-mso-portable-oscilloscope),
+[Keysight InfiniiVision HD3 user guide](https://www.keysight.com/us/en/assets/9924-01793/user-manuals/InfiniiVision-HD3-Series-Oscilloscopes-Users-Guide.pdf),
+[R&S MXO 5 user manual](https://scdn.rohde-schwarz.com/ur/pws/dl_downloads/pdm/cl_manuals/user_manual/1802_3369_01/MXO5_UserManual_en_08.pdf),
+[Andor Fusion](https://andor.oxinst.com/fusion-acquisition-software),
+[Andor Solis](https://andor.oxinst.com/software-packages), and
+[Coherent Connection user guide](https://www.coherent.com/resources/laser-measurement-and-control-help-center/software-drivers-and-manuals/coherent-meter-connection/coherent-connection-installation-user-guide.pdf).
 
 ## CURRENT OWNER-SUPPLIED AD2 WIRING AND VERIFIED SOFTWARE MAPPING
 
@@ -238,7 +294,7 @@ Current operator surfaces:
 | --- | --- |
 | v1 | Tracked default operator UI; `launch_gui.bat` / `tools/run_ui.py` |
 | v2 | Tracked rollback/reference transitional UI; `launch_gui_v2.bat` / `tools/run_ui_v2.py` |
-| v3 | Tracked opt-in UI, not independently hardware-verified; `launch_gui_v3.bat` / `tools/run_ui_v3.py` |
+| v3 | Tracked opt-in instrument workflow, offline UX-reviewed but not independently hardware-verified or the default; `launch_gui_v3.bat` / `tools/run_ui_v3.py` |
 
 ## CURRENT HARDWARE INVENTORY
 
@@ -271,10 +327,24 @@ Current system-level USB topology:
 
 ## ACTIVE
 
-- No active software architecture change; the freeze remains in force.
+- The reviewed V3 UX change set is complete and awaits an explicit Git
+  checkpoint authorization; the execution architecture freeze remains in
+  force.
 
 ## READY
 
+- **SW-V3-UX-001:** the opt-in V3 surface now separates Experiment, Monitor,
+  Manual & Service, and Diagnostics; keeps instrument state and run controls
+  persistent; makes preflight blockers actionable; presents the authoritative
+  planned run before Start; and consumes the existing runtime/action evidence
+  without adding a second planner or record authority. This is offline/fake UI
+  readiness only. The focused V3 module reported 36 passed plus one documented
+  PySide/Shiboken lifetime-family failure that passed immediately in isolation;
+  238 planning/logging/application tests passed. The broad suite reported 669
+  passed, 1 skipped, and two failures from that same documented lifetime
+  family; both passed immediately in isolated fresh processes. Compileall,
+  repository hygiene, change-surface audit, offscreen geometry review, and
+  `git diff --check` passed. V3 remains opt-in and no hardware was accessed.
 - **SW-ACTION-TRACE-001:** each normal repeat now creates a bounded structured
   action stream linked from TDMS and the lifecycle manifest. It retains
   requested/planned/effective/command/protocol/readback distinctions,
@@ -434,10 +504,11 @@ Current system-level USB topology:
 
 ## NEXT CHECKPOINT
 
-The next software round is the separately requested V3 commercial
-scientific-instrument UX review, using the action stream as a trustworthy
-status/event source. That review has not started here. Documentation
-Convergence and any real experiment also remain separate tasks.
+After this reviewed V3 UX change set is checkpointed, the next software round
+is the separately requested Documentation Convergence. It must reconcile the
+broader documentation set to the implemented operator workflow without
+reopening the frozen execution architecture. Any real experiment remains a
+separate, explicitly authorized task.
 
 The independent request/plan DTO and legacy-adapter seam has immutable
 planning data, a bounded semantic-equivalence matrix, and a series-local
