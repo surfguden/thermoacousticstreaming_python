@@ -1892,6 +1892,7 @@ def test_fm_sweep_toggle_on_carries_settings_into_experiment_wfg_config(monkeypa
     window.exp_camera_fps.setValue(100.0)
     window.exp_frames.setValue(5)
 
+    window.exp_ad2_channels[0]["enable"].setChecked(True)
     window.exp_sweep_enable.setChecked(True)
     # Start=1909.0/Stop=1959.0 kHz reproduces the same Martens et al. reference
     # case as the original Center=1934/Width=50 kHz: (1909+1959)/2=1934, |1959-1909|=50.
@@ -2208,6 +2209,20 @@ def test_qt_ui_experiment_ad2_fields_seed_once_from_wfg(monkeypatch, tmp_path):
     assert window.exp_ch1_freq.value() == 1234.0
 
 
+def test_new_normal_channel0_repeat_defaults_to_one_but_persisted_zero_is_preserved(monkeypatch, tmp_path):
+    fresh = make_window(monkeypatch, tmp_path)
+    fresh._seed_experiment_ad2_from_wfg_once()
+    assert fresh.exp_ch1_repeat.value() == 1
+    fresh.close()
+
+    persisted = make_window(
+        monkeypatch,
+        tmp_path,
+        settings={"schema_version": 2, "experiment": {"ch1_repeat": 0}},
+    )
+    assert persisted.exp_ch1_repeat.value() == 0
+
+
 def test_qt_ui_experiment_wfg_config_uses_only_experiment_ad2_fields(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
     window._experiment_ad2_seeded = True
@@ -2295,6 +2310,8 @@ def test_camera_sequence_settings_are_passed_to_manual_configure(monkeypatch, tm
     class FakeCamera:
         def __init__(self) -> None:
             self.calls = []
+            self.enabled = True
+            self.simulate = True
 
         def configure_exposure_time(self, exposure_ms: float) -> None:
             self.calls.append(("configure_exposure_time", exposure_ms))
@@ -2331,9 +2348,18 @@ def test_camera_sequence_settings_are_passed_to_manual_configure(monkeypatch, tm
         "trigger_source": "MasterPulse",
         "trigger_polarity": "Positive",
         "trigger_delay_s": 0.25,
+        "roi": {
+            "horizontal_offset": 0,
+            "vertical_offset": 792,
+            "horizontal_size": 2304,
+            "vertical_size": 740,
+        },
     }
     assert "exposure_ms" not in settings
     assert "capture_mode" not in settings
+    requested_roi = dict(window._experiment_request().sequence_settings)["roi"]
+    assert requested_roi.value_for("vertical_offset") == 792
+    assert requested_roi.value_for("vertical_size") == 740
 
     roi = SubRegion(horizontal_offset=1, vertical_offset=2, horizontal_size=3, vertical_size=4)
     result = window._configure_camera(roi, 12.5, False, settings)

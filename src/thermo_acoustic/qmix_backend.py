@@ -151,6 +151,7 @@ class QmixPumpBackend:
                 self.bus.start()
                 self.bus_started = True
                 self._auto_clear_fault_on_initialize()
+                self._require_position_sensing_initialized_before_enable()
                 self._enable_pump()
                 self.configure_flow_unit("ul/min")
                 self.pump.set_volume_unit(self.qmixpump.UnitPrefix.milli, self.qmixpump.VolumeUnit.litres)
@@ -238,6 +239,7 @@ class QmixPumpBackend:
                 self.bus_started = True
                 if self.pump.is_in_fault_state():
                     self.pump.clear_fault()
+                self._require_position_sensing_initialized_before_enable()
                 self._enable_pump()
                 self.configure_flow_unit("ul/min")
                 self.pump.set_volume_unit(self.qmixpump.UnitPrefix.milli, self.qmixpump.VolumeUnit.litres)
@@ -259,6 +261,19 @@ class QmixPumpBackend:
         if self.pump is None:
             raise QmixPumpError("Qmix pump is not initialized.")
         return self.pump
+
+    def _require_position_sensing_initialized_before_enable(self) -> None:
+        """Fail closed unless the freshly connected pump reports valid position sensing."""
+        pump = self._require_pump()
+        with log_call("pump", "check_position_sensing_initialized") as result:
+            initialized = bool(pump.is_position_sensing_initialized())
+            result["response"] = initialized
+        if not initialized:
+            raise QmixPumpError(
+                "Qmix pump position sensing is not initialized after fault recovery; "
+                "refusing to enable or command the pump. Resolve the position-sensing "
+                "readiness condition in QmixElements before reconnecting."
+            )
 
     def _enable_pump(self) -> None:
         pump = self._require_pump()

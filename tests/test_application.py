@@ -472,6 +472,51 @@ def test_flush_sets_valve_and_status():
     assert app.status == "FlushComplete"
 
 
+def test_flush_uses_one_pump_command_between_confirmed_valve_positions(monkeypatch):
+    app = Application()
+    app.pump.fill_level = 0.05
+    events = []
+
+    def set_position(self, position):
+        self.position = position
+        events.append(("valve_set", position))
+
+    def wait_until_ready(self, timeout_s=1.0):
+        events.append(("valve_confirm", self.position, timeout_s))
+        return True
+
+    def set_fill_level(self, fill_level, flow_rate=None):
+        self.fill_level = fill_level
+        events.append(("pump_set_fill_level", fill_level, flow_rate))
+
+    monkeypatch.setattr(Valve, "set_position", set_position)
+    monkeypatch.setattr(Valve, "wait_until_ready", wait_until_ready)
+    monkeypatch.setattr(CetoniPump, "set_fill_level", set_fill_level)
+    monkeypatch.setattr(
+        Application,
+        "wait_for_pump",
+        lambda self, timeout_s: events.append(("pump_confirm", timeout_s)) or True,
+    )
+    monkeypatch.setattr(
+        Application,
+        "wait",
+        lambda self, seconds: events.append(("post_flush_wait", seconds)),
+    )
+
+    ok = app.flush(FlushSettings(flush_flowrate=200.0, flush_volume_ml=0.05, wait_after_flush_s=2.5))
+
+    assert ok
+    assert events == [
+        ("valve_set", 1),
+        ("valve_confirm", 1, 1.0),
+        ("pump_set_fill_level", 0.0, 200.0),
+        ("pump_confirm", 20.0),
+        ("valve_set", 2),
+        ("valve_confirm", 2, 1.0),
+        ("post_flush_wait", 2.5),
+    ]
+
+
 @pytest.mark.parametrize("flow_rate", [0.0, -1.0, -5000.0])
 def test_flush_rejects_nonpositive_flow_before_valve_or_pump_moves(monkeypatch, flow_rate):
     app = Application()
@@ -508,7 +553,7 @@ def test_flush_stops_before_pump_move_when_first_valve_position_is_not_ready(mon
     assert app.status == "FlushValvePosition1NotReady"
 
 
-def test_flush_stops_before_final_pump_move_when_second_valve_position_is_not_ready(monkeypatch):
+def test_flush_reports_failure_when_second_valve_position_is_not_ready(monkeypatch):
     app = Application()
     app.pump.fill_level = 60.0
     pump_moves = []
@@ -839,7 +884,8 @@ def test_run_experiment2_processes_one_experiment(tmp_path, monkeypatch):
     assert app.experiment_series.see_elements_left() == 0
     assert app.camera.exposure_ms == 12.5
     assert app.ad2.wfg_config is not None
-    assert app.ad2.do_clock_settings is not None
+    assert experiment.do_clock_settings.running is False
+    assert experiment.do_clock_settings.channels == []
     assert app.status == "ExperimentComplete"
     assert (tmp_path / "experiment-1").exists()
 
@@ -2104,6 +2150,7 @@ class FakeQmixPumpModule:
         def __init__(self):
             self.calls = []
             self.fault = False
+            self.position_sensing_initialized = True
             self.enabled = False
             self.pumping = False
             self.max_flow = 5000.0
@@ -2124,6 +2171,10 @@ class FakeQmixPumpModule:
         def clear_fault(self):
             self.calls.append(("clear_fault",))
             self.fault = False
+
+        def is_position_sensing_initialized(self):
+            self.calls.append(("is_position_sensing_initialized",))
+            return self.position_sensing_initialized
 
         def is_enabled(self):
             self.calls.append(("is_enabled",))
@@ -2266,9 +2317,48 @@ def test_qmix_initialization_clears_existing_fault_before_enabling(tmp_path):
 
     pump = FaultedPump.instances[0]
     assert ("clear_fault",) in pump.calls
+    assert ("is_position_sensing_initialized",) in pump.calls
     assert ("enable", True) in pump.calls
-    assert pump.calls.index(("clear_fault",)) < pump.calls.index(("enable", True))
+    assert pump.calls.index(("clear_fault",)) < pump.calls.index(("is_position_sensing_initialized",))
+    assert pump.calls.index(("is_position_sensing_initialized",)) < pump.calls.index(("enable", True))
+    assert ("lookup_by_device_index", 0) in pump.calls
     assert backend.initialized is True
+
+
+def test_qmix_initialization_refuses_enable_when_position_sensing_is_not_initialized(tmp_path):
+    FakeQmixPumpModule.Pump.instances = []
+    original_pump = FakeQmixPumpModule.Pump
+
+    class PositionSensingNotReadyPump(original_pump):
+        def __init__(self):
+            super().__init__()
+            self.fault = True
+            self.position_sensing_initialized = False
+
+    FakeQmixPumpModule.Pump = PositionSensingNotReadyPump
+    try:
+        backend = QmixPumpBackend(qmixbus=FakeQmixBusModule, qmixpump=FakeQmixPumpModule)
+        with pytest.raises(QmixPumpError, match="position sensing is not initialized"):
+            backend.initialize(tmp_path / "qmix-config")
+    finally:
+        FakeQmixPumpModule.Pump = original_pump
+
+    pump = PositionSensingNotReadyPump.instances[0]
+    assert pump.calls.index(("clear_fault",)) < pump.calls.index(("is_position_sensing_initialized",))
+    assert ("enable", True) not in pump.calls
+    forbidden_calls = {
+        "is_enabled",
+        "enable",
+        "set_flow_unit",
+        "set_volume_unit",
+        "calibrate",
+        "set_fill_level",
+        "generate_flow",
+    }
+    assert not any(call[0] in forbidden_calls for call in pump.calls)
+    assert backend.initialized is False
+    assert backend.pump is None
+    assert backend.bus is None
 
 
 def test_qmix_auto_clear_logs_fault_state_and_repeated_fault_warning(tmp_path, monkeypatch):
@@ -3423,13 +3513,9 @@ def test_configure_do_accepts_known_output_modes_case_and_space_insensitively():
     assert any(args[2].value == 1 for args in output_set_calls), "OpenDrain must map to DWF mode 1"
 
 
-def test_run_experiment2_records_do_clock_achieved_frequency_in_final_tdms(tmp_path, monkeypatch):
-    # Finding E regression test, end-to-end: drives the real run_experiment2()
-    # call order (config_do_clock_special() mutates the same DoConfig object
-    # experiment.do_clock_settings references, then Finding A's existing
-    # second save_settings() call captures the result -- no new ordering fix
-    # needed here, but confirming that combination actually works end-to-end
-    # is the point, same discipline as Finding A's own test).
+def test_run_experiment2_does_not_program_or_record_legacy_do_clock(tmp_path, monkeypatch):
+    # Normal production runs must not program DIO1 even when a legacy caller
+    # supplies an enabled DO payload directly on Experiment2.
     writes = install_fake_nptdms(monkeypatch)
     fake_dwf = FakeDwf()
     ad2 = AD2Sdk(backend=WaveFormsBackend(dwf=fake_dwf), device_handle=123)
@@ -3449,15 +3535,16 @@ def test_run_experiment2_records_do_clock_achieved_frequency_in_final_tdms(tmp_p
     ok = app.run_experiment2()
 
     assert ok
-    assert do_channel.achieved_clock_frequency_hz == pytest.approx(50.0)
+    assert do_channel.achieved_clock_frequency_hz is None
+    assert not any(name.startswith("FDwfDigitalOut") for name, _args in fake_dwf.calls)
+    assert experiment.do_clock_settings.running is False
+    assert experiment.do_clock_settings.channels == []
     tdms_path = tmp_path / "experiment-do-freq" / "data.tdms"
     properties = next(
         item for item in writes[str(tdms_path)] if getattr(item, "kind", "") == "group" and item.name == "Experiment"
     ).properties
-    assert properties["DOFreq"] == 33.0
-    assert properties["DOFreqActual"] == pytest.approx(50.0), (
-        "the FINAL data.tdms must record the real achieved DO-clock frequency, not just the requested one"
-    )
+    assert properties["DOFreq"] == ""
+    assert properties["DOFreqActual"] == ""
 
 
 # -- AD2 amplitude/frequency clamping against the device's own live

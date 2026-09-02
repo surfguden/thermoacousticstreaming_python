@@ -46,7 +46,10 @@ No direct Python control path was found for a laser, high-voltage amplifier,
 heater, or NI-DAQmx device. The PPC001 precision-piezo path is a separate
 manual Z-Scan/calibration feature, not a canonical experiment actuator path.
 Acoustic drive appears to be represented indirectly through the AD2
-wavegen/digital-output paths.
+wavegen path. Historical smoke-script descriptions that assigned the laser to
+the same CH0 path were not a distinct hardware configuration and are not wiring
+evidence; `--include-ad2-laser` is now rejected before hardware setup pending
+**OWNER/PHYSICAL WIRING CONFIRMATION REQUIRED**.
 
 ## Hardware-Related Files
 
@@ -80,6 +83,14 @@ wavegen/digital-output paths.
 - `tools/legacy_qmix_pump_probe.py`: legacy manual Qmix diagnostic; initialization can
   enable the pump and its optional flow argument can move it. It has no
   confirmation gate.
+
+- `hardware_tests/manual_qmix_read_only_readiness.py`: retained one-shot,
+  explicit-confirmation passive readiness snapshot. It opens/starts the reviewed
+  one-pump project, rejects competing clients and unexpected identity, reads
+  state, and closes the bus. It has no normal pump-state-changing command; the
+  sole exception is emergency `stop_pumping()` if the first read reports
+  unexpected active motion. It is manual-only and was not executed during the
+  pre-experiment software hardening round.
 
 The four legacy `tools/` diagnostics above are marked `__test__ = False` and
 live outside `testpaths = ["tests"]`; prefer the gated scripts in

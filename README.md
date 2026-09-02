@@ -65,8 +65,9 @@ front panel tabs that are still in scope:
 - Experiment
 
 The direct DOCustom, DOClock, and Zstack tabs are intentionally omitted.
-DO Clock Special remains structurally active in the experiment path for the
-DIO1 LED timing configuration; it is not a standalone UI tab.
+Normal production plans explicitly disable DIO1/DO Clock and the experiment
+runtime does not program DO Clock Special; the retained DO helpers are
+legacy/manual capabilities only.
 `src/thermo_acoustic/qt_ui_v2.py` (`MainWindowV2`) is an actively maintained
 transitional UI that reuses `qt_ui.py`'s widget-building, manual-test-panel
 code, and the same `Application`/hardware-backend instance (WFG/MSO/

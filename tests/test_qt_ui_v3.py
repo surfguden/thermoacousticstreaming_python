@@ -28,6 +28,14 @@ def make_window(monkeypatch, tmp_path, app: Application | None = None) -> qt_ui_
     return build_with_retry(lambda: qt_ui_v3.MainWindowV3(app=app))
 
 
+def _normalize_current_production(experiment):
+    """Adapt legacy-builder evidence to the production-disabled DIO policy."""
+    normalized = normalize_experiment(experiment)
+    normalized["do_clock"] = {"channels": (), "running": False}
+    normalized["do_channels"] = ()
+    return normalized
+
+
 def test_v3_main_constructs_its_offline_application_without_entering_qt_loop(monkeypatch):
     captured = []
 
@@ -592,7 +600,9 @@ def test_v3_plan_exposes_axes_sequence_camera_request_and_evidence_boundaries(mo
 
         window.exp_ad2_channels[0]["enable"].setChecked(False)
         window.exp_sweep_enable.setChecked(True)
-        assert "FM sweep enables channel 0" in warnings.text()
+        assert "FM Sweep and Frequency Scan cannot be enabled together" in warnings.text()
+        window.exp_freq_scan_enable.setChecked(False)
+        assert "FM Sweep requires Channel 0 to be explicitly enabled" in warnings.text()
     finally:
         window.close()
 
@@ -689,7 +699,7 @@ def test_v3_shadow_plan_matches_authoritative_builder_for_frequency_camera_flush
         assert shadow.request.frames == 40
         assert shadow.request.flush_enabled is True
         assert shadow.plan.normalized_experiments() == tuple(
-            normalize_experiment(experiment) for experiment in authoritative.experiments
+            _normalize_current_production(experiment) for experiment in authoritative.experiments
         )
         assert [item["wfg_frequencies_hz"][0] for item in shadow.plan.normalized_experiments()] == [
             100000.0,
@@ -703,7 +713,7 @@ def test_v3_shadow_plan_matches_authoritative_builder_for_frequency_camera_flush
         ]
         assert all(item["output_root"] == str(output_path) for item in shadow.plan.normalized_experiments())
         assert all(item["planned_repeat_count"] == 3 for item in shadow.plan.normalized_experiments())
-        assert all(item["do_channels"][0][2:] == (25.0, 0.4, 1.6) for item in shadow.plan.normalized_experiments())
+        assert all(item["do_channels"] == () for item in shadow.plan.normalized_experiments())
         assert all(item["flush_enabled"] is True for item in shadow.plan.normalized_experiments())
     finally:
         window.close()
@@ -728,7 +738,7 @@ def test_v3_shadow_plan_matches_authoritative_unlocked_tec_groups(monkeypatch, t
         assert shadow.plan.total_frames == total_frames
         assert shadow.request.temperature_targets_c == (((1, 21.0), (2, 18.0)), ((1, 26.0), (2, 23.0)))
         authoritative_normalized = tuple(
-            normalize_experiment(experiment)
+            _normalize_current_production(experiment)
             for group in groups
             for experiment in group.experiments
         )
@@ -765,7 +775,7 @@ def test_v3_shadow_plan_matches_plain_fixed_start_grouping_and_camera_overrides(
 
         assert shadow.plan is not None
         assert shadow.plan.normalized_groups() == (
-            tuple(normalize_experiment(experiment) for experiment in authoritative.experiments),
+            tuple(_normalize_current_production(experiment) for experiment in authoritative.experiments),
         )
         assert tuple(len(group) for group in shadow.plan.experiment_groups) == (4,)
         assert shadow.plan.total_frames == total_frames == 24
@@ -774,12 +784,12 @@ def test_v3_shadow_plan_matches_plain_fixed_start_grouping_and_camera_overrides(
             item["sequence_settings"]["trigger_source"] == "Internal"
             for item in shadow.plan.normalized_experiments()
         )
-        assert all(item["do_channels"][0][3] == 0.25 for item in shadow.plan.normalized_experiments())
+        assert all(item["do_channels"] == () for item in shadow.plan.normalized_experiments())
     finally:
         window.close()
 
 
-def test_v3_shadow_plan_matches_fm_dynamic_start_locked_tec_and_blank_path(monkeypatch, tmp_path):
+def test_v3_shadow_preflight_rejects_fm_without_explicit_channel0(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
     try:
         window.series_path.setText("")
@@ -807,35 +817,16 @@ def test_v3_shadow_plan_matches_fm_dynamic_start_locked_tec_and_blank_path(monke
         window.app.valve.enabled = False
         window.app.tec.enabled = False
 
-        _temperature_series, groups, total_frames, _config = window._build_temperature_experiment_groups(Path(""))
         shadow = window._v3_shadow_build_result()
 
-        assert shadow.plan is not None
-        authoritative_groups = tuple(
-            tuple(normalize_experiment(experiment) for experiment in group.experiments)
-            for group in groups
-        )
-        assert shadow.plan.normalized_groups() == authoritative_groups
-        assert tuple(len(group) for group in shadow.plan.experiment_groups) == (3, 3)
-        assert shadow.plan.total_frames == total_frames == 24
+        assert shadow.plan is None
+        assert "FM Sweep requires Channel 0 to be explicitly enabled" in shadow.preflight.blocking_issues[0].message
         assert shadow.preflight.output_path_state == "implicit_working_directory"
-        assert shadow.preflight.fluidics_required is False
-        assert "pump" not in shadow.preflight.required_devices
-        assert "valve" not in shadow.preflight.required_devices
-        assert {"camera", "tec"}.issubset(shadow.preflight.disabled_devices)
-        assert "ad2" in shadow.preflight.simulated_devices
-        normalized = shadow.plan.normalized_experiments()
-        assert [item["do_channels"][0][3] for item in normalized[:3]] == [0.1, 0.2, 0.3]
-        assert all(item["fm_sweep"] is not None for item in normalized)
-        assert all(item["wfg"]["channels"][0]["carrier"]["enable"] is True for item in normalized)
-        assert all(item["global_exposure_ms"] == 7.5 for item in normalized)
-        assert all(item["sequence_settings"]["trigger_source"] == "Internal" for item in normalized)
-        assert all(item["sequence_settings"]["masterpulse_interval_s"] == 0.125 for item in normalized)
     finally:
         window.close()
 
 
-def test_v3_shadow_preflight_matches_legacy_dc_scan_and_fm_semantics(monkeypatch, tmp_path):
+def test_v3_shadow_preflight_rejects_scan_and_fm_even_for_dc(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
     try:
         window.series_path.setText(str(tmp_path / "dc"))
@@ -846,17 +837,11 @@ def test_v3_shadow_preflight_matches_legacy_dc_scan_and_fm_semantics(monkeypatch
         window.exp_freq_scan_count.setValue(1)  # intentionally mismatched if scan were effective
         window.exp_sweep_enable.setChecked(True)
 
-        authoritative, _frames, _config = window._build_experiment_series(Path(window.series_path.text()))
         shadow = window._v3_shadow_build_result()
 
-        assert shadow.plan is not None
-        assert shadow.plan.normalized_experiments() == tuple(
-            normalize_experiment(experiment) for experiment in authoritative.experiments
-        )
+        assert shadow.plan is None
         assert shadow.preflight.frequency_repeat_compatible is True
-        assert not shadow.preflight.blocking_issues
-        codes = {issue.code for issue in shadow.preflight.warnings}
-        assert {"frequency_scan_ignored_for_dc", "fm_sweep_ignored_for_dc"} <= codes
+        assert "FM Sweep and Frequency Scan cannot be enabled together" in shadow.preflight.blocking_issues[0].message
         assert "inactive for DC" in window._v3_axis_summary.text()
     finally:
         window.close()

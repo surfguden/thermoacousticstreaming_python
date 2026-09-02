@@ -30,7 +30,8 @@ CAMERA_FIELD_OWNERSHIP: dict[str, CameraFieldOwnership] = {
     "manual_trigger_source": CameraFieldOwnership.MANUAL_ONLY,
     "automated_trigger_source": CameraFieldOwnership.EXPERIMENT_OVERRIDE,
     "frames": CameraFieldOwnership.EXPERIMENT_OVERRIDE,
-    "roi": CameraFieldOwnership.MANUAL_ONLY,
+    "roi": CameraFieldOwnership.EXPERIMENT_DEFAULT,
+    "applied_roi": CameraFieldOwnership.APPLIED_DEVICE_STATE,
     "manual_exposure_ms": CameraFieldOwnership.MANUAL_ONLY,
     "experiment_exposure_ms": CameraFieldOwnership.EXPERIMENT_OVERRIDE,
     "applied_exposure_ms": CameraFieldOwnership.APPLIED_DEVICE_STATE,
@@ -55,7 +56,7 @@ class ExperimentCameraDefaults:
         frames: int,
         trigger_source_override: str | None = None,
     ) -> dict[str, object]:
-        return {
+        settings: dict[str, object] = {
             "masterpulse_mode": self.masterpulse_mode,
             "masterpulse_source": self.masterpulse_source,
             "masterpulse_interval_s": self.masterpulse_interval_s,
@@ -65,6 +66,9 @@ class ExperimentCameraDefaults:
             "trigger_polarity": self.trigger_polarity,
             "trigger_delay_s": self.trigger_delay_s,
         }
+        if self.roi is not None:
+            settings["roi"] = asdict(self.roi) if is_dataclass(self.roi) else deepcopy(self.roi)
+        return settings
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,6 +301,36 @@ def build_independent_run_plan(request: ExperimentRequest) -> RunPlan:
         raise ValueError("Repeats must be at least one.")
     if request.camera_fps <= 0:
         raise ValueError("Camera FPS must be greater than zero.")
+    if request.fm_sweep_enabled and request.frequency_scan_enabled:
+        raise ValueError(
+            "FM Sweep and Frequency Scan cannot be enabled together because the scan would "
+            "invalidate the sweep center and effective frequency limits."
+        )
+    wfg_template = (
+        coerce_wfg_config(_thaw(request.wfg_templates[0]))
+        if request.wfg_templates
+        else coerce_wfg_config(None)
+    )
+    channel0 = next((channel for channel in wfg_template.channels if channel.channel_index == 0), None)
+    if request.fm_sweep_enabled and (
+        not request.channel0_output_selected
+        or not wfg_template.running
+        or channel0 is None
+        or not channel0.carrier.enable
+    ):
+        raise ValueError(
+            "FM Sweep requires Channel 0 to be explicitly enabled and the waveform generator to be running."
+        )
+    if (
+        wfg_template.running
+        and channel0 is not None
+        and channel0.carrier.enable
+        and channel0.trigger.repeat_count != 1
+    ):
+        raise ValueError(
+            "Normal production Channel 0 Repeat must be exactly 1; Repeat=0 is infinite and "
+            "finite Repeat values above 1 are not supported by the completion budget."
+        )
     scan_effective = _frequency_scan_is_effective(request)
     if scan_effective and len(request.frequency_values_hz) != request.repeats_per_group:
         raise ValueError("Frequency-list count must match repeats.")
@@ -319,7 +353,7 @@ def build_independent_run_plan(request: ExperimentRequest) -> RunPlan:
                 if request.dynamic_camera_start
                 else (request.fixed_camera_start_s if request.fixed_camera_start_s is not None else request.camera_start_s[0])
             )
-            do = _freeze_mapping(_do_config_recipe(request.camera_fps, request.frames, start))
+            do = _freeze_mapping(_production_disabled_do_config())
             wfg = _thaw(request.wfg_templates[0]) if request.wfg_templates else {}
             selected = request.frequency_values_hz[repeat_id] if scan_effective else None
             if selected is not None:
@@ -410,6 +444,11 @@ def _do_config_recipe(camera_fps: float, frames: int, camera_start_s: float) -> 
     }
 
 
+def _production_disabled_do_config() -> dict[str, Any]:
+    """Current normal-run DIO state; legacy DO helpers remain separately callable."""
+    return {"running": False, "channels": []}
+
+
 def _freeze_mapping(value: FrozenMapping | dict[str, Any]) -> FrozenMapping:
     if isinstance(value, FrozenMapping):
         return value
@@ -467,6 +506,17 @@ def build_result_from_existing_plan(
 ) -> BuildResult:
     issues: list[PreflightIssue] = []
     scan_effective = _frequency_scan_is_effective(request)
+    if request.fm_sweep_enabled and request.frequency_scan_enabled:
+        issues.append(
+            PreflightIssue(
+                code="fm_sweep_frequency_scan_conflict",
+                message=(
+                    "FM Sweep and Frequency Scan cannot be enabled together because the scan would "
+                    "invalidate the sweep center and effective frequency limits."
+                ),
+                blocking=True,
+            )
+        )
     compatible = not scan_effective or len(request.frequency_values_hz) == request.repeats_per_group
     if not compatible:
         issues.append(
@@ -482,7 +532,7 @@ def build_result_from_existing_plan(
         issues.append(
             PreflightIssue(
                 code="camera_start_slots",
-                message="Per-repeat DIO1 start slots are insufficient.",
+                message="Per-repeat camera-start slots are insufficient.",
                 blocking=True,
             )
         )
@@ -536,12 +586,12 @@ def build_result_from_existing_plan(
                 blocking=False,
             )
         )
-    if request.fm_sweep_enabled and request.channel0_waveform_function != "DC" and not request.channel0_output_selected:
+    if request.fm_sweep_enabled and not request.channel0_output_selected:
         issues.append(
             PreflightIssue(
-                code="fm_enables_channel0",
-                message="FM sweep enables channel 0 in the authoritative builder although Channel output is unchecked.",
-                blocking=False,
+                code="fm_requires_channel0",
+                message="FM Sweep requires Channel 0 to be explicitly enabled; it will not be auto-enabled.",
+                blocking=True,
             )
         )
     if request.flush_enabled:

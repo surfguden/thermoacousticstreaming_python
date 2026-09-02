@@ -610,6 +610,28 @@ class Application:
 
     def _ad2_completion_wait_seconds(self, experiment: Experiment2) -> float:
         wfg_config = coerce_wfg_config(experiment.wfg_config)
+        channel0 = next((channel for channel in wfg_config.channels if channel.channel_index == 0), None)
+        if experiment.fm_sweep is not None and experiment.frequency_scan_selected_hz is not None:
+            raise ValueError(
+                "FM Sweep and Frequency Scan cannot be used in the same condition because the "
+                "scan would invalidate the configured sweep limits."
+            )
+        if experiment.fm_sweep is not None and (
+            not wfg_config.running or channel0 is None or not channel0.carrier.enable
+        ):
+            raise ValueError(
+                "FM Sweep requires Channel 0 to be explicitly enabled and the waveform generator to be running."
+            )
+        if (
+            wfg_config.running
+            and channel0 is not None
+            and channel0.carrier.enable
+            and channel0.trigger.repeat_count != 1
+        ):
+            raise ValueError(
+                "Normal production AD2 channel 0 Repeat must be exactly 1; Repeat=0 is infinite and "
+                "finite Repeat values above 1 are not supported by the completion budget."
+            )
         wait_seconds = 0.0
         if wfg_config.running:
             for channel in wfg_config.channels:
@@ -845,12 +867,12 @@ class Application:
 
             self.valve.set_position(2)
             if not self.valve.wait_until_ready(timeout_s=1.0):
-                # The final fill-level update can command the real pump too;
-                # leave it untouched when the return position is unconfirmed.
+                # The return route must be confirmed before the workflow can
+                # be reported complete, even though the one pump move has
+                # already completed at position 1.
                 self.fire_status_event("FlushValvePosition2NotReady")
                 return False
             self.wait(settings.wait_after_flush_s)
-            self.pump.set_fill_level(new_fill_level)
             self.fire_status_event("FlushComplete")
             return True
 
@@ -942,52 +964,43 @@ class Application:
             experiment.save_settings()
 
         with _report_step(progress, STEP_CONFIGURE_WFG):
+            # DIO1/DO Clock is retained as a legacy/manual AD2 capability, but
+            # it is not part of the current production experiment workflow.
+            # Record that effective state explicitly and never program the
+            # digital output as a carry-over side effect of configuring CH0.
+            experiment.do_clock_settings = coerce_do_config(None)
             if self.ad2.enabled:
                 self.ad2.config_wfg(experiment.wfg_config)
-                self.ad2.config_do_clock_special(experiment.do_clock_settings)
-                # Finding 1 (application.py review, Session 67): point
-                # experiment.wfg_config/do_clock_settings at the confirmed,
-                # post-clamping objects AD2Sdk now holds (only assigned there
-                # after the real hardware call succeeds, since Session 66's
-                # Fix 2) rather than leaving them at whatever was originally
-                # passed in. coerce_wfg_config()/coerce_do_config() return the
-                # SAME object unchanged when given an already-typed WfgConfig/
-                # DoConfig, but build a brand-new, disconnected object when
-                # given a dict -- so when experiment.wfg_config/do_clock_settings
-                # started out as a dict (a documented, type-hinted input shape,
-                # used by hardware_tests/test_real_workflow_smoke.py), the
-                # object WaveFormsBackend.configure_wfg()/configure_do() just
-                # mutated with the real clamping result was never the same
-                # object as experiment.wfg_config -- the re-snapshot below
-                # would silently keep reading the untouched original dict's
-                # pre-configure defaults. Reassigning here makes the fix work
-                # for both input shapes without changing coerce_wfg_config()/
-                # coerce_do_config() themselves (which have other read-only
-                # callers, e.g. _ad2_completion_wait_seconds() below, that
-                # must not start mutating a caller-supplied dict as a side
-                # effect).
+                # Point the experiment at the confirmed post-clamping WFG
+                # object. A dict input is coerced to a separate typed object
+                # inside AD2Sdk, so retaining the original would save stale
+                # pre-clamp values.
                 experiment.wfg_config = self.ad2.get_wfg_config()
-                experiment.do_clock_settings = self.ad2.get_do_config()
             else:
-                self.fire_status_event("AD2Disabled -- WFG/DO configuration skipped")
+                self.fire_status_event("AD2Disabled -- WFG configuration skipped; DIO1 disabled")
 
             # Re-snapshot settings now that config_wfg() has run. The first
             # save_settings() call above is deliberately kept (not replaced) so a
             # partial record with the *requested* settings still exists on disk
-            # even if config_wfg()/config_do_clock_special() itself raises -- this
+            # even if config_wfg() itself raises -- this
             # second call only refreshes fields that hardware configuration can
             # change after the fact, currently WfgChannelConfig.out_of_range
             # (set by WaveFormsBackend.configure_wfg()'s live-range clamping,
-            # Session 51 / commit 23e17d5) and DOFreqActual (achieved DO-clock
-            # frequency after integer-divider rounding). Without this,
-            # WFGOutOfRangeCh1/Ch2 and DOFreqActual in data.tdms always
-            # reflected the pre-configure default, because config_wfg()/
-            # config_do_clock_special() -- the only places that ever set them
-            # -- ran after the metadata snapshot that recorded them.
+            # Session 51 / commit 23e17d5). It also records the explicit
+            # production-disabled DIO1 state established above.
             experiment.save_settings()
 
         with _report_step(progress, STEP_CONFIGURE_CAMERA):
             if self.camera.enabled:
+                camera_sequence_settings = dict(experiment.sequence_settings or {})
+                requested_roi = camera_sequence_settings.pop("roi", None)
+                if requested_roi is not None:
+                    # The request is not evidence of what DCAM accepted. Apply
+                    # it first, then force a fresh backend readback; the camera
+                    # facade updates its ROI cache with that applied value, and
+                    # STEP_SAVE_RESULTS later persists that cache as metadata.
+                    self.camera.configure_roi(requested_roi)
+                    self.camera.read_subregion_limits_and_value()
                 # configure_exposure_time() (not the plain configure() bookkeeping
                 # setter) is what actually writes DCAM_IDPROP.EXPOSURETIME to real
                 # hardware -- matches the manual Camera tab's _configure_camera(),
@@ -1006,7 +1019,7 @@ class Application:
                 experiment.global_exposure_ms = applied_exposure_ms
                 experiment.save_settings()
 
-                self.camera.configure_sequence(experiment.sequence_settings)
+                self.camera.configure_sequence(camera_sequence_settings)
                 self.fire_status_event(
                     "Configuring camera trigger global exposure; this may only take effect with compatible trigger source settings"
                 )

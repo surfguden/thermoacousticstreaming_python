@@ -26,7 +26,7 @@ def _wfg(function: str = "Sine") -> dict:
             {"channel_index": 0, "carrier": {"frequency_hz": 100_000.0,
              "amplitude_v": 2.0, "offset_v": 0.1, "symmetry_percent": 40.0,
              "phase_deg": 10.0, "function": function, "enable": True},
-             "trigger": {"sec_run": 1.0, "sec_wait": 0.2},
+             "trigger": {"sec_run": 1.0, "sec_wait": 0.2, "repeat_count": 1},
              "fm_mod": {"enable": False}},
             {"channel_index": 1, "carrier": {"frequency_hz": 2_000.0,
              "function": "Square", "enable": False}, "trigger": {}, "fm_mod": {"enable": False}},
@@ -45,7 +45,10 @@ def _request(**changes) -> ExperimentRequest:
         device_modes=(("ad2", True, True), ("camera", True, True), ("pump", True, True),
                       ("valve", True, True), ("tec", False, True)),
         fixed_camera_start_s=0.3, wfg_templates=(_wfg(),),
-        sequence_settings=(("frames", 10), ("trigger_source", "Internal")),
+        sequence_settings=(("frames", 10), ("trigger_source", "Internal"), (
+            "roi", {"horizontal_offset": 0, "vertical_offset": 792,
+                    "horizontal_size": 2304, "vertical_size": 740},
+        )),
         flush_settings=(1.0, 0.2, 0.5, 5.0), exposure_ms=3.5,
         trigger_global_exposure=True,
     )
@@ -59,7 +62,7 @@ def _request(**changes) -> ExperimentRequest:
         pytest.param("Sine", 1, False, False, False, (), False, _request().device_modes, id="sine-single-fixed"),
         pytest.param("Sine", 2, False, False, False, (), False, _request().device_modes, id="sine-multiple-fixed"),
         pytest.param("Square", 2, True, False, False, (), True, _request().device_modes, id="square-scan-flush"),
-        pytest.param("DC", 2, True, True, True, (), False, _request().device_modes, id="dc-inactive-scan-fm"),
+        pytest.param("DC", 2, True, False, True, (), False, _request().device_modes, id="dc-inactive-scan"),
         pytest.param("Sine", 2, False, True, True, (((1, 21.0), (2, 21.0)),), True, _request().device_modes, id="fm-dynamic-locked-tec"),
         pytest.param("Sine", 2, True, False, True, (((1, 21.0), (2, 18.0)), ((1, 25.0), (2, 22.0))), False, _request().device_modes, id="scan-dynamic-unlocked-tec"),
         pytest.param("Sine", 2, False, False, False, (), False,
@@ -84,7 +87,8 @@ def test_independent_plan_adapter_preserves_static_execution_semantics(
 
     assert len(plan.conditions) == request.repeats_per_group * (len(tec_targets) or 1)
     assert len(normalized) == len(plan.conditions)
-    assert all(item["do_channels"][0][2] == request.camera_fps for item in normalized)
+    assert all(item["do_clock"]["running"] is False for item in normalized)
+    assert all(item["do_channels"] == () for item in normalized)
     assert all(item["flush_enabled"] is flush for item in normalized)
     assert request.device_modes == device_modes  # simulation/enabled state is retained request semantics, not invented by the adapter
     if function == "DC":
@@ -94,6 +98,7 @@ def test_independent_plan_adapter_preserves_static_execution_semantics(
         assert [item["frequency_scan_selected_hz"] for item in normalized[:2]] == [90_000.0, 110_000.0]
     if tec_targets:
         assert {item["tec_targets_c"][1] for item in normalized} == {21.0, 25.0} if len(tec_targets) == 2 else {21.0}
+    assert all(item["sequence_settings"]["roi"]["vertical_offset"] == 792 for item in normalized)
 
 
 def test_pure_planner_does_not_construct_legacy_experiments(monkeypatch):
@@ -105,6 +110,20 @@ def test_pure_planner_does_not_construct_legacy_experiments(monkeypatch):
     assert len(plan.conditions) == 2
 
 
+def test_normal_plan_disables_dio_even_when_legacy_template_is_supplied():
+    request = _request(
+        do_template={
+            "running": True,
+            "channels": [{"channel_index": 1, "enable": True, "clock_frequency_hz": 20.0}],
+        }
+    )
+
+    normalized = legacy_series_from_run_plan(build_independent_run_plan(request))[0].experiments
+
+    assert all(experiment.do_clock_settings.running is False for experiment in normalized)
+    assert all(experiment.do_clock_settings.channels == [] for experiment in normalized)
+
+
 def test_invalid_static_combinations_fail_before_adapter():
     with pytest.raises(ValueError, match="Frequency-list"):
         build_independent_run_plan(_request(frequency_scan_enabled=True, frequency_values_hz=(1.0,)))
@@ -112,6 +131,34 @@ def test_invalid_static_combinations_fail_before_adapter():
         build_independent_run_plan(_request(camera_fps=0.0))
     with pytest.raises(ValueError, match="Camera Start"):
         build_independent_run_plan(_request(dynamic_camera_start=True, camera_start_s=(0.1,)))
+
+
+def test_production_channel0_repeat_must_be_exactly_one():
+    for repeat_count in (0, 2):
+        config = _wfg()
+        config["channels"][0]["trigger"]["repeat_count"] = repeat_count
+        with pytest.raises(ValueError, match="Repeat must be exactly 1"):
+            build_independent_run_plan(_request(wfg_templates=(config,)))
+
+    plan = build_independent_run_plan(_request(wfg_templates=(_wfg(),)))
+    assert plan.conditions
+
+
+def test_fm_sweep_rejects_frequency_scan_and_requires_explicit_channel0_enable():
+    with pytest.raises(ValueError, match="FM Sweep and Frequency Scan"):
+        build_independent_run_plan(_request(fm_sweep_enabled=True, frequency_scan_enabled=True))
+
+    disabled = _wfg()
+    disabled["channels"][0]["carrier"]["enable"] = False
+    with pytest.raises(ValueError, match="explicitly enabled"):
+        build_independent_run_plan(
+            _request(fm_sweep_enabled=True, channel0_output_selected=False, wfg_templates=(disabled,))
+        )
+
+    not_running = _wfg()
+    not_running["running"] = False
+    with pytest.raises(ValueError, match="waveform generator to be running"):
+        build_independent_run_plan(_request(fm_sweep_enabled=True, wfg_templates=(not_running,)))
 
 
 def test_run_plan_contains_no_legacy_experiment_objects():

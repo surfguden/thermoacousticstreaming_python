@@ -52,14 +52,13 @@ AD2_LABVIEW_ACOUSTIC_AMPLITUDE_V = 2.0
 AD2_LABVIEW_ACOUSTIC_OFFSET_V = 0.0
 AD2_LABVIEW_ACOUSTIC_SHORT_DURATION_S = 0.5
 AD2_LABVIEW_ACOUSTIC_ORIGINAL_DURATION_S = 60.0
-LASER_AD2_CHANNEL = AD2_LABVIEW_ACOUSTIC_CHANNEL
-LASER_AD2_PATH = "existing AD2 WFG CH0 path in Application.run_experiment2"
+LASER_GATE_PATH_STATUS = "OWNER/PHYSICAL WIRING CONFIRMATION REQUIRED"
 LED_TRIGGER_CHANNEL = AD2_LOW_RISK_CHANNEL
 LED_TRIGGER_FREQUENCY_HZ = AD2_LOW_RISK_FREQUENCY_HZ
 LED_TRIGGER_AMPLITUDE_V = AD2_LOW_RISK_AMPLITUDE_V
 LED_TRIGGER_OFFSET_V = AD2_LOW_RISK_OFFSET_V
 LED_TRIGGER_DURATION_S = AD2_LOW_RISK_DURATION_S
-LED_TRIGGER_AD2_PATH = "AD2 WFG CH0 via the green wire illumination trigger line"
+LED_TRIGGER_AD2_PATH = "unverified candidate: AD2 WFG CH0 from a retained green-wire note"
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,7 +221,7 @@ def real_camera_led_trigger_check_plan() -> SmokePlan:
         name="real-camera-led-trigger-check",
         description=(
             "Observation smoke using the real Hamamatsu camera and real AD2 "
-            "LED trigger path. The LED is driven by the AD2 green wire. Pump, "
+            "LED trigger candidate. The retained green-wire note is not physical wiring proof. Pump, "
             "valve, Qmix, Z-stage, Thorlabs/APT, and Prior COM7 remain unused, "
             "and experiment flush is disabled."
         ),
@@ -561,8 +560,8 @@ def print_led_trigger_check_plan(
             "enabled explicitly by --apply-roi" if settings.apply_roi else "disabled by default; pass --apply-roi",
         )
     print_value("LED trigger path", LED_TRIGGER_AD2_PATH)
-    print_value("LED is driven by", "AD2 green wire")
-    print_value("AD2 output path used for LED", "WFG CH0 only; trigger source trigsrcNone; pc_trigger sent by Application.run_experiment2")
+    print_value("LED physical wiring", "OWNER/PHYSICAL WIRING CONFIRMATION REQUIRED")
+    print_value("software candidate only", "WFG CH0; not authorized as a proven LED route")
     print_ad2_output_parameters(parameters)
     print_value("CH2/index 1", "disabled")
     print_value("DO Clock", "not used")
@@ -632,16 +631,19 @@ def print_labview_acoustic_short_output_parameters(parameters: Ad2OutputSmokePar
 
 
 def print_ad2_laser_summary(include_ad2_laser: bool, parameters: Ad2OutputSmokeParameters) -> None:
+    print_step("laser gate is not represented by an independently verified software path")
+    print_value("separate laser backend", "absent")
+    print_value(
+        "known acoustic actuation path",
+        f"AD2 WFG CH{parameters.channel}: {parameters.frequency_hz} Hz for {parameters.duration_s} s",
+    )
+    print_value("laser gate path", LASER_GATE_PATH_STATUS)
+    print_value("laser power", "manual/fixed; AD2 amplitude is not optical-power evidence")
     if include_ad2_laser:
-        print_step("AD2-controlled laser path enabled for this smoke run")
-        print_value("separate laser backend", "not used")
-        print_value("laser AD2 channel/line", f"CH{LASER_AD2_CHANNEL}: {LASER_AD2_PATH}")
-        print_value("laser follows AD2 output", f"CH{parameters.channel} {parameters.frequency_hz} Hz sine for {parameters.duration_s} s")
-        print_value("laser mapping source", "operator clarification: laser is controlled by the existing AD2 path")
-    else:
-        print_step("AD2-controlled laser path is not explicitly enabled")
-        print_value("laser AD2 channel/line candidate", f"CH{LASER_AD2_CHANNEL}: {LASER_AD2_PATH}")
-        print_value("how to include laser", "pass --include-ad2-laser only if the laser is wired to the existing AD2 WFG CH0 path")
+        print_value(
+            "--include-ad2-laser",
+            "unsupported provenance assertion; it does not configure a distinct output and the real runner rejects it",
+        )
 
 
 def run_real_ad2_low_risk_output(device_index: int = 0) -> int:
@@ -1058,6 +1060,10 @@ def run_real_camera_led_trigger_check(
     device_index: int = 0,
     duration_s: float | None = None,
 ) -> Path:
+    raise ValueError(
+        "The retained AD2 green-wire/LED mapping is not verified physical wiring. "
+        "OWNER/PHYSICAL WIRING CONFIRMATION REQUIRED before this output mode can run."
+    )
     _ = device_index
     plan = real_camera_led_trigger_check_plan()
     settings = resolve_smoke_settings(preset_name, frames, exposure_ms, apply_roi)
@@ -1066,7 +1072,7 @@ def run_real_camera_led_trigger_check(
     print_plan(plan, run_dir, settings)
     print_led_trigger_check_plan(settings, run_dir, duration_s, plan_only=False)
     print_step("LED trigger check uses Application.run_experiment2 with flush_enabled=False")
-    print_step("LED is driven by the AD2 green wire; this is not a separate device backend")
+    print_step("LED mapping is an unverified retained green-wire note, not an established backend route")
     print_step("CH2/index 1 remains disabled; DO Clock and DO Custom are not used")
     print_step("pump, valve, Qmix, Z-stage, Thorlabs/APT, and Prior COM7 remain disabled or unused")
 
@@ -1086,7 +1092,7 @@ def run_real_camera_led_trigger_check(
         (
             f"CH{led_parameters.channel} {led_parameters.frequency_hz} Hz sine, "
             f"{led_parameters.amplitude_v} V amplitude, {led_parameters.offset_v} V offset, "
-            f"{led_parameters.duration_s} s via green wire"
+            f"{led_parameters.duration_s} s via unverified WFG CH0 candidate"
         ),
     )
     print_value("CH2/index 1", "disabled")
@@ -1154,6 +1160,11 @@ def run_real_full_workflow_short(
     duration_s: float | None = None,
     include_ad2_laser: bool = False,
 ) -> Path:
+    if include_ad2_laser:
+        raise ValueError(
+            "--include-ad2-laser cannot enable or prove a laser gate: no independent laser output is "
+            "represented and the physical wiring is unverified. OWNER/PHYSICAL WIRING CONFIRMATION REQUIRED."
+        )
     _ = device_index
     defaults = default_hardware_config()
     plan = real_full_workflow_short_plan(valve_port, flush_enabled=flush_enabled)
@@ -1232,10 +1243,7 @@ def run_real_full_workflow_short(
             f"{acoustic_parameters.duration_s} s"
         ),
     )
-    if include_ad2_laser:
-        print_value("AD2-controlled laser", f"enabled on CH{LASER_AD2_CHANNEL}; no separate laser backend")
-    else:
-        print_value("AD2-controlled laser", "not explicitly enabled")
+    print_value("software-controlled laser gate", "not claimed; manual fixed-power operation only")
 
     apply_hardware_bundle(app, bundle)
     experiment = Experiment2(
@@ -1368,7 +1376,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--include-ad2-laser",
         action="store_true",
-        help="Explicitly mark the existing full-workflow AD2 WFG CH0 path as also driving the laser. No separate laser backend is used.",
+        help=(
+            "Legacy unsupported assertion. The runner rejects this flag because it never configured a distinct "
+            "laser gate and current physical wiring is unverified."
+        ),
     )
     parser.add_argument(
         "--duration-s",

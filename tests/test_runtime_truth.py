@@ -32,17 +32,24 @@ def test_experiment_camera_defaults_keep_defaults_separate_from_run_overrides():
         "trigger_source": "Internal",
         "trigger_polarity": "Negative",
         "trigger_delay_s": 0.002,
+        "roi": {
+            "horizontal_offset": 10,
+            "vertical_offset": 20,
+            "horizontal_size": 100,
+            "vertical_size": 80,
+        },
     }
     assert defaults.trigger_source == "External"
     assert defaults.roi is roi
-    assert "roi" not in settings
+    assert settings["roi"] is not roi
 
 
 def test_camera_field_ownership_classifies_defaults_overrides_applied_and_manual_state():
     assert CAMERA_FIELD_OWNERSHIP["masterpulse_mode"] is CameraFieldOwnership.EXPERIMENT_DEFAULT
     assert CAMERA_FIELD_OWNERSHIP["frames"] is CameraFieldOwnership.EXPERIMENT_OVERRIDE
     assert CAMERA_FIELD_OWNERSHIP["automated_trigger_source"] is CameraFieldOwnership.EXPERIMENT_OVERRIDE
-    assert CAMERA_FIELD_OWNERSHIP["roi"] is CameraFieldOwnership.MANUAL_ONLY
+    assert CAMERA_FIELD_OWNERSHIP["roi"] is CameraFieldOwnership.EXPERIMENT_DEFAULT
+    assert CAMERA_FIELD_OWNERSHIP["applied_roi"] is CameraFieldOwnership.APPLIED_DEVICE_STATE
     assert CAMERA_FIELD_OWNERSHIP["experiment_exposure_ms"] is CameraFieldOwnership.EXPERIMENT_OVERRIDE
     assert CAMERA_FIELD_OWNERSHIP["applied_exposure_ms"] is CameraFieldOwnership.APPLIED_DEVICE_STATE
     assert CAMERA_FIELD_OWNERSHIP["timing_feasibility_summary"] is CameraFieldOwnership.DISPLAY_ONLY

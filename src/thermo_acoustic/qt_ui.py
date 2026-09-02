@@ -1351,7 +1351,10 @@ class MainWindow(QMainWindow):
             "Application._ad2_trigger_completion_seconds() raises before starting if this is 0, "
             "since flush/save can't safely proceed without a known completion time."
         )
-        self.exp_ch1_repeat = _int_spin(0, minimum=0)
+        # New normal experiments default to one finite output run. Persisted
+        # owner settings are still loaded unchanged; an older Repeat=0 value
+        # therefore remains visible and is rejected by production preflight.
+        self.exp_ch1_repeat = _int_spin(1, minimum=0)
         self.exp_ch1_trigger_source = _combo(WFG_TRIGGER_SOURCE_OPTIONS, "trigsrcNone")
         self.exp_ch1_trigger_source.setToolTip(
             "AD2 SDK trigger source enum. The automated Experiment path always arms via config "
@@ -3678,7 +3681,7 @@ class MainWindow(QMainWindow):
     def _seed_experiment_ad2_from_wfg_once(self) -> None:
         if self._experiment_ad2_seeded:
             return
-        for experiment_state, wfg_state in zip(self.exp_ad2_channels, self.wfg_channels):
+        for index, (experiment_state, wfg_state) in enumerate(zip(self.exp_ad2_channels, self.wfg_channels)):
             experiment_state["frequency"].setValue(wfg_state["frequency"].value())
             experiment_state["amplitude"].setValue(wfg_state["amplitude"].value())
             experiment_state["offset"].setValue(wfg_state["offset"].value())
@@ -3686,7 +3689,14 @@ class MainWindow(QMainWindow):
             experiment_state["enable"].setChecked(wfg_state["enable"].isChecked())
             experiment_state["sec_wait"].setValue(wfg_state["sec_wait"].value())
             experiment_state["sec_run"].setValue(wfg_state["sec_run"].value())
-            experiment_state["repeat"].setValue(wfg_state["repeat"].value())
+            # WaveForms manual state historically defaults Repeat to 0
+            # (infinite). Do not let that legacy manual default overwrite the
+            # fresh normal-experiment CH0 default of 1. Explicit persisted
+            # experiment settings set _experiment_ad2_seeded during loading,
+            # so an owner's existing Repeat=0 remains unchanged and is
+            # rejected visibly by normal-run preflight.
+            if index != 0 or wfg_state["repeat"].value() != 0:
+                experiment_state["repeat"].setValue(wfg_state["repeat"].value())
             _set_combo_text(experiment_state["trigger_source"], wfg_state["trigger_source"].currentText())
             experiment_state["symmetry"].setValue(wfg_state["symmetry"].value())
             experiment_state["phase"].setValue(wfg_state["phase"].value())
@@ -3727,7 +3737,6 @@ class MainWindow(QMainWindow):
         if index == 0 and carrier.function != WaveformFunction.DC and self.exp_sweep_enable.isChecked():
             sweep = self._experiment_fm_sweep_settings()
             carrier.frequency_hz = sweep.center_hz
-            carrier.enable = True
             fm_mod = sweep.fm_mod_settings()
         # Frequency Scanning / Dynamic Frequency: per-repeat discrete carrier
         # frequency substitution (LabVIEW's CreateExperiments.vi "Dynamic

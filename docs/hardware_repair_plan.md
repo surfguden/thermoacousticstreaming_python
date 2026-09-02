@@ -127,8 +127,11 @@ Real TEC operation remains unapproved in this audit.
    exposure.
 3. Trace the physical camera trigger cable and record its AD2 line, if any. Do
    not change DCAM to External until that wiring and polarity are known.
-4. Treat DIO0/acoustic origin and laser mapping as unresolved physical wiring;
-   current experiment code does not configure them.
+4. Treat physical downstream routing as unresolved: current software maps
+   acoustic actuation to AD2 analog WFG CH0 (`W1`), but amplifier/transducer
+   wiring is not retained as physical evidence. Laser-gate wiring is unknown,
+   and the historical LED/green-wire description is only an unverified WFG
+   CH0 candidate. Current normal experiments configure neither DIO0 nor DIO1.
 
 A later code repair depends on the measurement: either preserve documented
 internal/free-run camera behavior and stop claiming synchronization, or add an

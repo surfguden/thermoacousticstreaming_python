@@ -339,9 +339,9 @@ def test_plan_only_can_include_led_trigger_plan(monkeypatch, capsys, tmp_path):
     assert module.main() == 0
     output = capsys.readouterr().out
     assert "LED trigger verification plan" in output
-    assert "LED is driven by: AD2 green wire" in output
-    assert "LED trigger path: AD2 WFG CH0 via the green wire illumination trigger line" in output
-    assert "AD2 output path used for LED: WFG CH0 only" in output
+    assert "LED physical wiring: OWNER/PHYSICAL WIRING CONFIRMATION REQUIRED" in output
+    assert "LED trigger path: unverified candidate: AD2 WFG CH0 from a retained green-wire note" in output
+    assert "software candidate only: WFG CH0; not authorized as a proven LED route" in output
     assert "camera frames: 20" in output
     assert "ROI application: enabled explicitly by --apply-roi" in output
     assert "CH2/index 1: disabled" in output
@@ -939,6 +939,18 @@ def test_led_trigger_check_runs_only_with_confirmation_and_acknowledgement(monke
     assert calls == [(tmp_path, 20, None, "labview-screenshot", True, 1, 0.5)]
 
 
+def test_real_led_trigger_runner_rejects_unverified_wiring_before_hardware(tmp_path):
+    module = load_smoke_module()
+
+    try:
+        module.run_real_camera_led_trigger_check(tmp_path, 1, 40.0)
+    except ValueError as exc:
+        assert "green-wire/LED mapping is not verified" in str(exc)
+        assert "OWNER/PHYSICAL WIRING CONFIRMATION REQUIRED" in str(exc)
+    else:
+        raise AssertionError("unverified LED route should fail before hardware setup")
+
+
 def test_real_full_workflow_short_runs_only_with_all_confirmations(monkeypatch, tmp_path):
     module = load_smoke_module()
     calls = []
@@ -1003,7 +1015,7 @@ def test_real_full_workflow_short_runs_only_with_all_confirmations(monkeypatch, 
     assert calls == [(tmp_path, 20, None, "labview-screenshot", True, "COM6", True, 1, 0.5, False)]
 
 
-def test_real_full_workflow_short_can_explicitly_include_ad2_laser(monkeypatch, tmp_path):
+def test_cli_forwards_legacy_laser_flag_to_runner_for_rejection(monkeypatch, tmp_path):
     module = load_smoke_module()
     calls = []
 
@@ -1178,23 +1190,43 @@ def test_labview_acoustic_short_parameters_are_short_candidate():
     assert channel.trigger.repeat_count == 1
 
 
-def test_ad2_laser_path_reuses_existing_ch0_acoustic_workflow_path(capsys):
+def test_laser_summary_separates_known_acoustic_path_from_unverified_gate(capsys):
     module = load_smoke_module()
     parameters = module.labview_acoustic_short_parameters(2.0)
 
     module.print_ad2_laser_summary(True, parameters)
 
     output = capsys.readouterr().out
-    assert module.LASER_AD2_CHANNEL == 0
-    assert module.LASER_AD2_CHANNEL == parameters.channel
-    assert "AD2-controlled laser path enabled" in output
-    assert "separate laser backend: not used" in output
-    assert "laser AD2 channel/line: CH0: existing AD2 WFG CH0 path in Application.run_experiment2" in output
-    assert "laser follows AD2 output: CH0 1975000.0 Hz sine for 2.0 s" in output
+    assert module.LASER_GATE_PATH_STATUS == "OWNER/PHYSICAL WIRING CONFIRMATION REQUIRED"
+    assert "separate laser backend: absent" in output
+    assert "known acoustic actuation path: AD2 WFG CH0: 1975000.0 Hz for 2.0 s" in output
+    assert "laser gate path: OWNER/PHYSICAL WIRING CONFIRMATION REQUIRED" in output
+    assert "does not configure a distinct output" in output
 
     config = module.ad2_output_wfg_config(parameters)
     assert len(config.channels) == 1
     assert [configured_channel.channel_index for configured_channel in config.channels] == [0]
+
+
+def test_real_full_workflow_rejects_legacy_laser_flag_before_hardware(tmp_path):
+    module = load_smoke_module()
+
+    try:
+        module.run_real_full_workflow_short(
+            tmp_path,
+            frames=1,
+            exposure_ms=40.0,
+            preset_name="labview-screenshot",
+            apply_roi=False,
+            valve_port="COM5",
+            flush_enabled=False,
+            include_ad2_laser=True,
+        )
+    except ValueError as exc:
+        assert "cannot enable or prove a laser gate" in str(exc)
+        assert "OWNER/PHYSICAL WIRING CONFIRMATION REQUIRED" in str(exc)
+    else:
+        raise AssertionError("unsupported laser provenance assertion should fail before hardware setup")
 
 
 def test_labview_acoustic_short_refuses_full_labview_duration():

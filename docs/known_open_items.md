@@ -26,10 +26,12 @@ below; the table does not replace their history.
 
 | ID | Status | Domain | Blocking impact | Evidence | Next action / review point | Closure criterion |
 | --- | --- | --- | --- | --- | --- | --- |
-| HW-TIMING-001 | DEFERRED / READY FOR PHYSICAL VERIFICATION | Camera / AD2 / DIO | Physical trigger and exposure timing cannot be claimed; ordinary software development is not blocked | A 2026-08-28 follow-up restored PnP/vendor/backend visibility and a clean read-only open/close for `C15440-20UP` / `S/N: 500478`. Vendor documents identify AD2 `W1`/`DIO1` and camera SMA `TIMING 1/2/3`; a later read-only probe found all three camera outputs fixed `LOW`. No acquisition, AD2 output, trigger change, or timing measurement occurred. The first capture requires an operator-controlled external oscilloscope with simultaneous CH1 DIO1, CH2 W1, and CH3 Camera TIMING 1 on one common timebase; CH4 is unused and repository scope control is not required | Keep physical timing verification deferred; when resumed, identify the scope/export path, confirm wiring/load, and approve a temporary camera exposure-output setting plus restoration before the one bounded diagnostic | Retained raw scope data (or an accepted fallback export/screenshot) establishes the timing relationship for that capture, with repeatability/jitter explicitly left as a later characterization question; no verified synchronization claim before then |
-| HW-VALVE-001 | OPEN | Valve / fluidics | P01/P02 cannot be given physical route names | No command was sent on 2026-08-28 because harmless routing could not be established | Run the pump-disabled P01/S and P02/S procedure with visible harmless routing | Both positions have separate requested, protocol-confirmed, and physically observed route records |
+| HW-TIMING-001 | DEFERRED / READY FOR PHYSICAL VERIFICATION | Camera / AD2 / DIO | Physical trigger and exposure timing cannot be claimed; ordinary software development is not blocked | A 2026-08-28 follow-up restored PnP/vendor/backend visibility and a clean read-only open/close for `C15440-20UP` / `S/N: 500478`. Vendor documents identify AD2 `W1`/`DIO1` and camera SMA `TIMING 1/2/3`; a later read-only probe found all three camera outputs fixed `LOW`. No acquisition, AD2 output, trigger change, or timing measurement occurred. Normal production planning now emits an explicit disabled DIO1 payload and `Application.run_experiment2()` does not call the legacy DO-clock programmer | Keep physical timing verification deferred; if DIO1 remains scientifically required, separately authorize a diagnostic source plus the scope/export path, wiring/load, and temporary camera exposure-output setting/restoration | Retained raw scope data (or an accepted fallback export/screenshot) establishes the timing relationship for that separately authorized capture, with repeatability/jitter explicitly left as a later characterization question; no verified synchronization claim before then |
+| HW-LASER-PATH-001 | OWNER/PHYSICAL WIRING CONFIRMATION REQUIRED | Laser gate / AD2 wiring | Normal software cannot claim independent laser ON/OFF gating; camera+acoustic-only work with manual fixed-power laser handling is not blocked | No laser backend, normal-production laser field, or distinct gate output exists in `src/`. AD2 WFG CH0 is the represented acoustic path. Git history shows `--include-ad2-laser` added only labels around the unchanged CH0 experiment configuration; it now fails before hardware setup instead of claiming gate control. Retained LED/green-wire prose is not physical wiring evidence | Owner traces and identifies the current gate connector/line and confirms whether it is independent of acoustic W1/CH0 and historical LED/DIO descriptions | A retained wiring record plus one separately authorized bounded gate verification establishes requested, electrical, and optical ON/OFF behavior without treating AD2 amplitude as optical-power evidence |
+| SW-ACQ-DETERMINISM-001 | RESOLVED OFFLINE | Camera ROI / AD2 preflight | Stale ROI, infinite/unsupported CH0 repeat, and inconsistent sweep requests could make data scientifically ambiguous | Canonical plans carry requested ROI; runtime applies it, performs fresh readback, and saves applied ROI. Enabled CH0 requires Repeat=1. FM Sweep plus Frequency Scan and FM Sweep without explicit CH0 enable/running state fail before hardware configuration. Focused fake/planner/UI tests cover each boundary | Preserve these gates during hardware validation; do not rewrite persisted Repeat=0 behind the operator's back | One separately authorized minimal run confirms the software evidence model against current camera/AD2 hardware |
+| HW-VALVE-001 | OPEN FOR OPTIONAL DIRECT PHYSICAL CONFIRMATION | Valve / fluidics | Software position/command correspondence and owner-supplied route names are resolved; direct physical actuation evidence is not retained | Owner-supplied experimental hardware truth defines position 1 / `P01` as through-chip liquid exchange and position 2 / `P02` as chip bypass. Current `Valve.set_position()` maps 1 directly to `P01` and 2 directly to `P02`; the serial backend adds carriage return on transmission | If direct confirmation is desired, run one separately authorized, pump-inactive valve command and `S` readback at a time while observing the expected route; one position does not authorize the other | Both positions have separate requested, protocol-confirmed, and physically observed route records; until then retain the owner-supplied provenance explicitly |
 | HW-QMIX-CAN-001 | RESOLVED FOR STARTUP/NO-MOTION RECOVERY | Qmix / CAN | Startup events do not block the accepted no-motion recovery lifecycle; this does not establish motion readiness | H2A proved fresh pre-clear startup emergencies. H2B then completed five single-client trials with pre-clear `fault=True`, exactly one accepted `LCP_ClearFault`, immediate and +0.5/+1.5/+3.0 second `fault=False`, enabled/pumping false, clear-associated `0x0000` with no post-clear nonzero emergency, and clean stop/close in 5/5 | Preserve the clear-before-enable policy and retained evidence; reopen physical CAN/termination diagnosis only if recovery fails, relatches, or host/device evidence materially changes | Five representative trials distinguish command acknowledgement from stable recovery while retaining H2A's startup-event truth |
-| HW-PUMP-MOTION-001 | OPEN | Qmix pump | Reference, fill truth, and bounded motion remain unsafe to infer | H2B confirmed stable no-motion startup recovery without enable/reference/motion; installed syringe identity, geometry, loading, travel, and harmless route remain physically unconfirmed | First perform a no-command operator-visible physical readiness inspection; then separately review reference, fill truth, stop latency, and one minimal motion in that order | Single-client recovery remains stable; syringe/loading/route and motion bounds are physically known; reference, fill truth, stop latency, and one minimal motion are separately authorized and verified |
+| HW-PUMP-MOTION-001 | OPEN | Qmix pump | Reference, fill truth, and bounded motion remain unsafe to infer | H2B confirmed stable no-motion startup recovery. H1 read `position_sensing_initialized=true` in 5/5 trials, but the bundled wrapper identifies this Low Pressure pump as incremental-encoder hardware that loses position on power-off. Production initialization now checks the flag freshly after fault recovery and before enable, failing closed on `false` without enabling or commanding the pump. Flush now contains one target command between P01/P02 confirmations. Installed syringe identity, loading, travel, and harmless route remain physically unconfirmed | First perform a no-command operator-visible physical readiness inspection. Then separately authorize a fresh connection/readiness result and review reference timeout-stop behavior if the gate is false, followed by fill truth, stop latency, and one minimal motion in that order | Single-client recovery remains stable; syringe/loading/route and motion bounds are physically known; current position sensing is explicitly established or restored; reference, fill truth, stop latency, and one minimal motion are separately authorized and verified |
 | HW-TEC-001 | RESOLVED | Meerstetter TEC | OFF-only real-operation gate closed; broader write scope remains separate | On 2026-08-28 the authorized shared path wrote only parameter 2010 value 0 to channels 1 and 2, read both back OFF, and closed cleanly | Keep ON, target, PID/calibration, raw, and persistence operations outside this closure | Per-channel OFF and cleanup behavior are retained from a safe real-device check; broader ON/target approval remains separate |
 | ARCH-PREFLIGHT-001 | RESOLVED FOR CURRENT AUTHORITY | Experiment planning | Normal production Start must have one clear planning authority | `ExperimentRequest` -> immutable `RunPlan`/`RunCondition` -> `legacy_series_from_run_plan()` now drives normal Start; the legacy builder remains explicit rollback-only; v3 `BuildResult` remains presentation/audit derivation | Preserve the rollback boundary and do not treat v3 shadow presentation as a second authority | Hardware validation provides sufficient confidence for any future rollback retirement |
 | ARCH-RECORD-001 | RESOLVED | Experiment record lifecycle | Series-level aggregate outcome must not be inferred from individual TDMS files alone | `series_manifest.json` is now atomically updated beside each series output root with requested/started/completed/failed counts, abort state, terminal outcome, timestamps, and TEC outer-axis counts when applicable; per-repeat TDMS remains authoritative for condition and failure detail | Keep the manifest bounded to lifecycle aggregate truth; do not turn it into configuration persistence | Requested versus started counts reconstruct never-started repeats, while terminal outcome distinguishes completion, failure, and graceful abort without claiming hardware application |
@@ -57,32 +59,40 @@ historical notes. This document is a live issue register, whereas
   `docs/runtime_truth_and_bench_preparation.md`. **Status: OPEN for bench
   evidence; software authority promotion is resolved.**
 
-- **Valve protocol position versus physical fluidic routing.** The serial
-  protocol and status tokens confirm numeric positions `P01`/`P02`, but the
-  current workflow and migration audits still record the physical routing as
-  unverified. Current source/UI text deliberately labels controls only
-  `P01`/`P02`; it does not claim a fluidic route for either numeric protocol
-  position. Treat physical routing as an unresolved bench mapping until a
-  controlled hardware check records what each position does; numeric protocol
-  confirmation is not proof of fluidic semantics. A successful real serial
-  write is now shown as `requested P01/P02; confirmation pending`; only a
-  subsequent recognized `S` status reply restores `confirmed` state.
-  A 2026-08-28 attempt deliberately sent no command because physical pump
-  isolation and a harmless observable route could not be confirmed from
-  software. **Status: OPEN; no new physical mapping.**
-- **DIO0 (acoustic)/DIO1 (LED) relative timing never oscilloscope-verified.**
-  Session 19/31/43. The DO-clock derivation (`_experiment_do_clock_config()`)
-  is structurally wired from real UI values, but whether its physical timing
-  actually matches LabVIEW has never been confirmed with a scope. Session 31
+- **Valve protocol position versus physical fluidic routing.** Owner-supplied
+  experimental hardware truth now defines position 1 / `P01` as the path
+  through the microfluidic chip, used for liquid exchange, and position 2 /
+  `P02` as the chip-bypass path. Current `Valve.set_position()` maps software
+  position 1 directly to `P01` and position 2 directly to `P02`; there is no
+  zero-based or reversing translation layer, and the serial backend appends
+  the carriage return on transmission. The software command mapping is
+  therefore consistent with the owner's route definition. This provenance is
+  not independent physical verification. A successful real serial write is
+  shown as `requested P01/P02; confirmation pending`; only a subsequent
+  recognized `S` status reply confirms the numeric protocol position, and
+  neither event alone physically verifies the fluid route. A 2026-08-28
+  attempt deliberately sent no command because physical pump isolation and a
+  harmless observable route could not then be confirmed. **Status: SOFTWARE
+  CORRESPONDENCE RESOLVED; optional direct physical route confirmation remains
+  separately authorized.**
+- **AD2 W1 acoustic output / historical DIO1-or-green-wire LED timing was
+  never oscilloscope-verified.**
+  Session 19/31/43. The legacy DO-clock derivation
+  (`_experiment_do_clock_config()`) remains available, but the current normal
+  `ExperimentRequest` -> `RunPlan` path emits `running=false` with no DO
+  channels, and `Application.run_experiment2()` does not call
+  `config_do_clock_special()`. Whether the historical physical timing matches
+  LabVIEW has never been confirmed with a scope. Session 31
   added real per-frame `dcam_clock:` timestamp evidence (~0.0316s deltas,
   matching camera readout time, not the configured 0.2s DO-clock period) that
   is *consistent with* camera trigger source `"Internal"` free-running rather
   than being paced by the DO clock -- supporting evidence, not a resolution.
-  The current experiment configuration creates DIO1 only and explicitly sets
-  DCAM trigger source to `Internal`; it does not configure DIO0 or establish a
-  physical camera-trigger line. `Camera Start` is therefore a programmed DO
-  `sec_wait`, not a proven delay relative to the later `pc_trigger()` call.
-  **Status: OPEN.**
+  Current normal experiments explicitly configure neither DIO0 nor DIO1 and
+  retain DCAM trigger source `Internal`; they do not establish a physical
+  camera-trigger line. `Camera Start` remains planned sequence metadata and is
+  not a programmed DO delay or a proven physical delay relative to the later
+  `pc_trigger()` call. **Status: DEFERRED / READY FOR SEPARATELY AUTHORIZED
+  PHYSICAL VERIFICATION IF DIO TIMING REMAINS A SCIENTIFIC REQUIREMENT.**
   **2026-08-28 attempt:** passive AD2 discovery found unopened device
   `SN:210321A18CE2`, but DCAM initialization returned `0x80000206`
   (`DCAMERR_NOCAMERA`) and physical scope wiring was not observable. No output
@@ -673,6 +683,16 @@ historical notes. This document is a live issue register, whereas
   as of this writing`, pre-dating Session 45) was never updated to reflect
   this -- see Part 2 of the report.** **Status: RESOLVED**, changelog
   stale on this point.
+- **Exact post-clamp FM center/span provenance remains limited.** The backend
+  checks live per-node frequency/amplitude limits, sends bounded values, and
+  records `WFGOutOfRangeCh1=true` when either carrier or FM modulation was
+  clamped. The retained `FMSweepCenterHz`/`FMSweepWidthKHz` describe the
+  requested sweep, while current WFG settings do not receive a fresh hardware
+  `Get` readback and the clamped local values are not written back into the
+  settings object. Exact effective sweep endpoints therefore must not be
+  inferred when `WFGOutOfRangeCh1=true`. **Status: OPEN METADATA LIMITATION;
+  non-blocking for an in-range first experiment, and explicitly documented
+  rather than expanding persistence in this hardening round.**
 - **AD2 device detection depends on knowing the correct USB VID.** Session 51
   (post-commit follow-up). This specific lab's Analog Discovery 2 enumerates
   via an FTDI bridge chip (`VID_0403&PID_6014`), not Digilent's own
@@ -875,6 +895,65 @@ historical notes. This document is a live issue register, whereas
   `test_cetoni_pump_reference_move_sets_referenced_true`). Full suite
   green, 369/369 at the time of the fix. **Status: RESOLVED, committed in
   `17f24dd`.**
+
+  **Current readiness interpretation (2026-09-02):** the bundled Qmix wrapper
+  states that `is_position_sensing_initialized()` means the internal position
+  counter/encoder is properly initialized. It identifies the neMESYS Low
+  Pressure pump as incremental-encoder hardware that loses position when pump
+  power is turned off; a later `true` requires either `calibrate()` or restore
+  of a previously saved counter. H1 observed `true` in 5/5 no-motion trials,
+  so reference was not required to initialize position sensing in that powered
+  session. That evidence cannot be carried across unknown subsequent power
+  history. A fresh `true` would support avoiding a reference move; `false`
+  would require a separately reviewed reference or counter-restore path before
+  dosing. `QmixPumpBackend.initialize()` and the explicit clear/reinitialize
+  path now read this flag after fault recovery and before `_enable_pump()`.
+  `true` continues the existing path; `false` raises a readiness error and
+  rollback closes the connection without enable, reference/calibration,
+  counter restore, fill/flow, or motion. **Status: SOFTWARE GATE RESOLVED;
+  CURRENT REFERENCE REQUIREMENT REMAINS CONDITIONAL ON A FRESH REAL READ, and
+  no hardware access, enable, or reference is authorized by this conclusion.**
+
+  A subsequent passive-readiness helper attempt retained
+  `SAFETY/TRANSPORT_STOP` after `PermissionError [WinError 5]` while loading
+  `C:\Users\Lab user\AppData\Local\CETONI_SDK\labbCAN_Bus_API.dll`; it never
+  reached `Bus.open()` or `Bus.start()`. Targeted load-only diagnosis reproduced
+  the denial for byte reads, hashing, and `ctypes.WinDLL()` inside the Codex
+  filesystem sandbox, while the same 64-bit Python 3.13 executable, wrapper,
+  `QMIXSDK` directory, and retained `os.add_dll_directory()` mechanism imported
+  both Qmix bus and pump bindings outside the sandbox. The DLLs are AMD64,
+  owner-readable with full control, and their dependency chain loaded. **Status:
+  NATIVE QMIX LOAD PATH RESTORED / HEALTHY OUTSIDE THE SANDBOX; no DLL, ACL,
+  vendor-install, CAN-configuration, or repository loader change is required.
+  Any later bus snapshot remains separate hardware authorization.**
+
+  The production reference helper calls `LCP_SyringePumpCalibrate`, polls
+  `is_calibration_finished()` for up to 60 seconds, and raises on timeout. It
+  does not call `stop_pumping()` in that timeout branch. This differs from the
+  fill-level motion helpers, whose callers request a stop after a timeout.
+  **Status: reference timeout/stop behavior must be resolved before any real
+  reference trial.**
+
+- **`Application.flush()` sent an extra same-target pump command after P02 --
+  fixed (2026-09-02).**
+  The first `set_fill_level(new_fill_level, requested_flow)` sends
+  `LCP_SetFillLevel` and `wait_for_pump()` waits until `is_pumping()` is false.
+  After P02 and `WaitAfterFlush`, Python calls
+  `set_fill_level(new_fill_level)` again. The backend does not compare the
+  requested target with current fill: it rechecks/enables the drive as needed,
+  chooses the default/clamped flow, and sends another `LCP_SetFillLevel`.
+  Neither the bundled wrapper nor retained local documentation guarantees that
+  an equal-target call is a device no-op, so it remains motion-capable. Direct
+  inspection of `main_html/Application_lvclass_Flushd.png` shows that the
+  corresponding final LabVIEW node is `Application Set Cetoni Pump`, storing
+  the already-mutated object after P02; it is not a second `Set Fill Level`
+  device call. The Python call is therefore not required for LabVIEW parity
+  and was software-redundant. The second call is now removed. The retained
+  sequence is P01 command/confirmation, one target+flow pump command, bounded
+  pump completion wait, P02 command/confirmation, and post-flush wait. Offline
+  regression tests assert that exact order and exactly one pump target command.
+  **Status: RESOLVED IN SOFTWARE; no real pump or valve was accessed, and this
+  does not expand or bypass the first no-command readiness inspection.**
 - **`vci4109w5.sys` (IXXAT VCI4 USB-to-CAN adapter driver, used by the
   Qmix pump's CANopen bus) BSOD'd three times in one session during
   real-hardware pump diagnostics (2026-07-31) -- root-caused and
@@ -1356,14 +1435,20 @@ historical notes. This document is a live issue register, whereas
   non-functional stub) -- adding a working automated-path control would
   misrepresent a fake feature as real. **Status: RESOLVED as scoped**, not a
   gap.
-- **Laser (785nm) has no software-side control in this codebase at all.**
-  Confirmed via a repo-wide case-insensitive search for "laser"/"785" (zero
-  matches in `src/`) during this project's own hardware-safety audit --
-  entirely out of software scope, manual-only on the physical unit.
-  **Status: CONFIRMED OUT OF SCOPE** (this is the one item in this whole
-  document that genuinely matches a "confirmed out of scope" framing --
-  see Part 2 of the report for why the *specific* "Peltier TEC background
-  temperature control confirmed out of scope" example could not be found).
+- **Laser (785 nm) has no independently represented software gate; physical
+  mapping is unresolved.** Repo-wide source review confirms no laser backend,
+  normal-production laser field, or separate gate output in `src/`. AD2 WFG
+  CH0 is the represented acoustic actuation path. The manual smoke script had
+  assigned the laser to that same CH0 in descriptive constants, but Git history
+  and current control flow show `--include-ad2-laser` changed only printed
+  descriptions: the generated WFG configuration was identical. It therefore
+  was not evidence of an independent gate or current wiring. The script now
+  rejects that legacy flag before hardware setup. Historical LED/green-wire
+  text likewise remains an unverified physical note, not a proven software
+  route. **Status: OWNER/PHYSICAL WIRING CONFIRMATION REQUIRED.** Camera+acoustic
+  testing may proceed with manual alignment and manually established fixed
+  optical power, but software must not claim independent laser ON/OFF control
+  and AD2 electrical amplitude must not be reported as verified optical power.
 - **LabVIEW-migration-parity scaffolding modules -- intentionally retained,
   not dead code.** `utilities.py`, `imaq.py`, `filetypes.py`,
   `serial_config.py` (~454 lines total) each map to specific original
@@ -1627,9 +1712,11 @@ historical notes. This document is a live issue register, whereas
      channel's `DORun`/`DOWait`/`DOFreq`/`DOFreqActual`
      (these are singular field names, not per-channel-suffixed like
      the WFG fields). A second simultaneously-enabled DO channel would
-     be silently unrecorded. Confirmed unreachable: `qt_ui.py`'s
-     `_experiment_do_clock_config()` only ever builds one DO channel
-     (`channel_index=1`, the LED clock).
+     be silently unrecorded. Confirmed unreachable in normal production:
+     current plans contain no enabled DO channels and `run_experiment2()` does
+     not program DO. The retained legacy `qt_ui.py`
+     `_experiment_do_clock_config()` only builds one channel (`channel_index=1`,
+     the LED clock).
   **Status: OPEN, low priority** -- same disposition as the backlog
   entries above.
 - **The production `exp_ctrl` conda environment was silently missing
@@ -1777,12 +1864,12 @@ historical notes. This document is a live issue register, whereas
   run, the second call would silently clobber the first's confirmed
   configuration with no error or warning, the same "silent state
   clobber" shape found and fixed elsewhere this session, just not yet
-  triggered here. Currently dormant/unreachable: nothing in the
-  automated `run_experiment2()` path calls `config_do_custom()` today
-  (confirmed via the qt_ui.py call-site audit). **Not fixed -- not
+  triggered here. Currently dormant/unreachable: the automated
+  `run_experiment2()` path calls neither DO configuration helper today
+  (confirmed via the shared-runtime call-site audit). **Not fixed -- not
   worth restructuring dormant code with no reported issue.** Flag for
   design review if `config_do_custom()` is ever wired into the automated
-  path alongside `config_do_clock_special()`. **Status: OPEN, low
+  same future path alongside `config_do_clock_special()`. **Status: OPEN, low
   priority, latent risk only.**
 - **Pump&Valve "Syringe" dropdown looks live-selected but has no real
   effect until "ConfigureSyringe" is clicked -- a real operator-confusion
