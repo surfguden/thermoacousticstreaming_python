@@ -117,6 +117,11 @@ class ExperimentRequest:
         object.__setattr__(self, "wfg_templates", tuple(_freeze_mapping(item) for item in self.wfg_templates))
         if self.do_template is not None:
             object.__setattr__(self, "do_template", _freeze_mapping(self.do_template))
+        object.__setattr__(
+            self,
+            "sequence_settings",
+            tuple((key, _freeze_value(value)) for key, value in self.sequence_settings),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -319,13 +324,14 @@ def build_independent_run_plan(request: ExperimentRequest) -> RunPlan:
             selected = request.frequency_values_hz[repeat_id] if scan_effective else None
             if selected is not None:
                 wfg["channels"][0]["carrier"]["frequency_hz"] = selected
-            sequence = dict(request.sequence_settings)
+            sequence = {key: _thaw(value) for key, value in request.sequence_settings}
             sequence["camera_start_s"] = list(request.camera_start_s)
             sequence["camera_start_mode"] = "dynamic" if request.dynamic_camera_start else "fixed"
             sequence["camera_start_selected_s"] = start
             conditions.append(RunCondition(group_index, repeat_id, request.output_path,
                 root / f"repeat_{repeat_id + 1:03d}", tuple(target), selected, _freeze_mapping(wfg), do,
-                tuple(sequence.items()), request.flush_settings, request.flush_enabled,
+                tuple((key, _freeze_value(value)) for key, value in sequence.items()),
+                request.flush_settings, request.flush_enabled,
                 request.exposure_ms, request.trigger_global_exposure,
                 request.fm_sweep if request.fm_sweep_enabled and request.channel0_waveform_function != "DC" else None))
     return RunPlan(request.output_path, tuple(conditions), tuple([request.repeats_per_group] * len(targets)), request.frames * len(conditions))
@@ -345,7 +351,8 @@ def legacy_series_from_run_plan(plan: RunPlan) -> list[ExperimentSeries2]:
                 flush_settings=FlushSettings(*condition.flush_settings),
                 flush_enabled=condition.flush_enabled, global_exposure_ms=condition.exposure_ms,
                 trigger_global_exposure=condition.trigger_global_exposure,
-                sequence_settings=dict(condition.sequence_settings), wfg_config=_thaw(condition.wfg_config),
+                sequence_settings={key: _thaw(value) for key, value in condition.sequence_settings},
+                wfg_config=_thaw(condition.wfg_config),
                 do_clock_settings=coerce_do_config(_thaw(condition.do_config)),
                 fm_sweep=(FmSweepSettings(*condition.fm_sweep) if condition.fm_sweep is not None else None),
                 tec_target_c=dict(condition.temperature_targets_c).get(1),
@@ -380,7 +387,8 @@ def _condition_from_experiment(experiment: Experiment2, group_index: int) -> Run
         experiment.experiment_folder, tuple(sorted((experiment.tec_targets_c or {}).items())), experiment.frequency_scan_selected_hz,
         _freeze_mapping(asdict(coerce_wfg_config(experiment.wfg_config))),
         _freeze_mapping(asdict(coerce_do_config(experiment.do_clock_settings))),
-        tuple((experiment.sequence_settings or {}).items()), (experiment.flush_settings.flush_flowrate, experiment.flush_settings.flush_volume_ml, experiment.flush_settings.wait_after_flush_s, experiment.flush_settings.syringe_volume_ml), experiment.flush_enabled, experiment.global_exposure_ms, experiment.trigger_global_exposure, _stable_value(experiment.fm_sweep))
+        tuple((key, _freeze_value(value)) for key, value in (experiment.sequence_settings or {}).items()),
+        (experiment.flush_settings.flush_flowrate, experiment.flush_settings.flush_volume_ml, experiment.flush_settings.wait_after_flush_s, experiment.flush_settings.syringe_volume_ml), experiment.flush_enabled, experiment.global_exposure_ms, experiment.trigger_global_exposure, _stable_value(experiment.fm_sweep))
 
 
 def _temperature_folder_name(index: int, temperature_c: float) -> str:

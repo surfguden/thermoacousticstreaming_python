@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -120,6 +121,58 @@ def test_run_plan_contains_no_legacy_experiment_objects():
     assert all(type(condition.wfg_config) is FrozenMapping for condition in plan.conditions)
     with pytest.raises((AttributeError, TypeError)):
         plan.conditions[0].wfg_config.items += (("new", "value"),)
+
+
+def test_request_and_run_condition_deep_freeze_nested_sequence_settings():
+    mutable_values = [0.1, 0.2]
+    request = _request(sequence_settings=(("frames", 10), ("nested", mutable_values)))
+    mutable_values.append(9.9)
+
+    plan = build_independent_run_plan(request)
+    condition = plan.conditions[0]
+    nested = dict(condition.sequence_settings)["nested"]
+    assert nested.values == (0.1, 0.2)
+    with pytest.raises((AttributeError, TypeError)):
+        nested.values += (9.9,)
+
+    adapted = legacy_series_from_run_plan(plan)[0].experiments[0]
+    adapted.sequence_settings["nested"].append(7.7)
+    assert dict(condition.sequence_settings)["nested"].values == (0.1, 0.2)
+
+
+def test_normal_start_routes_through_shared_planner_and_adapter(monkeypatch, tmp_path):
+    request = _request(output_path=tmp_path)
+    calls = []
+    real_planner = planning.build_independent_run_plan
+    real_adapter = planning.legacy_series_from_run_plan
+
+    def planner_spy(value):
+        calls.append("planner")
+        return real_planner(value)
+
+    def adapter_spy(value):
+        calls.append("adapter")
+        return real_adapter(value)
+
+    monkeypatch.setattr(qt_ui, "build_independent_run_plan", planner_spy)
+    monkeypatch.setattr(qt_ui, "legacy_series_from_run_plan", adapter_spy)
+
+    sink = SimpleNamespace(setText=lambda _value: None)
+    window = SimpleNamespace(
+        series_path=SimpleNamespace(text=lambda: str(tmp_path)),
+        queue_count=sink,
+        waveform_graph=SimpleNamespace(set_points=lambda _points: None),
+        _series_path_has_existing_data=lambda _path: False,
+        _start_experiment_legacy_authority=lambda _path: (_ for _ in ()).throw(
+            AssertionError("normal Start must not invoke the rollback builder")
+        ),
+        _experiment_request=lambda: request,
+        _preview_points=lambda _config: (),
+        _run_action=lambda _action, _label: calls.append("runtime"),
+    )
+
+    qt_ui.MainWindow._start_experiment(window)
+    assert calls == ["planner", "adapter", "runtime"]
 
 
 def test_all_ui_versions_inherit_one_request_extraction_seam():

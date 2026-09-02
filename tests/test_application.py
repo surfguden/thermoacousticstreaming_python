@@ -929,6 +929,33 @@ def test_run_experiment2_records_capture_cleanup_failure_separately(tmp_path, mo
     assert "simulated camera stop failure" in group.properties["CleanupFailure"]
 
 
+def test_run_experiment2_preserves_primary_and_capture_cleanup_failures(tmp_path, monkeypatch):
+    writes = install_fake_nptdms(monkeypatch)
+    app = Application(ad2=SimulatedAD2Sdk())
+    experiment = Experiment2(experiment_folder=tmp_path / "capture-and-cleanup-failed")
+    app.experiment_series.enqueue_experiments([experiment])
+
+    monkeypatch.setattr(
+        HamamatsuCamera,
+        "image_sequence",
+        lambda _self, **_kwargs: (_ for _ in ()).throw(RuntimeError("simulated capture failure")),
+    )
+    monkeypatch.setattr(
+        HamamatsuCamera,
+        "stop_capture",
+        lambda _self: (_ for _ in ()).throw(RuntimeError("simulated camera stop failure")),
+    )
+
+    with pytest.raises(RuntimeError, match="simulated capture failure"):
+        app.run_experiment2()
+
+    objects = writes[str(experiment.tdms_path)]
+    group = next(item for item in objects if getattr(item, "kind", "") == "group" and item.name == "Experiment")
+    assert group.properties["RecordOutcome"] == "FAILED"
+    assert "simulated capture failure" in group.properties["PrimaryFailure"]
+    assert "simulated camera stop failure" in group.properties["CleanupFailure"]
+
+
 def test_run_experiment2_records_real_wfg_clamping_in_final_tdms(tmp_path, monkeypatch):
     # Finding A regression test: drives the REAL run_experiment2() call
     # order end-to-end (not configure_wfg()/save_settings() in isolation --

@@ -870,7 +870,7 @@ class Application:
                 cleanup_failure = experiment._tdms_properties.get("CleanupFailure") or None
                 experiment.finalize_record(
                     "FAILED",
-                    primary_failure=None if cleanup_failure else exc,
+                    primary_failure=(None if cleanup_failure == str(exc) else exc),
                     cleanup_failure=cleanup_failure,
                 )
             raise
@@ -1057,10 +1057,10 @@ class Application:
                     try:
                         self.camera.stop_capture()
                     except Exception as cleanup_exc:
+                        experiment._tdms_properties["CleanupFailure"] = str(cleanup_exc)
                         if capture_error is None:
                             # Preserve the category before the outer repeat
                             # finalizer records the terminal FAILED outcome.
-                            experiment._tdms_properties["CleanupFailure"] = str(cleanup_exc)
                             raise
                         logger.error(
                             "Camera stop failed while preserving an earlier capture error: %s",

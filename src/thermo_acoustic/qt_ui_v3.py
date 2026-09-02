@@ -407,8 +407,8 @@ class MainWindowV3(MainWindowV2):
         start.setObjectName("v3StartExperimentButton")
         start.setMinimumHeight(44)
         start.setToolTip(
-            "Runs with the currently initialized backends. The shared preflight shown above is "
-            "shadow-only in this milestone; the inherited production Start path remains authoritative."
+            "Runs with the currently initialized backends. The review above is a presentation/audit "
+            "derivation; the inherited Start path rebuilds the authoritative independent RunPlan."
         )
         start.clicked.connect(self._v3_start_experiment_with_shared_preflight)
         stop = QPushButton("Request graceful stop")
@@ -1018,8 +1018,8 @@ class MainWindowV3(MainWindowV2):
                 ),
                 update_legacy_status=False,
             )
-        # Shadow-only in this milestone: the inherited authoritative Start
-        # path rebuilds and executes exactly as before.
+        # BuildResult is presentation/audit derivation only. The inherited
+        # authoritative Start path rebuilds its independent RunPlan and executes it.
         self._start_experiment()
 
     def _render_v3_shared_preflight(self, result: BuildResult) -> None:

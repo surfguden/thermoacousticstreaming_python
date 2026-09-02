@@ -458,7 +458,8 @@ def test_v3_shadow_preflight_presentation_is_explicit_and_wrapped(monkeypatch, t
     try:
         start = window.findChild(QPushButton, "v3StartExperimentButton")
         assert start is not None
-        assert "shadow-only" in start.toolTip()
+        assert "presentation/audit derivation" in start.toolTip()
+        assert "independent RunPlan" in start.toolTip()
         assert "authoritative" in start.toolTip()
 
         assert window.exp_tec_scan_enable.toolTip().startswith("<html>")
