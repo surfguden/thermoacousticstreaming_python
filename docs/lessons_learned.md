@@ -55,7 +55,12 @@ The valve status handshake and Qmix open/start/stop/close lifecycle provide
 protocol or transport evidence, not proof of tubing routing, fluid movement,
 fault-free readiness, or safe motion. The 2026-08-28 Qmix record showed three
 clean no-motion lifecycle trials while `fault=True` remained in all three.
-Likewise, a valid TEC response is not evidence that a target was applied.
+On 2026-09-02, five more clean cycles again retained the fault; the raw
+last-error API alone was ambiguous, but the contemporaneous CETONI/Qmix log
+proved fresh `0x8120 -> 0x8130 -> 0x81FF` node emergencies during trial 1.
+Correlate passive status with independently timestamped retained logs before
+classifying a device fault as active or merely latched. Likewise, a valid TEC
+response is not evidence that a target was applied.
 
 Enforcement: `PROJECT_CONTROL` and retained hardware truth records; final
 classification of a physical claim requires `HUMAN_JUDGMENT` at the bench.

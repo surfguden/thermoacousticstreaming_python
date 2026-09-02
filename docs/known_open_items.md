@@ -28,7 +28,7 @@ below; the table does not replace their history.
 | --- | --- | --- | --- | --- | --- | --- |
 | HW-TIMING-001 | DEFERRED / READY FOR PHYSICAL VERIFICATION | Camera / AD2 / DIO | Physical trigger and exposure timing cannot be claimed; ordinary software development is not blocked | A 2026-08-28 follow-up restored PnP/vendor/backend visibility and a clean read-only open/close for `C15440-20UP` / `S/N: 500478`. Vendor documents identify AD2 `W1`/`DIO1` and camera SMA `TIMING 1/2/3`; a later read-only probe found all three camera outputs fixed `LOW`. No acquisition, AD2 output, trigger change, or timing measurement occurred. The first capture requires an operator-controlled external oscilloscope with simultaneous CH1 DIO1, CH2 W1, and CH3 Camera TIMING 1 on one common timebase; CH4 is unused and repository scope control is not required | Keep physical timing verification deferred; when resumed, identify the scope/export path, confirm wiring/load, and approve a temporary camera exposure-output setting plus restoration before the one bounded diagnostic | Retained raw scope data (or an accepted fallback export/screenshot) establishes the timing relationship for that capture, with repeatability/jitter explicitly left as a later characterization question; no verified synchronization claim before then |
 | HW-VALVE-001 | OPEN | Valve / fluidics | P01/P02 cannot be given physical route names | No command was sent on 2026-08-28 because harmless routing could not be established | Run the pump-disabled P01/S and P02/S procedure with visible harmless routing | Both positions have separate requested, protocol-confirmed, and physically observed route records |
-| HW-QMIX-CAN-001 | OPEN | Qmix / CAN | Pump connection is not fault-free or motion-ready | Three no-motion trials retained `fault=True` in 3/3; the adapter/service was healthy with no client owner. The installed canAnalyser manual proves controller-wide TX-passive behavior and shared regular access, but does not prove that one adapter can remain Qmix-active/ACK-capable while a second client observes without changing that controller mode | Prefer QmixElements/VCI counters or a second independently TX-passive interface; do not attach canAnalyser to the one active adapter under an inferred per-client passive mode | Live evidence identifies bus/controller state and heartbeat traffic, repeated reviewed no-motion trials are fault-free, and ownership cleanup remains clean |
+| HW-QMIX-CAN-001 | OPEN — ACTIVE CAN ERROR EVIDENCE | Qmix / CAN | Pump connection is not fault-free or motion-ready | H1 on 2026-09-02 completed 5/5 single-client no-motion open/start/status/stop/close cycles with clean release, but retained `fault=True` in 5/5. The contemporaneous CETONI/Qmix log proves fresh node-2 emergencies `0x8120 -> 0x8130 -> 0x81FF` during trial 1; trials 2-5 returned last-error zero while the fault flag remained set. Windows identifies a healthy legacy Ixxat `USB-to-CAN compact` behind the observed CETONI base-module USB connection; no H1-time Windows reset/driver event occurred. Exact termination remains unknown. | Run one separately authorized, powered-down termination/CAN-path measurement and inspection using CETONI's documented connector/pinout; do not clear the fault, transmit through a second client, or attempt motion | The physical communication-path cause is identified/corrected under separate authorization, followed by retained single-client fault-free no-motion trials and clean release |
 | HW-PUMP-MOTION-001 | OPEN | Qmix pump | Reference, fill truth, and bounded motion remain unsafe to infer | No recovery/reference/motion occurred in the 2026-08-28 baseline | Advance only after the explicit Qmix progression gate below is satisfied and reviewed | Single-client transport is fault-free; syringe/loading/route and motion bounds are physically known; operator recovery, reference, fill truth, stop latency, and one minimal motion are separately authorized and verified in that order |
 | HW-TEC-001 | RESOLVED | Meerstetter TEC | OFF-only real-operation gate closed; broader write scope remains separate | On 2026-08-28 the authorized shared path wrote only parameter 2010 value 0 to channels 1 and 2, read both back OFF, and closed cleanly | Keep ON, target, PID/calibration, raw, and persistence operations outside this closure | Per-channel OFF and cleanup behavior are retained from a safe real-device check; broader ON/target approval remains separate |
 | ARCH-PREFLIGHT-001 | RESOLVED FOR CURRENT AUTHORITY | Experiment planning | Normal production Start must have one clear planning authority | `ExperimentRequest` -> immutable `RunPlan`/`RunCondition` -> `legacy_series_from_run_plan()` now drives normal Start; the legacy builder remains explicit rollback-only; v3 `BuildResult` remains presentation/audit derivation | Preserve the rollback boundary and do not treat v3 shadow presentation as a second authority | Hardware validation provides sufficient confidence for any future rollback retirement |
@@ -930,6 +930,39 @@ historical notes. This document is a live issue register, whereas
   clearing the fault flag. This is transport/cleanup evidence, not a
   fault-free pass and not permission to reference or move. Full timestamps
   and limits are retained in `docs/p0_hardware_truth_20260828.md`.
+
+  **H1/H2A current-truth update (2026-09-02):** the gated no-motion probe
+  completed 5/5 single-client open/start/status/stop/close cycles and 5/5
+  clean releases against the one-pump project. Pump index 0/node 2 remained
+  disabled and not pumping, but reported `fault=True` in all five trials.
+  Trial 1 returned `33279` (`0x81FF`); trials 2-5 returned last-error code 0.
+  The raw H1 API alone cannot say when a retained last-error value was
+  generated. The independently retained CETONI/Qmix log does: at
+  2026-09-02 10:41:45 local, during H1 trial 1, node 2 emitted fresh emergency
+  messages `0x8120`, `0x8130`, and `0x81FF` in that order. The same active
+  sequence recurred on 2026-09-01, usually followed by emergency `0x0000`
+  about 1.25 seconds later. Therefore active recurrent CAN communication
+  errors are established, but continuous errors during all five H1 trials are
+  not; the later persistent fault flag may include latched device state.
+
+  Windows PnP identifies `USB\\VID_08D8&PID_0002` as a present/healthy legacy
+  `VCI4 USB-to-CAN compact`, driver `vci4109w5.sys` 4.0.131.0. It is a direct
+  child of the observed i-tec hub. CETONI's Base 120/600 manual documents its
+  USB Type-B connector as the PC interface, and CETONI describes the base as
+  containing a USB-CAN interface (Ixxat or SysTec). Together with the observed
+  white USB cable entering the CETONI unit and the absence of an external
+  Ixxat box, this supports an Ixxat interface integrated into the CETONI base;
+  the exact Ixxat article number, serial, hardware revision, firmware, and
+  exact base type remain unknown because their labels are not safely visible.
+  No H1-time Windows driver/service/reset event was found. A recurring
+  `VciDevService` warning concerns an empty non-Plug-and-Play device-server
+  JSON file; the installed HMS readme says that file configures non-PnP VCI3
+  devices, so no causal connection to this Plug-and-Play USB adapter is
+  established. The visible end plug cannot be identified as a terminator from
+  appearance, so termination remains `UNKNOWN`. **H2A classification: PATH C
+  — ACTIVE CAN ERROR EVIDENCE FOUND.** The smallest next gate is one
+  separately authorized, powered-down termination/CAN-path measurement and
+  inspection; fault clear and motion remain prohibited.
 - **Qmix project identity and stored bus settings are now separated from live
   bus diagnosis (2026-08-12).** `hardware_config.py` selects the one-pump
   project under `video paper 2\\Paper 2 slow flow\\Configurations`; its XML

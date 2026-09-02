@@ -6,7 +6,9 @@ records; this page does not replace them.
 
 ## CURRENT MILESTONE
 
-The software checkpoint is in convergence closure. Normal production Start
+The software architecture is frozen at
+`1ef76949ef7f5216a9b0ed2f540dd1cc171cc1ed` after adversarial verification.
+Normal production Start
 uses the shared independent planner: `ExperimentRequest` is the canonical
 normalized request, immutable `RunPlan`/`RunCondition` hold software planning
 truth, and `legacy_series_from_run_plan()` is the compatibility boundary into
@@ -24,7 +26,13 @@ Current operator surfaces:
 
 ## ACTIVE
 
-- **HW-QMIX-CAN-001:** narrow passive CAN/controller state without pump motion.
+- **HW-QMIX-CAN-001:** H1 established five clean single-client no-motion
+  open/start/status/stop/close cycles, but `fault=True` remained in 5/5.
+  H2A then correlated H1 trial 1 with fresh node-2 emergencies
+  `0x8120 -> 0x8130 -> 0x81FF` in the CETONI/Qmix log. This is active,
+  recurrent CAN communication evidence, not merely a stale last-error value;
+  termination and the exact physical cause remain unresolved. Pump motion is
+  still blocked.
 
 ## READY
 
@@ -47,9 +55,9 @@ Current operator surfaces:
   observation path.
 - **HW-PUMP-MOTION-001:** reference, fill, and motion remain blocked by
   **HW-QMIX-CAN-001**. Advancement requires reviewed single-client ownership,
-  fault-free no-motion transport trials, known physical syringe/loading and
-  fluid-route state, and a separately approved stop-latency/reference/fill
-  verification plan before any bounded motion.
+  a resolved communication path and fault-free no-motion trials, known
+  physical syringe/loading and fluid-route state, and a separately approved
+  stop-latency/reference/fill verification plan before any bounded motion.
 
 ## VERIFYING
 
@@ -86,10 +94,11 @@ Current operator surfaces:
 
 ## NEXT CHECKPOINT
 
-The independent request/plan DTO and legacy-adapter seam now has immutable
+The independent request/plan DTO and legacy-adapter seam has immutable
 planning data, a bounded semantic-equivalence matrix, and a series-local
 lifecycle manifest. V3's older `BuildResult`/shadow-preflight is retained for
-presentation and audit derivation only; further software architecture
-expansion is frozen pending hardware validation.
+presentation and audit derivation only. Software architecture remains frozen.
+The next Qmix checkpoint is a separately authorized, powered-down termination
+and CAN-path measurement/inspection; do not clear the fault or attempt motion.
 **HW-TIMING-001** remains deferred / ready for physical verification; do not
 enable AD2 output as part of this software work.
