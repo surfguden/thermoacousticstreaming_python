@@ -36,10 +36,9 @@ frame_*.npy
 *.bak
 ~$*
 
-# pytest --basetemp scratch directories (this machine's tmp_path fixture hits
-# PermissionError, so tests are run with --basetemp=.pytest_tmp* project-
-# relative dirs instead -- these are throwaway test output and must never be
-# committed, see the accidental commit cleaned up in a prior session).
+# Historical repository-root pytest bases are disposable test output. Normal
+# pytest policy uses an external temporary location; do not add a
+# repository-relative --basetemp fallback.
 .pytest_tmp*/
 _pytest_tmp/
 

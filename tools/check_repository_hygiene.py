@@ -29,8 +29,29 @@ def is_disposable_tracked_path(path: str) -> bool:
         "__pycache__" in parts
         or ".pytest_cache" in parts
         or any(part.startswith(".pytest_tmp") for part in parts)
+        or any(part.startswith(".pytest-") and part != ".pytest_cache" for part in parts)
         or "_pytest_tmp" in parts
         or name.endswith((".pyc", ".pyo"))
+    )
+
+
+def repository_root_pytest_scratch_directories(root: Path) -> list[str]:
+    """Return generated pytest bases at the repository root, never fixtures.
+
+    The normal pytest policy deliberately uses the external system temporary
+    location.  These names therefore mean a caller explicitly reintroduced a
+    repository-relative ``--basetemp`` and need cleanup rather than an ignore
+    rule.  ``.pytest_cache`` is pytest's separate cache-provider directory.
+    """
+    return sorted(
+        path.name
+        for path in root.iterdir()
+        if path.is_dir()
+        and (
+            path.name.startswith(".pytest_tmp")
+            or path.name.startswith(".pytest-")
+            or path.name == "_pytest_tmp"
+        )
     )
 
 
@@ -80,11 +101,17 @@ def validate_repository(root: Path) -> dict[str, object]:
     tracked = sorted(_git(root, "ls-files"))
     disposable = [path for path in tracked if is_disposable_tracked_path(path)]
     issues = [f"tracked disposable path: {path}" for path in disposable]
+    root_pytest_scratch = repository_root_pytest_scratch_directories(root)
+    issues.extend(
+        f"repository-root pytest scratch directory: {path}"
+        for path in root_pytest_scratch
+    )
     issues.extend(check_labview_export(root))
     return {
         "repository_root": str(root),
         "tracked_file_count": len(tracked),
         "tracked_disposable_paths": disposable,
+        "repository_root_pytest_scratch_directories": root_pytest_scratch,
         "labview_export_consistent": not any("LabVIEW" in issue or "labview_" in issue for issue in issues),
         "issues": issues,
         "ok": not issues,
