@@ -59,8 +59,14 @@ On 2026-09-02, five more clean cycles again retained the fault; the raw
 last-error API alone was ambiguous, but the contemporaneous CETONI/Qmix log
 proved fresh `0x8120 -> 0x8130 -> 0x81FF` node emergencies during trial 1.
 Correlate passive status with independently timestamped retained logs before
-classifying a device fault as active or merely latched. Likewise, a valid TEC
-response is not evidence that a target was applied.
+classifying a device fault as active or merely latched. H2B then established a
+different boundary: all five startup faults cleared through the accepted
+vendor call and remained false during bounded no-motion observation, while
+enabled and pumping stayed false. An initial startup fault is not by itself a
+persistent hardware failure; a clear-command acknowledgement is not recovery;
+recovery requires fault-false delayed readback without a post-clear nonzero
+emergency. That evidence still does not establish pump-motion readiness.
+Likewise, a valid TEC response is not evidence that a target was applied.
 
 Enforcement: `PROJECT_CONTROL` and retained hardware truth records; final
 classification of a physical claim requires `HUMAN_JUDGMENT` at the bench.

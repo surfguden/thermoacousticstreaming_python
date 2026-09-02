@@ -26,13 +26,7 @@ Current operator surfaces:
 
 ## ACTIVE
 
-- **HW-QMIX-CAN-001:** H1 established five clean single-client no-motion
-  open/start/status/stop/close cycles, but `fault=True` remained in 5/5.
-  H2A then correlated H1 trial 1 with fresh node-2 emergencies
-  `0x8120 -> 0x8130 -> 0x81FF` in the CETONI/Qmix log. This is active,
-  recurrent CAN communication evidence, not merely a stale last-error value;
-  termination and the exact physical cause remain unresolved. Pump motion is
-  still blocked.
+- No active software architecture change; the freeze remains in force.
 
 ## READY
 
@@ -54,10 +48,10 @@ Current operator surfaces:
 - **HW-VALVE-001:** physical routing awaits a safe, operator-visible harmless
   observation path.
 - **HW-PUMP-MOTION-001:** reference, fill, and motion remain blocked by
-  **HW-QMIX-CAN-001**. Advancement requires reviewed single-client ownership,
-  a resolved communication path and fault-free no-motion trials, known
-  physical syringe/loading and fluid-route state, and a separately approved
-  stop-latency/reference/fill verification plan before any bounded motion.
+  unknown physical syringe/loading/travel and fluid-route state. H2B closed the
+  startup recovery question without enabling or moving the pump. Advancement
+  still requires physical readiness evidence and separately approved
+  reference, fill-truth, stop-latency, and bounded-motion stages.
 
 ## VERIFYING
 
@@ -78,6 +72,14 @@ Current operator surfaces:
 
 ## RECENTLY CLOSED
 
+- **HW-QMIX-CAN-001 — startup/no-motion recovery:** H2B issued exactly one
+  accepted `LCP_ClearFault` per trial in five trials. Pre-clear fault was true
+  in 5/5; clear succeeded, fault became false immediately, remained false at
+  +0.5/+1.5/+3.0 seconds, enabled/pumping remained false, and stop/close was
+  clean in 5/5. H2A's pre-clear startup communication events remain valid;
+  H2B observed clear-associated `0x0000` recovery and no post-clear nonzero
+  emergency. This is no-motion recovery evidence, not pump-motion authorization
+  or a physical termination/root-cause finding.
 - **ARCH-PREFLIGHT-001:** normal Start now uses the independent
   `ExperimentRequest` -> `RunPlan`/`RunCondition` path and the legacy builder is
   rollback-only; v3 `BuildResult` remains presentation/audit derivation.
@@ -98,7 +100,10 @@ The independent request/plan DTO and legacy-adapter seam has immutable
 planning data, a bounded semantic-equivalence matrix, and a series-local
 lifecycle manifest. V3's older `BuildResult`/shadow-preflight is retained for
 presentation and audit derivation only. Software architecture remains frozen.
-The next Qmix checkpoint is a separately authorized, powered-down termination
-and CAN-path measurement/inspection; do not clear the fault or attempt motion.
+The next Qmix checkpoint is a no-command, operator-visible confirmation of the
+installed syringe identity/geometry, loading, available travel, tubing route,
+and harmless destination. Powered-down termination/CAN-path work is deferred
+unless recovery later fails or relatches. Do not enable, reference, or move the
+pump without a separate later authorization.
 **HW-TIMING-001** remains deferred / ready for physical verification; do not
 enable AD2 output as part of this software work.

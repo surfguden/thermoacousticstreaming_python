@@ -28,8 +28,8 @@ below; the table does not replace their history.
 | --- | --- | --- | --- | --- | --- | --- |
 | HW-TIMING-001 | DEFERRED / READY FOR PHYSICAL VERIFICATION | Camera / AD2 / DIO | Physical trigger and exposure timing cannot be claimed; ordinary software development is not blocked | A 2026-08-28 follow-up restored PnP/vendor/backend visibility and a clean read-only open/close for `C15440-20UP` / `S/N: 500478`. Vendor documents identify AD2 `W1`/`DIO1` and camera SMA `TIMING 1/2/3`; a later read-only probe found all three camera outputs fixed `LOW`. No acquisition, AD2 output, trigger change, or timing measurement occurred. The first capture requires an operator-controlled external oscilloscope with simultaneous CH1 DIO1, CH2 W1, and CH3 Camera TIMING 1 on one common timebase; CH4 is unused and repository scope control is not required | Keep physical timing verification deferred; when resumed, identify the scope/export path, confirm wiring/load, and approve a temporary camera exposure-output setting plus restoration before the one bounded diagnostic | Retained raw scope data (or an accepted fallback export/screenshot) establishes the timing relationship for that capture, with repeatability/jitter explicitly left as a later characterization question; no verified synchronization claim before then |
 | HW-VALVE-001 | OPEN | Valve / fluidics | P01/P02 cannot be given physical route names | No command was sent on 2026-08-28 because harmless routing could not be established | Run the pump-disabled P01/S and P02/S procedure with visible harmless routing | Both positions have separate requested, protocol-confirmed, and physically observed route records |
-| HW-QMIX-CAN-001 | OPEN — ACTIVE CAN ERROR EVIDENCE | Qmix / CAN | Pump connection is not fault-free or motion-ready | H1 on 2026-09-02 completed 5/5 single-client no-motion open/start/status/stop/close cycles with clean release, but retained `fault=True` in 5/5. The contemporaneous CETONI/Qmix log proves fresh node-2 emergencies `0x8120 -> 0x8130 -> 0x81FF` during trial 1; trials 2-5 returned last-error zero while the fault flag remained set. Windows identifies a healthy legacy Ixxat `USB-to-CAN compact` behind the observed CETONI base-module USB connection; no H1-time Windows reset/driver event occurred. Exact termination remains unknown. | Run one separately authorized, powered-down termination/CAN-path measurement and inspection using CETONI's documented connector/pinout; do not clear the fault, transmit through a second client, or attempt motion | The physical communication-path cause is identified/corrected under separate authorization, followed by retained single-client fault-free no-motion trials and clean release |
-| HW-PUMP-MOTION-001 | OPEN | Qmix pump | Reference, fill truth, and bounded motion remain unsafe to infer | No recovery/reference/motion occurred in the 2026-08-28 baseline | Advance only after the explicit Qmix progression gate below is satisfied and reviewed | Single-client transport is fault-free; syringe/loading/route and motion bounds are physically known; operator recovery, reference, fill truth, stop latency, and one minimal motion are separately authorized and verified in that order |
+| HW-QMIX-CAN-001 | RESOLVED FOR STARTUP/NO-MOTION RECOVERY | Qmix / CAN | Startup events do not block the accepted no-motion recovery lifecycle; this does not establish motion readiness | H2A proved fresh pre-clear startup emergencies. H2B then completed five single-client trials with pre-clear `fault=True`, exactly one accepted `LCP_ClearFault`, immediate and +0.5/+1.5/+3.0 second `fault=False`, enabled/pumping false, clear-associated `0x0000` with no post-clear nonzero emergency, and clean stop/close in 5/5 | Preserve the clear-before-enable policy and retained evidence; reopen physical CAN/termination diagnosis only if recovery fails, relatches, or host/device evidence materially changes | Five representative trials distinguish command acknowledgement from stable recovery while retaining H2A's startup-event truth |
+| HW-PUMP-MOTION-001 | OPEN | Qmix pump | Reference, fill truth, and bounded motion remain unsafe to infer | H2B confirmed stable no-motion startup recovery without enable/reference/motion; installed syringe identity, geometry, loading, travel, and harmless route remain physically unconfirmed | First perform a no-command operator-visible physical readiness inspection; then separately review reference, fill truth, stop latency, and one minimal motion in that order | Single-client recovery remains stable; syringe/loading/route and motion bounds are physically known; reference, fill truth, stop latency, and one minimal motion are separately authorized and verified |
 | HW-TEC-001 | RESOLVED | Meerstetter TEC | OFF-only real-operation gate closed; broader write scope remains separate | On 2026-08-28 the authorized shared path wrote only parameter 2010 value 0 to channels 1 and 2, read both back OFF, and closed cleanly | Keep ON, target, PID/calibration, raw, and persistence operations outside this closure | Per-channel OFF and cleanup behavior are retained from a safe real-device check; broader ON/target approval remains separate |
 | ARCH-PREFLIGHT-001 | RESOLVED FOR CURRENT AUTHORITY | Experiment planning | Normal production Start must have one clear planning authority | `ExperimentRequest` -> immutable `RunPlan`/`RunCondition` -> `legacy_series_from_run_plan()` now drives normal Start; the legacy builder remains explicit rollback-only; v3 `BuildResult` remains presentation/audit derivation | Preserve the rollback boundary and do not treat v3 shadow presentation as a second authority | Hardware validation provides sufficient confidence for any future rollback retirement |
 | ARCH-RECORD-001 | RESOLVED | Experiment record lifecycle | Series-level aggregate outcome must not be inferred from individual TDMS files alone | `series_manifest.json` is now atomically updated beside each series output root with requested/started/completed/failed counts, abort state, terminal outcome, timestamps, and TEC outer-axis counts when applicable; per-repeat TDMS remains authoritative for condition and failure detail | Keep the manifest bounded to lifecycle aggregate truth; do not turn it into configuration persistence | Requested versus started counts reconstruct never-started repeats, while terminal outcome distinguishes completion, failure, and graceful abort without claiming hardware application |
@@ -963,6 +963,28 @@ historical notes. This document is a live issue register, whereas
   — ACTIVE CAN ERROR EVIDENCE FOUND.** The smallest next gate is one
   separately authorized, powered-down termination/CAN-path measurement and
   inspection; fault clear and motion remain prohibited.
+
+  **H2B recovery update (2026-09-02):** owner-supplied operating history
+  established that the vendor lifecycle intentionally clears an initial
+  startup/self-check fault. The production `initialize()` and compatibility
+  recovery helper were inspected but not used because both continue from
+  `Pump.clear_fault()` into `_enable_pump()` and may call `Pump.enable(True)`.
+  A manual-only probe therefore isolated exactly one
+  `qmixsdk.qmixpump.Pump.clear_fault()` / vendor `LCP_ClearFault` call per
+  trial. In five trials, pre-clear `fault=True`; the clear returned without
+  error; immediate, +0.5 s, +1.5 s, and +3.0 s snapshots all reported
+  `fault=False` and last-error 0; enabled and pumping remained false; and
+  stop/close were clean. Trials 2-5 retained nonzero startup events before
+  clear, while all five retained clear-associated `0x0000`; no post-clear
+  nonzero emergency occurred. Two conservative harness stops after trials 1
+  and 2 were caused by initially over-broad log classification, occurred only
+  after clean release, and did not add clear commands; the unchanged raw
+  evidence and event timestamps distinguish them from device failures.
+  **H2B classification: STABLE STARTUP FAULT RECOVERY CONFIRMED.** This does
+  not invalidate H2A: active startup events occur, then the accepted clear
+  reaches a stable bounded no-motion state. Physical termination/root cause,
+  reference, fill truth, and motion remain unproven. Powered-down CAN-path
+  diagnosis is deferred unless recovery later fails or relatches.
 - **Qmix project identity and stored bus settings are now separated from live
   bus diagnosis (2026-08-12).** `hardware_config.py` selects the one-pump
   project under `video paper 2\\Paper 2 slow flow\\Configurations`; its XML
@@ -1015,7 +1037,8 @@ historical notes. This document is a live issue register, whereas
   (2026-08-28).** `HW-PUMP-MOTION-001` may not begin until all of the following
   are reviewed and retained: (1) one intended privileged client and clean
   release are demonstrated; (2) repeated no-motion open/start/status/stop/close
-  trials are fault-free, not merely followed by recovery or last-error zero;
+  trials demonstrate stable fault-free delayed readback after the accepted
+  startup clear, not merely clear-command acknowledgement or last-error zero;
   (3) the active project, node 2, 1 Mbit/s bus, heartbeat/life-guard settings,
   and any observed counters/traffic agree; (4) the installed syringe identity,
   geometry, loading, available travel, and harmless fluid route are physically
@@ -1025,7 +1048,9 @@ historical notes. This document is a live issue register, whereas
   operator fault recovery if still needed, reference verification, fill-level
   truth verification, stop-latency verification, then one minimal motion. No
   gate item authorizes automatic retries, unobserved fault clearing, reference,
-  or motion. **Status: DEFINED; prerequisites not satisfied.**
+  or motion. **Status: DEFINED; H2B satisfies the startup-recovery portion,
+  while physical syringe/loading/route and later action-specific prerequisites
+  remain unsatisfied.**
 - **A disabled-but-real instrument's per-step hardware calls were handled
   inconsistently -- `AD2Sdk` silently skipped them (while falsely reporting
   success), `HamamatsuCamera`/`CetoniPump`/`Valve` attempted them anyway --
