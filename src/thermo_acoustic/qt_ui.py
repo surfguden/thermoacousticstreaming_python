@@ -1309,21 +1309,17 @@ class MainWindow(QMainWindow):
         )
         self.exp_camera_fps = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_camera_fps.setToolTip(
-            "Must be > 0 -- used to derive the AD2 DIO1 LED clock (Experiment2's DO clock "
-            "channel) and checked against the real DCAM readout time + exposure by "
-            "Application._check_camera_timing_budget() before capture starts. Combines with "
-            "Frames below: the DO clock's run duration = Frames / this value "
-            "(_experiment_do_clock_config()); combines with Exposure time (ms) in the "
-            "Experiment group below: this FPS must be achievable given that exposure + the real "
-            "DCAM readout time, or the timing-budget check rejects the run before it starts "
-            "(Session 19)."
+            "Requested Internal-trigger camera frame rate. Must be > 0 and must be achievable "
+            "given the applied exposure plus fresh DCAM readout time; "
+            "Application._check_camera_timing_budget() rejects an infeasible request before "
+            "capture. Normal production does not program the connected DIO0 camera-trigger or "
+            "DIO1 laser-trigger lines."
         )
         self.exp_camera_start = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_camera_start.setToolTip(
-            "Programmed as the AD2 DigitalOut sec_wait value before the DIO1 pulse train, used for "
-            "every repeat. The current DO trigger source defaults to trigsrcNone, so its physical "
-            "reference to config_do_clock_special() versus pc_trigger() remains bench-unverified. "
-            "Ignored whenever Dynamic Camera Start Time (below, in Camera Start Array(s)) is checked."
+            "Retained requested camera-start metadata for the current plan. Normal production does "
+            "not convert this value into a camera delay or program DIO0/DIO1. Ignored whenever "
+            "Dynamic Camera Start Time (below) is checked."
         )
         self.exp_ch1_freq = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_ch1_freq.setToolTip(
@@ -1411,17 +1407,21 @@ class MainWindow(QMainWindow):
         )
         self.exp_ch2_freq = _spin(1.0, decimals=3, minimum=0.0)
         self.exp_ch2_freq.setToolTip(
-            "CH1 carrier frequency in kHz, converted to Hz at the UI boundary "
-            "(_experiment_channel_config()), applied to real AD2 hardware every run. Never "
-            "touched by Frequency Scanning or Frequency Sweep -- both are Ch1(CH0)-only."
+            "Project Ch2 maps to WaveForms API channel index 1 / physical W2, which the owner "
+            "identifies as connected to the laser Analog In. This value is retained for provenance "
+            "but normal production rejects an enabled Ch2 until the laser input polarity, scaling, "
+            "and enable semantics are confirmed. Frequency Scanning and FM Sweep remain acoustic "
+            "Ch1/API-index-0/W1 only."
         )
         self.exp_ch2_amp = _spin(1.0, decimals=3)
         self.exp_ch2_offset = _spin(0.0, decimals=3)
         self.exp_ch2_function = _combo([item.value for item in WaveformFunction], WaveformFunction.SINE.value)
         self.exp_ch2_enable = QCheckBox("Enable")
         self.exp_ch2_enable.setToolTip(
-            "Whether CH1's real AD2 output is active for this run. If neither channel is enabled, "
-            "WfgConfig.running is False and the AD2 WFG is not started at all (_experiment_wfg_config())."
+            "Project Ch2 is physical W2 connected to the laser Analog In. Normal production fails "
+            "closed if this is selected; do not enable it until exact current laser electrical "
+            "semantics are confirmed. The separate DIO1 green lead is the laser digital-trigger "
+            "connection and is also unprogrammed by normal production."
         )
         self.exp_ch2_start = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_ch2_start.setToolTip(self.exp_ch1_start.toolTip())
@@ -1474,14 +1474,13 @@ class MainWindow(QMainWindow):
             "Frequency Scanning below is enabled, its resulting frequency count must exactly equal "
             "this value or _build_experiment_series() raises before starting; (2) when Dynamic "
             "Camera Start Time is checked, this cannot exceed Camera Start Array(s)'s 10 fixed "
-            "slots, or _experiment_do_clock_config() raises mid-run on the first repeat past slot 10."
+            "metadata slots, or planning rejects the request before a run starts."
         )
         self.exp_frames = _int_spin(1, minimum=0)
         self.exp_frames.setToolTip(
-            "Frames captured per repeat. Combines with Camera FPS above: the DO clock's run "
-            "duration = this value / Camera FPS (_experiment_do_clock_config()), which programs the "
-            "DIO1 pulse-train window. Automated capture currently configures DCAM Internal trigger, "
-            "so this value does not prove that DIO1 paces or synchronizes camera frames."
+            "Frames captured per repeat. With Camera FPS this defines the requested acquisition "
+            "duration for planning and metadata. Automated capture configures DCAM Internal trigger; "
+            "normal production programs neither the DIO0 camera cable nor DIO1 laser cable."
         )
         self.exp_exposure_ms = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_exposure_ms.setToolTip(
@@ -3278,14 +3277,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(note)
 
         top = QFormLayout()
-        # v3 design-idea adoption, Proposal 4 (2026-08-06): these fields'
-        # own tooltips already explain the real DIO1 relationship ("used to
-        # derive the AD2 DIO1 LED clock", "Programmed as the AD2 DigitalOut
-        # sec_wait value before the DIO1 pulse train") -- the terse caption
-        # alone didn't. Captions now name what's actually being configured,
-        # not just the camera-facing effect.
-        top.addRow("Camera FPS (drives DIO1 LED clock)", self.exp_camera_fps)
-        top.addRow("Camera Start (s) (DIO1 pulse delay)", self.exp_camera_start)
+        top.addRow("Camera FPS (Internal trigger)", self.exp_camera_fps)
+        top.addRow("Camera Start request (s; metadata only)", self.exp_camera_start)
         layout.addLayout(top)
         self._add_tooltip_icons(top)
 
@@ -3495,18 +3488,16 @@ class MainWindow(QMainWindow):
         # content moves onto its own QScrollArea instead of laying directly
         # into the group, so it can lay out at full natural height internally
         # and scroll rather than being compressed.
-        # v3 design-idea adoption, Proposal 4 (2026-08-06): names the real
-        # DIO1 relationship, matching Dynamic Camera Start Time's own
-        # tooltip below.
-        group = QGroupBox("Camera Start Array(s) (per-repeat DIO1 delays)")
+        # Current production retains these values as requested metadata only;
+        # it does not program either connected digital line.
+        group = QGroupBox("Camera Start Array(s) (per-repeat metadata)")
         outer = QVBoxLayout(group)
         content = QWidget()
         form = QFormLayout(content)
         # Moved here from an isolated spot elsewhere in the tab's grid --
-        # Dynamic Camera Start Time is the toggle that controls whether this
-        # array is used at all (see _experiment_do_clock_config()), so it
-        # belongs directly above the array it controls.
-        form.addRow("Dynamic Camera Start Time (per-repeat DIO1 delays)", self.dynamic_camera_start)
+        # Dynamic Camera Start Time controls whether this metadata array is
+        # selected, so it belongs directly above the array it controls.
+        form.addRow("Dynamic Camera Start Time (per-repeat metadata)", self.dynamic_camera_start)
         for widget in self.camera_start_array:
             form.addRow(widget)
         self._add_tooltip_icons(form)

@@ -611,6 +611,13 @@ class Application:
     def _ad2_completion_wait_seconds(self, experiment: Experiment2) -> float:
         wfg_config = coerce_wfg_config(experiment.wfg_config)
         channel0 = next((channel for channel in wfg_config.channels if channel.channel_index == 0), None)
+        channel1 = next((channel for channel in wfg_config.channels if channel.channel_index == 1), None)
+        if wfg_config.running and channel1 is not None and (channel1.carrier.enable or channel1.fm_mod.enable):
+            raise ValueError(
+                "Normal production AD2 channel 1 / W2 is connected to the laser Analog In and must "
+                "remain disabled until the current laser input polarity, scaling, and enable semantics "
+                "are confirmed."
+            )
         if experiment.fm_sweep is not None and experiment.frequency_scan_selected_hz is not None:
             raise ValueError(
                 "FM Sweep and Frequency Scan cannot be used in the same condition because the "

@@ -497,6 +497,29 @@ def test_application_rejects_fm_sweep_without_enabled_channel0_before_hardware(t
     assert ("camera", "start_capture") not in calls
 
 
+def test_application_rejects_laser_w2_output_before_hardware(tmp_path):
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+    experiment = make_recording_experiment(calls, tmp_path)
+    config = finite_wfg_config()
+    config["channels"].append(
+        {
+            "channel_index": 1,
+            "carrier": {"enable": True, "frequency_hz": 1000.0, "amplitude_v": 1.0},
+            "fm_mod": {"enable": False},
+            "trigger": {"secRun": 0.5, "secWait": 0.0, "repeatCount": 1},
+        }
+    )
+    experiment.wfg_config = config
+    app.experiment_series.enqueue_experiments([experiment])
+
+    with pytest.raises(ValueError, match="W2 is connected to the laser Analog In"):
+        app.run_experiment2()
+
+    assert not any(call[:2] == ("ad2", "config_wfg") for call in calls)
+    assert ("camera", "start_capture") not in calls
+
+
 def finite_do_clock_config(*, camera_fps=10.0, enabled=True):
     return {
         "running": True,

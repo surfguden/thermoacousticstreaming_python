@@ -177,16 +177,16 @@ def test_v3_reuses_the_supplied_application_and_places_status_first(monkeypatch,
             "Estimated time remaining",
             "Runs remaining",
             "Status and error history",
-            "DIO1 pulse rate (camera FPS)",
-            "Fixed DIO1 pulse start delay (s)",
+            "Camera frame rate (Internal trigger)",
+            "Fixed camera-start request (metadata only)",
             "Series repeats",
             "Frames per repeat",
             "Request global exposure reset",
-            "Use per-repeat DIO1 pulse delays",
+            "Use per-repeat camera-start metadata",
             "Measured camera rate (fps)",
         } <= labels
         assert window.findChild(QLabel, "v3ElapsedTimeCaption").text() == "Elapsed time"
-        assert window.findChild(QLabel, "v3CameraFrameRateCaption").text() == "DIO1 pulse rate (camera FPS)"
+        assert window.findChild(QLabel, "v3CameraFrameRateCaption").text() == "Camera frame rate (Internal trigger)"
         assert window.findChild(QLabel, "v3StatusHistoryCaption").text() == "Status and error history"
         assert {
             "Elapsed Time",
@@ -202,9 +202,9 @@ def test_v3_reuses_the_supplied_application_and_places_status_first(monkeypatch,
             "Average FPS",
         }.isdisjoint(labels)
         groups = {group.title() for group in window.findChildren(QGroupBox)}
-        assert {"Experiment acquisition", "Per-repeat DIO1 pulse delays (s)"} <= groups
-        assert "DIO1" in window.dynamic_camera_start.toolTip()
-        assert "bench-unverified" in window.dynamic_camera_start.toolTip()
+        assert {"Experiment acquisition", "Per-repeat camera-start metadata (s)"} <= groups
+        assert "metadata" in window.dynamic_camera_start.toolTip()
+        assert "does not program DIO0 or DIO1" in window.dynamic_camera_start.toolTip()
         assert "unchanged" in window.global_exposure.toolTip()
         assert "unresolved" in window.global_exposure.toolTip()
         acquisition = next(
@@ -249,18 +249,18 @@ def test_v3_field_bound_adapters_survive_inherited_caption_changes(monkeypatch, 
     def acquisition_with_changed_captions(self):
         group = original_acquisition_builder(self)
         inherited = {
-            "Camera FPS (drives DIO1 LED clock)",
-            "Camera Start (s) (DIO1 pulse delay)",
+            "Camera FPS (Internal trigger)",
+            "Camera Start request (s; metadata only)",
             "Repeats",
             "Frames",
             "GlobalExposure",
-            "Dynamic Camera Start Time (per-repeat DIO1 delays)",
+            "Dynamic Camera Start Time (per-repeat metadata)",
         }
         for label in group.findChildren(QLabel):
             if label.text() in inherited:
                 label.setText(f"Changed upstream: {label.text()}")
         for nested_group in group.findChildren(QGroupBox):
-            if nested_group.title() == "Camera Start Array(s) (per-repeat DIO1 delays)":
+            if nested_group.title() == "Camera Start Array(s) (per-repeat metadata)":
                 nested_group.setTitle("Changed upstream camera-start group")
         return group
 
@@ -270,12 +270,12 @@ def test_v3_field_bound_adapters_survive_inherited_caption_changes(monkeypatch, 
     window = make_window(monkeypatch, tmp_path)
     try:
         assert window.findChild(QLabel, "v3ElapsedTimeCaption").text() == "Elapsed time"
-        assert window.findChild(QLabel, "v3CameraFrameRateCaption").text() == "DIO1 pulse rate (camera FPS)"
+        assert window.findChild(QLabel, "v3CameraFrameRateCaption").text() == "Camera frame rate (Internal trigger)"
         assert window.findChild(QLabel, "v3DynamicCameraStartCaption").text() == (
-            "Use per-repeat DIO1 pulse delays"
+            "Use per-repeat camera-start metadata"
         )
         assert window.findChild(QGroupBox, "v3PerRepeatCameraStartGroup").title() == (
-            "Per-repeat DIO1 pulse delays (s)"
+            "Per-repeat camera-start metadata (s)"
         )
     finally:
         window.close()
@@ -293,8 +293,8 @@ def test_v3_main_ad2_settings_use_channel_tabs_without_horizontal_overflow(monke
         assert channels is not None
         assert scroll is not None
         assert [channels.tabText(index) for index in range(channels.count())] == [
-            "Channel 0",
-            "Channel 1 — role unverified",
+            "Channel 0 — W1 acoustic",
+            "Channel 1 — W2 laser (blocked)",
         ]
         assert window.exp_ch1_freq in channels.findChildren(type(window.exp_ch1_freq))
         assert window.exp_ch2_freq in channels.findChildren(type(window.exp_ch2_freq))
@@ -331,8 +331,9 @@ def test_v3_main_ad2_settings_use_channel_tabs_without_horizontal_overflow(monke
             QLabel, "v3ScanAlternativeInputsNote"
         ).text()
         channel1_note = window.findChild(QLabel, "v3Channel1RoleNote")
-        assert "Independent analog output" in channel1_note.text()
-        assert "role unverified" in channel1_note.text()
+        assert "physical W2" in channel1_note.text()
+        assert "laser Analog In" in channel1_note.text()
+        assert "rejects this output" in channel1_note.text()
         assert "camera" not in channel1_note.text().lower()
         window.exp_sweep_enable.setChecked(True)
         window.exp_freq_scan_enable.setChecked(True)
@@ -514,7 +515,7 @@ def test_v3_relationship_panels_use_shared_requested_timing_builders(monkeypatch
         ch0["enable"].setChecked(True)
         ch0["sec_wait"].setValue(1.0)
         ch0["sec_run"].setValue(4.0)
-        ch1["enable"].setChecked(True)
+        ch1["enable"].setChecked(False)
         ch1["sec_wait"].setValue(2.0)
         ch1["sec_run"].setValue(5.0)
         ch1_before = (ch1["sec_wait"].value(), ch1["sec_run"].value())
@@ -529,19 +530,26 @@ def test_v3_relationship_panels_use_shared_requested_timing_builders(monkeypatch
         assert window.findChild(QLabel, "v3TimingCh0End").text() == "5.000"
         assert window.findChild(QLabel, "v3TimingCh1End").text() == "7.000"
         assert window.findChild(QLabel, "v3TimingCh1Delta").text() == "2.000"
-        assert window.findChild(QLabel, "v3TimingDio1Run").text() == "3.000"
-        assert window.findChild(QLabel, "v3TimingDio1Delta").text() == "-1.500"
+        assert not window.findChild(QLabel, "v3TimingCh1End").isEnabled()
+        assert window.findChild(QLabel, "v3TimingDio1Run").text() == "0.000"
+        assert window.findChild(QLabel, "v3TimingDio1Delta").text() == "-5.000"
         assert window.findChild(QLabel, "v3TimingDeltaHeader").text() == "End delta vs CH0 (s)"
         assert window.findChild(QLabel, "v3Ad2CompletionBudget").text().startswith(
-            "Shared AD2 completion budget: 7.000 s"
+            "Shared AD2 completion budget: 5.000 s"
         )
+
+        ch1["enable"].setChecked(True)
+        assert "W2 is connected to the laser Analog In" in window.findChild(
+            QLabel, "v3Ad2CompletionBudget"
+        ).text()
+        ch1["enable"].setChecked(False)
 
         ch0["enable"].setChecked(False)
         assert window.findChild(QLabel, "v3TimingDeltaHeader").text() == (
             "End delta vs completion driver (s)"
         )
-        assert window.findChild(QLabel, "v3TimingCh1Delta").text() == "0.000"
-        assert window.findChild(QLabel, "v3TimingDio1Delta").text() == "-3.500"
+        assert window.findChild(QLabel, "v3TimingCh1Delta").text() == "7.000"
+        assert window.findChild(QLabel, "v3TimingDio1Delta").text() == "0.000"
         assert "CH0 is disabled" in window.findChild(QLabel, "v3TimingAnchorNote").text()
 
         window.exp_repeats.setValue(11)
@@ -554,7 +562,8 @@ def test_v3_relationship_panels_use_shared_requested_timing_builders(monkeypatch
         assert "live DCAM readout" in window._v3_camera_feasibility.text()
         uncertainty = window.findChild(QLabel, "v3SyncUncertaintyBanner")
         assert "camera trigger is Internal" in uncertainty.text()
-        assert "not been bench verified" in uncertainty.text()
+        assert "DIO0/pink" in uncertainty.text()
+        assert "DIO1/green" in uncertainty.text()
     finally:
         window.close()
 
@@ -584,16 +593,16 @@ def test_v3_plan_exposes_axes_sequence_camera_request_and_evidence_boundaries(mo
         assert "TEC temperature: 2 point(s)" in axis.text()
         assert "3 repeat(s) per temperature; 6 acquisition run(s) total" in axis.text()
         assert "one-to-one to repeat indices" in axis.text()
-        assert "configure AD2/DIO" in workflow.text()
+        assert "configure AD2 WFG (DIO disabled)" in workflow.text()
         assert "optional flush" in workflow.text()
-        assert "2.500 s DIO1 window" in camera.text()
+        assert "2.500 s acquisition duration" in camera.text()
         assert "10.000 ms exposure vs 50.000 ms frame interval" in camera.text()
         assert "Live DCAM readout margin is checked only at run start" in camera.text()
         assert "Software-known shared snapshot only; no hardware query" in requirements.text()
         assert "shared AD2 snapshot intentionally deferred" in requirements.text()
         assert "Output path: CONFIGURED" in requirements.text()
         assert "Frequency-list preview (3 point(s), kHz): 100, 120, 140" == preview.text()
-        assert "DIO1-to-camera exposure synchronization remains bench-unverified" in warnings.text()
+        assert "DIO0 camera trigger is connected but unused" in warnings.text()
         assert "2 temperature point(s) × 3 repeats = 6 acquisition runs" in window.findChild(
             QLabel, "v3TecAxisSummary"
         ).text()

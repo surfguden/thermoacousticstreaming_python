@@ -67,7 +67,12 @@ front panel tabs that are still in scope:
 The direct DOCustom, DOClock, and Zstack tabs are intentionally omitted.
 Normal production plans explicitly disable DIO1/DO Clock and the experiment
 runtime does not program DO Clock Special; the retained DO helpers are
-legacy/manual capabilities only.
+legacy/manual capabilities only. Owner-supplied current wiring maps project Ch1
+to AD2 API 0 / W1 / acoustic amplifier and transducer, and project Ch2 to API 1
+/ W2 / laser Analog In. Normal production rejects enabled W2 pending exact
+laser input semantics. DIO0/pink is connected to camera trigger and DIO1/green
+to laser trigger, but neither digital line is programmed in the current
+steady-state workflow.
 `src/thermo_acoustic/qt_ui_v2.py` (`MainWindowV2`) is an actively maintained
 transitional UI that reuses `qt_ui.py`'s widget-building, manual-test-panel
 code, and the same `Application`/hardware-backend instance (WFG/MSO/

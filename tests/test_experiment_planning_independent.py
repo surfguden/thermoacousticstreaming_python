@@ -144,6 +144,19 @@ def test_production_channel0_repeat_must_be_exactly_one():
     assert plan.conditions
 
 
+def test_production_rejects_laser_w2_output_until_input_semantics_are_confirmed():
+    config = _wfg()
+    config["channels"][1]["carrier"]["enable"] = True
+
+    with pytest.raises(ValueError, match="W2 is connected to the laser Analog In"):
+        build_independent_run_plan(_request(wfg_templates=(config,)))
+
+    config["channels"][1]["carrier"]["enable"] = False
+    config["channels"][1]["fm_mod"]["enable"] = True
+    with pytest.raises(ValueError, match="W2 is connected to the laser Analog In"):
+        build_independent_run_plan(_request(wfg_templates=(config,)))
+
+
 def test_fm_sweep_rejects_frequency_scan_and_requires_explicit_channel0_enable():
     with pytest.raises(ValueError, match="FM Sweep and Frequency Scan"):
         build_independent_run_plan(_request(fm_sweep_enabled=True, frequency_scan_enabled=True))

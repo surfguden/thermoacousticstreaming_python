@@ -3545,6 +3545,9 @@ def test_run_experiment2_does_not_program_or_record_legacy_do_clock(tmp_path, mo
     ).properties
     assert properties["DOFreq"] == ""
     assert properties["DOFreqActual"] == ""
+    assert properties["CameraDIO0TriggerUsed"] is False
+    assert properties["LaserDIO1TriggerRequested"] is False
+    assert properties["LaserDIO1TriggerConfiguredByProductionRuntime"] is False
 
 
 # -- AD2 amplitude/frequency clamping against the device's own live
@@ -3766,12 +3769,14 @@ def test_experiment2_writes_labview_metadata_tdms(tmp_path, monkeypatch):
     for field in (
         "WFGFreqCh1",
         "WFGAmpCh1",
+        "WFGEnabledCh1",
         "WFGRunCh1",
         "WFGWaitCh1",
         "RepeatCh1",
         "WFGOutOfRangeCh1",
         "WFGFreqCh2",
         "WFGAmpCh2",
+        "WFGEnabledCh2",
         "WFGRunCh2",
         "WFGWaitCh2",
         "RepeatCh2",
@@ -3779,6 +3784,11 @@ def test_experiment2_writes_labview_metadata_tdms(tmp_path, monkeypatch):
         "DORun",
         "DOWait",
         "DOFreq",
+        "WFGPhysicalRoleCh1",
+        "WFGPhysicalRoleCh2",
+        "CameraDIO0TriggerUsed",
+        "LaserDIO1TriggerRequested",
+        "LaserDIO1TriggerConfiguredByProductionRuntime",
         "CameraFrames",
         "CameraFPS",
         "ExposureTime",
@@ -3800,6 +3810,13 @@ def test_experiment2_writes_labview_metadata_tdms(tmp_path, monkeypatch):
     assert properties["CameraFPS"] == 100.0
     assert properties["WFGOutOfRangeCh1"] is False
     assert properties["WFGOutOfRangeCh2"] is False
+    assert properties["WFGEnabledCh1"] is True
+    assert properties["WFGEnabledCh2"] is True
+    assert properties["WFGPhysicalRoleCh1"] == "AD2 API 0 / W1 / acoustic amplifier and transducer"
+    assert properties["WFGPhysicalRoleCh2"] == "AD2 API 1 / W2 / laser Analog In"
+    assert properties["CameraDIO0TriggerUsed"] is False
+    assert properties["LaserDIO1TriggerRequested"] is True
+    assert properties["LaserDIO1TriggerConfiguredByProductionRuntime"] is False
     channels = {item.name: item for item in objects if getattr(item, "kind", "") == "channel"}
     assert channels["ImageName"].data == ["frame_00000.tiff", "frame_00001.tiff"]
     assert len(channels["Timestamp"].data) == 2

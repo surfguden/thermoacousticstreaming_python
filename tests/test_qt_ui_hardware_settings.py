@@ -489,10 +489,10 @@ def test_representative_fields_have_grounded_tooltips(monkeypatch, tmp_path):
     # Experiment tab: Step Size convention, Frequency Scanning spacing caveat.
     assert "0 = not used" in window.exp_freq_scan_step_khz.toolTip()
     assert "not confirmed" in window.exp_freq_scan_enable.toolTip()
-    assert "trigsrcNone" in window.exp_camera_start.toolTip()
-    assert "bench-unverified" in window.exp_camera_start.toolTip()
+    assert "metadata" in window.exp_camera_start.toolTip()
+    assert "does not convert this value into a camera delay" in window.exp_camera_start.toolTip()
     assert "DCAM Internal trigger" in window.exp_frames.toolTip()
-    assert "does not prove" in window.exp_frames.toolTip()
+    assert "programs neither the DIO0 camera cable nor DIO1 laser cable" in window.exp_frames.toolTip()
 
 
 def test_custom_syringe_volume_disabled_unless_syringe_is_custom(monkeypatch, tmp_path):
@@ -687,9 +687,9 @@ def test_experiment_tab_regroups_global_exposure_and_dynamic_camera_start(monkey
 
     groups = {gb.title(): gb for gb in experiment_tab.findChildren(QGroupBox)}
     assert window.global_exposure in groups["Experiment"].findChildren(QCheckBox)
-    # v3 design-idea adoption, Proposal 4 (2026-08-06): title gained a
-    # DIO1-clarifying suffix.
-    assert window.dynamic_camera_start in groups["Camera Start Array(s) (per-repeat DIO1 delays)"].findChildren(
+    # Current production stores these values as metadata and does not program
+    # either connected DIO cable.
+    assert window.dynamic_camera_start in groups["Camera Start Array(s) (per-repeat metadata)"].findChildren(
         QCheckBox
     )
 
@@ -2223,7 +2223,7 @@ def test_new_normal_channel0_repeat_defaults_to_one_but_persisted_zero_is_preser
     assert persisted.exp_ch1_repeat.value() == 0
 
 
-def test_qt_ui_experiment_wfg_config_uses_only_experiment_ad2_fields(monkeypatch, tmp_path):
+def test_qt_ui_maps_project_channels_to_zero_based_ad2_wfg_indices(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
     window._experiment_ad2_seeded = True
     window.wfg_running.setChecked(False)
@@ -2266,6 +2266,8 @@ def test_qt_ui_experiment_wfg_config_uses_only_experiment_ad2_fields(monkeypatch
 
     assert config.running is True
     assert config.synchronize_state == "Independent"
+    # Project Ch1 is zero-based WaveForms API index 0 / physical W1 / acoustic.
+    assert config.channels[0].channel_index == 0
     assert config.channels[0].carrier.frequency_hz == 1_975_000.0
     assert config.channels[0].carrier.amplitude_v == 2.0
     assert config.channels[0].carrier.offset_v == 0.0
@@ -2279,6 +2281,8 @@ def test_qt_ui_experiment_wfg_config_uses_only_experiment_ad2_fields(monkeypatch
     assert config.channels[0].trigger.repeat_trigger is False
     assert config.channels[0].trigger.source == "trigsrcPC"
     assert config.channels[0].fm_mod.enable is False
+    # Project Ch2 is zero-based WaveForms API index 1 / physical W2 / laser Analog In.
+    assert config.channels[1].channel_index == 1
     assert config.channels[1].carrier.frequency_hz == 1000.0
     assert config.channels[1].carrier.amplitude_v == 0.1
     assert config.channels[1].carrier.offset_v == 0.2

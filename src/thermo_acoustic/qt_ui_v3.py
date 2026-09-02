@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .ad2 import coerce_do_config
 from .application import Application
 from .experiment_planning import (
     BuildResult,
@@ -487,7 +488,7 @@ class MainWindowV3(MainWindowV2):
         channels = QTabWidget()
         channels.setObjectName("v3ExperimentAd2Channels")
         for index, state in enumerate(self.exp_ad2_channels):
-            title = "Channel 0" if index == 0 else "Channel 1 — role unverified"
+            title = "Channel 0 — W1 acoustic" if index == 0 else "Channel 1 — W2 laser (blocked)"
             channels.addTab(self._v3_ad2_channel_page(state, index), title)
         self._bind_dc_incompatible_experiment_features(self.exp_ch1_function)
         layout.addWidget(channels)
@@ -541,8 +542,10 @@ class MainWindowV3(MainWindowV2):
             layout.addWidget(self._v3_frequency_program_group())
         else:
             role = QLabel(
-                "AD2 analog channel 1 (LabVIEW Ch2). Independent analog output; physical apparatus "
-                "role unverified. Timing is intentionally not linked to channel 0 or DIO1."
+                "AD2 API channel 1 / physical W2 (project/LabVIEW Ch2) is owner-confirmed connected "
+                "to the laser Analog In. Normal production rejects this output while the current "
+                "laser input polarity, scaling, and enable semantics remain unverified. DIO1 is a "
+                "separate laser digital-trigger cable and also remains unprogrammed."
             )
             role.setObjectName("v3Channel1RoleNote")
             role.setWordWrap(True)
@@ -638,9 +641,9 @@ class MainWindowV3(MainWindowV2):
         grid.addWidget(self._v3_timing_delta_header, 0, 4)
         self._v3_timing_labels: dict[str, dict[str, QLabel]] = {}
         rows = (
-            ("ch0", "WFG channel 0"),
-            ("ch1", "WFG channel 1 (role unverified)"),
-            ("dio1", "DIO1 request"),
+            ("ch0", "WFG channel 0 / W1 acoustic"),
+            ("ch1", "WFG channel 1 / W2 laser (blocked)"),
+            ("dio1", "DIO1 laser trigger (disabled)"),
         )
         for row, (key, title) in enumerate(rows, start=1):
             grid.addWidget(QLabel(title), row, 0)
@@ -875,13 +878,13 @@ class MainWindowV3(MainWindowV2):
         # Use the shared field objects as the binding contract. The previous
         # exact-caption adapter broke whenever v1/v2 clarified their wording.
         captions = (
-            (self.exp_camera_fps, "DIO1 pulse rate (camera FPS)", "v3CameraFrameRateCaption"),
-            (self.exp_camera_start, "Fixed DIO1 pulse start delay (s)", "v3CameraStartDelayCaption"),
+            (self.exp_camera_fps, "Camera frame rate (Internal trigger)", "v3CameraFrameRateCaption"),
+            (self.exp_camera_start, "Fixed camera-start request (metadata only)", "v3CameraStartDelayCaption"),
             (self.exp_frames, "Frames per repeat", "v3FramesPerRepeatCaption"),
             (self.global_exposure, "Request global exposure reset", "v3GlobalExposureCaption"),
             (
                 self.dynamic_camera_start,
-                "Use per-repeat DIO1 pulse delays",
+                "Use per-repeat camera-start metadata",
                 "v3DynamicCameraStartCaption",
             ),
         )
@@ -907,7 +910,7 @@ class MainWindowV3(MainWindowV2):
         camera_start_group = dynamic_wrapper.parentWidget() if dynamic_wrapper is not None else None
         if not isinstance(camera_start_group, QGroupBox):
             raise RuntimeError("V3 could not locate the per-repeat camera-start group.")
-        camera_start_group.setTitle("Per-repeat DIO1 pulse delays (s)")
+        camera_start_group.setTitle("Per-repeat camera-start metadata (s)")
         camera_start_group.setObjectName("v3PerRepeatCameraStartGroup")
         self.global_exposure.setToolTip(
             "On requests GLOBALRESET. Off leaves the current DCAM property unchanged because the "
@@ -915,11 +918,11 @@ class MainWindowV3(MainWindowV2):
             "camera trigger settings."
         )
         self.dynamic_camera_start.setToolTip(
-            "When enabled, each experiment repeat uses its corresponding DIO1 pulse-train sec_wait "
-            "value instead of the fixed delay. The list has 10 slots; its physical alignment with "
-            "camera exposure remains bench-unverified."
+            "When enabled, each repeat records its corresponding camera-start metadata request instead of "
+            "the fixed value. The list has 10 slots. Normal production does not apply these values "
+            "as camera delays and does not program DIO0 or DIO1."
         )
-        summary = QGroupBox("DIO1 timing request and camera feasibility")
+        summary = QGroupBox("Camera request and feasibility (DIO outputs disabled)")
         summary.setObjectName("v3DioTimingSummary")
         summary_form = QFormLayout(summary)
         self._v3_dio_duration = QLabel()
@@ -927,8 +930,8 @@ class MainWindowV3(MainWindowV2):
         self._v3_dio_slot_budget = QLabel()
         self._v3_camera_feasibility = QLabel()
         self._v3_camera_feasibility.setWordWrap(True)
-        summary_form.addRow("Derived DIO1 run duration", self._v3_dio_duration)
-        summary_form.addRow("Active start source", self._v3_dio_start_source)
+        summary_form.addRow("Requested acquisition duration", self._v3_dio_duration)
+        summary_form.addRow("Recorded start metadata", self._v3_dio_start_source)
         summary_form.addRow("Per-repeat slot budget", self._v3_dio_slot_budget)
         summary_form.addRow("Existing run-start check", self._v3_camera_feasibility)
         acquisition_grid = group.layout()
@@ -936,8 +939,8 @@ class MainWindowV3(MainWindowV2):
             raise RuntimeError("V3 expected Experiment acquisition to use a grid layout.")
         acquisition_grid.addWidget(summary, 6, 0, 1, 3)
         self._v3_sync_uncertainty = QLabel(
-            "Synchronization uncertainty: automated camera trigger is Internal. DIO1-to-exposure timing "
-            "has not been bench verified; this panel shows the requested DIO1 window, not confirmed exposure timing."
+            "Automated camera trigger is Internal. DIO0/pink is physically connected to camera trigger "
+            "but currently unused; DIO1/green is the separate laser trigger and is also unprogrammed."
         )
         self._v3_sync_uncertainty.setObjectName("v3SyncUncertaintyBanner")
         self._v3_sync_uncertainty.setWordWrap(True)
@@ -1137,7 +1140,10 @@ class MainWindowV3(MainWindowV2):
         self._apply_v3_context_state()
         try:
             wfg = self._experiment_wfg_config()
-            do_config = self._experiment_do_clock_config(0)
+            # Normal production explicitly carries a disabled digital-output
+            # payload. Do not preview the retained legacy DIO1/DO-clock builder
+            # as though it were part of the authoritative run.
+            do_config = coerce_do_config(None)
             rows = {
                 "ch0": (
                     bool(wfg.running and wfg.channels[0].carrier.enable),
@@ -1150,9 +1156,9 @@ class MainWindowV3(MainWindowV2):
                     float(wfg.channels[1].trigger.sec_run),
                 ),
                 "dio1": (
-                    bool(do_config.running and do_config.channels[0].enable),
-                    float(do_config.channels[0].trigger.sec_wait),
-                    float(do_config.channels[0].trigger.sec_run),
+                    False,
+                    0.0,
+                    0.0,
                 ),
             }
             preview = Experiment2(wfg_config=wfg, do_clock_settings=do_config)
@@ -1182,7 +1188,7 @@ class MainWindowV3(MainWindowV2):
                 for label in values.values():
                     label.setEnabled(enabled)
             self._v3_completion_budget.setText(
-                f"Shared AD2 completion budget: {completion:.3f} s (maximum enabled analog/digital end)."
+                f"Shared AD2 completion budget: {completion:.3f} s (maximum enabled analog end; DIO disabled)."
             )
         except (IndexError, TypeError, ValueError) as exc:
             self._v3_completion_budget.setText(f"Shared AD2 completion budget unavailable: {exc}")
@@ -1206,9 +1212,9 @@ class MainWindowV3(MainWindowV2):
         else:
             scan_text = "frequency scan off"
         dynamic_text = (
-            f"DIO1 start slots {min(repeats, len(self.camera_start_array))}/{repeats}"
+            f"camera-start metadata slots {min(repeats, len(self.camera_start_array))}/{repeats}"
             if self.dynamic_camera_start.isChecked()
-            else "fixed DIO1 start"
+            else "fixed camera-start metadata"
         )
         self._v3_series_relationship_summary.setText(f"Relationship checks: {scan_text}; {dynamic_text}.")
         self._v3_series_relationship_summary.setStyleSheet(
@@ -1253,7 +1259,7 @@ class MainWindowV3(MainWindowV2):
             "color: darkorange; font-weight: bold;" if temperature_error is not None else ""
         )
         self._v3_repeat_workflow.setText(
-            "create record → configure AD2/DIO → configure camera → capture frames → wait for AD2 "
+            "create record → configure AD2 WFG (DIO disabled) → configure camera → capture frames → wait for AD2 "
             "completion → optional flush → save frames and metadata"
         )
         camera_fps = float(self.exp_camera_fps.value())
@@ -1262,11 +1268,11 @@ class MainWindowV3(MainWindowV2):
             acquisition_s = float(self.exp_frames.value()) / camera_fps
             camera_request = (
                 f"{self.exp_frames.value()} frame(s) at {camera_fps:g} fps request a "
-                f"{acquisition_s:.3f} s DIO1 window; {self.exp_exposure_ms.value():.3f} ms exposure vs "
+                f"{acquisition_s:.3f} s acquisition duration; {self.exp_exposure_ms.value():.3f} ms exposure vs "
                 f"{frame_interval_ms:.3f} ms frame interval. Live DCAM readout margin is checked only at run start."
             )
         else:
-            camera_request = "Camera FPS must be greater than zero before a DIO1 window can be derived."
+            camera_request = "Camera FPS must be greater than zero before acquisition duration can be derived."
         self._v3_camera_request_summary.setText(camera_request)
         status = getattr(self, "_v3_connection_values", {})
         status_text = lambda name: status[name].text() if name in status else "status unavailable"
@@ -1313,7 +1319,7 @@ class MainWindowV3(MainWindowV2):
         elif scan_mismatch:
             warnings.append("frequency count must match repeats")
         if self.dynamic_camera_start.isChecked() and repeats > len(self.camera_start_array):
-            warnings.append("per-repeat DIO1 delay slots are insufficient")
+            warnings.append("per-repeat camera-start metadata slots are insufficient")
         if camera_fps <= 0:
             warnings.append("camera FPS must be greater than zero")
         if not output_path:
@@ -1337,7 +1343,7 @@ class MainWindowV3(MainWindowV2):
             if not (self.app.pump.enabled and self.app.valve.enabled):
                 warnings.append("flush is selected but pump or valve is disabled; the shared runtime will skip it")
             warnings.append("fluid routing is bench-unverified; selected syringe geometry must be applied manually")
-        warnings.append("DIO1-to-camera exposure synchronization remains bench-unverified")
+        warnings.append("DIO0 camera trigger is connected but unused; acquisition remains Internal")
         self._v3_plan_warnings.setText("; ".join(warnings) + ".")
         self._v3_plan_warnings.setStyleSheet("color: darkorange; font-weight: bold;")
         self._render_v3_shared_preflight(self._v3_shadow_build_result())
@@ -1369,13 +1375,16 @@ class MainWindowV3(MainWindowV2):
         for widget in self.camera_start_array:
             widget.setEnabled(dynamic)
         try:
-            do_config = self._experiment_do_clock_config(0)
-            trigger = do_config.channels[0].trigger
+            camera_fps = float(self.exp_camera_fps.value())
+            if camera_fps <= 0:
+                raise ValueError("Camera FPS must be greater than zero")
+            acquisition_s = float(self.exp_frames.value()) / camera_fps
+            start_s = float(self.camera_start_array[0].value()) if dynamic else float(self.exp_camera_start.value())
             self._v3_dio_duration.setText(
-                f"{trigger.sec_run:.3f} s = {self.exp_frames.value()} frames / {self.exp_camera_fps.value():.3f} fps"
+                f"{acquisition_s:.3f} s = {self.exp_frames.value()} frames / {camera_fps:.3f} fps"
             )
-            source = "per-repeat slot 1" if dynamic else "fixed DIO1 start"
-            self._v3_dio_start_source.setText(f"{source}: {trigger.sec_wait:.3f} s")
+            source = "per-repeat slot 1" if dynamic else "fixed request"
+            self._v3_dio_start_source.setText(f"{source}: {start_s:.3f} s (not applied as a delay)")
         except (IndexError, ValueError) as exc:
             self._v3_dio_duration.setText(f"Unavailable: {exc}")
             self._v3_dio_start_source.setText("Unavailable")

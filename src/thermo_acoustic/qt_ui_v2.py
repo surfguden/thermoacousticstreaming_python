@@ -806,12 +806,9 @@ class MainWindowV2(MainWindow):
         group = QGroupBox("Acquisition Parameters")
         group.setMinimumHeight(300)
         grid = QGridLayout(group)
-        # v3 design-idea adoption, Proposal 4 (2026-08-06): names the real
-        # DIO1 relationship these fields' own tooltips already explain --
-        # matching qt_ui.py's own equivalent captions.
         acquisition_rows = (
-            ("Camera FPS (drives DIO1 LED clock)", self.exp_camera_fps),
-            ("Camera Start (s) (DIO1 pulse delay)", self.exp_camera_start),
+            ("Camera FPS (Internal trigger)", self.exp_camera_fps),
+            ("Camera Start request (s; metadata only)", self.exp_camera_start),
             ("Repeats", self.exp_repeats),
             ("Frames", self.exp_frames),
             ("Exposure time (ms)", self.exp_exposure_ms),
@@ -821,15 +818,11 @@ class MainWindowV2(MainWindow):
             grid.addWidget(QLabel(text), row, 0)
             grid.addWidget(self._wrap_with_tooltip_icon(widget), row, 1)
 
-        camera_start = QGroupBox("Camera Start Array(s) (per-repeat DIO1 delays)")
+        camera_start = QGroupBox("Camera Start Array(s) (per-repeat metadata)")
         camera_start_layout = QGridLayout(camera_start)
-        # Dynamic Camera Start Time moved here from the acquisition grid's own
-        # column -- it's the toggle controlling whether this array is used at
-        # all (see qt_ui.py's _experiment_do_clock_config()), so it belongs
-        # with the array it controls rather than the other, unrelated
-        # acquisition params (matching the same regroup applied in qt_ui.py's
-        # own _camera_start_group()).
-        camera_start_layout.addWidget(QLabel("Dynamic Camera Start Time (per-repeat DIO1 delays)"), 0, 0)
+        # Dynamic Camera Start Time selects which requested metadata values are
+        # retained per repeat, so it belongs with the array it controls.
+        camera_start_layout.addWidget(QLabel("Dynamic Camera Start Time (per-repeat metadata)"), 0, 0)
         camera_start_layout.addWidget(self._wrap_with_tooltip_icon(self.dynamic_camera_start), 0, 1)
         for index, widget in enumerate(self.camera_start_array):
             # No adjacent label for these (qt_ui.py's own _camera_start_group()

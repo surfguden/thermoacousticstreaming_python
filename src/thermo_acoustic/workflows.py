@@ -468,6 +468,14 @@ class Experiment2:
         properties.update(self._wfg_properties("Ch2", ch2))
         properties.update(
             {
+                "WFGPhysicalRoleCh1": "AD2 API 0 / W1 / acoustic amplifier and transducer",
+                "WFGPhysicalRoleCh2": "AD2 API 1 / W2 / laser Analog In",
+                "CameraDIO0TriggerUsed": False,
+                "LaserDIO1TriggerRequested": bool(
+                    do_clock.running
+                    and any(channel.channel_index == 1 and channel.enable for channel in do_clock.channels)
+                ),
+                "LaserDIO1TriggerConfiguredByProductionRuntime": False,
                 "DORun": do_channel.trigger.sec_run if do_channel is not None else "",
                 "DOWait": do_channel.trigger.sec_wait if do_channel is not None else "",
                 "DOFreq": do_channel.clock_frequency_hz if do_channel is not None and do_channel.clock_frequency_hz is not None else "",
@@ -565,6 +573,7 @@ class Experiment2:
             properties = {
                 f"WFGFreq{suffix}": "",
                 f"WFGAmp{suffix}": "",
+                f"WFGEnabled{suffix}": "",
                 f"WFGRun{suffix}": "",
                 f"WFGWait{suffix}": "",
                 f"Repeat{suffix}": "",
@@ -585,6 +594,7 @@ class Experiment2:
         properties = {
             f"WFGFreq{suffix}": channel.carrier.frequency_hz,
             f"WFGAmp{suffix}": channel.carrier.amplitude_v,
+            f"WFGEnabled{suffix}": bool(channel.carrier.enable),
             f"WFGRun{suffix}": channel.trigger.sec_run,
             f"WFGWait{suffix}": channel.trigger.sec_wait,
             f"Repeat{suffix}": channel.trigger.repeat_count,

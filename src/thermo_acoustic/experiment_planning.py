@@ -312,6 +312,13 @@ def build_independent_run_plan(request: ExperimentRequest) -> RunPlan:
         else coerce_wfg_config(None)
     )
     channel0 = next((channel for channel in wfg_template.channels if channel.channel_index == 0), None)
+    channel1 = next((channel for channel in wfg_template.channels if channel.channel_index == 1), None)
+    if wfg_template.running and channel1 is not None and (channel1.carrier.enable or channel1.fm_mod.enable):
+        raise ValueError(
+            "Normal production Channel 1 / AD2 W2 is connected to the laser Analog In and must "
+            "remain disabled until the current laser input polarity, scaling, and enable semantics "
+            "are confirmed."
+        )
     if request.fm_sweep_enabled and (
         not request.channel0_output_selected
         or not wfg_template.running
@@ -633,8 +640,8 @@ def build_result_from_existing_plan(
         )
     issues.append(
         PreflightIssue(
-            code="dio_camera_timing_unverified",
-            message="DIO1-to-camera exposure synchronization remains bench-unverified.",
+            code="dio0_camera_trigger_unused",
+            message="DIO0 camera trigger is connected but unused; normal acquisition remains Internal.",
             blocking=False,
             verification=VerificationScope.UNVERIFIED,
         )
