@@ -41,13 +41,16 @@ warnings, and v3 shadow-preflight failures carry structured severity and
 operator guidance. This is incremental compatibility work, not a conversion of
 every historical status string.
 
-`experiment_planning.py` defines `ExperimentRequest`, `RunPlan`,
-`PreflightIssue`, `PreflightResult`, and `BuildResult`. During this milestone,
-the existing `qt_ui.py` builder remains authoritative for execution. The shared
-plan wraps those actual `Experiment2` objects and normalizes them for shadow
-comparison. V3 renders the shared preflight and snapshot but still invokes the
-inherited production Start path. It must not block or alter that path until the
-shadow comparison has broader evidence.
+`experiment_planning.py` defines `ExperimentRequest`, immutable `RunPlan` and
+`RunCondition`, plus the retained v3 `BuildResult` presentation/audit model.
+Normal production Start now extracts the canonical request, builds the
+independent plan, and crosses the `legacy_series_from_run_plan()` compatibility
+boundary into the retained `Experiment2` runtime. The old `qt_ui.py` builder is
+kept as an explicit rollback-only path and is not concurrently authoritative.
+V3 may render `BuildResult`/shadow preflight for presentation and audit
+derivation; that older mechanism is not a second production planning
+authority. Physical timing and device feasibility remain separate runtime or
+hardware evidence.
 
 ## TEC run provenance
 
@@ -289,6 +292,7 @@ hashes be added to TDMS.
   The 2026-08-28 independent read-only probe confirmed communication and both
   channels reporting OFF, while the new Static OFF operation and unlocked
   dual-channel operation remain fake-tested only.
-- The shared plan is shadow-only; production Start still uses the established
-  builder.
+- The shared plan is the normal production Start authority; the legacy builder
+  remains rollback-only. V3 `BuildResult` shadow/preflight remains a
+  presentation/audit derivation and is not a second execution plan.
 - The persistence split is a proposal only.

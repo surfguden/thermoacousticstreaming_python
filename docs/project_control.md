@@ -6,11 +6,13 @@ records; this page does not replace them.
 
 ## CURRENT MILESTONE
 
-The software checkpoint is restored: offline CI is green at the deterministic
-test fix (`525894f`) and the rules/project-control checkpoint (`da4a790`).
-Engineering control is in maintenance mode. The active mainline is offline
-software consistency; camera visibility is restored, but physical trigger
-timing is not yet verified and is explicitly deferred.
+The software checkpoint is in convergence closure. Normal production Start
+uses the shared independent planner: `ExperimentRequest` is the canonical
+normalized request, immutable `RunPlan`/`RunCondition` hold software planning
+truth, and `legacy_series_from_run_plan()` is the compatibility boundary into
+the retained `Experiment2` runtime. The legacy builder remains an explicit
+rollback-only path and is not concurrently authoritative. Physical camera
+trigger timing remains explicitly deferred.
 
 Current operator surfaces:
 
@@ -51,8 +53,6 @@ Current operator surfaces:
 
 ## VERIFYING
 
-- **ARCH-PREFLIGHT-001:** shared planning remains a shadow path; the production
-  builder is authoritative.
 - **TEST-QT-LIFETIME-001:** the open-ended PySide/Shiboken lifetime family remains
   informationally marked, not retried, skipped, or hidden.
 
@@ -70,6 +70,10 @@ Current operator surfaces:
 
 ## RECENTLY CLOSED
 
+- **ARCH-PREFLIGHT-001:** normal Start now uses the independent
+  `ExperimentRequest` -> `RunPlan`/`RunCondition` path and the legacy builder is
+  rollback-only; v3 `BuildResult` remains presentation/audit derivation.
+
 - Injected WaveForms startup no longer requires the vendor DLL (`ba25e27`).
 - Z-Scan now reuses the initialized Application-owned configured Thorlabs
   stage; no independent default-stage discovery or scan-owned disconnect
@@ -84,7 +88,8 @@ Current operator surfaces:
 
 The independent request/plan DTO and legacy-adapter seam now has immutable
 planning data, a bounded semantic-equivalence matrix, and a series-local
-lifecycle manifest. Planning remains offline and shadow-only; the next approved
-software milestone is **V3 Information Architecture Consolidation**.
+lifecycle manifest. V3's older `BuildResult`/shadow-preflight is retained for
+presentation and audit derivation only; further software architecture
+expansion is frozen pending hardware validation.
 **HW-TIMING-001** remains deferred / ready for physical verification; do not
 enable AD2 output as part of this software work.

@@ -1,5 +1,10 @@
 # P0 Hardware Truth Record — 2026-08-28
 
+> **Historical state at 2026-08-28.** The software planning conclusion below
+> predates the later independent-planner authority cutover. Preserve this
+> hardware evidence and its physical no-go boundary; current software
+> authority is described in [`project_control.md`](project_control.md).
+
 This is a point-in-time evidence record for the prepared P0 procedures. It
 distinguishes software, protocol, and physical evidence. It does not authorize
 later motion or output and does not replace retained historical records.

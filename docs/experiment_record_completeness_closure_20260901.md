@@ -1,5 +1,13 @@
 # Experiment Record Completeness & BuildResult Equivalence Closure
 
+> **Historical state at 2026-09-01. Superseded for planning authority by the
+> later independent-planner authority cutover.** This document preserves the
+> earlier NO-GO conclusion and record-lifecycle evidence; current authority is
+> described in [`docs/project_control.md`](project_control.md). `BuildResult`
+> remains a v3 presentation/audit derivation, while normal Start uses
+> `ExperimentRequest` -> `RunPlan`/`RunCondition` ->
+> `legacy_series_from_run_plan()`.
+
 Date: 2026-09-01. Scope: bounded offline closure following Autonomous Sweep
 Round 2; no hardware access or output occurred.
 
