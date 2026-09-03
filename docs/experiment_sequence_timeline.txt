@@ -4,14 +4,84 @@ THERMO ACOUSTIC STREAMING - V3 EXPERIMENT SEQUENCE TIMELINE
 Purpose
 -------
 
-This document explains the order and timing of one automated experiment
-repeat, how the sequence is repeated, and which v3 GUI settings change each
-part of the sequence.
+This document explains the intended high-level experimental sequence, the
+order and timing of one automated experiment repeat, and which v3 GUI settings
+change each part of the sequence.
 
-The document describes the current Python implementation. It does not claim
-that every requested AD2 or camera time has been physically measured. Where
-the software knows only an order, timeout, or requested hardware window, that
-limitation is stated explicitly.
+The intended procedure and the current Python implementation are kept
+separate. Items labelled "intended" or "suggested correction" are design
+requirements for a future implementation task; this document does not
+authorize or implement those code changes.
+
+This document does not claim that every requested AD2 or camera time has been
+physically measured. Where the software knows only an order, timeout, or
+requested hardware window, that limitation is stated explicitly.
+
+
+0. INTENDED HIGH-LEVEL EXPERIMENTAL SEQUENCE
+--------------------------------------------
+
+There are two levels to distinguish:
+
+    Experimental sequence
+        The complete run containing one or more experiments/repeats.
+
+    Single experiment
+        One hardware-timed acquisition and its resulting image set.
+
+Intended sequence-level order:
+
+    1. Initial flush, once at the beginning of the experimental sequence.
+       This is the first-experiment edge case. The flush includes the
+       configured WaitAfterFlush delay; there is no additional separate wait
+       before hardware configuration.
+
+    2. Run the first experiment.
+
+    3. After acquisition, save that experiment's images and run the next
+       flush in parallel.
+
+    4. Repeat the experiment followed by parallel save-and-flush work for
+       every remaining experiment.
+
+The post-experiment flush is last in the order of one experiment and prepares
+the fluidics for the next experiment. The same post-experiment flush is still
+performed after the final experiment.
+
+Intended single-experiment order:
+
+    1. Configure and arm AD2.
+    2. Configure and arm the camera.
+    3. Trigger the experiment.
+    4. Acquire the requested camera frames while the AD2 outputs run.
+    5. If necessary, wait for any remaining programmed AD2 output time.
+    6. In parallel:
+         - save images and metadata to disk
+         - perform the flush, including WaitAfterFlush
+
+Step 5 is a derived completion wait, not a separate user-configured delay.
+Its duration is calculated from the programmed AD2 windows and the time
+already spent collecting images.
+
+Required sequence boundary (rendezvous):
+
+    Saving and flushing start as parallel branches after an experiment. The
+    two branches then rendezvous: the next experiment must not begin until
+    both saving and flushing have completed successfully. A failure in either
+    branch prevents the sequence from advancing normally.
+
+Known differences in the current implementation (suggested corrections):
+
+    - There is no distinct once-only initial flush at sequence start.
+    - The current repeat performs flush first and save second; they are not
+      parallel.
+    - Automated camera acquisition currently uses Internal trigger. DIO
+      control of camera exposure is not established by the current code.
+    - WFG channel 0 is treated as the ultrasound/acoustic output.
+    - WFG channel 1 is intended to control the laser, but that physical role
+      is not yet verified by retained bench evidence.
+    - The physical role of DIO must still be confirmed: camera trigger,
+      illumination timing, or both.
 
 
 1. THREE TYPES OF TIME IN THIS PROGRAM
@@ -43,7 +113,7 @@ In the timelines below:
 2. SERIES-LEVEL PROCEDURE
 -------------------------
 
-Without a TEC temperature scan:
+Intended sequence structure without a TEC temperature scan:
 
     Start experiment
           |
@@ -51,10 +121,20 @@ Without a TEC temperature scan:
     Validate/build the experiment series
           |
           v
-    Repeat 1 -> Repeat 2 -> ... -> Repeat N
+    Initial flush once, including WaitAfterFlush
+    (first physical experimental action)
+          |
+          v
+    Repeat 1 -> parallel save + flush -> Repeat 2 -> ... -> Repeat N
+          |                                                   |
+          |                                                   v
+          +----------------------------------------> parallel save + flush
           |
           v
     Series complete
+
+The current implementation does not yet follow this sequence-level flush
+placement. Its current per-repeat order is recorded in section 3.
 
 GUI setting:
 
@@ -108,7 +188,8 @@ is allowed to finish.
 3. ONE AUTOMATED REPEAT - SOFTWARE ORDER
 ----------------------------------------
 
-The current Application.run_experiment2() order is:
+The current Application.run_experiment2() order is shown below. This is a
+record of existing behavior, not the intended parallel save-and-flush design:
 
     1. Create the repeat folder and initial data.tdms record.
 
@@ -174,7 +255,7 @@ Symbolic timeline:
                        start = WFG1_Start
                        end   = WFG1_Start + WFG1_Run
 
-    Laser / DIO1       |...DIO delay...[pulse train]|
+    DIO1 pulse output  |...DIO delay...[pulse train]|
                        start = DIO_Start
                        end   = DIO_Start + Frames / Camera_FPS
 
@@ -353,7 +434,7 @@ Approximate drawing of the programmed requests:
     WFG CH1        ................[=======================================]
                                     2.0                                   7.0
 
-    DIO1 laser     ....[=======================]
+    DIO1 output    ....[=======================]
                        0.5                     3.5
 
     Camera images  ????????????????????????????????????????????????????????
@@ -366,8 +447,20 @@ Approximate drawing of the programmed requests:
 7. FLUSH SEQUENCE - SHOWN SEPARATELY
 ------------------------------------
 
-Flush occurs only after camera capture and the required AD2 completion wait.
-It is not simultaneous with the sound, DIO1, or image-acquisition windows.
+In the intended design, flush has two placements:
+
+    - once at the beginning of the full experimental sequence, before the
+      first experiment (the first-experiment edge case)
+    - after each experiment, in parallel with saving that experiment's images
+
+WaitAfterFlush is part of the flush sequence and is the only configured wait
+associated with flushing. There is no separate wait between the initial flush
+and hardware configuration.
+
+In the current implementation, flush occurs only after camera capture and the
+required AD2 completion wait. It runs before image saving rather than in
+parallel with it. It is not simultaneous with the sound, DIO1, or
+image-acquisition windows.
 
 The current flush order is:
 
