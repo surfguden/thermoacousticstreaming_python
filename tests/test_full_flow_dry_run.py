@@ -354,7 +354,7 @@ def test_full_flow_writes_correlated_operator_action_stream(tmp_path):
     assert operations[0] == ("condition_planned", "READY")
     assert ("InitializeExperiment", "STARTED") in operations
     assert ("InitializeExperiment", "COMPLETED") in operations
-    assert ("wfg_configuration_effective", "APPLIED") in operations
+    assert ("wfg_configuration_effective", "EFFECTIVE") in operations
     assert ("acquisition_settings_effective", "APPLIED") in operations
     assert ("results_saved", "COMPLETED") in operations
     assert operations[-1] == ("repeat_outcome", "COMPLETED")

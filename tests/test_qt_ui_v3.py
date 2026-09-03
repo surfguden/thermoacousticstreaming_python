@@ -1141,7 +1141,7 @@ def test_v3_action_log_surfaces_requested_effective_discrepancies(monkeypatch, t
         assert "latest applied 39.998 ms — DIFFERENT" in window._v3_exposure_evidence.text()
         assert "latest applied" in window._v3_roi_evidence.text()
         assert "— DIFFERENT" in window._v3_roi_evidence.text()
-        assert "latest effective 5 V — LIMITED" in window._v3_amplitude_evidence.text()
+        assert "latest software-effective 5 V — LIMITED" in window._v3_amplitude_evidence.text()
         assert "run series, condition default, repeat 1" in window._v3_evidence_source.text()
         assert "Loaded 2 most recent record(s)" in window._v3_action_log_state.text()
     finally:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 from ctypes import byref, c_char, c_double, c_int, c_ubyte, c_uint, create_string_buffer
 from ctypes.util import find_library
+from dataclasses import replace
 from pathlib import Path
 import time
 from typing import Iterable
@@ -456,7 +457,6 @@ class WaveFormsBackend:
             "ad2", "configure_wfg", command=config, response_stage="EFFECTIVE"
         ) as result:
             h = c_int(handle)
-            effective_channels: list[dict[str, object]] = []
             for channel in config.channels:
                 idx = c_int(channel.channel_index)
                 carrier_out_of_range, effective_carrier = self._configure_analog_node(h, idx, 0, channel.carrier)
@@ -510,18 +510,25 @@ class WaveFormsBackend:
                     self._dwf.FDwfAnalogOutConfigure(h, idx, c_int(int(config.running))),
                     "FDwfAnalogOutConfigure",
                 )
-                effective_channels.append(
-                    {
-                        "channel_index": channel.channel_index,
-                        "carrier": effective_carrier,
-                        "fm_mod": effective_fm,
-                        "trigger": channel.trigger,
-                        "running": config.running,
-                        "out_of_range": channel.out_of_range,
-                    }
+                channel.effective_carrier = replace(
+                    channel.carrier,
+                    frequency_hz=float(effective_carrier["frequency_hz"]),
+                    amplitude_v=float(effective_carrier["amplitude_v"]),
                 )
-            result["response"] = f"applied, out_of_range={[c.out_of_range for c in config.channels]}"
-            result["effective"] = {"channels": effective_channels, "running": config.running}
+                channel.effective_fm_mod = (
+                    replace(
+                        channel.fm_mod,
+                        frequency_hz=float(effective_fm["frequency_hz"]),
+                        amplitude_v=float(effective_fm["amplitude_v"]),
+                    )
+                    if effective_fm is not None
+                    else None
+                )
+            result["response"] = (
+                "SDK configuration calls succeeded, "
+                f"out_of_range={[c.out_of_range for c in config.channels]}"
+            )
+            result["effective"] = config.effective_evidence()
 
     def _configure_analog_node(
         self, handle: c_int, channel_index: c_int, node: int, settings: object

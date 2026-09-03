@@ -1140,21 +1140,21 @@ class Application:
             experiment.do_clock_settings = coerce_do_config(None)
             if self.ad2.enabled:
                 self.ad2.config_wfg(experiment.wfg_config)
-                # Point the experiment at the confirmed post-clamping WFG
-                # object. A dict input is coerced to a separate typed object
-                # inside AD2Sdk, so retaining the original would save stale
-                # pre-clamp values.
-                experiment.wfg_config = self.ad2.get_wfg_config()
+                # Point the experiment at the confirmed WFG object. Requested
+                # values remain in carrier/fm_mod; successful post-clamp SDK
+                # arguments are held separately in effective_carrier/
+                # effective_fm_mod.
+                experiment.wfg_config = coerce_wfg_config(self.ad2.get_wfg_config())
                 log_action(
                     "acoustic_laser_control",
                     "wfg_configuration_effective",
                     evidence_stage="EFFECTIVE",
                     verification_scope=("SOFTWARE" if experiment.sim_ad2 else "PROTOCOL"),
-                    status="APPLIED",
+                    status="EFFECTIVE",
                     effective={
                         "project_ch1_api_0_w1_role": "acoustic amplifier and transducer",
                         "project_ch2_api_1_w2_role": "laser Analog In electrical control",
-                        "configuration": experiment.wfg_config,
+                        "configuration": experiment.wfg_config.effective_evidence(),
                         "dio0_camera_trigger": "CONNECTED_BUT_CURRENTLY_UNUSED",
                         "dio1_laser_trigger": "DISABLED_NOT_PROGRAMMED_BY_PRODUCTION",
                         "physical_acoustic_pressure_verified": False,
@@ -1178,11 +1178,9 @@ class Application:
             # save_settings() call above is deliberately kept (not replaced) so a
             # partial record with the *requested* settings still exists on disk
             # even if config_wfg() itself raises -- this
-            # second call only refreshes fields that hardware configuration can
-            # change after the fact, currently WfgChannelConfig.out_of_range
-            # (set by WaveFormsBackend.configure_wfg()'s live-range clamping,
-            # Session 51 / commit 23e17d5). It also records the explicit
-            # production-disabled DIO1 state established above.
+            # second call adds the separate software-effective WFG arguments
+            # and out-of-range result produced by configure_wfg(). It also
+            # records the explicit production-disabled DIO1 state above.
             experiment.save_settings()
 
         with _report_step(progress, STEP_CONFIGURE_CAMERA):

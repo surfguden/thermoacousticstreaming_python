@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
 
@@ -179,6 +179,12 @@ class WfgChannelConfig:
     carrier: CarrierSettings = field(default_factory=CarrierSettings)
     trigger: TriggerSettings = field(default_factory=TriggerSettings)
     fm_mod: CarrierSettings = field(default_factory=lambda: CarrierSettings(enable=False))
+    # Populated only after configure_wfg() has successfully sent this
+    # channel's SDK configuration.  The requested carrier/fm_mod objects stay
+    # unchanged so durable records can preserve request and software-effective
+    # evidence independently.
+    effective_carrier: CarrierSettings | None = None
+    effective_fm_mod: CarrierSettings | None = None
 
 
 @dataclass(slots=True)
@@ -191,6 +197,49 @@ class WfgConfig:
 
     def check_valid(self) -> bool:
         return all(not channel.out_of_range for channel in self.channels)
+
+    def effective_evidence(self) -> dict[str, object]:
+        """Return successful post-clamp SDK arguments, never physical output."""
+        channels: list[dict[str, object]] = []
+        for channel in self.channels:
+            carrier = channel.effective_carrier
+            fm_mod = channel.effective_fm_mod
+            fm_evidence: dict[str, object] | None = None
+            if fm_mod is not None and fm_mod.enable:
+                fm_evidence = asdict(fm_mod)
+                fm_evidence["node_quantity"] = "fm_modulation_index_percent"
+                fm_evidence["modulation_index_percent"] = fm_mod.amplitude_v
+                fm_evidence["sweep_direction"] = {
+                    WaveformFunction.TRIANGLE: "BIDIRECTIONAL_BETWEEN_START_AND_STOP",
+                    WaveformFunction.RAMP_UP: "START_TO_STOP_THEN_RESET",
+                    WaveformFunction.RAMP_DOWN: "STOP_TO_START_THEN_RESET",
+                }.get(fm_mod.function, "FUNCTION_SPECIFIC")
+                if carrier is not None:
+                    half_deviation_hz = carrier.frequency_hz * abs(fm_mod.amplitude_v) / 100.0
+                    fm_evidence.update(
+                        {
+                            "derived_start_hz": carrier.frequency_hz - half_deviation_hz,
+                            "derived_stop_hz": carrier.frequency_hz + half_deviation_hz,
+                            "derived_total_span_hz": 2.0 * half_deviation_hz,
+                            "derived_half_deviation_hz": half_deviation_hz,
+                            "derivation_scope": "SOFTWARE_FROM_EFFECTIVE_SDK_PARAMETERS_NOT_MEASURED",
+                        }
+                    )
+            channels.append(
+                {
+                    "channel_index": channel.channel_index,
+                    "carrier": asdict(carrier) if carrier is not None else None,
+                    "fm_mod": fm_evidence,
+                    "trigger": asdict(channel.trigger),
+                    "running": self.running,
+                    "out_of_range": channel.out_of_range,
+                }
+            )
+        return {
+            "channels": channels,
+            "running": self.running,
+            "evidence_scope": "SOFTWARE_EFFECTIVE_SDK_ARGUMENTS_NOT_DEVICE_READBACK_OR_PHYSICAL_OUTPUT",
+        }
 
 
 _FM_SWEEP_TYPE_TO_FUNCTION: dict[str, WaveformFunction] = {
@@ -301,7 +350,20 @@ class FmSweepSettings:
             "sweep_time_ms": self.sweep_time_ms,
             "fm_frequency_hz": self.fm_frequency_hz,
             "sweep_type": self.sweep_type,
+            "sweep_direction": self.sweep_direction,
+            "symmetry_percent": self.fm_mod_settings().symmetry_percent,
         }
+
+    @property
+    def sweep_direction(self) -> str:
+        return {
+            "Symmetric": "BIDIRECTIONAL_BETWEEN_START_AND_STOP",
+            "RampUp": "START_TO_STOP_THEN_RESET",
+            "RampDown": "STOP_TO_START_THEN_RESET",
+        }.get(self.sweep_type) or self._unsupported_sweep_type()
+
+    def _unsupported_sweep_type(self) -> str:
+        raise ValueError(f"Unsupported Sweep Type: {self.sweep_type!r}")
 
     @property
     def fm_function(self) -> WaveformFunction:
@@ -311,13 +373,19 @@ class FmSweepSettings:
             raise ValueError(f"Unsupported Sweep Type: {self.sweep_type!r}") from None
 
     def fm_mod_settings(self) -> CarrierSettings:
+        # Digilent's official analogout_sweep example uses a directional ramp
+        # with 100% symmetry so the ramp occupies the full modulation period.
+        # The function enum supplies direction; Triangle at 50% is the
+        # bidirectional sweep between the two endpoints. Its phase-origin
+        # endpoint is not promoted beyond the installed official evidence.
+        symmetry_percent = 50.0 if self.fm_function is WaveformFunction.TRIANGLE else 100.0
         return CarrierSettings(
             frequency_hz=self.fm_frequency_hz,
             # CarrierSettings is shared with voltage-bearing nodes; for the FM
             # node this field is the dimensionless modulation index in percent.
             amplitude_v=self.fm_modulation_index_pct,
             offset_v=0.0,
-            symmetry_percent=50.0,
+            symmetry_percent=symmetry_percent,
             phase_deg=0.0,
             function=self.fm_function,
             enable=True,
@@ -448,12 +516,28 @@ def coerce_wfg_channel_config(config: WfgChannelConfig | dict[str, Any] | None, 
         return WfgChannelConfig(channel_index=index)
     carrier_data = _first_present(config, "carrier", "carrier_settings", default=config)
     fm_data = _first_present(config, "fm_mod", "fmMod", "fm", default=None)
+    effective_carrier_data = _first_present(
+        config, "effective_carrier", "effectiveCarrier", default=None
+    )
+    effective_fm_data = _first_present(
+        config, "effective_fm_mod", "effectiveFmMod", default=None
+    )
     return WfgChannelConfig(
         channel_index=int(_first_present(config, "channel_index", "channelIndex", "channel", "idx", default=index) or 0),
         out_of_range=bool(_first_present(config, "out_of_range", "outOfRange", default=False)),
         carrier=coerce_carrier_settings(carrier_data, enable=True),
         trigger=coerce_trigger_settings(_first_present(config, "trigger", "trigger_settings", default=None)),
         fm_mod=coerce_carrier_settings(fm_data, enable=False),
+        effective_carrier=(
+            coerce_carrier_settings(effective_carrier_data)
+            if effective_carrier_data is not None
+            else None
+        ),
+        effective_fm_mod=(
+            coerce_carrier_settings(effective_fm_data, enable=False)
+            if effective_fm_data is not None
+            else None
+        ),
     )
 
 

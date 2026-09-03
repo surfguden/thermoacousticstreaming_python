@@ -1406,9 +1406,10 @@ class MainWindow(QMainWindow):
         for widget in (self.exp_sweep_start_khz, self.exp_sweep_stop_khz, self.exp_sweep_center_khz, self.exp_sweep_width_khz):
             widget.setToolTip(exp_sweep_dual_mode_tip)
         self.exp_sweep_type.setToolTip(
-            "Symmetric->Triangle, RampUp->RampUp, RampDown->RampDown is the most architecturally "
-            "plausible Function-2 enum mapping given the shared AD2 SDK enum, not independently "
-            "confirmed against WfgConfigureSweepCh1.vi's actual wiring (Session 16)."
+            "Digilent FM-node mapping: Symmetric uses Triangle at 50% and sweeps bidirectionally "
+            "between Start and Stop; RampUp uses RampUp at 100% for Start->Stop then reset; "
+            "RampDown uses RampDown at 100% for Stop->Start then reset. Direction comes from "
+            "the official WaveForms function enum; symmetry sets full-period directional ramps."
         )
         self.exp_ch2_freq = _spin(1.0, decimals=3, minimum=0.0)
         self.exp_ch2_freq.setToolTip(
@@ -1815,9 +1816,10 @@ class MainWindow(QMainWindow):
             "reference case (Session 16) uses 1 ms (-> 1 kHz FM modulation rate)."
         )
         state["sweep_type"].setToolTip(
-            "Symmetric->Triangle, RampUp->RampUp, RampDown->RampDown is the most architecturally "
-            "plausible Function-2 enum mapping given the shared AD2 SDK enum, not independently "
-            "confirmed against WfgConfigureSweepCh1.vi's actual wiring (Session 16)."
+            "Digilent FM-node mapping: Symmetric uses Triangle at 50% and sweeps bidirectionally "
+            "between Start and Stop; RampUp uses RampUp at 100% for Start->Stop then reset; "
+            "RampDown uses RampDown at 100% for Stop->Start then reset. Direction comes from "
+            "the official WaveForms function enum; symmetry sets full-period directional ramps."
         )
         return state
 

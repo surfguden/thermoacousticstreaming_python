@@ -531,10 +531,16 @@ class SimulatedAD2Sdk(AD2Sdk):
         self.triggered = True
 
     def config_wfg(self, config: WfgConfig | dict | None) -> None:
+        self._set_effective_wfg_config(config)
+
+    def _set_effective_wfg_config(self, config: WfgConfig | dict | None) -> None:
         self.set_wfg_config(config)
+        for channel in self.get_wfg_config().channels:
+            channel.effective_carrier = deepcopy(channel.carrier)
+            channel.effective_fm_mod = deepcopy(channel.fm_mod) if channel.fm_mod.enable else None
 
     def wfg_configure(self, config: WfgConfig | dict | None) -> None:
-        self.set_wfg_config(config)
+        self._set_effective_wfg_config(config)
 
     def wfg_start_stop_all_ch(self, running: bool) -> None:
         self.get_wfg_config().running = running

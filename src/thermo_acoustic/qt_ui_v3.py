@@ -1623,7 +1623,7 @@ class MainWindowV3(MainWindowV2):
                     different = abs(float(applied_amplitude) - requested_amplitude) > 1e-9
                     suffix = " — LIMITED" if different else ""
                     self._v3_amplitude_evidence.setText(
-                        f"Requested {requested_amplitude:.6g} V; latest effective {float(applied_amplitude):.6g} V{suffix}"
+                        f"Requested {requested_amplitude:.6g} V; latest software-effective {float(applied_amplitude):.6g} V{suffix}"
                     )
                     self._v3_amplitude_evidence.setStyleSheet(
                         "color: darkorange; font-weight: bold;" if different else ""

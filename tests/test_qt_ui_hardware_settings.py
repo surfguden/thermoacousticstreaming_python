@@ -1948,6 +1948,10 @@ def test_fm_sweep_toggle_on_carries_settings_into_experiment_wfg_config(monkeypa
     assert properties["FMSweepModulationIndexPercent"] == pytest.approx(1.2926577)
     assert properties["FMSweepTimeMs"] == 1.0
     assert properties["FMSweepType"] == "Symmetric"
+    assert properties["FMSweepDirection"] == "BIDIRECTIONAL_BETWEEN_START_AND_STOP"
+    assert properties["FMSweepSymmetryPercent"] == 50.0
+    assert "RampUp at 100%" in window.exp_sweep_type.toolTip()
+    assert "RampDown at 100%" in window.exp_sweep_type.toolTip()
 
 
 def test_fm_sweep_dual_mode_start_stop_and_center_width_stay_in_sync(monkeypatch, tmp_path):

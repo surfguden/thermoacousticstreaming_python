@@ -230,6 +230,24 @@ deviation, and index. Backend effective evidence derives post-clamp endpoints
 from the SDK parameters and labels them software/protocol-derived, not measured.
 Zero or reversed endpoint spans fail closed. Triangle/RampUp/RampDown enum
 values and FM node 1 remain confirmed against official installed `dwf.h`.
+Sweep shape now follows the official WaveForms function/symmetry semantics:
+`Symmetric` uses Triangle at 50 percent and traverses bidirectionally between
+the two endpoints; `RampUp` uses RampUp at 100 percent for
+start -> stop then reset; `RampDown` uses RampDown at 100 percent for stop ->
+start then reset. Requested/action/TDMS evidence retains the selected type,
+direction, function, symmetry, and sweep period.
+
+WFG request and effective evidence are separate. `carrier` and `fm_mod` retain
+the operator/planner request. After every successful `configure_wfg()`, the
+backend stores separate `effective_carrier` and `effective_fm_mod` values built
+from the SDK arguments after explicit live-range frequency/amplitude clamping.
+`WFGFreq`/`WFGAmp` remain requested compatibility fields;
+`WFGEffectiveFreq`/`WFGEffectiveAmp` and the additive effective-FM TDMS fields
+come only from that post-configure state. For example, a 10 V request clamped
+to 5 V is retained as requested 10 V and software-effective 5 V. The action
+record uses stage/status `EFFECTIVE`, not `APPLIED` or `OBSERVED`. These values
+are successful software/protocol command arguments, not SDK readback, loaded
+terminal voltage, measured waveform, or acoustic pressure.
 
 Historical impact: the factor-of-two formula entered production source in
 commit `d30be02dfd45d9a0f1c79ecb53bc27ed274160d9` (2026-07-23) and remained
@@ -389,9 +407,11 @@ manual setting.
   `Repeat=1`; infinite and unsupported finite repeats fail preflight.
 - FM Sweep requires explicit Acoustic/W1 enable and cannot coexist with
   Frequency Scan.
-- AD2 range clamping is retained as effective electrical-output metadata. It
-  does not establish loaded amplifier voltage, transducer drive, acoustic
-  pressure, streaming strength, or physical synchronization.
+- AD2 live-range frequency/amplitude clamping is retained separately as
+  software-effective SDK-argument metadata; requested values remain requested.
+  Effective here is not device readback and does not establish loaded amplifier
+  voltage, transducer drive, acoustic pressure, streaming strength, or physical
+  synchronization.
 
 ## Laser boundary
 
@@ -412,7 +432,7 @@ separately authorized.
 | Record | Authority |
 | --- | --- |
 | `<series>/action_log.jsonl` | Append-only, low-frequency correlated action stream with UTC, host-monotonic elapsed time, run/condition/repeat/phase, subsystem/operation, stage/scope, status, and bounded useful fields. |
-| `<repeat>/data.tdms` | Authoritative per-repeat scientific data/settings, requested/applied camera and effective WFG state, enabled/simulated state, output metadata, refresh outcome, and separate primary/cleanup failure. |
+| `<repeat>/data.tdms` | Authoritative per-repeat scientific data/settings, requested/applied camera state, requested WFG settings, separate software-effective post-clamp WFG arguments, enabled/simulated state, output metadata, refresh outcome, and separate primary/cleanup failure. |
 | `<series>/series_manifest.json` | Atomic aggregate lifecycle: requested/started/completed/failed counts, abort/final outcome, timestamps, optional TEC counts, and action-log link. It does not duplicate full configuration. |
 | `logs/hardware_transactions.log` | Rotating global backend/API/transport diagnostic timeline with `SETUP`, `RUN`, `CLEANUP`, or `MANUAL_SERVICE` context. |
 | `Application.runtime_events` / UI event stream | Transient operator chronology, not durable scientific authority. |

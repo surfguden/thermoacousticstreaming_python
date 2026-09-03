@@ -444,7 +444,36 @@ def test_fm_sweep_settings_match_martens_et_al_reference_case():
     assert fm_mod.frequency_hz == 1000.0
     assert fm_mod.amplitude_v == pytest.approx(1.2926577)
     assert fm_mod.function == WaveformFunction.TRIANGLE
+    assert fm_mod.symmetry_percent == 50.0
     assert fm_mod.enable is True
+
+
+@pytest.mark.parametrize(
+    ("sweep_type", "expected_function", "expected_symmetry", "expected_direction"),
+    [
+        ("Symmetric", WaveformFunction.TRIANGLE, 50.0, "bidirectional"),
+        ("RampUp", WaveformFunction.RAMP_UP, 100.0, "start_to_stop"),
+        ("RampDown", WaveformFunction.RAMP_DOWN, 100.0, "stop_to_start"),
+    ],
+)
+def test_fm_sweep_shape_uses_official_function_and_full_period_directional_ramps(
+    sweep_type, expected_function, expected_symmetry, expected_direction
+):
+    # Independent oracle: Digilent defines separate Triangle/RampUp/RampDown
+    # function enums and its official analogout_sweep example programs the
+    # one-way ramp with symmetry=100. Direction therefore comes from the enum;
+    # both one-way functions occupy the full period, while Triangle uses the
+    # 50/50 bidirectional period.
+    sweep = FmSweepSettings.from_endpoints(1_909_000.0, 1_959_000.0, 1.0, sweep_type)
+    fm_mod = sweep.fm_mod_settings()
+
+    assert fm_mod.function is expected_function
+    assert fm_mod.symmetry_percent == expected_symmetry
+    assert {
+        WaveformFunction.TRIANGLE: "bidirectional",
+        WaveformFunction.RAMP_UP: "start_to_stop",
+        WaveformFunction.RAMP_DOWN: "stop_to_start",
+    }[fm_mod.function] == expected_direction
 
 
 def test_fm_sweep_settings_rejects_non_positive_sweep_time():
@@ -477,6 +506,8 @@ def test_fm_sweep_requested_evidence_names_total_span_half_deviation_and_index()
     assert evidence["total_span_hz"] == 50_000.0
     assert evidence["half_deviation_hz"] == 25_000.0
     assert evidence["fm_modulation_index_percent"] == pytest.approx(1.2926577)
+    assert evidence["sweep_direction"] == "BIDIRECTIONAL_BETWEEN_START_AND_STOP"
+    assert evidence["symmetry_percent"] == 50.0
 
 
 def test_flush_sets_valve_and_status():
@@ -1058,7 +1089,7 @@ def test_run_experiment2_records_real_wfg_clamping_in_final_tdms(tmp_path, monke
     ad2 = AD2Sdk(backend=WaveFormsBackend(dwf=fake_dwf), device_handle=123)
     app = Application(ad2=ad2)
     app.pump.fill_level = 1.0
-    channel = WfgChannelConfig(0, carrier=CarrierSettings(frequency_hz=1000.0, amplitude_v=10.0))
+    channel = WfgChannelConfig(0, carrier=CarrierSettings(frequency_hz=2_000_000.0, amplitude_v=10.0))
     experiment = Experiment2(
         experiment_folder=tmp_path / "experiment-clamped",
         wfg_config=WfgConfig(channels=[channel]),
@@ -1078,6 +1109,10 @@ def test_run_experiment2_records_real_wfg_clamping_in_final_tdms(tmp_path, monke
         "early save_settings() call"
     )
     assert experiment_group.properties["WFGAmpCh1"] == 10.0
+    assert experiment_group.properties["WFGFreqCh1"] == 2_000_000.0
+    assert experiment_group.properties["WFGEffectiveFreqCh1"] == 1_000_000.0
+    assert experiment_group.properties["WFGEffectiveAmpCh1"] == 5.0
+    assert experiment_group.properties["WFGEffectiveAmpCh1"] != experiment_group.properties["WFGAmpCh1"]
     action_records = [
         json.loads(line)
         for line in (tmp_path / "action_log.jsonl").read_text(encoding="utf-8").splitlines()
@@ -1098,7 +1133,55 @@ def test_run_experiment2_records_real_wfg_clamping_in_final_tdms(tmp_path, monke
     )
     assert wfg_result["evidence_stage"] == "EFFECTIVE"
     assert wfg_attempt["requested"]["channels"][0]["carrier"]["amplitude_v"] == 10.0
+    assert wfg_attempt["requested"]["channels"][0]["carrier"]["frequency_hz"] == 2_000_000.0
     assert wfg_result["effective"]["channels"][0]["carrier"]["amplitude_v"] == 5.0
+    assert wfg_result["effective"]["channels"][0]["carrier"]["frequency_hz"] == 1_000_000.0
+    high_level = next(
+        record
+        for record in action_records
+        if record["operation"] == "wfg_configuration_effective"
+    )
+    assert high_level["evidence_stage"] == "EFFECTIVE"
+    assert high_level["status"] == "EFFECTIVE"
+    assert high_level["status"] not in {"APPLIED", "OBSERVED", "PHYSICAL_VERIFIED"}
+    assert high_level["effective"]["configuration"]["channels"][0]["carrier"]["amplitude_v"] == 5.0
+    assert high_level["effective"]["configuration"]["channels"][0]["carrier"]["frequency_hz"] == 1_000_000.0
+    assert high_level["effective"]["configuration"]["evidence_scope"].endswith(
+        "NOT_DEVICE_READBACK_OR_PHYSICAL_OUTPUT"
+    )
+
+
+def test_run_experiment2_preserves_equal_requested_and_effective_wfg_values_when_in_range(tmp_path, monkeypatch):
+    writes = install_fake_nptdms(monkeypatch)
+    fake_dwf = FakeAD2ConfigureDwf(
+        frequency_range=(10.0, 3_000_000.0), amplitude_range=(-5.0, 5.0)
+    )
+    app = Application(ad2=AD2Sdk(backend=WaveFormsBackend(dwf=fake_dwf), device_handle=123))
+    app.pump.fill_level = 1.0
+    experiment = Experiment2(
+        experiment_folder=tmp_path / "experiment-in-range",
+        wfg_config=WfgConfig(
+            channels=[
+                WfgChannelConfig(
+                    0,
+                    carrier=CarrierSettings(frequency_hz=1_934_000.0, amplitude_v=0.1),
+                )
+            ]
+        ),
+    )
+    app.experiment_series.enqueue_experiments([experiment])
+
+    assert app.run_experiment2()
+
+    objects = writes[str(tmp_path / "experiment-in-range" / "data.tdms")]
+    properties = next(
+        item for item in objects if getattr(item, "kind", "") == "group" and item.name == "Experiment"
+    ).properties
+    assert properties["WFGFreqCh1"] == 1_934_000.0
+    assert properties["WFGEffectiveFreqCh1"] == 1_934_000.0
+    assert properties["WFGAmpCh1"] == 0.1
+    assert properties["WFGEffectiveAmpCh1"] == 0.1
+    assert properties["WFGOutOfRangeCh1"] is False
 
 
 def test_run_experiment2_records_real_wfg_clamping_in_final_tdms_when_wfg_config_is_a_dict(tmp_path, monkeypatch):
@@ -3660,6 +3743,11 @@ def test_configure_wfg_clamps_out_of_range_amplitude_and_frequency_and_flags_cha
     amplitude_set_calls = [args for name, args in fake.calls if name == "FDwfAnalogOutNodeAmplitudeSet"]
     assert frequency_set_calls[0][3].value == 1_000_000.0, "must clamp to the device's real max, not send the requested value unchanged"
     assert amplitude_set_calls[0][3].value == 5.0, "must clamp to the device's real max, not send the requested value unchanged"
+    assert channel.carrier.frequency_hz == 2_000_000.0
+    assert channel.carrier.amplitude_v == 10.0
+    assert channel.effective_carrier is not None
+    assert channel.effective_carrier.frequency_hz == 1_000_000.0
+    assert channel.effective_carrier.amplitude_v == 5.0
 
 
 def test_configure_wfg_dc_applies_only_offset_and_enable_function():
@@ -3716,6 +3804,9 @@ def test_configure_wfg_leaves_in_range_values_unclamped_and_not_out_of_range():
     amplitude_set_calls = [args for name, args in fake.calls if name == "FDwfAnalogOutNodeAmplitudeSet"]
     assert frequency_set_calls[0][3].value == 1000.0
     assert amplitude_set_calls[0][3].value == 1.0
+    assert channel.effective_carrier is not None
+    assert channel.effective_carrier.frequency_hz == 1000.0
+    assert channel.effective_carrier.amplitude_v == 1.0
 
 
 def test_configure_wfg_checks_fm_mod_node_too_when_enabled():
@@ -3750,7 +3841,21 @@ def test_configure_wfg_effective_log_names_fm_index_and_derived_endpoints(tmp_pa
     assert effective_fm["modulation_index_percent"] == pytest.approx(1.2926577)
     assert effective_fm["derived_start_hz"] == pytest.approx(1_909_000.0)
     assert effective_fm["derived_stop_hz"] == pytest.approx(1_959_000.0)
+    assert effective_fm["function"] == "Triangle"
+    assert effective_fm["symmetry_percent"] == 50.0
+    assert effective_fm["sweep_direction"] == "BIDIRECTIONAL_BETWEEN_START_AND_STOP"
     assert effective_fm["derivation_scope"].endswith("NOT_MEASURED")
+    properties = Experiment2(
+        experiment_folder=tmp_path / "fm-tdms-evidence",
+        wfg_config=WfgConfig(running=True, channels=[channel]),
+    )._wfg_properties("Ch1", channel)
+    assert properties["WFGEffectiveFMModulationIndexPercentCh1"] == pytest.approx(1.2926577)
+    assert properties["WFGEffectiveFMFunctionCh1"] == WaveformFunction.TRIANGLE
+    assert properties["WFGEffectiveFMSymmetryCh1"] == 50.0
+    assert properties["WFGEffectiveFMDirectionCh1"] == "BIDIRECTIONAL_BETWEEN_START_AND_STOP"
+    assert properties["WFGEffectiveFMDerivedStartHzCh1"] == pytest.approx(1_909_000.0)
+    assert properties["WFGEffectiveFMDerivedStopHzCh1"] == pytest.approx(1_959_000.0)
+    assert properties["WFGEffectiveFMDerivationScopeCh1"].endswith("NOT_MEASURED")
 
 
 def test_write_tdms_verification_catches_truncated_write(tmp_path, monkeypatch):
@@ -4027,6 +4132,14 @@ def test_experiment2_metadata_marks_only_effective_carrier_parameters(function, 
             function=function,
         ),
         trigger=TriggerSettings(sec_run=1.5, sec_wait=0.25, repeat_count=3),
+    )
+    channel.effective_carrier = CarrierSettings(
+        frequency_hz=1234.0,
+        amplitude_v=2.0,
+        offset_v=0.4,
+        symmetry_percent=25.0,
+        phase_deg=90.0,
+        function=function,
     )
     experiment = Experiment2(experiment_folder=tmp_path / function.value, wfg_config=WfgConfig(channels=[channel]))
     properties = experiment._wfg_properties("Ch1", channel)

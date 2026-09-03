@@ -612,6 +612,8 @@ class Experiment2:
                 "FMSweepModulationIndexPercent": "",
                 "FMSweepTimeMs": "",
                 "FMSweepType": "",
+                "FMSweepDirection": "",
+                "FMSweepSymmetryPercent": "",
             }
         return {
             "FMSweepEnabled": True,
@@ -625,6 +627,8 @@ class Experiment2:
             "FMSweepModulationIndexPercent": self.fm_sweep.fm_modulation_index_pct,
             "FMSweepTimeMs": self.fm_sweep.sweep_time_ms,
             "FMSweepType": str(self.fm_sweep.sweep_type),
+            "FMSweepDirection": self.fm_sweep.sweep_direction,
+            "FMSweepSymmetryPercent": self.fm_sweep.fm_mod_settings().symmetry_percent,
         }
 
     def _wfg_properties(self, suffix: str, channel: Any | None) -> dict[str, Any]:
@@ -645,10 +649,12 @@ class Experiment2:
                 f"WFGEffectiveFreq{suffix}": "",
                 f"WFGEffectiveAmp{suffix}": "",
                 f"WFGEffectiveOffset{suffix}": "",
+                f"WFGEffectiveFunction{suffix}": "",
                 f"WFGEffectiveSymmetry{suffix}": "",
                 f"WFGEffectivePhase{suffix}": "",
             }
             properties.update(self._wfg_fm_mod_properties(suffix, None))
+            properties.update(self._wfg_effective_fm_mod_properties(suffix, None, None))
             return properties
         properties = {
             f"WFGFreq{suffix}": channel.carrier.frequency_hz,
@@ -676,16 +682,23 @@ class Experiment2:
             f"WFGPhase{suffix}": channel.carrier.phase_deg,
             f"WFGTriggerSource{suffix}": channel.trigger.source,
         }
-        policy = waveform_parameter_policy(channel.carrier.function)
-        carrier_active = bool(channel.carrier.enable)
+        effective_carrier = channel.effective_carrier
+        policy = waveform_parameter_policy(effective_carrier.function) if effective_carrier is not None else None
+        carrier_active = bool(effective_carrier is not None and effective_carrier.enable)
         properties.update({
-            f"WFGEffectiveFreq{suffix}": channel.carrier.frequency_hz if carrier_active and policy.is_effective("frequency") else "",
-            f"WFGEffectiveAmp{suffix}": channel.carrier.amplitude_v if carrier_active and policy.is_effective("amplitude") else "",
-            f"WFGEffectiveOffset{suffix}": channel.carrier.offset_v if carrier_active and policy.is_effective("offset") else "",
-            f"WFGEffectiveSymmetry{suffix}": channel.carrier.symmetry_percent if carrier_active and policy.is_effective("symmetry") else "",
-            f"WFGEffectivePhase{suffix}": channel.carrier.phase_deg if carrier_active and policy.is_effective("phase") else "",
+            f"WFGEffectiveFreq{suffix}": effective_carrier.frequency_hz if carrier_active and policy is not None and policy.is_effective("frequency") else "",
+            f"WFGEffectiveAmp{suffix}": effective_carrier.amplitude_v if carrier_active and policy is not None and policy.is_effective("amplitude") else "",
+            f"WFGEffectiveOffset{suffix}": effective_carrier.offset_v if carrier_active and policy is not None and policy.is_effective("offset") else "",
+            f"WFGEffectiveFunction{suffix}": effective_carrier.function if carrier_active else "",
+            f"WFGEffectiveSymmetry{suffix}": effective_carrier.symmetry_percent if carrier_active and policy is not None and policy.is_effective("symmetry") else "",
+            f"WFGEffectivePhase{suffix}": effective_carrier.phase_deg if carrier_active and policy is not None and policy.is_effective("phase") else "",
         })
         properties.update(self._wfg_fm_mod_properties(suffix, channel.fm_mod))
+        properties.update(
+            self._wfg_effective_fm_mod_properties(
+                suffix, channel.effective_fm_mod, effective_carrier
+            )
+        )
         return properties
 
     def _wfg_fm_mod_properties(self, suffix: str, fm_mod: Any | None) -> dict[str, Any]:
@@ -716,6 +729,45 @@ class Experiment2:
             f"WFGFMOffset{suffix}": fm_mod.offset_v,
             f"WFGFMSymmetry{suffix}": fm_mod.symmetry_percent,
             f"WFGFMPhase{suffix}": fm_mod.phase_deg,
+        }
+
+    def _wfg_effective_fm_mod_properties(
+        self, suffix: str, fm_mod: Any | None, carrier: Any | None
+    ) -> dict[str, Any]:
+        empty = {
+            f"WFGEffectiveFMFreq{suffix}": "",
+            f"WFGEffectiveFMModulationIndexPercent{suffix}": "",
+            f"WFGEffectiveFMFunction{suffix}": "",
+            f"WFGEffectiveFMOffset{suffix}": "",
+            f"WFGEffectiveFMSymmetry{suffix}": "",
+            f"WFGEffectiveFMPhase{suffix}": "",
+            f"WFGEffectiveFMDirection{suffix}": "",
+            f"WFGEffectiveFMDerivedStartHz{suffix}": "",
+            f"WFGEffectiveFMDerivedStopHz{suffix}": "",
+            f"WFGEffectiveFMDerivedTotalSpanHz{suffix}": "",
+            f"WFGEffectiveFMDerivedHalfDeviationHz{suffix}": "",
+            f"WFGEffectiveFMDerivationScope{suffix}": "",
+        }
+        if fm_mod is None or not fm_mod.enable or carrier is None:
+            return empty
+        half_deviation_hz = carrier.frequency_hz * abs(fm_mod.amplitude_v) / 100.0
+        return {
+            f"WFGEffectiveFMFreq{suffix}": fm_mod.frequency_hz,
+            f"WFGEffectiveFMModulationIndexPercent{suffix}": fm_mod.amplitude_v,
+            f"WFGEffectiveFMFunction{suffix}": fm_mod.function,
+            f"WFGEffectiveFMOffset{suffix}": fm_mod.offset_v,
+            f"WFGEffectiveFMSymmetry{suffix}": fm_mod.symmetry_percent,
+            f"WFGEffectiveFMPhase{suffix}": fm_mod.phase_deg,
+            f"WFGEffectiveFMDirection{suffix}": {
+                "Triangle": "BIDIRECTIONAL_BETWEEN_START_AND_STOP",
+                "RampUp": "START_TO_STOP_THEN_RESET",
+                "RampDown": "STOP_TO_START_THEN_RESET",
+            }.get(str(getattr(fm_mod.function, "value", fm_mod.function)), "FUNCTION_SPECIFIC"),
+            f"WFGEffectiveFMDerivedStartHz{suffix}": carrier.frequency_hz - half_deviation_hz,
+            f"WFGEffectiveFMDerivedStopHz{suffix}": carrier.frequency_hz + half_deviation_hz,
+            f"WFGEffectiveFMDerivedTotalSpanHz{suffix}": 2.0 * half_deviation_hz,
+            f"WFGEffectiveFMDerivedHalfDeviationHz{suffix}": half_deviation_hz,
+            f"WFGEffectiveFMDerivationScope{suffix}": "SOFTWARE_FROM_EFFECTIVE_SDK_PARAMETERS_NOT_MEASURED",
         }
 
     def _camera_properties(self, settings: dict[str, Any]) -> dict[str, Any]:
