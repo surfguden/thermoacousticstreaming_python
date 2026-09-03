@@ -4,6 +4,17 @@ This folder contains hardware debugging scripts isolated from the main
 experiment program. They are manual tools, not normal pytest coverage:
 `pyproject.toml` collects only `tests/`.
 
+> **CURRENT SAFETY CONTEXT — HISTORICAL PROCEDURES BELOW ARE NOT CURRENT
+> AUTHORITY.** Read [`docs/project_control.md`](../docs/project_control.md) and
+> [`docs/known_open_items.md`](../docs/known_open_items.md) before using any
+> script. As of the accepted pre-acoustic baseline, camera-only Gate 2 is
+> accepted, W1/acoustic output is blocked pending JP4/cable/amplifier/
+> transducer/starting-amplitude closure, and Gate 3/Gate 4 must not resume.
+> This README describes script capabilities and retained preparation evidence;
+> it does not authorize a hardware action. Under this baseline, use only
+> plan-only/discovery/read-only paths; do not invoke action-capable output,
+> valve, pump, stage, or camera modes from the retained procedures.
+
 ## Safety Rules
 
 - Hardware tests must default to discovery, read-only status checks, or
@@ -190,10 +201,13 @@ operator setup and observation:
    gated action is `--real-ad2-timing-check --pre-trigger-wait-s 2.0 --confirm
    CONFIRM_REAL_HARDWARE`. This uses the script's low-risk 1 kHz, 0.1 V
    waveform; it does not prove the full acoustic condition.
-2. Valve routing: use one `P01\r` or `P02\r` action at a time through a
-   `test_valve_command_probe*.py` script with `--confirm SEND`, after confirming
-   COM5/COM6 and the tubing state. A recognized status response confirms the
-   numeric position, not its fluidic meaning.
+2. Valve routing: the current application valve resource is **COM5**. Use one
+   `P01\r` or `P02\r` action at a time through a
+   `test_valve_command_probe*.py` script with `--confirm SEND`, only after the
+   current open-item gate and separate operator authorization are satisfied.
+   Do not recover COM6-as-valve from this historical checklist; COM6 is the
+   current TEC resource. A recognized status response confirms the numeric
+   position, not its fluidic meaning.
 3. Qmix motion/stop semantics: the 2026-08-28 no-motion probe completed three
    clean bus ownership/cleanup cycles but retained the pump fault flag in all
    three. Do not run motion while that relatching CAN fault remains. Resolve
@@ -207,6 +221,10 @@ operator setup and observation:
    cancellation from the UI becoming responsive.
 
 ## Z-Stage Discovery Result
+
+The following is retained discovery evidence and is not current commissioning
+status or motion authorization. Current Z truth is summarized in
+`docs/project_control.md` and `docs/known_open_items.md`.
 
 - The old Z-stage path in the converted Python code assumes a Prior serial
   stage on `COM7`.

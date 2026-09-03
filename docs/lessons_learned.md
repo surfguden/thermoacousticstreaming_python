@@ -259,6 +259,63 @@ commissioning stop rule; prose alone does not qualify.
 | Internal indices and operator counts differ — `DOCUMENTED_AND_ENFORCED` | Zero-based `repeat_id` leaked into a flush-failure operator message. | Operator logs/folders use one-based number; TDMS records both bases explicitly. | Exact repeat-1 flush failure test and TDMS identity test. | `project_control.md` condition/repeat row. | Compatibility `Repeat ID` remains zero-based and must be read with the base fields. |
 | Software chronology is not physical timing — `DOCUMENTED_AND_ENFORCED` | UTC/monotonic logs could be overread as trigger/exposure synchronization. | Evidence model limits them to chronology and elapsed/timeout diagnosis. | Deterministic timing tests; physical timing remains a manual-only future gate. | `project_control.md` time/evidence rows; this file. | `HW-TIMING-001` remains deferred; no jitter/synchronization claim. |
 
+## Lessons for future review and Codex tasks
+
+These are retained because they change how high-risk work must be specified and
+reviewed; they are not a second project-status register.
+
+### Material task methods belong in the brief from the start — `DOCUMENTED_BUT_NOT_ENFORCED`
+
+If a task has a material scientific, evidence, Git, or hardware boundary, its
+methodology, acceptance classification, retrospective-coverage requirement,
+and deliverables should be stated before execution. Known mature lessons should
+be included at task start. A later-discovered requirement must be applied to
+already-reviewed material when it changes the conclusion, rather than being
+treated as optional because the first pass predated it.
+
+Control: task brief plus the retrospective-coverage and drift checklists in the
+historical audit evidence. Independent check: a final reviewer reruns the
+required coverage against the whole knowledge family. Residual risk: a future
+task may still omit a requirement or rely on serial steering; this is a process
+control, not an automated gate.
+
+### Executor self-review is not organizational independence — `DOCUMENTED_BUT_NOT_ENFORCED`
+
+The executor should perform a complete self-review, but a material scientific,
+hardware, or evidence-boundary conclusion benefits from a fresh reviewer who
+did not perform the implementation. “PASS” or “VALIDATED” is not sufficient
+without the evidence package and the independent challenge opportunity.
+
+Control: explicit independent-review request and reviewer-reconstructable
+report. Independent check: a fresh agent starts from the repository checkpoint
+without owner chat history. Residual risk: reviewer availability and actual
+independence remain organizational matters.
+
+### Critical numerical conclusions require an external anchor and an evidence package — `DOCUMENTED_AND_ENFORCED`
+
+A production/test agreement is not enough when both may share one wrong model.
+Important numerical transformations need a first-principles, metrology,
+manufacturer/API, or peer-reviewed anchor as appropriate, plus a concise
+record of the expected case, sources, checks, and limitations.
+
+Control: cited hard-case tests, source hierarchy, and dated audit reports.
+Independent check: reproduce the expected case without calling the production
+helper. Residual risk: an anchor can be misapplied if its evidence layer or
+acquisition mode is not named.
+
+### Codex autonomy is bounded by explicit scientific, evidence, Git, and hardware rules — `DOCUMENTED_AND_ENFORCED`
+
+Codex may choose implementation details within the authorized task, but must
+not infer permission for hardware actions, destructive Git operations, or a
+materially different scope. New physical evidence supersedes an old assumption
+without rewriting the old record; the current authority must be updated and
+the provenance retained.
+
+Control: `AGENTS.md`, current-authority hierarchy, hardware gates, and the
+no-stage/no-commit/no-push boundary unless separately authorized. Independent
+check: final Git-state and hardware-action accounting. Residual risk: stale
+implementation details and manual probes remain searchable and need context.
+
 ## Deliberately not adopted
 
 No lesson was copied from a sibling repository, and no sibling-project naming,

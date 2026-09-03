@@ -7,10 +7,11 @@ Historical audits and evidence records preserve how conclusions were reached,
 but they do not override this page, current source, tests, Git state, or newer
 retained evidence.
 
-Last current-truth convergence: 2026-09-03. This parameter-semantics audit
-started from clean pushed checkpoint
-`bfd1b3168081fdd6bf29494b683973b9dc54aeaa`; its current offline corrections
-remain uncheckpointed pending owner review and authorization.
+Last current-truth convergence: 2026-09-03, at the accepted pushed
+pre-acoustic software baseline `0855e411e93a5636be841375c96b540bb04c7399`.
+The preceding parameter-semantics corrections were reviewed and checkpointed
+there; this page records their current project implications, not an
+uncheckpointed change set.
 
 ## Authority hierarchy
 
@@ -58,7 +59,10 @@ concrete contradictory defect supported by current source/tests.
 
 The primary experiment is steady/quasi-steady thermoacoustic acquisition.
 Transient/onset synchronization is deferred and must not dominate the normal
-path.
+path. The workflow below is the intended software workflow, but execution is
+currently paused before any W1 output: the custom acoustic chain and a
+defensible same-chain starting amplitude remain unclosed under
+`HW-AD2-BNC-001` and `HW-ACOUSTIC-CHAIN-001`.
 
 Manual preparation:
 
@@ -79,17 +83,20 @@ Software experiment:
    separately authorized workflow explicitly requires them.
 5. Review V3's “Start will run” summary and resolve all blocking preflight
    issues.
-6. Run Internal-trigger camera acquisition with finite Acoustic/W1 behavior.
+6. Once the physical W1 closure and a separate run authorization exist, run
+   Internal-trigger camera acquisition with finite Acoustic/W1 behavior.
 7. Monitor run progress and operator events.
 8. Retain TDMS, action, manifest, and diagnostic evidence.
 9. Enable the bounded repeat-to-repeat refresh sequence only after its separate
    physical readiness gates are satisfied. Cleaning and initial loading remain
    manual, not automated refresh steps.
 
-For the next minimal camera+AD2 run: enable Acoustic/W1 explicitly, use
-`Repeat=1`, keep Frequency Scan off when FM Sweep is on, choose a finite run
-duration covering acquisition, verify the requested ROI/exposure/amplitude, and
-leave every deferred subsystem disabled.
+After the W1 physical gate is closed and the run is separately authorized, the
+minimal camera+AD2 run should enable Acoustic/W1 explicitly, use `Repeat=1`,
+keep Frequency Scan off when FM Sweep is on, choose a finite run duration
+covering acquisition, verify the requested ROI/exposure/amplitude, and leave
+every deferred subsystem disabled. Until then, do not enable W1 or repeat the
+accepted camera-only Gate 2.
 
 ## V3 operator model
 
@@ -532,19 +539,19 @@ Do not reopen these without new contradictory evidence:
 ## Current readiness and next step
 
 Camera-only Gate 2 is accepted. The FM total-width and sweep-shape software
-defects are closed at pushed checkpoint `bfd1b31`. Acoustic commissioning is
+defects are closed in the accepted pushed pre-acoustic baseline `0855e41`
+(following their implementation checkpoints). Acoustic commissioning is
 still not ready because exact amplifier/load/termination/current-transducer
 evidence is insufficient to select a defensible first W1 source peak
 amplitude. No W1 output is allowed until that physical closure is complete.
 
 ### Next real project step
 
-After reviewing/checkpointing the current offline parameter-semantics
-corrections, obtain and retain the six amplifier/transducer/JP4 facts listed in
-the 2026-09-02 electrical-closure section. Then derive and independently review
-a first-run AD2 source peak amplitude against the exact chain. Do not energize
-W1 or resume Gate 3/Gate 4 until that closure is explicit and the hardware run
-is separately authorized.
+Obtain and retain the six amplifier/transducer/JP4 facts listed in the
+2026-09-02 electrical-closure section. Then derive and independently review a
+first-run AD2 source peak amplitude against the exact chain. Do not energize W1
+or resume Gate 3/Gate 4 until that closure is explicit and the hardware run is
+separately authorized.
 
 ### Deferred capabilities
 
