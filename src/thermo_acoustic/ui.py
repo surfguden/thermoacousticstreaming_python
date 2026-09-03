@@ -213,7 +213,7 @@ class MainWindow(tk.Tk):
         for label, key in (
             ("idxChannel", "idx"),
             ("Frequency (Hz)", "frequency"),
-            ("Amplitude (V)", "amplitude"),
+            ("AD2 source peak amplitude (V)", "amplitude"),
             ("Offset(V)", "offset"),
             ("Symmetry(%)", "symmetry"),
             ("Phase(Deg)", "phase"),
@@ -361,7 +361,7 @@ class MainWindow(tk.Tk):
             ("Camera FPS", self.experiment_camera_fps),
             ("Camera Start (s)", self.experiment_camera_start),
             ("Ch1 Frequency (Hz)", self.experiment_ch1_frequency),
-            ("Ch1.Carrier.Amplitude (V)", self.experiment_ch1_amplitude),
+            ("Ch1 AD2 source peak amplitude (V)", self.experiment_ch1_amplitude),
             ("Ch1 Start (s)", self.experiment_ch1_start),
             ("Ch1 Run (s) (0=Cont)", self.experiment_ch1_run),
             ("Ch2 Start(s)", self.experiment_ch2_start),

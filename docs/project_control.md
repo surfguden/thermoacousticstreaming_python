@@ -7,8 +7,10 @@ Historical audits and evidence records preserve how conclusions were reached,
 but they do not override this page, current source, tests, Git state, or newer
 retained evidence.
 
-Last current-truth convergence: 2026-09-02, based on clean pushed documentation
-checkpoint `86b03500af36c1b7d61c30c1f583641b709760ab`.
+Last current-truth convergence: 2026-09-03. This parameter-semantics audit
+started from clean pushed checkpoint
+`bfd1b3168081fdd6bf29494b683973b9dc54aeaa`; its current offline corrections
+remain uncheckpointed pending owner review and authorization.
 
 ## Authority hierarchy
 
@@ -114,6 +116,45 @@ contains it. Missing evidence is `UNKNOWN`, never inferred. Deferred
 camera-start metadata, trigger details, TEC engineering controls, raw channel
 indices, and other uncommon options remain available without dominating normal
 operation.
+
+## Authoritative parameter semantics
+
+This compact registry is the current semantic authority. Compatibility field
+names remain where readers depend on them; additive fields make units and
+conventions explicit. SI/NIST quantity conventions establish the physical
+layer, exact manufacturer documentation establishes device/API behavior, and
+the Lund publication establishes only the scientific method it actually
+reports. A value never inherits authority from a different layer.
+
+| Parameter family | Meaning, units, and transformation | Persisted/operator evidence | Status |
+| --- | --- | --- | --- |
+| Carrier frequency | AD2 W1/W2 carrier frequency in Hz internally/TDMS; Qt entry is kHz and converts by `x1000`. | Requested `WFGFreq*`; post-clamp software-effective `WFGEffectiveFreq*`. | VERIFIED |
+| FM endpoints/span | `center=(start+stop)/2`; total span=`stop-start`; half deviation=total span/2, all in Hz. The Digilent FM-node percentage is `100*half_deviation/center`, not the universal communications definition of FM index beta. | Explicit start/stop/center/total-span/half-deviation and SDK-percent fields in review, actions, and TDMS. | VERIFIED_WITH_SOFTWARE_DERIVATION |
+| Sweep time/shape | UI milliseconds convert to modulation frequency `1000/sweep_time_ms` Hz. Triangle/50% is bidirectional; RampUp/100% and RampDown/100% have the documented directions. Repeat is finite trigger count; normal enabled W1 requires exactly 1. | Requested and effective function, symmetry, direction, period, frequency, and repeat fields. | VERIFIED |
+| AD2 carrier amplitude | Peak source amplitude in volts around Offset for supported periodic waveforms. For a zero-offset sine only, `Vpp=2*Vpeak` and `Vrms=Vpeak/sqrt(2)`; no shape-independent RMS conversion is implied. | UI says `AD2 source peak amplitude (V)`; TDMS convention is `AD2_SOURCE_PEAK_VOLTS_NOT_LOADED_OR_DOWNSTREAM`; requested and post-clamp software-effective values are separate. | VERIFIED |
+| Loaded/acoustic amplitude | BNC JP4 selects approximately 0-ohm/direct or 49.9-ohm series source path. Loaded amplifier input depends on complex input impedance; amplifier output, transducer voltage/current, and acoustic pressure require chain characterization or measurement. | Deliberately absent as measured values. | PHYSICAL_MEASUREMENT_REQUIRED |
+| Camera exposure | Operator/request and authoritative TDMS fields use ms; DCAM receives seconds (`ms/1000`) and set/get seconds return as ms (`s*1000`). The camera quantizes upward according to scan mode. | `RequestedExposureMs`, `AppliedExposureMs`; legacy `ExposureTime` changes from request to configured set/get value after successful configuration. | VERIFIED |
+| Camera cadence | FPS is requested frames/s; interval is `1/FPS`. In Internal/free-running acquisition, exposure and readout overlap, so the supported-period gate uses `max(applied_exposure_s, fresh_readout_s)`, not their sum. Frame count/FPS gives the requested capture-window estimate; actual frame chronology requires timestamps. | `CameraFPS` plus `CameraFPSUnit`; legacy `ReadoutTime` plus `ReadoutTimeSeconds`. | VERIFIED_WITH_SOFTWARE_DERIVATION |
+| ROI/image scale | ROI x/y/width/height are sensor pixels, requested then freshly read back. Exact sensor is 2304 x 2304 with 6.5-micrometre pixel pitch; pixel pitch is a model specification, not calibrated object-space scale. | Applied ROI fields in TDMS; no inferred object-space distance. | VERIFIED |
+| Condition/repeat | Internal `repeat_id`/`RepeatIndex` and temperature point index are zero-based. Operator repeat number, folders, progress, and action records are one-based. Conditions are ordered by temperature group then repeat. | `RepeatIndexBase=0`, `RepeatNumberBase=1`; `repeat_NNN` folders and one-based operator messages. | VERIFIED |
+| Refresh/fluidics | Flow request is positive dispense in uL/min; flush volume/fill level are absolute mL. Travel estimate is `(mL*1000/uL_per_min)*60` s. `WaitAfterFlush` is seconds after confirmed P02. P01 is through-chip; P02 bypass. Commands/controller state do not prove delivered fluid. | Additive unit fields accompany legacy TDMS names; action evidence stays command/protocol scoped. | VERIFIED semantics; PHYSICAL_MEASUREMENT_REQUIRED delivery |
+| Laser | W2 voltage command, laser Analog In voltage, Digital In state, emitted optical power, power entering the channel, and calibrated in-channel power are distinct. | Software laser control remains disabled; no electrical value is called laser power. | DEFERRED / PHYSICAL_MEASUREMENT_REQUIRED |
+| Z and TEC | Z values are controller micrometres until direction/zero/microscope datum are physically established. TEC target and controller sensor/stable state are degrees Celsius/controller evidence, not fluid temperature or imaging-plane equilibrium. | Controller/readback language remains qualified; no sample-state promotion. | DEFERRED / PHYSICAL_MEASUREMENT_REQUIRED |
+| Time evidence | UTC timestamps provide wall-clock chronology; host monotonic seconds provide elapsed/timeout ordering. Sweep/camera/trigger settings are programmed quantities. None is a common-timebase physical timing measurement. | Action log records UTC and monotonic elapsed time; physical timing remains absent. | VERIFIED semantics; PHYSICAL_MEASUREMENT_REQUIRED timing |
+
+Fundamental/cross-vendor checks: the [NIST SI Guide](https://www.nist.gov/pml/special-publication-811/nist-guide-si-chapter-7-rules-and-style-conventions-expressing-values)
+supports explicit quantity/unit labeling; [NIST spectrum-amplitude guidance](https://www.nist.gov/system/files/documents/calibrations/tn699.pdf)
+distinguishes time-domain peak and frequency-domain RMS conventions;
+[Tektronix AFG documentation](https://download.tek.com/manual/077095702_July_2019.pdf)
+demonstrates the professional source/load trap in displayed generator
+amplitude; [Keysight FM documentation](https://www.keysight.com/bi/en/assets/9018-01829/user-manuals/9018-01829.pdf)
+defines universal sinusoidal FM beta as peak deviation divided by modulation
+frequency, distinct from Digilent's device-specific FM-node percentage; and
+[EMVA 1288](https://www.emva.org/standards-technology/emva-1288/) separates
+standardized camera characterization from operational timing. Selective
+[Andor/Oxford overlap guidance](https://andor.oxinst.com/learning/view/article/faqs-on-rolling-and-global-exposure)
+confirms that exposure/readout overlap is a camera-mode property, so exact
+Hamamatsu timing remains controlling for this installed camera.
 
 ## Current hardware and routing truth
 
@@ -287,6 +328,13 @@ transducer. The historical 2 V configuration is software/screenshot evidence
 only and was explicitly marked do-not-run. None of these values establishes a
 defensible first energized amplitude for the current chain.
 
+For the off-centre case the paper reports a 1.934 MHz centre, a “sweep of
+50 kHz,” and a 1 ms sweep time, but does not explicitly state whether 50 kHz
+is total start-to-stop span or +/- deviation. Current project/owner semantics
+define 50 kHz as total span; that is a retained project interpretation, not a
+quotation of an explicit literature endpoint convention. The centred case's
+reported 1.9712 MHz is unswept.
+
 Commissioning remains stopped before Gate 3/Gate 4 and before any W1 output.
 The current photographs are `OWNER_SUPPLIED / PHOTO_CONFIRMED_CURRENT_UNIT`
 evidence for the custom enclosure and visible external construction only. No
@@ -401,8 +449,9 @@ manual setting.
   compatibility field `ExposureTime` is the effective/applied value after
   configuration.
 - Requested FPS remains planning truth even with production DIO disabled. Run
-  start checks applied exposure plus fresh readout time against the requested
-  frame interval.
+  start checks the slower of applied exposure and fresh readout time against
+  the requested frame interval, matching the camera's documented overlapping
+  Internal/free-running timing rather than incorrectly adding them.
 - Acoustic uses Project Ch1 / API 0 / W1. Enabled normal CH0 requires
   `Repeat=1`; infinite and unsupported finite repeats fail preflight.
 - FM Sweep requires explicit Acoustic/W1 enable and cannot coexist with
@@ -482,20 +531,20 @@ Do not reopen these without new contradictory evidence:
 
 ## Current readiness and next step
 
-Camera-only Gate 2 is accepted. Acoustic commissioning is not ready for two
-independent reasons: exact amplifier/load/termination/current-transducer
-evidence is insufficient to select a defensible first W1 amplitude, and the
-current FM total-width translation is twice the official SDK formula. No W1
-output is allowed until both are closed.
+Camera-only Gate 2 is accepted. The FM total-width and sweep-shape software
+defects are closed at pushed checkpoint `bfd1b31`. Acoustic commissioning is
+still not ready because exact amplifier/load/termination/current-transducer
+evidence is insufficient to select a defensible first W1 source peak
+amplitude. No W1 output is allowed until that physical closure is complete.
 
 ### Next real project step
 
-Obtain and retain the six amplifier/transducer/JP4 facts listed in the
-2026-09-02 electrical-closure section, and separately authorize correction and
-offline validation of the FM factor-of-two defect. Then derive and
-independently review a first-run AD2 amplitude against the exact chain. Do not
-energize W1 or resume Gate 3/Gate 4 until both closures are explicit and the
-hardware run is separately authorized.
+After reviewing/checkpointing the current offline parameter-semantics
+corrections, obtain and retain the six amplifier/transducer/JP4 facts listed in
+the 2026-09-02 electrical-closure section. Then derive and independently review
+a first-run AD2 source peak amplitude against the exact chain. Do not energize
+W1 or resume Gate 3/Gate 4 until that closure is explicit and the hardware run
+is separately authorized.
 
 ### Deferred capabilities
 

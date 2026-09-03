@@ -45,14 +45,20 @@ class WaveformParameterPolicy:
         {"function", "frequency", "amplitude", "offset", "symmetry", "phase"}
     )
     frequency_label: str = "Frequency"
-    amplitude_label: str = "Amplitude (V)"
+    amplitude_label: str = "AD2 source peak amplitude (V)"
     offset_label: str = "Offset (V)"
     symmetry_label: str = "Symmetry (%)"
     phase_label: str = "Phase (Deg)"
     help_text: tuple[tuple[str, str], ...] = (
         ("frequency", "Standard-waveform repetition frequency."),
-        ("amplitude", "Carrier voltage amplitude."),
-        ("offset", "Carrier voltage offset."),
+        (
+            "amplitude",
+            "AD2 source peak amplitude in volts before BNC-adapter loading or any downstream amplifier; not Vpp, RMS, transducer voltage, or acoustic pressure.",
+        ),
+        (
+            "offset",
+            "AD2 source DC offset in volts; for a periodic carrier the commanded source excursion is offset plus/minus peak amplitude and remains distinct from loaded voltage.",
+        ),
         ("symmetry", "Standard-signal symmetry percentage."),
         ("phase", "Carrier phase in degrees."),
     )

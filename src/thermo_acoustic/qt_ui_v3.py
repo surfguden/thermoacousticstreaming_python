@@ -1623,7 +1623,7 @@ class MainWindowV3(MainWindowV2):
                     different = abs(float(applied_amplitude) - requested_amplitude) > 1e-9
                     suffix = " — LIMITED" if different else ""
                     self._v3_amplitude_evidence.setText(
-                        f"Requested {requested_amplitude:.6g} V; latest software-effective {float(applied_amplitude):.6g} V{suffix}"
+                        f"Requested AD2 source peak {requested_amplitude:.6g} V; latest software-effective AD2 source peak {float(applied_amplitude):.6g} V{suffix}"
                     )
                     self._v3_amplitude_evidence.setStyleSheet(
                         "color: darkorange; font-weight: bold;" if different else ""
@@ -2278,8 +2278,8 @@ class MainWindowV3(MainWindowV2):
             self._v3_dio_slot_budget.setText("Not used; fixed start applies to every repeat")
             self._v3_dio_slot_budget.setStyleSheet("")
         self._v3_camera_feasibility.setText(
-            "Application._check_camera_timing_budget() validates requested FPS against applied exposure plus "
-            "live DCAM readout at run start. Preview unavailable without querying hardware."
+            "Application._check_camera_timing_budget() validates requested FPS against the slower of applied "
+            "exposure and live DCAM readout at run start. Preview unavailable without querying hardware."
         )
 
         settings = self._flush_settings(experiment=True)
@@ -2452,7 +2452,7 @@ class MainWindowV3(MainWindowV2):
         label_text_by_object_name = {
             "manualWfgCarrier_idxLabel": "Channel index",
             "manualWfgCarrier_frequencyLabel": "Carrier frequency (kHz) (overridden)",
-            "manualWfgCarrier_amplitudeLabel": "Amplitude (V) (overridden)",
+            "manualWfgCarrier_amplitudeLabel": "AD2 source peak amplitude (V) (overridden)",
             "manualWfgCarrier_offsetLabel": "Offset (V) (overridden)",
             "manualWfgCarrier_symmetryLabel": "Symmetry (%) (overridden)",
             "manualWfgCarrier_phaseLabel": "Phase (deg) (overridden)",

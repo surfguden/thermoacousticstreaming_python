@@ -20,15 +20,20 @@ class ZScanFrameResult:
     without a rewrite -- per explicit instruction."""
 
     target_um: float
-    measured_um: float
+    controller_readback_um: float
     filename: str
 
+    @property
+    def measured_um(self) -> float:
+        """Compatibility alias; this is controller readback, not metrology."""
+        return self.controller_readback_um
 
-def _filename_for(measured_um: float) -> str:
-    # z_XXXX.XXum.tif -- e.g. 125.3 -> "z_0125.30um.tif". Real closed-loop
-    # readback, not the commanded target, so any small settling residual is
-    # captured accurately in the filename itself (explicit requirement).
-    return f"z_{measured_um:07.2f}um.tif"
+
+def _filename_for(controller_readback_um: float) -> str:
+    # z_XXXX.XXum.tif -- e.g. 125.3 -> "z_0125.30um.tif". This embeds the
+    # controller's closed-loop coordinate rather than the commanded target;
+    # it is not an independently measured microscope displacement.
+    return f"z_{controller_readback_um:07.2f}um.tif"
 
 
 @dataclass(slots=True)
@@ -142,16 +147,21 @@ class ZScanCalibration:
         if image is None:
             raise ZScanError(f"Camera capture failed at target {target_um:.2f} um.")
 
-        # Real closed-loop readback, not the commanded target -- explicit
-        # requirement, so filename-embedded Z reflects actual position.
-        measured_um = self.piezo.get_position()
-        filename = _filename_for(measured_um)
+        # Controller closed-loop readback, not the commanded target. This can
+        # retain a settling residual but does not establish direction, scale,
+        # zero, or physical displacement at the microscope.
+        controller_readback_um = self.piezo.get_position()
+        filename = _filename_for(controller_readback_um)
 
         from PIL import Image as PILImage
 
         PILImage.fromarray(image).save(output_dir / filename, format="TIFF")
 
-        return ZScanFrameResult(target_um=target_um, measured_um=measured_um, filename=filename)
+        return ZScanFrameResult(
+            target_um=target_um,
+            controller_readback_um=controller_readback_um,
+            filename=filename,
+        )
 
     @staticmethod
     def _build_targets(z_start_um: float, z_end_um: float, step_size_um: float) -> list[float]:
@@ -268,7 +278,10 @@ def main(argv: list[str] | None = None) -> int:
 
     _print_step(f"scan complete: {len(results)} frames written to {args.output_dir}")
     for result in results:
-        _print_step(f"  target={result.target_um:.2f}um measured={result.measured_um:.2f}um -> {result.filename}")
+        _print_step(
+            f"  target={result.target_um:.2f}um "
+            f"controller_readback={result.controller_readback_um:.2f}um -> {result.filename}"
+        )
     return 0
 
 

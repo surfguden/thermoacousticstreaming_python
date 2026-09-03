@@ -355,7 +355,7 @@ def test_full_flow_writes_correlated_operator_action_stream(tmp_path):
     assert ("InitializeExperiment", "STARTED") in operations
     assert ("InitializeExperiment", "COMPLETED") in operations
     assert ("wfg_configuration_effective", "EFFECTIVE") in operations
-    assert ("acquisition_settings_effective", "APPLIED") in operations
+    assert ("acquisition_settings_effective", "EFFECTIVE") in operations
     assert ("results_saved", "COMPLETED") in operations
     assert operations[-1] == ("repeat_outcome", "COMPLETED")
 
@@ -608,7 +608,9 @@ def test_camera_timing_budget_rejects_planned_fps_exceeding_readout_budget_witho
     app = make_fake_app(calls, tmp_path)
     app.camera.read_readout_time = lambda: 0.05  # 50 ms readout for the configured ROI
     experiment = make_recording_experiment(calls, tmp_path)
-    experiment.global_exposure_ms = 20.0  # 20 ms exposure -> 70 ms frame period -> ~14.3 fps max
+    # Official C15440-20UP free-running timing is limited by the slower of
+    # exposure and readout, so 50 ms readout limits this case to 20 fps.
+    experiment.global_exposure_ms = 20.0
     experiment.sequence_settings["camera_fps"] = 100.0
     experiment.do_clock_settings = {"running": False, "channels": []}
     app.camera.configure_exposure_time(experiment.global_exposure_ms)
@@ -625,13 +627,34 @@ def test_camera_timing_budget_allows_planned_fps_within_readout_budget_without_d
     app = make_fake_app(calls, tmp_path)
     app.camera.read_readout_time = lambda: 0.005  # 5 ms readout for the configured ROI
     experiment = make_recording_experiment(calls, tmp_path)
-    experiment.global_exposure_ms = 5.0  # 5 ms exposure -> 10 ms frame period -> 100 fps max
+    experiment.global_exposure_ms = 5.0  # max(5 ms exposure, 5 ms readout) -> 200 fps max
     experiment.sequence_settings["camera_fps"] = 50.0
     experiment.do_clock_settings = {"running": False, "channels": []}
     app.camera.configure_exposure_time(experiment.global_exposure_ms)
     app._check_camera_timing_budget(experiment)
 
     assert ("camera", "start_capture") not in calls
+
+
+def test_camera_timing_budget_uses_vendor_overlap_relationship_not_sum(tmp_path):
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+    # Hamamatsu documents 11.22 ms full-frame readout in Fast scan. With a
+    # 40 ms exposure, the documented free-running limit is 1 / 40 ms = 25 fps,
+    # not 1 / (40 + 11.22) ms. This hard reference case is intentionally not
+    # calculated through a production helper.
+    app.camera.read_readout_time = lambda: 0.01122
+    experiment = make_recording_experiment(calls, tmp_path)
+    experiment.global_exposure_ms = 40.0
+    experiment.sequence_settings["camera_fps"] = 25.0
+    experiment.do_clock_settings = {"running": False, "channels": []}
+    app.camera.configure_exposure_time(experiment.global_exposure_ms)
+
+    app._check_camera_timing_budget(experiment)
+
+    experiment.sequence_settings["camera_fps"] = 25.01
+    with pytest.raises(ValueError, match="exceeds what the current exposure"):
+        app._check_camera_timing_budget(experiment)
 
 
 def test_run_experiment2_enforces_planned_fps_budget_while_production_dio_is_disabled(tmp_path):
@@ -900,8 +923,8 @@ def test_run_experiment2_reports_flush_failure_instead_of_completing(tmp_path, m
 
     assert ok is False
     assert app.status == "ExperimentFlushFailed"
-    assert any("Flush failed for experiment repeat" in str(error) for error in app.errors)
-    assert any("Flush failed for experiment repeat" in record.message for record in caplog.records)
+    assert any("Flush failed for experiment repeat 1:" in str(error) for error in app.errors)
+    assert any("Flush failed for experiment repeat 1:" in record.message for record in caplog.records)
     assert not any(call[:2] == ("camera", "save_sequence") for call in calls)
     assert ("experiment", "cleanup") in calls
 

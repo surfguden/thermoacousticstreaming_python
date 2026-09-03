@@ -259,10 +259,14 @@ def test_every_exposed_waveform_has_explicit_policy(function):
         "frequency_scan", "fm", "wait", "run", "repeat", "trigger", "enable",
     }
     assert set(dict(policy.help_text)) == {"frequency", "amplitude", "offset", "symmetry", "phase"}
+    assert policy.amplitude_label == "AD2 source peak amplitude (V)"
     if function is WaveformFunction.DC:
+        assert dict(policy.help_text)["amplitude"].startswith("Not applicable")
         assert policy.effective_parameters == frozenset({"function", "offset"})
         assert policy.incompatible_experiment_features == frozenset({"frequency_scan", "fm"})
     else:
+        amplitude_help = dict(policy.help_text)["amplitude"]
+        assert "not Vpp, RMS, transducer voltage, or acoustic pressure" in amplitude_help
         assert policy.effective_parameters == frozenset({"function", "frequency", "amplitude", "offset", "symmetry", "phase"})
         assert not policy.incompatible_experiment_features
     if function is WaveformFunction.SQUARE:
@@ -714,7 +718,7 @@ def test_wfg_tab_and_experiment_tab_carry_live_use_labels(monkeypatch, tmp_path)
     # experiment runs)" to "(overridden)"/"(unused)" -- same distinction (an active
     # Experiment-tab analog exists vs. none exists at all), far less per-row width.
     assert "Frequency (kHz) (overridden)" in wfg_label_texts
-    assert "Amplitude (V) (overridden)" in wfg_label_texts
+    assert "AD2 source peak amplitude (V) (overridden)" in wfg_label_texts
     assert "Run duration (s)   [0 = continuous] (overridden)" in wfg_label_texts
     assert "secWait (overridden)" in wfg_label_texts
     # Extended, verified-accurate labeling: Enable/Trigger source are also
@@ -733,7 +737,7 @@ def test_wfg_tab_and_experiment_tab_carry_live_use_labels(monkeypatch, tmp_path)
     exp_label_texts = {lbl.text() for lbl in exp_tab.findChildren(QLabel)}
 
     assert "CH0 Frequency (kHz) (overrides WFG tab)" in exp_label_texts
-    assert "CH0 Amplitude (V) (overrides WFG tab)" in exp_label_texts
+    assert "CH0 AD2 source peak amplitude (V) (overrides WFG tab)" in exp_label_texts
     assert "CH0 Start (s) (overrides WFG tab)" in exp_label_texts
     assert "CH1 Run (s)(0=Cont) (overrides WFG tab)" in exp_label_texts
 
@@ -854,6 +858,17 @@ def test_programmed_repeat_duration_uses_concurrent_ad2_window_then_flush():
     # AD2 contributes max(12, 21, 8) = 21s because outputs overlap.
     # Flush contributes 15s pump travel + 3s programmed post-flush wait.
     assert qt_ui._programmed_repeat_duration_s(experiment) == pytest.approx(39.0)
+
+
+def test_programmed_repeat_duration_includes_camera_only_capture_window():
+    from thermo_acoustic.workflows import Experiment2
+
+    experiment = Experiment2(
+        camera_enabled=True,
+        sequence_settings={"frames": 100, "camera_fps": 20.0},
+    )
+
+    assert qt_ui._programmed_repeat_duration_s(experiment) == pytest.approx(5.0)
 
 
 def test_series_timing_uses_controlled_clock_and_refines_remaining_estimate(monkeypatch, tmp_path):

@@ -997,6 +997,9 @@ def test_run_experiment2_finalizes_completed_record_with_explicit_identity(tmp_p
     assert properties["FrequencyScanSelectedHz"] == 125_000.0
     assert properties["CameraStartMode"] == "dynamic"
     assert properties["CameraStartRequested"] == 0.25
+    assert properties["CameraStartRequestedSeconds"] == 0.25
+    assert properties["RepeatIndexBase"] == 0
+    assert properties["RepeatNumberBase"] == 1
 
 
 def test_run_experiment2_finalizes_failed_record_without_claiming_configuration_applied(tmp_path, monkeypatch):
@@ -3975,11 +3978,13 @@ def test_experiment2_writes_labview_metadata_tdms(tmp_path, monkeypatch):
         "DOFreq",
         "WFGPhysicalRoleCh1",
         "WFGPhysicalRoleCh2",
+        "WFGCarrierAmplitudeConvention",
         "CameraDIO0TriggerUsed",
         "LaserDIO1TriggerRequested",
         "LaserDIO1TriggerConfiguredByProductionRuntime",
         "CameraFrames",
         "CameraFPS",
+        "CameraFPSUnit",
         "ExposureTime",
         "RequestedExposureMs",
         "AppliedExposureMs",
@@ -3987,9 +3992,13 @@ def test_experiment2_writes_labview_metadata_tdms(tmp_path, monkeypatch):
         "Repeat ID",
         "Experiment started",
         "FlushFlowrate",
+        "FlushFlowrateUnit",
         "FlushVolume",
+        "FlushVolumeUnit",
         "WaitAfterFlush",
+        "WaitAfterFlushUnit",
         "ReadoutTime",
+        "ReadoutTimeSeconds",
         "HorizontalSize",
         "VerticalSize",
         "HorizontalOffset",
@@ -4007,6 +4016,12 @@ def test_experiment2_writes_labview_metadata_tdms(tmp_path, monkeypatch):
     assert properties["WFGEnabledCh2"] is True
     assert properties["WFGPhysicalRoleCh1"] == "AD2 API 0 / W1 / acoustic amplifier and transducer"
     assert properties["WFGPhysicalRoleCh2"] == "AD2 API 1 / W2 / laser Analog In"
+    assert properties["WFGCarrierAmplitudeConvention"] == "AD2_SOURCE_PEAK_VOLTS_NOT_LOADED_OR_DOWNSTREAM"
+    assert properties["CameraFPSUnit"] == "frames/s"
+    assert properties["FlushFlowrateUnit"] == "uL/min"
+    assert properties["FlushVolumeUnit"] == "mL"
+    assert properties["WaitAfterFlushUnit"] == "s"
+    assert properties["ReadoutTimeSeconds"] == pytest.approx(0.012)
     assert properties["CameraDIO0TriggerUsed"] is False
     assert properties["LaserDIO1TriggerRequested"] is True
     assert properties["LaserDIO1TriggerConfiguredByProductionRuntime"] is False
@@ -4844,6 +4859,7 @@ def test_configure_exposure_time_returns_real_applied_value_not_requested(tmp_pa
 
     applied_ms = backend.configure_exposure_time(50.0)
 
+    assert ("prop_setgetvalue", "EXPOSURETIME", 0.05) in handle.calls
     assert applied_ms == pytest.approx(50.1), (
         "must return the real applied exposure (with quantization), not echo back the 50.0ms request"
     )

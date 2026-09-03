@@ -186,6 +186,79 @@ surfaces, and dynamically built fields.
 
 Enforcement: `TEST`, `CI`, and shared implementation in `qt_ui.py`.
 
+### Numerical agreement between code and tests is not semantic validation
+
+The original FM factor-of-two error and the camera exposure-plus-readout timing
+gate were both internally coherent: tests repeated the same model as production.
+A critical conversion needs an external semantic anchor and at least one hard
+reference case whose expected result is not calculated by the production
+helper. Vendor/API examples establish device formulas; SI/metrology and
+cross-vendor checks expose overloaded terms such as amplitude and modulation
+index.
+
+Enforcement: `TEST` with cited reference cases and `PROJECT_CONTROL` parameter
+semantics.
+
+### A numeric value needs quantity, unit, reference, and evidence layer
+
+“Amplitude (V)” hid whether the value meant peak, peak-to-peak, RMS, source, or
+loaded voltage. Legacy fields without unit suffixes similarly hid seconds and
+index bases. Keep compatibility names when necessary, but pair them with
+explicit operator labels and additive convention/unit metadata. Requested,
+post-clamp software-effective, device-configured/readback, and physically
+measured values must remain separately named.
+
+Enforcement: `PROJECT_CONTROL`, UI labels/tooltips, TDMS convention fields, and
+independent persistence tests.
+
+### Timing arithmetic must follow acquisition mode, not intuition
+
+Exposure and readout can be serial or overlapping depending on camera and mode.
+The C15440-20UP Internal/free-running case uses the slower limiting interval,
+not their sum. Host UTC and monotonic timestamps describe software chronology;
+they cannot validate trigger edges, exposure windows, latency, or jitter on a
+shared physical timebase.
+
+Enforcement: exact camera documentation, hard timing tests, and
+`PHYSICAL_MEASUREMENT_REQUIRED` for synchronization claims.
+
+### Custom laboratory hardware needs characterization, not a guessed identity
+
+A mains-powered home-built amplifier cannot be closed by searching for a
+commercial model number or reading blurry annotations. Establish only the
+minimum chain envelope needed for the next bounded action: connector roles,
+source/load termination, input impedance, gain/transfer near the operating
+frequency, output/load limits, indicators, transducer identity, and comparable
+same-chain history. Model limits and old voltage settings are not current safe
+operating evidence.
+
+Enforcement: `PROJECT_CONTROL`, powered-down owner/lab inspection only, and a
+separately reviewed bounded characterization plan if build records are absent.
+
+## Lesson-to-control matrix
+
+This maps material repository lessons to present controls. “Enforced” includes
+a production fail-closed gate, independent regression test, or explicit
+commissioning stop rule; prose alone does not qualify.
+
+| Lesson / classification | Originating failure, root cause, and correct rule | Current prevention mechanism | Independent test/reference | Documentation location | Residual risk / commissioning consequence |
+| --- | --- | --- | --- | --- | --- |
+| Code and tests can share a wrong scientific model — `DOCUMENTED_AND_ENFORCED` | FM width was doubled and camera timing added overlapping intervals because tests mirrored implementation. Critical equations require an external anchor and hard expected case. | Explicit endpoint model; `max(exposure, readout)` gate; review rule requires independent expectations. | `test_fm_sweep_settings_match_martens_et_al_reference_case`; `test_camera_timing_budget_uses_vendor_overlap_relationship_not_sum`; Digilent/Hamamatsu manuals. | This file; `project_control.md` parameter registry. | New formulas still require the same discipline; a newly found material defect pauses hardware continuation. |
+| Universal quantities differ from device/API conventions — `DOCUMENTED_AND_ENFORCED` | Digilent FM-node “amplitude” is percent deviation, while standard sinusoidal FM beta is peak deviation/modulation frequency. Preserve both layers by name. | Separate `FMSweepModulationIndexPercent` and modulation-frequency/effective fields; no beta claim. | Endpoint/index tests; installed SDK sample; Keysight FM definition cross-check. | `project_control.md` FM row and electrical closure. | Triangle/ramp sweeps are not universal single-tone FM beta; do not relabel them. |
+| Total span, half deviation, period, peak, Vpp, and RMS need conventions — `DOCUMENTED_AND_ENFORCED` | Generic width/amplitude language hid factors of two and waveform dependence. | Explicit start/stop/total/half fields; UI says source peak; tooltip forbids downstream/Vpp/RMS promotion; TDMS convention marker. | FM shape/reference tests; WFG UI and TDMS tests; NIST/Tektronix references. | `project_control.md` registry; UI/tooltips. | RMS conversion remains waveform-specific; loaded voltage remains unmeasured. |
+| Post-clamp effective is not requested or physical — `DOCUMENTED_AND_ENFORCED` | Earlier records could silently replace requested values or overstate a command argument. | Immutable request plus separate backend post-clamp effective object; aggregate status stays `EFFECTIVE`; no production `PHYSICAL_VERIFIED`. | `test_run_experiment2_records_real_wfg_clamping_in_final_tdms`; effective-stage assertions. | `project_control.md` evidence model. | SDK configuration success is not terminal waveform measurement. |
+| Manufacturer specifications are not measurements — `DOCUMENTED_AND_ENFORCED` | Model limits/pixel pitch were at risk of becoming present-device or sample claims. | Specification, device configured/readback, observed, and physical layers are explicitly separated in records and readiness gates. | Evidence-stage tests and absence of `PHYSICAL_VERIFIED`; exact manufacturer manuals. | `project_control.md` inventory, registry, evidence model. | Physical voltage, timing, object scale, flow, and temperature still need measurement when scientifically required. |
+| Source voltage is not loaded or acoustic output — `DOCUMENTED_AND_ENFORCED` | Unknown JP4/load/amplifier chain made an AD2 number easy to mistake for transducer drive. | Qualified UI/TDMS wording; W1 commissioning hard-blocked pending chain characterization. | UI/TDMS convention tests; Digilent BNC schematic and Tektronix load-convention sanity check. | `project_control.md` routing, registry, and readiness. | `HW-AD2-BNC-001` and `HW-ACOUSTIC-CHAIN-001` remain open; no W1 output. |
+| Command success is not physical success — `DOCUMENTED_AND_ENFORCED` | Valve/Qmix acknowledgements and controller state did not prove routing, delivered fluid, or recovery. | Bounded evidence taxonomy; fresh readbacks where available; physical claims remain gated. | Flush sequence/failure tests; Qmix no-motion retained evidence. | `project_control.md`; `known_open_items.md`. | Pump delivery, valve route, acoustic pressure, and optical power remain physically unverified. |
+| Connected wiring does not authorize active drive — `DOCUMENTED_AND_ENFORCED` | Historical generic DIO/“unused CH2” stories conflated destination with software use. | Production DIO payload is disabled; W2 requests fail before hardware; W1 requires explicit enable. | `test_application_rejects_laser_w2_output_before_hardware`; `test_run_experiment2_does_not_program_or_record_legacy_do_clock`. | `project_control.md` four-layer routing. | Future laser/external-trigger work needs separate semantic closure and authorization. |
+| Camera timing follows acquisition architecture — `DOCUMENTED_AND_ENFORCED` | Intuitive exposure+readout addition contradicted C15440-20UP overlapping free-running behavior. | Timing gate uses the slower interval; unavailable readout fails closed; UI states the relationship. | Hard 40 ms/11.22 ms/25 fps test plus boundary/failure tests; Hamamatsu manual and Andor overlap sanity check. | `project_control.md` camera cadence row; this file. | Other trigger/scan modes must be re-derived; no physical synchronization claim. |
+| Historical values/defaults are not commissioning settings — `DOCUMENTED_AND_ENFORCED` | Lund 3 Vpp, prior 0.1 V, and a 2 V screenshot lack same-chain/load semantics. | Readiness gate rejects all as a present starting amplitude; UI defaults confer no hardware permission. | Literature/manual provenance comparison; preflight/output gates test software shape, not safety of a voltage. | `project_control.md` electrical closure/readiness. | Owner/lab must provide same-chain evidence or bounded characterization. |
+| Custom hardware requires characterization, not model lookup — `DOCUMENTED_AND_ENFORCED` | Current amplifier is home-built; commercial-model searching and blurry labels cannot establish limits. | Minimum characterization envelope and powered-down/mains-disconnected inspection rule. | Owner photographs plus retained build evidence if found; no numeric photo inference. | `project_control.md`; `known_open_items.md` HW-ACOUSTIC-CHAIN-001. | `STILL_OPEN` physical subproblem; blocks every energized W1 action. |
+| UI/preflight/status is not execution authority — `DOCUMENTED_AND_ENFORCED` | A parallel presentation model could drift into a second plan. | Normal Start rebuilds the independent immutable plan; V3 is a projection of planner/runtime/action evidence. | V3 shadow-plan parity and shared-preflight tests. | `project_control.md` architecture and V3 model. | Presentation can still lag; source/action evidence remains authoritative. |
+| Owner routing truth retains provenance — `DOCUMENTED_AND_ENFORCED` | Photos/owner statements establish current routes but not electrical behavior or measured effect. | Four-layer table labels owner/photo, official, software, and unverified physical claims separately; production disables unresolved routes. | Routing/preflight tests plus official connector manuals/schematic. | `project_control.md`; hardware truth records. | Independent route/termination observation remains required where it affects commissioning. |
+| Internal indices and operator counts differ — `DOCUMENTED_AND_ENFORCED` | Zero-based `repeat_id` leaked into a flush-failure operator message. | Operator logs/folders use one-based number; TDMS records both bases explicitly. | Exact repeat-1 flush failure test and TDMS identity test. | `project_control.md` condition/repeat row. | Compatibility `Repeat ID` remains zero-based and must be read with the base fields. |
+| Software chronology is not physical timing — `DOCUMENTED_AND_ENFORCED` | UTC/monotonic logs could be overread as trigger/exposure synchronization. | Evidence model limits them to chronology and elapsed/timeout diagnosis. | Deterministic timing tests; physical timing remains a manual-only future gate. | `project_control.md` time/evidence rows; this file. | `HW-TIMING-001` remains deferred; no jitter/synchronization claim. |
+
 ## Deliberately not adopted
 
 No lesson was copied from a sibling repository, and no sibling-project naming,

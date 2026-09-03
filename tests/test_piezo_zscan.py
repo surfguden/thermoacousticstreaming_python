@@ -25,9 +25,9 @@ class FakePiezo:
         self.set_position_calls: list[float] = []
         self.switch_to_closed_loop_calls = 0
         self.fail_at_target_um: float | None = None
-        # Simulates a small settling residual: measured position differs
-        # slightly from the commanded target, confirming the filename uses
-        # the real readback, not the nominal target.
+        # Simulates a small controller residual: readback differs from the
+        # commanded target, confirming the filename uses controller state,
+        # not the nominal target or independent displacement metrology.
         self.residual_um = 0.0
 
     def needs_closed_loop_confirmation(self) -> bool:
@@ -89,7 +89,7 @@ def test_scan_writes_expected_number_of_frames_with_correct_filenames(tmp_path, 
 
     assert len(results) == 3  # 0, 10, 20 -- inclusive of both endpoints
     assert [r.target_um for r in results] == [0.0, 10.0, 20.0]
-    assert [r.measured_um for r in results] == [0.0, 10.0, 20.0]
+    assert [r.controller_readback_um for r in results] == [0.0, 10.0, 20.0]
     assert results[1].filename == "z_0010.00um.tif"
     for result in results:
         assert (tmp_path / result.filename).exists()
@@ -107,7 +107,8 @@ def test_filename_uses_real_measured_position_not_nominal_target(tmp_path, monke
     results = scan.run(z_start_um=125.0, z_end_um=125.0, step_size_um=10.0, output_dir=tmp_path, exposure_ms=40.0)
 
     assert results[0].target_um == 125.0
-    assert results[0].measured_um == pytest.approx(125.3)
+    assert results[0].controller_readback_um == pytest.approx(125.3)
+    assert results[0].measured_um == pytest.approx(125.3)  # compatibility alias
     assert results[0].filename == "z_0125.30um.tif"
 
 

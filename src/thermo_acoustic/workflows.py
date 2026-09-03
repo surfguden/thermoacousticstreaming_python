@@ -475,7 +475,9 @@ class Experiment2:
         properties = {
             "Repeat ID": self.repeat_id,
             "RepeatIndex": self.repeat_id,
+            "RepeatIndexBase": 0,
             "RepeatNumber": self.repeat_id + 1,
+            "RepeatNumberBase": 1,
             "RequestedRepeatCount": "" if self.planned_repeat_count is None else self.planned_repeat_count,
             "OutputRoot": "" if self.output_root is None else str(self.output_root),
             "ExperimentFolder": str(self.experiment_folder),
@@ -495,8 +497,11 @@ class Experiment2:
             "AppliedExposureMs": "" if self.applied_exposure_ms is None else self.applied_exposure_ms,
             "GlobalExposure": self.trigger_global_exposure,
             "FlushFlowrate": self.flush_settings.flush_flowrate,
+            "FlushFlowrateUnit": "uL/min",
             "FlushVolume": self.flush_settings.flush_volume_ml,
+            "FlushVolumeUnit": "mL",
             "WaitAfterFlush": self.flush_settings.wait_after_flush_s,
+            "WaitAfterFlushUnit": "s",
             # Default "not attempted" -- both save_settings() calls in
             # run_experiment2() happen before flush() ever runs, so this is
             # always the correct value here; save_flush_result() overwrites
@@ -514,6 +519,7 @@ class Experiment2:
             {
                 "WFGPhysicalRoleCh1": "AD2 API 0 / W1 / acoustic amplifier and transducer",
                 "WFGPhysicalRoleCh2": "AD2 API 1 / W2 / laser Analog In",
+                "WFGCarrierAmplitudeConvention": "AD2_SOURCE_PEAK_VOLTS_NOT_LOADED_OR_DOWNSTREAM",
                 "CameraDIO0TriggerUsed": False,
                 "LaserDIO1TriggerRequested": bool(
                     do_clock.running
@@ -588,15 +594,19 @@ class Experiment2:
         return {
             "CameraFrames": settings.get("frames", ""),
             "CameraFPS": camera_fps,
+            "CameraFPSUnit": "frames/s",
             "CameraStartMode": settings.get("camera_start_mode", ""),
             "CameraStartRequested": settings.get("camera_start_selected_s", ""),
+            "CameraStartRequestedSeconds": settings.get("camera_start_selected_s", ""),
             "TriggerSource": settings.get("trigger_source", ""),
             "MasterPulseMode": settings.get("masterpulse_mode", ""),
             "MasterPulseSource": settings.get("masterpulse_source", ""),
             "MasterPulseInterval": settings.get("masterpulse_interval_s", ""),
+            "MasterPulseIntervalSeconds": settings.get("masterpulse_interval_s", ""),
             "MasterPulseBurstTimes": settings.get("masterpulse_burst_times", ""),
             "TriggerPolarity": settings.get("trigger_polarity", ""),
             "TriggerDelay": settings.get("trigger_delay_s", ""),
+            "TriggerDelaySeconds": settings.get("trigger_delay_s", ""),
         }
 
     def _fm_sweep_properties(self) -> dict[str, Any]:
@@ -774,6 +784,7 @@ class Experiment2:
         sub_region = settings.get("sub_region", {}) if isinstance(settings, dict) else {}
         return {
             "ReadoutTime": self._setting_value(settings, "readout_time"),
+            "ReadoutTimeSeconds": self._setting_value(settings, "readout_time"),
             "HorizontalSize": self._setting_value(sub_region, "horizontal_size"),
             "VerticalSize": self._setting_value(sub_region, "vertical_size"),
             "HorizontalOffset": self._setting_value(sub_region, "horizontal_offset"),

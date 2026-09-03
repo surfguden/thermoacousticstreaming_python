@@ -761,7 +761,12 @@ class Application:
                 "check the camera connection before starting this experiment."
             )
         readout_s = max(raw_readout_s, 0.0)
-        frame_period_s = exposure_s + readout_s
+        # C15440-20UP free-running timing is overlap-limited: when exposure is
+        # longer than frame readout, frame rate is 1/exposure; when it is
+        # shorter, readout/interface timing is limiting. Adding the two would
+        # incorrectly reject valid requests (for example 25 fps at 40 ms
+        # exposure with an 11.22 ms Fast full-frame readout).
+        frame_period_s = max(exposure_s, readout_s)
         if frame_period_s <= 0:
             return
         achievable_fps = 1.0 / frame_period_s
@@ -1230,7 +1235,11 @@ class Application:
                     "acquisition_settings_effective",
                     evidence_stage="EFFECTIVE",
                     verification_scope=("SOFTWARE" if experiment.sim_camera else "PROTOCOL"),
-                    status="APPLIED",
+                    # ROI is freshly read back and exposure comes from DCAM's
+                    # set/get result, but sequence_config remains accepted
+                    # software configuration rather than a complete device
+                    # readback. Keep the aggregate claim at EFFECTIVE.
+                    status="EFFECTIVE",
                     requested={
                         "roi": requested_roi,
                         "exposure_ms": requested_exposure_ms,
@@ -1330,7 +1339,7 @@ class Application:
                 experiment.save_flush_result(flush_completed)
                 if not flush_completed:
                     message = (
-                        f"Flush failed for experiment repeat {experiment.repeat_id}: "
+                        f"Flush failed for experiment repeat {experiment.repeat_id + 1}: "
                         f"flush_flowrate={experiment.flush_settings.flush_flowrate}, "
                         f"flush_volume_ml={experiment.flush_settings.flush_volume_ml}, "
                         f"wait_after_flush_s={experiment.flush_settings.wait_after_flush_s}"

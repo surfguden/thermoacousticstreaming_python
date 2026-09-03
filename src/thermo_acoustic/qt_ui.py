@@ -96,11 +96,12 @@ def _format_duration_s(seconds: float, *, round_up: bool = False) -> str:
 def _programmed_repeat_duration_s(experiment: Experiment2) -> float:
     """Return the display-only programmed duration estimate for one repeat.
 
-    WFG and digital outputs share one PC trigger and therefore overlap; the
-    longest enabled wait-plus-run window is the AD2 contribution. A requested
-    flush follows acquisition, so its programmed pump travel and post-flush
-    wait are additive. Invalid/non-finite timing remains Application's concern:
-    this estimator returns a conservative zero contribution instead of changing
+    Camera capture, WFG, and digital outputs overlap; the longest requested
+    capture/output window is the acquisition contribution. Camera Start is
+    currently metadata only and is therefore not added. A requested flush
+    follows acquisition, so its programmed pump travel and post-flush wait are
+    additive. Invalid/non-finite timing remains Application's concern: this
+    estimator returns a conservative zero contribution instead of changing
     experiment validation or execution semantics.
     """
     ad2_duration_s = 0.0
@@ -124,13 +125,23 @@ def _programmed_repeat_duration_s(experiment: Experiment2) -> float:
             if math.isfinite(sec_run) and math.isfinite(sec_wait):
                 ad2_duration_s = max(ad2_duration_s, max(sec_run, 0.0) + max(sec_wait, 0.0))
 
+    camera_duration_s = 0.0
+    sequence = experiment.sequence_settings or {}
+    if experiment.camera_enabled:
+        frames = float(sequence.get("frames", 0.0) or 0.0)
+        camera_fps = float(sequence.get("camera_fps", 0.0) or 0.0)
+        if math.isfinite(frames) and math.isfinite(camera_fps) and frames > 0 and camera_fps > 0:
+            camera_duration_s = frames / camera_fps
+
+    acquisition_duration_s = max(ad2_duration_s, camera_duration_s)
+
     flush_duration_s = 0.0
     settings = experiment.flush_settings
     if experiment.flush_enabled and settings.flush_flowrate > 0:
         pump_travel_s = (settings.flush_volume_ml * 1000.0 / settings.flush_flowrate) * 60.0
         flush_duration_s = max(pump_travel_s, 0.0) + max(settings.wait_after_flush_s, 0.0)
 
-    return ad2_duration_s + flush_duration_s
+    return acquisition_duration_s + flush_duration_s
 
 
 def _programmed_series_duration_s(experiments: list[Experiment2]) -> float:
@@ -1182,8 +1193,8 @@ class MainWindow(QMainWindow):
             "Applied to real DCAM hardware via Configure Camera (configure_exposure_time()). "
             "Automated Experiment runs use their own Exposure time (ms) field instead and enforce "
             "a timing budget: Application._check_camera_timing_budget() rejects a configured "
-            "Camera FPS the current exposure + real DCAM readout time (itself set by the ROI size "
-            "above) can't sustain."
+            "Camera FPS when the slower of current exposure and fresh DCAM readout time (itself "
+            "set by the ROI size above) can't sustain it."
         )
         self.center_roi = QCheckBox("Off/On")
         self.center_roi.setChecked(True)
@@ -1311,7 +1322,7 @@ class MainWindow(QMainWindow):
         self.exp_camera_fps = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_camera_fps.setToolTip(
             "Requested Internal-trigger camera frame rate. Must be > 0 and must be achievable "
-            "given the applied exposure plus fresh DCAM readout time; "
+            "given the slower limiting interval of applied exposure and fresh DCAM readout time; "
             "Application._check_camera_timing_budget() rejects an infeasible request before "
             "capture. Normal production does not program the connected DIO0 camera-trigger or "
             "DIO1 laser-trigger lines."
@@ -1494,8 +1505,8 @@ class MainWindow(QMainWindow):
             "fix -- a prior bug called a Python-side bookkeeping setter instead, silently leaving "
             "the camera at whatever exposure a previous manual session had set). Combines with "
             "Camera FPS above: Application._check_camera_timing_budget() rejects the run before "
-            "capture starts if this exposure plus the real DCAM readout time (set by the ROI size, "
-            "Camera tab) can't sustain the configured Camera FPS (Session 19)."
+            "capture starts if the slower of this exposure and the fresh DCAM readout time (set "
+            "by the ROI size, Camera tab) can't sustain the configured Camera FPS."
         )
         self.exp_flush_flowrate = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_flush_flowrate.setToolTip(
@@ -1681,8 +1692,8 @@ class MainWindow(QMainWindow):
         self.zscan_step_size_um.setToolTip(
             "Step size in micrometers between consecutive Z positions -- must be > 0. If (Z End - Z "
             "Start) isn't an exact multiple of this value, the step count is rounded to the nearest "
-            "whole number (Session 47); the saved filename still reflects the real measured position, "
-            "not the nominal target."
+            "whole number (Session 47); the saved filename reflects the controller closed-loop "
+            "readback, not the nominal target or independently measured microscope displacement."
         )
         self.zscan_exposure_ms = _spin(40.0, decimals=3, minimum=0.001)
         self.zscan_exposure_ms.setToolTip(
@@ -1692,8 +1703,9 @@ class MainWindow(QMainWindow):
         )
         self.zscan_output_dir = QLineEdit(r"C:\test\zscan_calibration")
         self.zscan_output_dir.setToolTip(
-            "Folder where each frame is saved as z_<measured_um>um.tif (real closed-loop readback, "
-            "not the commanded target -- Session 47). Created if it doesn't already exist."
+            "Folder where each frame is saved as z_<controller_readback_um>um.tif (controller "
+            "closed-loop coordinate, not the commanded target or physical microscope metrology). "
+            "Created if it doesn't already exist."
         )
 
         self.manual_z_observed_um = QLabel("Unknown")
@@ -2031,7 +2043,7 @@ class MainWindow(QMainWindow):
         # HTML tag is Qt's own documented way to force QToolTip word-wrap
         # on the real native control too. Escaped (not raw HTML) so a
         # literal &/</> in tooltip text (e.g. "Pump&Valve",
-        # "z_<measured_um>um.tif") renders as the real character instead of
+        # "z_<controller_readback_um>um.tif") renders as the real character instead of
         # being misinterpreted as markup or silently dropped.
         # Applied to the field widget's own tooltip too, not just the icon
         # button's: widget.toolTip() is still set here (never cleared), so
@@ -2165,7 +2177,7 @@ class MainWindow(QMainWindow):
         for label, key in (
             ("Channel index", "idx"),
             (f"Frequency (kHz) Carrier{overridden}", "frequency"),
-            (f"Amplitude (V){overridden}", "amplitude"),
+            (f"AD2 source peak amplitude (V){overridden}", "amplitude"),
             (f"Offset(V){overridden}", "offset"),
             (f"Symmetry(%){overridden}", "symmetry"),
             (f"Phase(Deg){overridden}", "phase"),
@@ -2888,7 +2900,7 @@ class MainWindow(QMainWindow):
     def _manual_focus_group(self) -> QGroupBox:
         group = QGroupBox("Manual Focus (Z Stage)")
         form = QFormLayout(group)
-        form.addRow("Observed/current position (um)", self.manual_z_observed_um)
+        form.addRow("Controller readback position (um)", self.manual_z_observed_um)
         form.addRow("Requested target (um)", self.manual_z_target_um)
         form.addRow("Jog step (um)", self.manual_z_jog_step_um)
         buttons = QHBoxLayout()
@@ -3350,7 +3362,7 @@ class MainWindow(QMainWindow):
         carrier.addRow(f"{channel_label} Enable{overrides}", enable)
         carrier.addRow(f"{channel_label} Function{overrides}", function)
         carrier.addRow(f"{channel_label} Frequency (kHz){overrides}", freq)
-        carrier.addRow(f"{channel_label} Amplitude (V){overrides}", amp)
+        carrier.addRow(f"{channel_label} AD2 source peak amplitude (V){overrides}", amp)
         carrier.addRow(f"{channel_label} Offset (V){overrides}", offset)
         carrier.addRow(f"{channel_label} Symmetry (%){overrides}", symmetry)
         carrier.addRow(f"{channel_label} Phase (Deg){overrides}", phase)
