@@ -4467,8 +4467,9 @@ class MainWindow(QMainWindow):
             sweep = self._experiment_fm_sweep_settings()
             fm_sweep = (sweep.start_hz, sweep.stop_hz, sweep.sweep_time_ms, sweep.sweep_type)
         sequence = self._experiment_camera_defaults().sequence_settings(
-            frames=self.exp_frames.value(), trigger_source_override="Internal"
+            frames=self.exp_frames.value(), trigger_source_override="external"
         )
+        sequence["trigger_polarity"] = "positive"
         return ExperimentRequest(
             output_path=Path(self.series_path.text()),
             repeats_per_group=self.exp_repeats.value(),

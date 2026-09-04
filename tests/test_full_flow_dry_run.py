@@ -282,6 +282,41 @@ def finite_wfg_config(*, sec_run=0.5, sec_wait=0.2, enabled=True, repeat_count=1
     }
 
 
+def canonical_triggered_do_config(*, frames=3, fps=20.0, start_s=0.0):
+    trigger = {
+        "source": "trigsrcPC", "secRun": frames / fps, "secWait": start_s,
+        "repeatCount": 1, "repeatTrigger": False,
+    }
+    return {
+        "running": True,
+        "channels": [
+            {"channel_index": 0, "enable": True, "clock_frequency_hz": fps,
+             "output_type": "Pulse", "idle_state": "Low", "counter_high_bits": 1,
+             "counter_low_bits": 1, "trigger": dict(trigger)},
+            {"channel_index": 1, "enable": True, "clock_frequency_hz": fps,
+             "output_type": "Pulse", "idle_state": "Low", "counter_high_bits": frames * 2,
+             "counter_low_bits": 0, "trigger": dict(trigger)},
+        ],
+    }
+
+
+def configure_canonical_triggered_experiment(experiment, *, frames=3, fps=20.0, start_s=0.0):
+    experiment.wfg_config = finite_wfg_config(sec_run=0.4, sec_wait=0.1)
+    experiment.wfg_config["channels"][0]["trigger"]["source"] = "trigsrcPC"
+    experiment.do_clock_settings = canonical_triggered_do_config(frames=frames, fps=fps, start_s=start_s)
+    experiment.sequence_settings.update(
+        {
+            "frames": frames,
+            "camera_fps": fps,
+            "trigger_source": "external",
+            "trigger_polarity": "positive",
+            "trigger_architecture": "canonical_pc_triggered_ad2_camera_led",
+            "dio0_frame_trigger_count": frames,
+            "dio1_role": "led_timing_control",
+        }
+    )
+
+
 def test_application_full_flow_dry_run_skips_flush_by_default(tmp_path):
     imported_before = {name for name in REAL_HARDWARE_MODULES if name in sys.modules}
     calls = []
@@ -909,6 +944,65 @@ def test_application_full_flow_dry_run_can_opt_into_fake_flush(tmp_path):
     assert ("valve", "set_position", 2) in calls
     assert isinstance(app.pump, FakePump)
     assert isinstance(app.valve, FakeValve)
+
+
+def test_canonical_triggered_run_arms_w1_dio_and_external_camera_before_one_pc_trigger(tmp_path):
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+    experiment = make_recording_experiment(calls, tmp_path)
+    configure_canonical_triggered_experiment(experiment, frames=4, fps=25.0, start_s=0.02)
+    app.experiment_series.enqueue_experiments([experiment])
+
+    assert app.run_experiment2() is True
+
+    wfg_call = next(call for call in calls if call[:2] == ("ad2", "config_wfg"))
+    configured_w1 = wfg_call[2]["channels"][0]
+    do_call = next(call for call in calls if call[:2] == ("ad2", "config_do_clock_special"))
+    camera_sequence = next(call for call in calls if call[:2] == ("camera", "configure_sequence"))
+    assert configured_w1["trigger"]["source"] == "trigsrcPC"
+    assert camera_sequence[2]["trigger_source"] == "external"
+    assert camera_sequence[2]["trigger_polarity"] == "positive"
+    assert {channel.channel_index for channel in do_call[2].channels if channel.enable} == {0, 1}
+    assert calls.index(wfg_call) < calls.index(do_call) < calls.index(camera_sequence)
+    assert calls.index(camera_sequence) < calls.index(("camera", "start_capture"))
+    assert calls.index(("camera", "start_capture")) < calls.index(("ad2", "pc_trigger"))
+    assert calls.index(("ad2", "pc_trigger")) < calls.index(("camera", "image_sequence", 4))
+    assert sum(call[:2] == ("ad2", "pc_trigger") for call in calls) == 1
+
+
+def test_canonical_triggered_dio_program_is_not_reconfigured_during_flush(tmp_path, monkeypatch):
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+    experiment = make_recording_experiment(calls, tmp_path, flush_enabled=True)
+    configure_canonical_triggered_experiment(experiment)
+    app.experiment_series.enqueue_experiments([experiment])
+    monkeypatch.setattr(Application, "wait", lambda self, seconds: None)
+
+    assert app.run_experiment2() is True
+    assert sum(call[:2] == ("ad2", "config_do_clock_special") for call in calls) == 1
+    assert calls.index(("ad2", "pc_trigger")) < calls.index(("valve", "set_position", 1))
+
+
+def test_canonical_triggered_capture_failure_stops_camera_without_retrying_trigger(tmp_path):
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+    experiment = make_recording_experiment(calls, tmp_path)
+    configure_canonical_triggered_experiment(experiment)
+    app.experiment_series.enqueue_experiments([experiment])
+
+    def fail_capture(frame_count=0, partial_capture_folder=None):
+        raise RuntimeError("injected capture failure")
+
+    app.camera.image_sequence = fail_capture
+
+    with pytest.raises(RuntimeError, match="injected capture failure"):
+        app.run_experiment2()
+    app.cleanup()
+
+    assert sum(call[:2] == ("ad2", "pc_trigger") for call in calls) == 1
+    assert ("camera", "stop_capture") in calls
+    assert ("ad2", "cleanup") in calls
+    assert sum(call[:2] == ("ad2", "config_do_clock_special") for call in calls) == 1
 
 
 def test_run_experiment2_reports_flush_failure_instead_of_completing(tmp_path, monkeypatch, caplog):

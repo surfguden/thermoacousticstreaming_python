@@ -339,6 +339,10 @@ class Experiment2:
     # Application.run_experiment2() from live Application state, same
     # pattern as sim_*/*_enabled above. See docs/hardware_repair_plan.md.
     pump_fault_manually_cleared: bool = False
+    # Set only after Application successfully configures the canonical
+    # DigitalOut program. It is API configuration evidence, never an
+    # electrical-edge or optical-emission claim.
+    do_configured_by_runtime: bool = False
     # Preserve the canonical request separately from DCAM's applied readback.
     # These are appended after the established public constructor fields so
     # older positional Experiment2 callers retain their existing argument
@@ -520,12 +524,26 @@ class Experiment2:
                 "WFGPhysicalRoleCh1": "AD2 API 0 / W1 / acoustic amplifier and transducer",
                 "WFGPhysicalRoleCh2": "AD2 API 1 / W2 / laser Analog In",
                 "WFGCarrierAmplitudeConvention": "AD2_SOURCE_PEAK_VOLTS_NOT_LOADED_OR_DOWNSTREAM",
-                "CameraDIO0TriggerUsed": False,
-                "LaserDIO1TriggerRequested": bool(
+                "CameraDIO0TriggerRequested": bool(
+                    do_clock.running
+                    and any(channel.channel_index == 0 and channel.enable for channel in do_clock.channels)
+                ),
+                "CameraDIO0TriggerUsed": bool(
+                    self.do_configured_by_runtime
+                    and do_clock.running
+                    and any(channel.channel_index == 0 and channel.enable for channel in do_clock.channels)
+                ),
+                "LEDDIO1TimingRequested": bool(
                     do_clock.running
                     and any(channel.channel_index == 1 and channel.enable for channel in do_clock.channels)
                 ),
-                "LaserDIO1TriggerConfiguredByProductionRuntime": False,
+                "LEDDIO1TimingConfiguredByProductionRuntime": bool(
+                    self.do_configured_by_runtime
+                    and
+                    do_clock.running
+                    and any(channel.channel_index == 1 and channel.enable for channel in do_clock.channels)
+                ),
+                "DIO1Role": "LED_TIMING_CONTROL_NOT_LASER_DIGITAL_IN",
                 "DORun": do_channel.trigger.sec_run if do_channel is not None else "",
                 "DOWait": do_channel.trigger.sec_wait if do_channel is not None else "",
                 "DOFreq": do_channel.clock_frequency_hz if do_channel is not None and do_channel.clock_frequency_hz is not None else "",

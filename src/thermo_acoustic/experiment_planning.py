@@ -369,8 +369,8 @@ def build_independent_run_plan(request: ExperimentRequest) -> RunPlan:
                 if request.dynamic_camera_start
                 else (request.fixed_camera_start_s if request.fixed_camera_start_s is not None else request.camera_start_s[0])
             )
-            do = _freeze_mapping(_production_disabled_do_config())
             wfg = _thaw(request.wfg_templates[0]) if request.wfg_templates else {}
+            _configure_canonical_w1_pc_trigger(wfg)
             selected = request.frequency_values_hz[repeat_id] if scan_effective else None
             if selected is not None:
                 wfg["channels"][0]["carrier"]["frequency_hz"] = selected
@@ -385,6 +385,17 @@ def build_independent_run_plan(request: ExperimentRequest) -> RunPlan:
             sequence["camera_start_s"] = list(request.camera_start_s)
             sequence["camera_start_mode"] = "dynamic" if request.dynamic_camera_start else "fixed"
             sequence["camera_start_selected_s"] = start
+            # Canonical acquisition owns these values; manual-camera widgets
+            # remain a separate capability.  They describe requested API
+            # configuration, not measured DIO/camera/LED timing.
+            sequence["trigger_source"] = "external"
+            sequence["trigger_polarity"] = "positive"
+            sequence["trigger_architecture"] = "canonical_pc_triggered_ad2_camera_led"
+            sequence["dio0_role"] = "camera_frame_trigger"
+            sequence["dio0_frame_trigger_count"] = request.frames
+            sequence["dio1_role"] = "led_timing_control"
+            sequence["dio1_led_window_s"] = request.frames / request.camera_fps
+            do = _freeze_mapping(_canonical_triggered_do_config(request.camera_fps, request.frames, start))
             conditions.append(RunCondition(group_index, repeat_id, request.output_path,
                 root / f"repeat_{repeat_id + 1:03d}", tuple(target), selected, _freeze_mapping(wfg), do,
                 tuple((key, _freeze_value(value)) for key, value in sequence.items()),
@@ -454,18 +465,52 @@ def _temperature_folder_name(index: int, temperature_c: float) -> str:
     return f"temperature_{index:03d}_{label}C"
 
 
-def _do_config_recipe(camera_fps: float, frames: int, camera_start_s: float) -> dict[str, Any]:
-    """The legacy CreateExperiments DIO1 recipe, expressed as static data."""
+def _canonical_triggered_do_config(camera_fps: float, frames: int, camera_start_s: float) -> dict[str, Any]:
+    """Build the one shared PC-triggered DigitalOut program for a repeat.
+
+    WaveForms has global DigitalOut Wait/Run/Repeat/TriggerSource settings.
+    Both DIO0's N pulse train and DIO1's acquisition-window level therefore
+    use the same cadence, start delay, finite run, and PC trigger.  The
+    electrical timing remains unverified; this is only the bounded API plan.
+    """
+    if frames < 1:
+        raise ValueError("Canonical triggered acquisition requires at least one frame.")
+    window_s = frames / camera_fps
+    shared_trigger = {
+        "sec_run": window_s,
+        "sec_wait": camera_start_s,
+        "repeat_count": 1,
+        "repeat_trigger": False,
+        "source": "trigsrcPC",
+    }
     return {
         "running": True,
-        "channels": [{
-            "channel_index": 1, "enable": True, "clock_frequency_hz": camera_fps,
-            "output_type": "Pulse", "output_mode": "PushPull", "idle_state": "Initial",
-            "counter_high_bits": 1, "counter_low_bits": 1, "counter_initial_bits": 0,
-            "start_high": True,
-            "trigger": {"sec_run": frames / camera_fps, "sec_wait": camera_start_s},
-        }],
+        "channels": [
+            {
+                "channel_index": 0, "enable": True, "clock_frequency_hz": camera_fps,
+                "output_type": "Pulse", "output_mode": "PushPull", "idle_state": "Low",
+                "counter_high_bits": 1, "counter_low_bits": 1, "counter_initial_bits": 0,
+                "start_high": True, "trigger": dict(shared_trigger),
+            },
+            {
+                "channel_index": 1, "enable": True, "clock_frequency_hz": camera_fps,
+                "output_type": "Pulse", "output_mode": "PushPull", "idle_state": "Low",
+                # Same shared bit clock as DIO0: a finite high counter covers
+                # the acquisition window and the low idle state ends it.
+                "counter_high_bits": frames * 2, "counter_low_bits": 0, "counter_initial_bits": 0,
+                "start_high": True, "trigger": dict(shared_trigger),
+            },
+        ],
     }
+
+
+def _configure_canonical_w1_pc_trigger(wfg: dict[str, Any]) -> None:
+    """Set only canonical W1 to wait for the single software trigger."""
+    for channel in wfg.get("channels", []):
+        if int(channel.get("channel_index", 0)) == 0:
+            trigger = channel.setdefault("trigger", {})
+            trigger["source"] = "trigsrcPC"
+            return
 
 
 def _production_disabled_do_config() -> dict[str, Any]:
@@ -657,8 +702,8 @@ def build_result_from_existing_plan(
         )
     issues.append(
         PreflightIssue(
-            code="dio0_camera_trigger_unused",
-            message="DIO0 camera trigger is connected but unused; normal acquisition remains Internal.",
+            code="dio0_camera_trigger_physical_timing_unverified",
+            message="Canonical acquisition plans DIO0 camera triggering and DIO1 LED timing, but their electrical and physical timing remain unverified.",
             blocking=False,
             verification=VerificationScope.UNVERIFIED,
         )

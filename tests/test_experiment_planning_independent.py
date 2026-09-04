@@ -87,8 +87,14 @@ def test_independent_plan_adapter_preserves_static_execution_semantics(
 
     assert len(plan.conditions) == request.repeats_per_group * (len(tec_targets) or 1)
     assert len(normalized) == len(plan.conditions)
-    assert all(item["do_clock"]["running"] is False for item in normalized)
-    assert all(item["do_channels"] == () for item in normalized)
+    assert all(item["do_clock"]["running"] is True for item in normalized)
+    assert all(
+        [(channel[0], channel[1]) for channel in item["do_channels"]] == [(0, True), (1, True)]
+        for item in normalized
+    )
+    assert all(item["wfg"]["channels"][0]["trigger"]["source"] == "trigsrcPC" for item in normalized)
+    assert all(item["sequence_settings"]["trigger_source"] == "external" for item in normalized)
+    assert all(item["sequence_settings"]["trigger_polarity"] == "positive" for item in normalized)
     assert all(item["flush_enabled"] is flush for item in normalized)
     assert all(item["sequence_settings"]["camera_fps"] == request.camera_fps for item in normalized)
     assert all(item["requested_exposure_ms"] == request.exposure_ms for item in normalized)
@@ -114,7 +120,7 @@ def test_pure_planner_does_not_construct_legacy_experiments(monkeypatch):
     assert len(plan.conditions) == 2
 
 
-def test_normal_plan_disables_dio_even_when_legacy_template_is_supplied():
+def test_normal_plan_builds_bounded_shared_dio_camera_and_led_program():
     request = _request(
         do_template={
             "running": True,
@@ -124,8 +130,34 @@ def test_normal_plan_disables_dio_even_when_legacy_template_is_supplied():
 
     normalized = legacy_series_from_run_plan(build_independent_run_plan(request))[0].experiments
 
-    assert all(experiment.do_clock_settings.running is False for experiment in normalized)
-    assert all(experiment.do_clock_settings.channels == [] for experiment in normalized)
+    for experiment in normalized:
+        channels = {channel.channel_index: channel for channel in experiment.do_clock_settings.channels}
+        assert experiment.do_clock_settings.running is True
+        assert set(channels) == {0, 1}
+        assert channels[0].trigger.source.value == "trigsrcPC"
+        assert channels[1].trigger.source.value == "trigsrcPC"
+        assert channels[0].trigger.sec_run == pytest.approx(10 / 20.0)
+        assert channels[0].clock_frequency_hz == 20.0
+        assert channels[0].counter_high_bits == channels[0].counter_low_bits == 1
+        assert channels[1].counter_high_bits == 20
+        assert channels[1].counter_low_bits == 0
+        assert channels[1].idle_state.value == "Low"
+
+
+@pytest.mark.parametrize("frames, fps", [(2, 10.0), (7, 31.0)])
+def test_canonical_dio_frame_count_and_cadence_round_trip(frames, fps):
+    experiment = legacy_series_from_run_plan(
+        build_independent_run_plan(_request(frames=frames, camera_fps=fps, sequence_settings=(("frames", frames),)))
+    )[0].experiments[0]
+    channels = {channel.channel_index: channel for channel in experiment.do_clock_settings.channels}
+
+    assert experiment.sequence_settings["dio0_frame_trigger_count"] == frames
+    assert experiment.sequence_settings["camera_fps"] == fps
+    assert channels[0].clock_frequency_hz == fps
+    assert channels[0].trigger.sec_run == pytest.approx(frames / fps)
+    assert channels[1].trigger.sec_run == channels[0].trigger.sec_run
+    assert channels[1].trigger.sec_wait == channels[0].trigger.sec_wait
+    assert experiment.sequence_settings["dio1_role"] == "led_timing_control"
 
 
 def test_invalid_static_combinations_fail_before_adapter():

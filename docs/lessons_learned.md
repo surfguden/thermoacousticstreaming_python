@@ -39,17 +39,17 @@ audits, retained run evidence, Git history, and changelogs preserve the trail.
 
 Enforcement: `PROJECT_CONTROL`, `KNOWN_OPEN_ITEMS`, and `HISTORICAL_ONLY`.
 
-### A physical connection has a role even when software deliberately does nothing
+### A physical connection's software role must retain its evidence boundary
 
 Earlier documentation alternated between treating CH2/DIO1 as unused and
 treating a generic DO clock as active camera/LED timing. Current owner truth is
 W2 -> laser Analog In/control, DIO0/pink -> camera `EXT.TRIG`, and DIO1/green
 -> LED timing/control; the earlier DIO1 -> laser Digital In statement is
-superseded historical truth. Normal production still programs none of those
-paths. The durable lesson is to record both truths: a connector can have a
-confirmed physical destination while its current software role is explicitly
-disabled. “Connected,” “configured,” “commanded,” and “verified effect” are
-different states.
+superseded historical truth. Canonical production now plans finite
+PC-triggered DIO0 camera pulses and a DIO1 LED window, while W2 remains
+disabled. The durable lesson is to retain both routing and evidence boundaries:
+“connected,” “configured,” “commanded,” and “verified effect” are different
+states, and API trigger configuration does not establish physical timing.
 
 Enforcement: `PROJECT_CONTROL`, planner/runtime fail-closed tests, and
 `HUMAN_JUDGMENT` for physical claims.

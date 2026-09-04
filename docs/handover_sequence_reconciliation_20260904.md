@@ -24,10 +24,12 @@ optical emission, or physical synchronization.
 
 ## CURRENT_IMPLEMENTATION
 
-- Normal production camera behavior is Internal/free-running.
-- Production programs neither DIO0 nor DIO1 and clears/disables DigitalOut.
-- Current W1 commonly uses `trigsrcNone`; `pc_trigger()` therefore is not a
-  current W1-start claim under that trigger source.
+- Canonical production camera configuration is External / positive edge.
+- Canonical production programs one finite shared PC-triggered DigitalOut
+  configuration: DIO0/pink is the N-frame camera-trigger train and DIO1/green
+  is the finite LED imaging window.
+- Canonical W1 uses `trigsrcPC`; one `pc_trigger()` is software logical t=0
+  for the prepared API paths, not physical onset proof.
 - Current repeat execution performs a conservative programmed AD2-completion
   software barrier before it starts enabled repeat refresh. After that barrier,
   TIFF/TDMS saving and a hardware-only flush worker may run concurrently; the

@@ -110,12 +110,13 @@ Software experiment:
 3. Configure Acoustic / W1, normally with intentional fast FM sweep. The
    scientific intent is `T_sweep << T_exposure`; this does not turn host or
    camera timestamps into a physical synchronization measurement.
-4. Keep Laser/W2, DIO0, DIO1, pump refresh, TEC, and Z disabled unless a later
-   separately authorized workflow explicitly requires them.
+4. Keep Laser/W2, pump refresh, TEC, and Z disabled unless a later separately
+   authorized workflow explicitly requires them. Canonical DIO0/DIO1 are the
+   bounded camera/LED trigger program, not laser control.
 5. Review V3's “Start will run” summary and resolve all blocking preflight
    issues.
 6. Once the physical W1 closure and a separate run authorization exist, run
-   Internal-trigger camera acquisition with finite Acoustic/W1 behavior.
+   the bounded PC-triggered W1/DIO0/DIO1/camera software sequence.
 7. Monitor run progress and operator events.
 8. Retain TDMS, action, manifest, and diagnostic evidence.
 9. Enable the bounded repeat-to-repeat refresh sequence only after its separate
@@ -201,8 +202,8 @@ Hamamatsu timing remains controlling for this installed camera.
 | --- | --- | --- | --- | --- |
 | Project Ch1 / `exp_ad2_channels[0]` / WaveForms API index 0 | W1 | W1 BNC `J4`; `JP4` selects direct or 49.9-ohm series path | Custom laboratory acoustic amplifier -> transducer | Software mapping, official connector semantics, owner wiring, and current custom-amplifier enclosure are owner/photo confirmed. Installed JP4 position, exact external connector roles, amplifier input impedance/gain/output envelope, current transducer identity, and downstream voltage are unverified; W1 commissioning is blocked. |
 | Project Ch2 / `exp_ad2_channels[1]` / WaveForms API index 1 | W2 | W2 BNC `J5`; `JP5` selects direct or approximately 49.9-ohm series path | TOPTICA laser Analog In | Physical route confirmed by owner evidence; exact input range, impedance, transfer function, polarity, and enable semantics unresolved. Normal production fails closed if W2 is enabled. |
-| No normal-production digital-output request | DIO0, pink | `J6` pass-through; no BNC or AWG jumper | Camera `EXT.TRIG` | Physically connected but unused in normal Internal-trigger acquisition. External/transient timing deferred. |
-| Explicit disabled normal-production digital-output payload | DIO1, green | `J6` pass-through; no BNC or AWG jumper | LED timing/control | Owner-supplied current route; physically unprogrammed in normal production. Electrical compatibility and physical timing are unverified. The earlier laser-Digital-In statement is superseded historical truth. |
+| Canonical finite PC-triggered DigitalOut | DIO0, pink | `J6` pass-through; no BNC or AWG jumper | Camera `EXT.TRIG` | Planned finite N-frame pulse train at requested cadence. Electrical edge and camera response timing are unverified. |
+| Canonical finite PC-triggered DigitalOut | DIO1, green | `J6` pass-through; no BNC or AWG jumper | LED timing/control | Planned finite imaging-window level, never laser control. Electrical compatibility and LED optical timing are unverified. The earlier laser-Digital-In statement is superseded historical truth. |
 
 The green adapter is the official Digilent BNC Adapter family, SKU `410-263`,
 not a generic/custom breakout. W1/W2 are routed to BNC connectors; DIO and T1/T2
@@ -481,18 +482,19 @@ manual setting.
 
 ## Camera and acoustic scientific truth
 
-- Normal camera acquisition uses Internal trigger and configures neither DIO0
-  nor DIO1.
+- Canonical camera acquisition configures External / positive-edge trigger.
+  W1, finite DIO0 frame pulses, finite DIO1 LED timing, and camera capture are
+  armed before one software `pc_trigger()` logical t=0. This is API/software
+  configuration, not a physical simultaneity claim.
 - Requested ROI is planned, explicitly applied before sequence setup, freshly
   read back, and saved as applied ROI.
 - `RequestedExposureMs` preserves the request;
   `AppliedExposureMs` preserves fresh effective DCAM exposure when available;
   compatibility field `ExposureTime` is the effective/applied value after
   configuration.
-- Requested FPS remains planning truth even with production DIO disabled. Run
-  start checks the slower of applied exposure and fresh readout time against
-  the requested frame interval, matching the camera's documented overlapping
-  Internal/free-running timing rather than incorrectly adding them.
+- Requested FPS remains planning truth for DIO0 cadence. Run start checks the
+  slower of applied exposure and fresh readout time against the requested frame
+  interval; achieved DigitalOut frequency remains separate API evidence.
 - Acoustic uses Project Ch1 / API 0 / W1. Enabled normal CH0 requires
   `Repeat=1`; infinite and unsupported finite repeats fail preflight.
 - FM Sweep requires explicit Acoustic/W1 enable and cannot coexist with

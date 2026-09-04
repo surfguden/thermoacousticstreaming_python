@@ -797,9 +797,10 @@ class Application:
         # readout timing" check (LabVIEW's Camera tab shows a live-computed
         # "N is Vertical is max for <fps> fps" readback derived from DCAM's
         # own DCAM_IDPROP_TIMING_READOUTTIME; Python had no equivalent).
-        # camera_fps comes from canonical experiment planning. It is
-        # deliberately independent of DIO0/DIO1 configuration: normal
-        # Internal-trigger acquisition programs neither digital line.
+        # camera_fps comes from canonical experiment planning and drives the
+        # bounded DIO0 frame cadence.  It remains requested planning truth;
+        # a real DigitalOut configure may separately record a quantized
+        # achieved clock frequency.
         camera_fps = self._configured_camera_fps(experiment)
         if camera_fps is None or camera_fps <= 0:
             return
@@ -1201,11 +1202,18 @@ class Application:
             experiment.save_settings()
 
         with _report_step(progress, STEP_CONFIGURE_WFG):
-            # DIO1/DO Clock is retained as a legacy/manual AD2 capability, but
-            # it is not part of the current production experiment workflow.
-            # Record that effective state explicitly and never program the
-            # digital output as a carry-over side effect of configuring CH0.
-            experiment.do_clock_settings = coerce_do_config(None)
+            # Canonical planning supplies one shared PC-triggered DigitalOut
+            # program: DIO0 is the finite camera-frame pulse train and DIO1
+            # is the finite LED window.  It is configured after W1 but before
+            # the camera is armed; the backend rejects divergent per-line
+            # global trigger signatures instead of inventing two clocks.
+            canonical_triggered_do = (
+                (experiment.sequence_settings or {}).get("trigger_architecture")
+                == "canonical_pc_triggered_ad2_camera_led"
+            )
+            experiment.do_clock_settings = coerce_do_config(
+                experiment.do_clock_settings if canonical_triggered_do else None
+            )
             if self.ad2.enabled:
                 self.ad2.config_wfg(experiment.wfg_config)
                 # Point the experiment at the confirmed WFG object. Requested
@@ -1223,22 +1231,26 @@ class Application:
                         "project_ch1_api_0_w1_role": "acoustic amplifier and transducer",
                         "project_ch2_api_1_w2_role": "laser Analog In electrical control",
                         "configuration": experiment.wfg_config.effective_evidence(),
-                        "dio0_camera_trigger": "CONNECTED_BUT_CURRENTLY_UNUSED",
-                        "dio1_laser_trigger": "DISABLED_NOT_PROGRAMMED_BY_PRODUCTION",
+                        "dio0_camera_trigger": "CANONICAL_FINITE_FRAME_TRIGGER",
+                        "dio1_led_timing": "CANONICAL_FINITE_IMAGING_WINDOW",
                         "physical_acoustic_pressure_verified": False,
                         "optical_emission_verified": False,
                     },
                     source="application._run_experiment2_unfinalized",
                 )
+                if canonical_triggered_do:
+                    self.ad2.config_do_clock_special(experiment.do_clock_settings)
+                    experiment.do_clock_settings = coerce_do_config(self.ad2.get_do_config())
+                    experiment.do_configured_by_runtime = True
             else:
-                self.fire_status_event("AD2Disabled -- WFG configuration skipped; DIO1 disabled")
+                self.fire_status_event("AD2Disabled -- WFG and DigitalOut configuration skipped")
                 log_action(
                     "acoustic_laser_control",
                     "wfg_configuration_effective",
                     evidence_stage="EFFECTIVE",
                     verification_scope="SOFTWARE",
                     status="DISABLED",
-                    effective={"wfg": "not attempted", "dio1_laser_trigger": "not attempted"},
+                    effective={"wfg": "not attempted", "dio0_camera_trigger": "not attempted", "dio1_led_timing": "not attempted"},
                     source="application._run_experiment2_unfinalized",
                 )
 
@@ -1247,8 +1259,8 @@ class Application:
             # partial record with the *requested* settings still exists on disk
             # even if config_wfg() itself raises -- this
             # second call adds the separate software-effective WFG arguments
-            # and out-of-range result produced by configure_wfg(). It also
-            # records the explicit production-disabled DIO1 state above.
+            # and out-of-range result produced by configure_wfg(), plus the
+            # DigitalOut achieved-frequency evidence set by its backend.
             experiment.save_settings()
 
         with _report_step(progress, STEP_CONFIGURE_CAMERA):

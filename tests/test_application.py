@@ -3702,8 +3702,8 @@ def test_run_experiment2_does_not_program_or_record_legacy_do_clock(tmp_path, mo
     assert properties["DOFreq"] == ""
     assert properties["DOFreqActual"] == ""
     assert properties["CameraDIO0TriggerUsed"] is False
-    assert properties["LaserDIO1TriggerRequested"] is False
-    assert properties["LaserDIO1TriggerConfiguredByProductionRuntime"] is False
+    assert properties["LEDDIO1TimingRequested"] is False
+    assert properties["LEDDIO1TimingConfiguredByProductionRuntime"] is False
 
 
 # -- AD2 amplitude/frequency clamping against the device's own live
@@ -3986,8 +3986,9 @@ def test_experiment2_writes_labview_metadata_tdms(tmp_path, monkeypatch):
         "WFGPhysicalRoleCh2",
         "WFGCarrierAmplitudeConvention",
         "CameraDIO0TriggerUsed",
-        "LaserDIO1TriggerRequested",
-        "LaserDIO1TriggerConfiguredByProductionRuntime",
+            "LEDDIO1TimingRequested",
+            "LEDDIO1TimingConfiguredByProductionRuntime",
+            "DIO1Role",
         "CameraFrames",
         "CameraFPS",
         "CameraFPSUnit",
@@ -4029,8 +4030,8 @@ def test_experiment2_writes_labview_metadata_tdms(tmp_path, monkeypatch):
     assert properties["WaitAfterFlushUnit"] == "s"
     assert properties["ReadoutTimeSeconds"] == pytest.approx(0.012)
     assert properties["CameraDIO0TriggerUsed"] is False
-    assert properties["LaserDIO1TriggerRequested"] is True
-    assert properties["LaserDIO1TriggerConfiguredByProductionRuntime"] is False
+    assert properties["LEDDIO1TimingRequested"] is True
+    assert properties["LEDDIO1TimingConfiguredByProductionRuntime"] is False
     channels = {item.name: item for item in objects if getattr(item, "kind", "") == "channel"}
     assert channels["ImageName"].data == ["frame_00000.tiff", "frame_00001.tiff"]
     assert len(channels["Timestamp"].data) == 2
@@ -4054,8 +4055,8 @@ def test_experiment2_records_planned_camera_fps_with_production_dio_disabled(tmp
     ).properties
     assert properties["CameraFPS"] == 20.0
     assert properties["CameraDIO0TriggerUsed"] is False
-    assert properties["LaserDIO1TriggerRequested"] is False
-    assert properties["LaserDIO1TriggerConfiguredByProductionRuntime"] is False
+    assert properties["LEDDIO1TimingRequested"] is False
+    assert properties["LEDDIO1TimingConfiguredByProductionRuntime"] is False
 
 
 def test_experiment2_writes_wfg_carrier_trigger_and_fm_mod_fields_to_tdms(tmp_path, monkeypatch):
