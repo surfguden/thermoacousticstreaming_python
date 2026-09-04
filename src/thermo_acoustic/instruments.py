@@ -186,6 +186,8 @@ class CameraBackend(Protocol):
 
     def read_readout_time(self) -> float | None: ...
 
+    def read_min_trigger_interval(self) -> float | None: ...
+
     def sw_trigger(self) -> None: ...
 
     def close(self) -> None: ...
@@ -244,6 +246,17 @@ class AD2Sdk:
                         errors.append(
                             f"AnalogOut channel {channel_index} {operation} failed: {exc}"
                         )
+            # DigitalOut is now part of the canonical production trigger path.
+            # Keep its shutdown independent from AnalogOut and device-close so
+            # one failed cleanup command cannot skip the remaining safeguards.
+            for operation, action in (
+                ("stop", lambda: backend.digital_out_configure(handle, False)),
+                ("reset", lambda: backend.reset_do(handle)),
+            ):
+                try:
+                    action()
+                except Exception as exc:
+                    errors.append(f"DigitalOut {operation} failed: {exc}")
             try:
                 backend.close(handle)
             except Exception as exc:
@@ -763,6 +776,12 @@ class HamamatsuCamera:
     def read_readout_time(self) -> float | None:
         if self.backend is not None:
             return self.backend.read_readout_time()
+        return 0.0
+
+    def read_min_trigger_interval(self) -> float | None:
+        if self.backend is not None:
+            return self.backend.read_min_trigger_interval()
+        # Simulated camera paths do not consult a hardware capability readback.
         return 0.0
 
     def sw_trigg(self) -> None:

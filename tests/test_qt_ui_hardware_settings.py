@@ -485,19 +485,20 @@ def test_representative_fields_have_grounded_tooltips(monkeypatch, tmp_path):
     assert "uncommitted" not in window.sim_tec.toolTip()
     assert "not independently approved" in window.tec_port.toolTip()
 
-    # Camera tab: Internal is authoritative for the current steady mode;
-    # External remains deferred and requires physical timing verification.
-    assert "selected steady/quasi-steady mode" in window.dcam_source.toolTip()
-    assert "DIO0 camera trigger remains unprogrammed" in window.dcam_source.toolTip()
-    assert "physical timing verification" in window.dcam_source.toolTip()
+    # Camera tab: canonical production is External-positive from DIO0;
+    # physical timing verification remains separate.
+    assert "Canonical Experiment runs configure" in window.dcam_source.toolTip()
+    assert "External-positive edge" in window.dcam_source.toolTip()
+    assert "physical timing still requires" in window.dcam_source.toolTip()
 
     # Experiment tab: Step Size convention, Frequency Scanning spacing caveat.
     assert "0 = not used" in window.exp_freq_scan_step_khz.toolTip()
     assert "not confirmed" in window.exp_freq_scan_enable.toolTip()
-    assert "metadata" in window.exp_camera_start.toolTip()
+    assert "shared canonical DigitalOut wait" in window.exp_camera_start.toolTip()
     assert "does not convert this value into a camera delay" in window.exp_camera_start.toolTip()
-    assert "DCAM Internal trigger" in window.exp_frames.toolTip()
-    assert "programs neither the DIO0 camera cable nor DIO1 laser cable" in window.exp_frames.toolTip()
+    assert "DCAM External-positive triggering" in window.exp_frames.toolTip()
+    assert "DIO0 drives camera EXT.TRIG" in window.exp_frames.toolTip()
+    assert "DIO1 is LED timing/control" in window.exp_frames.toolTip()
 
 
 def test_custom_syringe_volume_disabled_unless_syringe_is_custom(monkeypatch, tmp_path):
@@ -1248,8 +1249,8 @@ def test_experiment_help_distinguishes_flush_and_wfg_trigger_semantics(monkeypat
         assert "steady/pre-actuated" in trigger_help
         assert "trigsrcPC arms" in trigger_help
         assert "not physical timing verification" in trigger_help
-        assert "selected steady/quasi-steady mode" in window.dcam_source.toolTip()
-        assert "DIO0 camera trigger remains unprogrammed" in window.dcam_source.toolTip()
+        assert "Canonical Experiment runs configure External-positive edge" in window.dcam_source.toolTip()
+        assert "physical timing still requires separate verification" in window.dcam_source.toolTip()
     finally:
         window.close()
 
@@ -1791,10 +1792,8 @@ def test_qt_ui_experiment_flush_is_disabled_by_default_and_explicitly_enabled(mo
     assert series.experiments is not None
     assert [experiment.flush_enabled for experiment in series.experiments] == [False]
     assert [experiment.trigger_global_exposure for experiment in series.experiments] == [False]
-    assert series.experiments[0].do_clock_settings.running is True
-    assert series.experiments[0].do_clock_settings.channels[0].channel_index == 1
-    assert series.experiments[0].do_clock_settings.channels[0].clock_frequency_hz == 100.0
-    assert series.experiments[0].do_clock_settings.channels[0].trigger.sec_run == 0.2
+    assert series.experiments[0].do_clock_settings.running is False
+    assert series.experiments[0].do_clock_settings.channels == []
 
     window.exp_flush_enabled.setChecked(True)
     window.global_exposure.setChecked(True)
@@ -1805,7 +1804,7 @@ def test_qt_ui_experiment_flush_is_disabled_by_default_and_explicitly_enabled(mo
     assert [experiment.trigger_global_exposure for experiment in series.experiments] == [True]
 
 
-def test_experiment_sequence_settings_set_explicit_deterministic_trigger_source(monkeypatch, tmp_path):
+def test_legacy_rollback_builder_remains_internal_and_has_no_canonical_dio_runtime(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
     window.series_path.setText(str(tmp_path / "series"))
     window.exp_camera_fps.setValue(100.0)
@@ -1814,6 +1813,7 @@ def test_experiment_sequence_settings_set_explicit_deterministic_trigger_source(
     series, _total_frames, _config = window._build_experiment_series()
 
     assert series.experiments[0].sequence_settings["trigger_source"] == "Internal"
+    assert not series.experiments[0].do_clock_settings.running
 
 
 def test_experiment_sequence_settings_carry_manual_tab_sequence_cluster_fields(monkeypatch, tmp_path):
@@ -2164,7 +2164,7 @@ def test_frequency_scanning_swept_value_reaches_real_tdms_metadata(monkeypatch, 
         assert experiment_group.properties["WFGFreqCh1"] == pytest.approx(expected)
 
 
-def test_qt_ui_experiment_do_clock_config_uses_camera_timing_fields(monkeypatch, tmp_path):
+def test_qt_ui_legacy_rollback_do_clock_config_is_disabled(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
     window.exp_camera_fps.setValue(200.0)
     window.exp_camera_start.setValue(0.125)
@@ -2172,42 +2172,23 @@ def test_qt_ui_experiment_do_clock_config_uses_camera_timing_fields(monkeypatch,
 
     do_config = window._experiment_do_clock_config(0)
 
-    assert do_config.running is True
-    assert len(do_config.channels) == 1
-    channel = do_config.channels[0]
-    assert channel.channel_index == 1
-    assert channel.enable is True
-    assert channel.clock_frequency_hz == 200.0
-    assert channel.output_type == qt_ui.DigitalOutType.PULSE
-    assert channel.idle_state == qt_ui.DigitalOutIdleState.INITIAL
-    assert channel.counter_high_bits == 1
-    assert channel.counter_low_bits == 1
-    assert channel.counter_initial_bits == 0
-    assert channel.start_high is True
-    assert channel.trigger.sec_run == 0.25
-    assert channel.trigger.sec_wait == 0.125
-    assert channel.trigger.repeat_count == 0
-    assert channel.trigger.repeat_trigger is False
-    assert channel.trigger.source == qt_ui.TriggerSource.NONE
+    assert do_config.running is False
+    assert do_config.channels == []
 
     window.dynamic_camera_start.setChecked(True)
     window.camera_start_array[2].setValue(0.333)
 
     dynamic_config = window._experiment_do_clock_config(2)
 
-    assert dynamic_config.channels[0].trigger.sec_wait == 0.333
+    assert dynamic_config.running is False
+    assert dynamic_config.channels == []
 
 
-def test_qt_ui_experiment_do_clock_rejects_zero_camera_fps(monkeypatch, tmp_path):
+def test_qt_ui_legacy_rollback_do_clock_is_disabled_at_zero_camera_fps(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
     window.exp_camera_fps.setValue(0.0)
 
-    try:
-        window._experiment_do_clock_config(0)
-    except ValueError as exc:
-        assert "Camera FPS must be greater than 0" in str(exc)
-    else:
-        raise AssertionError("Camera FPS=0 should be rejected before deriving DO clock")
+    assert window._experiment_do_clock_config(0).running is False
 
 
 def test_qt_ui_experiment_ad2_fields_seed_once_from_wfg(monkeypatch, tmp_path):

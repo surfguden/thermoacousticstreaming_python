@@ -119,7 +119,7 @@ from thermo_acoustic.utilities import (
     trim_whitespace_one_sided,
 )
 from thermo_acoustic.waveforms import WaveFormsBackend, WaveFormsError
-from thermo_acoustic.workflows import Experiment2, ExperimentSeries2, FlushSettings
+from thermo_acoustic.workflows import Experiment2, ExperimentSeries2, FlushSettings, TemperatureSeries
 
 
 def install_fake_nptdms(monkeypatch):
@@ -853,6 +853,54 @@ def test_application_instrument_accessors():
     assert app.get_valve() is valve
     assert app.get_z_stage() is z_motor
     assert app.get_experiment_series_general() is series
+
+
+def test_series_automatic_flush_volume_preflight_uses_n_plus_one_before_commands(tmp_path):
+    class GuardPump:
+        enabled = True
+        fill_level = 0.3
+
+        def set_fill_level(self, *_args):
+            raise AssertionError("preflight must run before pump command")
+
+    class GuardValve:
+        enabled = True
+
+        def set_position(self, *_args):
+            raise AssertionError("preflight must run before valve command")
+
+    settings = FlushSettings(flush_flowrate=100.0, flush_volume_ml=0.1, wait_after_flush_s=0.0)
+    series = ExperimentSeries2(series_path=tmp_path, experiments=[
+        Experiment2(flush_enabled=True, flush_settings=settings),
+        Experiment2(flush_enabled=True, flush_settings=settings),
+    ])
+    app = Application(ad2=SimulatedAD2Sdk(), pump=GuardPump(), valve=GuardValve())
+
+    app.set_experiment_series_general(series)  # 2 repeats + initial flush = 0.3 ml exactly
+
+    app.pump.fill_level = 0.299
+    with pytest.raises(ValueError, match="3 flushes"):
+        app.set_experiment_series_general(series)
+
+
+def test_temperature_series_preflights_all_groups_before_its_first_action(monkeypatch, tmp_path):
+    app = Application(ad2=SimulatedAD2Sdk())
+    groups = [
+        ExperimentSeries2(tmp_path / "first", [Experiment2(flush_enabled=True)]),
+        ExperimentSeries2(tmp_path / "second", [Experiment2(flush_enabled=True)]),
+    ]
+    observed: list[Experiment2] = []
+
+    def stop_after_full_preflight(self, series):
+        observed.extend(series.experiments or [])
+        raise RuntimeError("preflight observed")
+
+    monkeypatch.setattr(Application, "_preflight_automatic_flush_volume", stop_after_full_preflight)
+
+    with pytest.raises(RuntimeError, match="preflight observed"):
+        app.run_temperature_series(TemperatureSeries(temperature_points_c=[20.0, 21.0]), groups)
+
+    assert observed == [groups[0].experiments[0], groups[1].experiments[0]]
 
 
 def test_cleanup_times_out_blocked_device_and_continues_to_later_devices():
@@ -3409,6 +3457,9 @@ class FakeWaveFormsBackend:
     def reset_do(self, handle):
         self.calls.append(("reset_do", handle))
 
+    def digital_out_configure(self, handle, start):
+        self.calls.append(("digital_out_configure", handle, start))
+
     def capture_analog_in_channels(
         self,
         handle,
@@ -3444,6 +3495,10 @@ class FakeDwfFunction:
 
     def __call__(self, *args):
         self.owner.calls.append((self.name, args))
+        if self.name == "FDwfDigitalOutDividerInfo":
+            args[2]._obj.value = 1
+            args[3]._obj.value = 2**32 - 1
+            return 1
         for arg in args:
             if hasattr(arg, "raw") and self.name == "FDwfGetLastErrorMsg":
                 arg.value = b"ok"
@@ -3556,7 +3611,7 @@ def test_waveforms_low_level_wrappers():
 
     backend.digital_out_enable_set(123, 0, True)
     backend.digital_out_divider_set(123, 0, 4)
-    assert backend.digital_out_divider_info(123, 0) == (100, 100)
+    assert backend.digital_out_divider_info(123, 0) == (1, 2**32 - 1)
     backend.digital_out_counter_init_set(123, 0, True, 0)
     backend.digital_out_counter_set(123, 0, 2, 3)
     backend.digital_out_type_set(123, 0, DigitalOutType.PULSE)
@@ -3628,6 +3683,38 @@ def test_configure_do_records_achieved_frequency_after_integer_divider_rounding(
 
     assert channel.achieved_clock_frequency_hz == pytest.approx(50.0)
     assert channel.achieved_clock_frequency_hz != channel.clock_frequency_hz
+
+
+def test_configure_do_uses_achieved_dio0_frequency_for_finite_frame_window():
+    fake = FakeDwf()
+    backend = WaveFormsBackend(dwf=fake)
+    config = DoConfig(
+        running=True,
+        frame_count=3,
+        channels=[
+            DoSingleChannelConfig(
+                channel_index=0,
+                enable=True,
+                clock_frequency_hz=33.0,
+                trigger=TriggerSettings(sec_run=3 / 33.0),
+            ),
+            DoSingleChannelConfig(
+                channel_index=1,
+                enable=True,
+                clock_frequency_hz=33.0,
+                trigger=TriggerSettings(sec_run=3 / 33.0),
+            ),
+        ],
+    )
+
+    backend.configure_do(123, config)
+
+    run_calls = [args for name, args in fake.calls if name == "FDwfDigitalOutRunSet"]
+    # FakeDwf's 100 Hz clock and divider 1 achieve 50 Hz, so three DIO0
+    # frame pulses require 0.06 s rather than the requested-rate 0.0909... s.
+    assert run_calls[-1][1].value == pytest.approx(3 / 50.0)
+    assert config.channels[0].trigger.sec_run == pytest.approx(3 / 50.0)
+    assert config.channels[1].trigger.sec_run == pytest.approx(3 / 50.0)
 
 
 def test_configure_do_leaves_achieved_frequency_none_when_no_clock_requested():
@@ -4340,6 +4427,8 @@ def test_ad2_real_class_dispatches_to_waveforms_backend():
         ("analog_out_reset", 777, 0),
         ("analog_out_configure", 777, 1, False),
         ("analog_out_reset", 777, 1),
+        ("digital_out_configure", 777, False),
+        ("reset_do", 777),
         ("close", 777),
     ]
 
@@ -4373,10 +4462,41 @@ def test_ad2_cleanup_attempts_both_channel_stop_resets_and_close_after_failures(
         ("analog_out_reset", 777, 0),
         ("analog_out_configure", 777, 1, False),
         ("analog_out_reset", 777, 1),
+        ("digital_out_configure", 777, False),
+        ("reset_do", 777),
         ("close", 777),
     ]
     assert ad2.get_phdwf() is None
     assert ad2.triggered is False
+
+
+def test_ad2_cleanup_attempts_digitalout_stop_reset_and_close_after_digitalout_failures():
+    class FailingDigitalOutCleanupBackend(FakeWaveFormsBackend):
+        def configure_do(self, handle, config):
+            raise AssertionError("cleanup must use DigitalOutConfigure, not configure_do")
+
+        def digital_out_configure(self, handle, start):
+            self.calls.append(("digital_out_configure", handle, start))
+            raise WaveFormsError("simulated DigitalOut stop failure")
+
+        def reset_do(self, handle):
+            self.calls.append(("reset_do", handle))
+            raise WaveFormsError("simulated DigitalOut reset failure")
+
+    backend = FailingDigitalOutCleanupBackend()
+    ad2 = AD2Sdk(backend=backend, device_handle=777)
+
+    with pytest.raises(AD2SdkError) as exc_info:
+        ad2.cleanup()
+
+    assert "DigitalOut stop failed" in str(exc_info.value)
+    assert "DigitalOut reset failed" in str(exc_info.value)
+    assert backend.calls[-3:] == [
+        ("digital_out_configure", 777, False),
+        ("reset_do", 777),
+        ("close", 777),
+    ]
+    assert ad2.get_phdwf() is None
 
 
 class FakeWaveFormsBackendThatRaisesOnConfigure(FakeWaveFormsBackend):

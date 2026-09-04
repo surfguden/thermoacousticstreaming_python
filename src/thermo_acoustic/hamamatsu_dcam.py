@@ -280,6 +280,23 @@ class HamamatsuDcamBackend:
                 "TRIGGERPOLARITY",
             )
             self._check(self.dcam.prop_setvalue(props.TRIGGERPOLARITY, polarity), "set TRIGGERPOLARITY")
+        if "trigger_active" in settings:
+            active = self._mapped_value(
+                settings["trigger_active"],
+                {"edge": values.TRIGGERACTIVE.EDGE, "level": values.TRIGGERACTIVE.LEVEL},
+                "TRIGGERACTIVE",
+            )
+            self._check(self.dcam.prop_setvalue(props.TRIGGERACTIVE, active), "set TRIGGERACTIVE")
+        if "trigger_mode" in settings:
+            mode = self._mapped_value(
+                settings["trigger_mode"],
+                {"normal": values.TRIGGER_MODE.NORMAL},
+                "TRIGGER_MODE",
+            )
+            self._check(self.dcam.prop_setvalue(props.TRIGGER_MODE, mode), "set TRIGGER_MODE")
+        if "trigger_times" in settings:
+            times = self._bounded_int(settings["trigger_times"], 1, 65535, "TRIGGERTIMES")
+            self._check(self.dcam.prop_setgetvalue(props.TRIGGERTIMES, times), "set TRIGGERTIMES")
         if "trigger_delay_s" in settings:
             delay_s = self._bounded_float(settings["trigger_delay_s"], 0.0, 10.000002, "TRIGGERDELAY")
             self._check(self.dcam.prop_setgetvalue(props.TRIGGERDELAY, delay_s), "set TRIGGERDELAY")
@@ -497,6 +514,21 @@ class HamamatsuDcamBackend:
             readout_s = float(value)
             result["response"] = readout_s
         return readout_s
+
+    def read_min_trigger_interval(self) -> float | None:
+        """Read the real external-trigger cadence limit; None means unavailable."""
+        self.open_camera()
+        props = self.dcam_module.DCAM_IDPROP
+        if not hasattr(props, "TIMING_MINTRIGGERINTERVAL"):
+            return None
+        value = self.dcam.prop_getvalue(props.TIMING_MINTRIGGERINTERVAL)
+        if value is False:
+            log_transaction("camera", "read_min_trigger_interval", success=False, error=str(self.dcam.lasterr()))
+            return None
+        with log_call("camera", "read_min_trigger_interval", response_stage="OBSERVED") as result:
+            interval_s = float(value)
+            result["response"] = interval_s
+        return interval_s
 
     def sw_trigger(self) -> None:
         self.open_camera()

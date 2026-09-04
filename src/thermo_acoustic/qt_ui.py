@@ -1272,11 +1272,9 @@ class MainWindow(QMainWindow):
         )
         self.dcam_source = _combo(["Internal", "External", "Software", "MasterPulse"], "Internal")
         self.dcam_source.setToolTip(
-            "DCAM TRIGGERSOURCE -- what starts each camera frame. Automated Experiment runs "
-            "hardcode this to 'Internal', the selected steady/quasi-steady mode. The physically "
-            "connected DIO0 camera trigger remains unprogrammed and currently unused. External "
-            "triggering is deferred for a future transient/synchronized mode and would require "
-            "explicit polarity plus physical timing verification. Polarity/Delay below are only "
+            "DCAM TRIGGERSOURCE -- what starts each camera frame. Canonical Experiment runs configure "
+            "External-positive edge triggering from DIO0. This manual control remains a separate camera "
+            "configuration surface; physical timing still requires separate verification. Polarity/Delay below are only "
             "physically meaningful when this manual control is 'External'."
         )
         self.external_polarity = _combo(["Negative", "Positive"], "Negative")
@@ -1320,16 +1318,15 @@ class MainWindow(QMainWindow):
         )
         self.exp_camera_fps = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_camera_fps.setToolTip(
-            "Requested Internal-trigger camera frame rate. Must be > 0 and must be achievable "
-            "given the slower limiting interval of applied exposure and fresh DCAM readout time; "
+            "Requested External-trigger camera cadence. Must be > 0 and must satisfy the fresh DCAM "
+            "minimum trigger-interval readback; Internal paths retain their separate exposure/readout gate. "
             "Application._check_camera_timing_budget() rejects an infeasible request before "
-            "capture. Normal production does not program the connected DIO0 camera-trigger or "
-            "DIO1 laser-trigger lines."
+            "capture. Canonical production programs DIO0 for camera EXT.TRIG and DIO1 for LED timing."
         )
         self.exp_camera_start = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_camera_start.setToolTip(
-            "Retained requested camera-start metadata for the current plan. Normal production does "
-            "not convert this value into a camera delay or program DIO0/DIO1. Ignored whenever "
+            "Requested camera-start value for the shared canonical DigitalOut wait before DIO0 camera "
+            "triggering and DIO1 LED timing; it does not convert this value into a camera delay. Ignored whenever "
             "Dynamic Camera Start Time (below) is checked."
         )
         self.exp_ch1_freq = _spin(0.0, decimals=3, minimum=0.0)
@@ -1436,8 +1433,7 @@ class MainWindow(QMainWindow):
         self.exp_ch2_enable.setToolTip(
             "Project Ch2 is physical W2 connected to the laser Analog In. Normal production fails "
             "closed if this is selected; do not enable it until exact current laser electrical "
-            "semantics are confirmed. The separate DIO1 green lead is the laser digital-trigger "
-            "connection and is also unprogrammed by normal production."
+            "semantics are confirmed. The separate DIO1 green lead is LED timing/control, never laser Digital In."
         )
         self.exp_ch2_start = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_ch2_start.setToolTip(self.exp_ch1_start.toolTip())
@@ -1495,8 +1491,8 @@ class MainWindow(QMainWindow):
         self.exp_frames = _int_spin(1, minimum=0)
         self.exp_frames.setToolTip(
             "Frames captured per repeat. With Camera FPS this defines the requested acquisition "
-            "duration for planning and metadata. Automated capture configures DCAM Internal trigger; "
-            "normal production programs neither the DIO0 camera cable nor DIO1 laser cable."
+            "duration for planning and the shared DigitalOut wait. Automated capture configures DCAM "
+            "External-positive triggering; DIO0 drives camera EXT.TRIG and DIO1 is LED timing/control."
         )
         self.exp_exposure_ms = _spin(0.0, decimals=3, minimum=0.0)
         self.exp_exposure_ms.setToolTip(
@@ -3294,8 +3290,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(note)
 
         top = QFormLayout()
-        top.addRow("Camera FPS (Internal trigger)", self.exp_camera_fps)
-        top.addRow("Camera Start request (s; metadata only)", self.exp_camera_start)
+        top.addRow("Camera FPS (External trigger cadence)", self.exp_camera_fps)
+        top.addRow("Camera Start request (s; shared DIO wait)", self.exp_camera_start)
         layout.addLayout(top)
         self._add_tooltip_icons(top)
 
@@ -4381,6 +4377,11 @@ class MainWindow(QMainWindow):
             if preview_config is None:
                 preview_config = config
             do_clock = self._experiment_do_clock_config(repeat)
+            camera_start_selected_s = (
+                float(self.camera_start_array[repeat].value())
+                if self.dynamic_camera_start.isChecked()
+                else float(self.exp_camera_start.value())
+            )
             folder = series_path / f"repeat_{repeat + 1:03d}"
             experiments.append(
                 Experiment2(
@@ -4408,14 +4409,15 @@ class MainWindow(QMainWindow):
                         "camera_fps": float(self.exp_camera_fps.value()),
                         "camera_start_s": [widget.value() for widget in self.camera_start_array],
                         "camera_start_mode": "dynamic" if self.dynamic_camera_start.isChecked() else "fixed",
-                        "camera_start_selected_s": do_clock.channels[0].trigger.sec_wait,
+                        "camera_start_selected_s": camera_start_selected_s,
                         # Explicit and deterministic so experiment runs never inherit
                         # whatever trigger source a prior manual Camera tab session left
                         # the DCAM device in. Whether this should be "External" and which
                         # verified AD2 line would pace the camera is still an open bench
-                        # question. The current experiment DO config below programs only
-                        # DIO1; this deterministic Internal setting removes undefined
-                        # leftover state but does not establish physical synchronization.
+                        # question. The retained rollback builder deliberately
+                        # carries no DIO runtime configuration; this Internal
+                        # setting removes undefined leftover state without
+                        # claiming physical synchronization.
                     },
                     wfg_config=config,
                     do_clock_settings=do_clock,
@@ -4570,37 +4572,14 @@ class MainWindow(QMainWindow):
         return temperature_series, groups, total_frames, preview_config
 
     def _experiment_do_clock_config(self, repeat_index: int) -> DoConfig:
-        camera_fps = float(self.exp_camera_fps.value())
-        if camera_fps <= 0:
-            raise ValueError("Camera FPS must be greater than 0 to derive the AD2 DIO1 LED clock.")
-        frames = int(self.exp_frames.value())
-        if self.dynamic_camera_start.isChecked():
-            if repeat_index >= len(self.camera_start_array):
-                raise ValueError("Dynamic Camera Start Time has more repeats than Camera Start Array entries.")
-            camera_start_s = float(self.camera_start_array[repeat_index].value())
-        else:
-            camera_start_s = float(self.exp_camera_start.value())
-        # LabVIEW CreateExperiments only wires DO secRun/secWait. Repeat count,
-        # repeat-trigger, and trigger source intentionally remain AD2 SDK defaults.
-        trigger = TriggerSettings(sec_run=frames / camera_fps, sec_wait=camera_start_s)
-        return DoConfig(
-            running=True,
-            channels=[
-                DoSingleChannelConfig(
-                    channel_index=1,
-                    enable=True,
-                    clock_frequency_hz=camera_fps,
-                    output_type=DigitalOutType.PULSE,
-                    output_mode="PushPull",
-                    idle_state=DigitalOutIdleState.INITIAL,
-                    counter_high_bits=1,
-                    counter_low_bits=1,
-                    counter_initial_bits=0,
-                    start_high=True,
-                    trigger=trigger,
-                )
-            ],
-        )
+        """Return a fail-closed record for the retained Internal rollback path.
+
+        Normal starts use the shared canonical planner. This compatibility
+        builder must never issue its former DIO1-only timing program, which
+        cannot establish the canonical camera/LED architecture.
+        """
+        _ = repeat_index
+        return DoConfig(running=False)
 
     def _run_experiment_series(
         self,

@@ -646,6 +646,12 @@ class WaveFormsBackend:
                     if internal_clock_hz <= 0:
                         raise WaveFormsError("Digital output internal clock frequency is not available.")
                     clock_divider = int((internal_clock_hz / channel.clock_frequency_hz) / 2.0)
+                    minimum_divider, maximum_divider = self.digital_out_divider_info(handle, channel.channel_index)
+                    if not minimum_divider <= clock_divider <= maximum_divider:
+                        raise WaveFormsError(
+                            f"DigitalOut divider {clock_divider} for channel {channel.channel_index} is outside "
+                            f"the supported range {minimum_divider}..{maximum_divider}."
+                        )
                     # Finding E: clock_divider is an integer, so the real achieved
                     # frequency can differ from the requested clock_frequency_hz --
                     # record it so that gap is visible instead of only ever
@@ -711,6 +717,20 @@ class WaveFormsBackend:
                         self._dwf.FDwfDigitalOutDataSet(h, idx, data, c_int(len(bits))),
                         "FDwfDigitalOutDataSet",
                     )
+
+            # WaveForms applies an integer divider. For the canonical finite
+            # DIO0 camera train, its global Run must cover exactly N pulses at
+            # the achieved cadence, not N/requested_fps.
+            if config.frame_count is not None:
+                dio0 = next((channel for channel in config.channels if channel.enable and channel.channel_index == 0), None)
+                if dio0 is None or dio0.achieved_clock_frequency_hz is None:
+                    raise WaveFormsError("Canonical DIO0 timing requires a valid achieved DigitalOut frequency.")
+                if config.frame_count < 1:
+                    raise WaveFormsError("Canonical DigitalOut frame count must be at least one.")
+                achieved_run_s = config.frame_count / dio0.achieved_clock_frequency_hz
+                for channel in config.channels:
+                    if channel.enable:
+                        channel.trigger.sec_run = achieved_run_s
 
             if trigger is not None:
                 self._check(self._dwf.FDwfDigitalOutWaitSet(h, c_double(trigger.sec_wait)), "FDwfDigitalOutWaitSet")

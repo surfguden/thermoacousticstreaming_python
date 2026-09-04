@@ -139,7 +139,7 @@ def test_normal_plan_builds_bounded_shared_dio_camera_and_led_program():
         assert channels[0].trigger.sec_run == pytest.approx(10 / 20.0)
         assert channels[0].clock_frequency_hz == 20.0
         assert channels[0].counter_high_bits == channels[0].counter_low_bits == 1
-        assert channels[1].counter_high_bits == 20
+        assert channels[1].counter_high_bits == 1
         assert channels[1].counter_low_bits == 0
         assert channels[1].idle_state.value == "Low"
 

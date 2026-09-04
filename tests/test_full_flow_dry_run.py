@@ -693,6 +693,37 @@ def test_camera_timing_budget_uses_vendor_overlap_relationship_not_sum(tmp_path)
         app._check_camera_timing_budget(experiment)
 
 
+def test_external_camera_timing_budget_uses_minimum_trigger_interval_and_fails_closed(tmp_path):
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+    experiment = make_recording_experiment(calls, tmp_path)
+    experiment.sequence_settings.update({"trigger_source": "external", "camera_fps": 50.0})
+    app.camera.read_min_trigger_interval = lambda: 0.02
+    app._check_camera_timing_budget(experiment)  # requested 20 ms is accepted
+
+    app.camera.read_min_trigger_interval = lambda: 0.021
+    with pytest.raises(ValueError, match="minimum"):
+        app._check_camera_timing_budget(experiment)
+
+    app.camera.read_min_trigger_interval = lambda: None
+    with pytest.raises(ValueError, match="Could not read"):
+        app._check_camera_timing_budget(experiment)
+
+
+def test_canonical_external_trigger_rejects_disabled_ad2_before_camera_capture(tmp_path):
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+    app.ad2.enabled = False
+    experiment = make_recording_experiment(calls, tmp_path)
+    configure_canonical_triggered_experiment(experiment)
+    app.experiment_series.enqueue_experiments([experiment])
+
+    with pytest.raises(ValueError, match="requires AD2 enabled"):
+        app.run_experiment2()
+
+    assert ("camera", "start_capture") not in calls
+
+
 def test_run_experiment2_enforces_planned_fps_budget_while_production_dio_is_disabled(tmp_path):
     calls = []
     app = make_fake_app(calls, tmp_path)

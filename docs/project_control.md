@@ -7,9 +7,9 @@ Historical audits and evidence records preserve how conclusions were reached,
 but they do not override this page, current source, tests, Git state, or newer
 retained evidence.
 
-Last current-truth convergence: 2026-09-04, at pushed checkpoint
-`a9fcfa6e79e045b350ed984b26fad1a77f08735e`. This page records current
-project implications, not an uncheckpointed change set.
+Last current-truth convergence: 2026-09-04, at the post-handover mainline
+correction checkpoint. This page records current project implications, not an
+uncheckpointed change set.
 
 ## Authority hierarchy
 
@@ -47,8 +47,10 @@ evidence appears.
 
 ## Current checkpoint and handover authority
 
-- `PUMP_QMIX_TOOL_HARDENING`: **IMPLEMENTED / PUSHED /
-  READY_FOR_INDEPENDENT_REVIEW** at `a9fcfa6`; it is not closed.
+- `POST_HANDOVER_MAINLINE_REVIEW_CORRECTIONS`: **IMPLEMENTED / VALIDATION
+  PENDING COMMIT**. This is the current checkpoint; the earlier
+  `PUMP_QMIX_TOOL_HARDENING` commit remains retained historical evidence, not
+  the current convergence pointer.
 - The colleague handover evidence was ingested without merging its branch:
   [`experiment_sequence_timeline.txt`](experiment_sequence_timeline.txt) and
   [`M-042_iBEAM_smart_manual_v09.pdf`](vendor_manuals/M-042_iBEAM_smart_manual_v09.pdf).
@@ -172,7 +174,7 @@ reports. A value never inherits authority from a different layer.
 | AD2 carrier amplitude | Peak source amplitude in volts around Offset for supported periodic waveforms. For a zero-offset sine only, `Vpp=2*Vpeak` and `Vrms=Vpeak/sqrt(2)`; no shape-independent RMS conversion is implied. | UI says `AD2 source peak amplitude (V)`; TDMS convention is `AD2_SOURCE_PEAK_VOLTS_NOT_LOADED_OR_DOWNSTREAM`; requested and post-clamp software-effective values are separate. | VERIFIED |
 | Loaded/acoustic amplitude | BNC JP4 selects approximately 0-ohm/direct or 49.9-ohm series source path. Loaded amplifier input depends on complex input impedance; amplifier output, transducer voltage/current, and acoustic pressure require chain characterization or measurement. | Deliberately absent as measured values. | PHYSICAL_MEASUREMENT_REQUIRED |
 | Camera exposure | Operator/request and authoritative TDMS fields use ms; DCAM receives seconds (`ms/1000`) and set/get seconds return as ms (`s*1000`). The camera quantizes upward according to scan mode. | `RequestedExposureMs`, `AppliedExposureMs`; legacy `ExposureTime` changes from request to configured set/get value after successful configuration. | VERIFIED |
-| Camera cadence | FPS is requested frames/s; interval is `1/FPS`. In Internal/free-running acquisition, exposure and readout overlap, so the supported-period gate uses `max(applied_exposure_s, fresh_readout_s)`, not their sum. Frame count/FPS gives the requested capture-window estimate; actual frame chronology requires timestamps. | `CameraFPS` plus `CameraFPSUnit`; legacy `ReadoutTime` plus `ReadoutTimeSeconds`. | VERIFIED_WITH_SOFTWARE_DERIVATION |
+| Camera cadence | FPS is requested frames/s; interval is `1/FPS`. Canonical External acquisition checks fresh `TIMING_MINTRIGGERINTERVAL`; Internal/free-running paths retain the overlapping `max(applied_exposure_s, fresh_readout_s)` gate. Actual frame chronology requires timestamps. | `CameraFPS` plus `CameraFPSUnit`; legacy `ReadoutTime` plus `ReadoutTimeSeconds`. | VERIFIED_WITH_SOFTWARE_DERIVATION |
 | ROI/image scale | ROI x/y/width/height are sensor pixels, requested then freshly read back. Exact sensor is 2304 x 2304 with 6.5-micrometre pixel pitch; pixel pitch is a model specification, not calibrated object-space scale. | Applied ROI fields in TDMS; no inferred object-space distance. | VERIFIED |
 | Condition/repeat | Internal `repeat_id`/`RepeatIndex` and temperature point index are zero-based. Operator repeat number, folders, progress, and action records are one-based. Conditions are ordered by temperature group then repeat. | `RepeatIndexBase=0`, `RepeatNumberBase=1`; `repeat_NNN` folders and one-based operator messages. | VERIFIED |
 | Refresh/fluidics | Flow request is positive dispense in uL/min; flush volume/fill level are absolute mL. Travel estimate is `(mL*1000/uL_per_min)*60` s. `WaitAfterFlush` is seconds after confirmed P02. P01 is through-chip; P02 bypass. Commands/controller state do not prove delivered fluid. | Additive unit fields accompany legacy TDMS names; action evidence stays command/protocol scoped. | VERIFIED semantics; PHYSICAL_MEASUREMENT_REQUIRED delivery |
@@ -218,7 +220,7 @@ is derived or measured.
 
 | Subsystem | Current identity/path | What remains unproven |
 | --- | --- | --- |
-| Camera | Hamamatsu ORCA-Fusion BT `C15440-20UP`, S/N `500478`; photograph, Windows enumeration, and fresh 2026-09-02 USB3 identity plus bounded camera-only acquisition evidence | Physical trigger/exposure timing; normal mode remains Internal |
+| Camera | Hamamatsu ORCA-Fusion BT `C15440-20UP`, S/N `500478`; photograph, Windows enumeration, and fresh 2026-09-02 USB3 identity plus bounded camera-only acquisition evidence | Physical External-trigger/exposure timing remains unverified |
 | AD2 | Analog Discovery 2, freshly enumerated 2026-09-02 as `SN:210321A18CE2`; W1 acoustic route; official BNC Adapter family | JP4/JP5 positions, loaded downstream voltage, acoustic pressure, physical timing |
 | Acoustic amplifier | Custom/home-built mains-powered laboratory unit. Owner-supplied current photographs show a metal enclosure with IEC entry/switch, external coax/BNC-type connectors, and handwritten engineering annotations; no commercial manufacturer/model label is visible. | `CUSTOM_ACOUSTIC_AMPLIFIER_CHARACTERIZATION_REQUIRED`: external input/output connector roles, controls, approximate input impedance and gain near 1.9-2.0 MHz, plausible output range/load, limiting/clipping indication, and same-chain history/build evidence needed before energized W1. Blurry annotation values are not evidence. |
 | Acoustic transducer | Lund apparatus used Ferroperm/Meggitt Pz26, `30 x 4.0 x 1.0 mm`, bonded to the chip glass lid; this is a prior-apparatus candidate, not current physical identity | Owner confirmation that the installed element is that part; assembled impedance/resonance and safe-drive evidence |
@@ -255,7 +257,7 @@ documentation:
   and powering the camera off. `EXT.TRIG` accepts TTL or 3.3 V LVCMOS into
   10 kohm and supports selectable rising/falling polarity. Normal Area Mode
   supports edge, level, global-reset edge/level, synchronous-readout, and start
-  triggering as documented; current production intentionally uses Internal.
+  triggering as documented; canonical production configures External-positive edge triggering.
   `TIMING 1/2/3` are 3.3 V LVCMOS outputs with 33-ohm output impedance and
   cable-dependent termination. Exposure ranges are 17 microseconds-10 seconds
   Fast, 65 microseconds-10 seconds Standard, and 280 microseconds-10 seconds
@@ -492,9 +494,9 @@ manual setting.
   `AppliedExposureMs` preserves fresh effective DCAM exposure when available;
   compatibility field `ExposureTime` is the effective/applied value after
   configuration.
-- Requested FPS remains planning truth for DIO0 cadence. Run start checks the
-  slower of applied exposure and fresh readout time against the requested frame
-  interval; achieved DigitalOut frequency remains separate API evidence.
+- Requested FPS remains planning truth for DIO0 cadence. Canonical External
+  runs check fresh minimum trigger interval; achieved DigitalOut frequency is
+  separate API evidence and defines the finite programmed run window.
 - Acoustic uses Project Ch1 / API 0 / W1. Enabled normal CH0 requires
   `Repeat=1`; infinite and unsupported finite repeats fail preflight.
 - FM Sweep requires explicit Acoustic/W1 enable and cannot coexist with
@@ -521,6 +523,11 @@ Consequently 0 V is not a generic optical-off claim, and a zero-offset bipolar
 AD2 waveform can be outside the documented input range. Do not enable W2 or
 infer optical output from an electrical command. Installed polarity, scaling,
 trim, impedance, and option set remain unknown.
+
+For the documented external analog-modulation configuration, RS232 Laser
+ON/OFF and FINE ON/OFF may be unavailable because modulation opens the
+microprocessor-to-driver connection. This is vendor-family behavior, not proof
+of the installed unit's active configuration.
 
 Electrical command, protocol/readback, laser emission, and in-channel optical
 power are separate claims. Reopen software laser control only after exact
@@ -565,9 +572,9 @@ Do not reopen these without new contradictory evidence:
   current steady experiment.
 - W2 is a real laser route, not an unused generic channel, and remains
   production-disabled pending semantics.
-- DIO0/pink is the connected camera trigger and DIO1/green is LED
-  timing/control; neither is used by normal production. The earlier DIO1 laser
-  trigger mapping is superseded historical truth.
+- DIO0/pink is the canonical camera trigger and DIO1/green is canonical LED
+  timing/control. The earlier DIO1 laser trigger mapping is superseded
+  historical truth.
 - The current pump profile is one-pump; old two-pump assumptions are migration
   history.
 - Valve transport is COM5; COM6-as-valve was a documentation error.

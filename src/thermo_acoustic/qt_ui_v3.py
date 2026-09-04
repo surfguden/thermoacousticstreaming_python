@@ -42,7 +42,9 @@ from .experiment_planning import (
     blocking_build_result,
     build_independent_run_plan,
     build_result_from_existing_plan,
+    legacy_series_from_run_plan,
 )
+from .ad2 import coerce_do_config
 from .instruments import SimulatedAD2Sdk
 from .piezo_zscan import ZScanCalibration
 from .qt_ui import bind_waveform_parameter_policy, install_focus_wheel_guard
@@ -460,7 +462,7 @@ class MainWindowV3(MainWindowV3Compatibility):
 
         phases = QTabWidget()
         phases.setObjectName("v3ExperimentPhaseTabs")
-        phases.addTab(prepare, "1  Prepare")
+        phases.addTab(prepare, "1  Preparation checklist")
         phases.addTab(configure, "2  Configure")
         phases.addTab(review, "3  Review run")
         self._v3_experiment_phase_tabs = phases
@@ -475,8 +477,8 @@ class MainWindowV3(MainWindowV3Compatibility):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
         boundary = QLabel(
-            "Preparation records OPERATOR_CONFIRMED_PREPARATION_EVIDENCE only. It does not query, "
-            "command, or physically verify equipment; authoritative requested values remain in Configure."
+            "Operator preparation checklist only. Checkboxes are local presentation confirmations: they are not "
+            "persisted run evidence and do not query, command, or physically verify equipment."
         )
         boundary.setObjectName("v3PreparationEvidenceBoundary")
         boundary.setWordWrap(True)
@@ -498,9 +500,9 @@ class MainWindowV3(MainWindowV3Compatibility):
             note = QLabel(detail)
             note.setWordWrap(True)
             task_layout.addWidget(note, 1)
-            confirmed = QCheckBox("Operator confirmed preparation evidence")
+            confirmed = QCheckBox("Local checklist confirmation")
             confirmed.setObjectName(f"v3PrepareConfirmed{index + 1}")
-            confirmed.setToolTip("Presentation metadata only; this is not physical verification.")
+            confirmed.setToolTip("Local presentation checklist only; not persisted run evidence or physical verification.")
             task_layout.addWidget(confirmed)
             layout.addWidget(group)
         configure_button = QPushButton("Continue to Configure")
@@ -996,6 +998,7 @@ class MainWindowV3(MainWindowV3Compatibility):
 
         carrier = QGroupBox("Base carrier waveform" if index == 0 else "Carrier waveform")
         carrier_form = QFormLayout(carrier)
+        carrier_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         state["enable"].setText("Enabled")
         carrier_form.addRow("Channel output", state["enable"])
         carrier_form.addRow("Waveform", state["function"])
@@ -1005,6 +1008,7 @@ class MainWindowV3(MainWindowV3Compatibility):
 
         timing = QGroupBox("Timing and trigger")
         timing_form = QFormLayout(timing)
+        timing_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         timing_form.addRow("Start delay", state["sec_wait"])
         timing_form.addRow("Run duration", state["sec_run"])
         timing_form.addRow("Repeat count [0 = infinite]", state["repeat"])
@@ -1015,6 +1019,7 @@ class MainWindowV3(MainWindowV3Compatibility):
 
         detail = QGroupBox("Waveform shape")
         detail_form = QFormLayout(detail)
+        detail_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         detail_form.addRow("Symmetry / duty cycle", state["symmetry"])
         detail_form.addRow("Phase", state["phase"])
         bind_waveform_parameter_policy(
@@ -1261,6 +1266,9 @@ class MainWindowV3(MainWindowV3Compatibility):
         area.setObjectName(object_name)
         area.setWidgetResizable(True)
         area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Let the scroll area constrain the page to its viewport; individual
+        # form rows wrap rather than retaining a hidden horizontal overflow.
+        content.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         area.setWidget(content)
         return area
 
@@ -1376,7 +1384,7 @@ class MainWindowV3(MainWindowV3Compatibility):
         # exact-caption adapter broke whenever v1/v2 clarified their wording.
         captions = (
             (self.exp_camera_fps, "Camera frame rate — external trigger cadence", "v3CameraFrameRateCaption"),
-            (self.exp_camera_start, "Fixed camera-start request — metadata only", "v3CameraStartDelayCaption"),
+            (self.exp_camera_start, "Fixed camera-start request — shared DIO wait", "v3CameraStartDelayCaption"),
             (self.exp_frames, "Frames per repeat", "v3FramesPerRepeatCaption"),
             (self.exp_exposure_ms, "Exposure request", "v3ExposureRequestCaption"),
             (self.global_exposure, "Request global exposure reset", "v3GlobalExposureCaption"),
@@ -1418,7 +1426,7 @@ class MainWindowV3(MainWindowV3Compatibility):
         self.dynamic_camera_start.setToolTip(
             "When enabled, each repeat records its corresponding camera-start metadata request instead of "
             "the fixed value. The list has 10 slots. Normal production does not apply these values "
-            "as camera delays and does not program DIO0 or DIO1."
+                "as a shared DIO wait before canonical DIO0 camera triggering and DIO1 LED timing."
         )
         acquisition_grid = group.layout()
         if not isinstance(acquisition_grid, QGridLayout):
@@ -2060,16 +2068,17 @@ class MainWindowV3(MainWindowV3Compatibility):
             # used by Start.  This is a read-only review projection, not a
             # second executor or a separate V3 trigger model.
             result = self._v3_shadow_build_result()
-            trigger_start = (
-                float(result.request.camera_start_s[0])
-                if self.dynamic_camera_start.isChecked() and result.request.camera_start_s
-                else float(self.exp_camera_start.value())
-            )
-            trigger_run = (
-                float(result.request.frames) / float(result.request.camera_fps)
-                if result.request.camera_fps > 0
-                else 0.0
-            )
+            if result.plan is not None and result.plan.conditions:
+                do_config = coerce_do_config(
+                    legacy_series_from_run_plan(result.plan)[0].experiments[0].do_clock_settings
+                )
+                dio_channels = {channel.channel_index: channel for channel in do_config.channels}
+                dio0 = dio_channels.get(0)
+                dio1 = dio_channels.get(1)
+                plan_note = ""
+            else:
+                dio0 = dio1 = None
+                plan_note = " Canonical DIO timing is unavailable because the current request is blocked (including W2 if selected)."
             rows = {
                 "ch0": (
                     bool(wfg.running and wfg.channels[0].carrier.enable),
@@ -2077,14 +2086,14 @@ class MainWindowV3(MainWindowV3Compatibility):
                     float(wfg.channels[0].trigger.sec_run),
                 ),
                 "dio0": (
-                    result.plan is not None,
-                    trigger_start,
-                    trigger_run,
+                    bool(dio0 and dio0.enable),
+                    float(dio0.trigger.sec_wait) if dio0 else 0.0,
+                    float(dio0.trigger.sec_run) if dio0 else 0.0,
                 ),
                 "dio1": (
-                    result.plan is not None,
-                    trigger_start,
-                    trigger_run,
+                    bool(dio1 and dio1.enable),
+                    float(dio1.trigger.sec_wait) if dio1 else 0.0,
+                    float(dio1.trigger.sec_run) if dio1 else 0.0,
                 ),
                 "ch1": (
                     bool(wfg.running and wfg.channels[1].carrier.enable),
@@ -2102,7 +2111,7 @@ class MainWindowV3(MainWindowV3Compatibility):
                 self._v3_timing_delta_header.setText("End delta vs Acoustic / W1 (s)")
                 self._v3_timing_anchor_note.setText(
                     "W1, DIO0, and DIO1 are all planned from the single logical pc_trigger t0. "
-                    "These are requested API timings, not measured electrical or physical simultaneity."
+                    "These are requested API timings, not measured electrical or physical simultaneity." + plan_note
                 )
             else:
                 anchor_end = completion

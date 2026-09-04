@@ -433,6 +433,9 @@ class DoSingleChannelConfig:
 class DoConfig:
     channels: list[DoSingleChannelConfig] = field(default_factory=list)
     running: bool = False
+    # Canonical finite camera-trigger window. Kept separate from the requested
+    # frequency so the backend can program its global Run using achieved DIO0.
+    frame_count: int | None = None
 
     def channel(self, index: int) -> DoSingleChannelConfig:
         for item in self.channels:
@@ -661,6 +664,9 @@ def coerce_do_config(config: DoConfig | dict[str, Any] | None) -> DoConfig:
     do_config = DoConfig()
     if "running" in config:
         do_config.running = bool(config["running"])
+    frame_count = _first_present(config, "frame_count", "frameCount", default=None)
+    if frame_count is not None:
+        do_config.frame_count = int(frame_count)
     raw_channels = _first_present(config, "channels", "channel_configs", default=None)
     if isinstance(raw_channels, list):
         do_config.channels = [coerce_do_channel_config(channel, index) for index, channel in enumerate(raw_channels)]

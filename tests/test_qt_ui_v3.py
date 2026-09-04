@@ -250,9 +250,9 @@ def test_v3_reuses_the_supplied_application_and_separates_operator_workspaces(mo
         ]
         assert [
             experiment_phases.tabText(index) for index in range(experiment_phases.count())
-        ] == ["1  Prepare", "2  Configure", "3  Review run"]
+        ] == ["1  Preparation checklist", "2  Configure", "3  Review run"]
         assert window.findChild(QWidget, "v3PrepareWorkspace") is not None
-        assert "OPERATOR_CONFIRMED_PREPARATION_EVIDENCE" in window.findChild(
+        assert "local presentation confirmations" in window.findChild(
             QLabel, "v3PreparationEvidenceBoundary"
         ).text()
         imaging_request = window.findChild(QGroupBox, "v3ConfigureImagingRequest")
@@ -274,7 +274,7 @@ def test_v3_reuses_the_supplied_application_and_separates_operator_workspaces(mo
             "Runs remaining",
             "Status and error history",
             "Camera frame rate — external trigger cadence",
-            "Fixed camera-start request — metadata only",
+            "Fixed camera-start request — shared DIO wait",
             "Series repeats",
             "Frames per repeat",
             "Request global exposure reset",
@@ -309,7 +309,7 @@ def test_v3_reuses_the_supplied_application_and_separates_operator_workspaces(mo
             "Current run context",
         } <= groups
         assert "metadata" in window.dynamic_camera_start.toolTip()
-        assert "does not program DIO0 or DIO1" in window.dynamic_camera_start.toolTip()
+        assert "shared DIO wait" in window.dynamic_camera_start.toolTip()
         assert "unchanged" in window.global_exposure.toolTip()
         assert "unresolved" in window.global_exposure.toolTip()
         acquisition = next(
@@ -554,6 +554,7 @@ def test_v3_main_ad2_settings_use_channel_tabs_without_horizontal_overflow(monke
         setup_tabs.setCurrentIndex(1)
         QApplication.processEvents()
         assert scroll.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        assert scroll.horizontalScrollBar().maximum() == 0
     finally:
         window.close()
 

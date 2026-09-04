@@ -462,9 +462,29 @@ class Application:
         *,
         preserve_initial_flush_state: bool = False,
     ) -> None:
+        self._preflight_automatic_flush_volume(experiment_series)
         self.experiment_series = experiment_series
         if not preserve_initial_flush_state:
             self._initial_flush_pending = True
+
+    def _preflight_automatic_flush_volume(self, experiment_series: ExperimentSeries2) -> None:
+        """Reject an underfilled automatic-refresh series before its first valve action.
+
+        This uses tracked pump state only as a feasibility gate; it does not
+        assert that any physical volume has been delivered.
+        """
+        experiments = list(experiment_series.experiments or [])
+        automatic = [item for item in experiments if item.flush_enabled]
+        if not automatic or not (self.pump.enabled and self.valve.enabled):
+            return
+        required_ml = automatic[0].flush_settings.flush_volume_ml + sum(
+            item.flush_settings.flush_volume_ml for item in automatic
+        )
+        if required_ml > self.pump.fill_level + 1e-12:
+            raise ValueError(
+                f"Automatic refresh requires {required_ml} ml for {len(automatic) + 1} flushes, "
+                f"but tracked pump fill is {self.pump.fill_level} ml; refusing before any valve or pump command."
+            )
 
     def _run_initial_flush_if_required(
         self,
@@ -803,6 +823,24 @@ class Application:
         # achieved clock frequency.
         camera_fps = self._configured_camera_fps(experiment)
         if camera_fps is None or camera_fps <= 0:
+            return
+        sequence_settings = experiment.sequence_settings or {}
+        if str(sequence_settings.get("trigger_source", "")).lower() == "external":
+            reader = getattr(self.camera, "read_min_trigger_interval", None)
+            # Older offline test doubles predate this real-camera capability
+            # readback. Production HamamatsuCamera always provides it.
+            min_interval_s = reader() if reader is not None else 0.0
+            if min_interval_s is None:
+                raise ValueError(
+                    "Could not read the camera's minimum external trigger interval -- cannot verify "
+                    "the configured Camera FPS for canonical External-trigger acquisition."
+                )
+            requested_period_s = 1.0 / camera_fps
+            if requested_period_s < max(min_interval_s, 0.0):
+                raise ValueError(
+                    f"Configured Camera FPS ({camera_fps:.3f}) requires {requested_period_s * 1000:.3f} ms "
+                    f"external trigger spacing, below the camera minimum of {min_interval_s * 1000:.3f} ms."
+                )
             return
         # Read back self.camera.exposure_ms (the value configure_exposure_time()
         # just applied to real hardware above) rather than experiment.global_exposure_ms
@@ -1211,6 +1249,10 @@ class Application:
                 (experiment.sequence_settings or {}).get("trigger_architecture")
                 == "canonical_pc_triggered_ad2_camera_led"
             )
+            if canonical_triggered_do and not self.ad2.enabled:
+                raise ValueError(
+                    "Canonical External-trigger acquisition requires AD2 enabled and available to generate DIO0 camera triggers."
+                )
             experiment.do_clock_settings = coerce_do_config(
                 experiment.do_clock_settings if canonical_triggered_do else None
             )
@@ -1572,6 +1614,17 @@ class Application:
             )
         # Temperature groups are one canonical experiment sequence for this
         # purpose: permit one pre-repeat refresh before group one's repeat one.
+        # Validate the complete flattened sequence before either the initial
+        # refresh or a TEC action can issue a pump/valve command.
+        self._preflight_automatic_flush_volume(
+            ExperimentSeries2(
+                experiments=[
+                    experiment
+                    for group in experiment_groups
+                    for experiment in (group.experiments or ())
+                ]
+            )
+        )
         self._initial_flush_pending = True
         for group_index, group in enumerate(experiment_groups, start=1):
             # Safety-behavior change (2026-08-04, closing a gap Session 78's

@@ -390,6 +390,10 @@ def build_independent_run_plan(request: ExperimentRequest) -> RunPlan:
             # configuration, not measured DIO/camera/LED timing.
             sequence["trigger_source"] = "external"
             sequence["trigger_polarity"] = "positive"
+            sequence["trigger_active"] = "edge"
+            sequence["trigger_mode"] = "normal"
+            sequence["trigger_times"] = 1
+            sequence["trigger_delay_s"] = 0.0
             sequence["trigger_architecture"] = "canonical_pc_triggered_ad2_camera_led"
             sequence["dio0_role"] = "camera_frame_trigger"
             sequence["dio0_frame_trigger_count"] = request.frames
@@ -485,6 +489,7 @@ def _canonical_triggered_do_config(camera_fps: float, frames: int, camera_start_
     }
     return {
         "running": True,
+        "frame_count": frames,
         "channels": [
             {
                 "channel_index": 0, "enable": True, "clock_frequency_hz": camera_fps,
@@ -497,7 +502,7 @@ def _canonical_triggered_do_config(camera_fps: float, frames: int, camera_start_
                 "output_type": "Pulse", "output_mode": "PushPull", "idle_state": "Low",
                 # Same shared bit clock as DIO0: a finite high counter covers
                 # the acquisition window and the low idle state ends it.
-                "counter_high_bits": frames * 2, "counter_low_bits": 0, "counter_initial_bits": 0,
+                "counter_high_bits": 1, "counter_low_bits": 0, "counter_initial_bits": 0,
                 "start_high": True, "trigger": dict(shared_trigger),
             },
         ],

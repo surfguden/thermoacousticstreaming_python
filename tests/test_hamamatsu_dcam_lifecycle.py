@@ -39,6 +39,12 @@ class FakeDcamModule:
     class DCAM_IDPROP:
         EXPOSURETIME = "EXPOSURETIME"
         TRIGGERSOURCE = "TRIGGERSOURCE"
+        TRIGGERPOLARITY = "TRIGGERPOLARITY"
+        TRIGGERACTIVE = "TRIGGERACTIVE"
+        TRIGGER_MODE = "TRIGGER_MODE"
+        TRIGGERTIMES = "TRIGGERTIMES"
+        TRIGGERDELAY = "TRIGGERDELAY"
+        TIMING_MINTRIGGERINTERVAL = "TIMING_MINTRIGGERINTERVAL"
         TRIGGER_GLOBALEXPOSURE = "TRIGGER_GLOBALEXPOSURE"
 
     class DCAMPROP:
@@ -46,6 +52,17 @@ class FakeDcamModule:
             INTERNAL = 1
             EXTERNAL = 2
             SOFTWARE = 3
+
+        class TRIGGERPOLARITY:
+            NEGATIVE = 1
+            POSITIVE = 2
+
+        class TRIGGERACTIVE:
+            EDGE = 1
+            LEVEL = 2
+
+        class TRIGGER_MODE:
+            NORMAL = 1
 
         class TRIGGER_GLOBALEXPOSURE:
             NONE = 1
@@ -59,6 +76,7 @@ class FakeDcamModule:
             self.index = index
             self.opened = False
             self.calls = []
+            self.values = {"TIMING_MINTRIGGERINTERVAL": 0.01}
             FakeDcamModule.instances.append(self)
 
         def is_opened(self):
@@ -84,6 +102,10 @@ class FakeDcamModule:
         def prop_setvalue(self, prop, value):
             self.calls.append(("prop_setvalue", prop, value))
             return True
+
+        def prop_getvalue(self, prop):
+            self.calls.append(("prop_getvalue", prop))
+            return self.values.get(prop, 0.0)
 
         def buf_release(self):
             self.calls.append(("buf_release",))
@@ -343,6 +365,25 @@ def test_configure_trigger_global_exposure_disabled_does_not_set_property():
 
     camera = FakeDcamModule.instances[0]
     assert not any(call[0] == "prop_setvalue" and call[1] == "TRIGGER_GLOBALEXPOSURE" for call in camera.calls)
+
+
+def test_external_sequence_sets_deterministic_trigger_properties_and_reads_minimum_interval():
+    FakeDcamModule.instances = []
+    backend = HamamatsuDcamBackend()
+    backend.dcam_module = FakeDcamModule
+    backend.dcamapi = FakeDcamApi
+
+    backend.configure_sequence({
+        "trigger_source": "external", "trigger_polarity": "positive", "trigger_active": "edge",
+        "trigger_mode": "normal", "trigger_times": 1, "trigger_delay_s": 0.0,
+    })
+
+    camera = FakeDcamModule.instances[0]
+    assert ("prop_setvalue", "TRIGGERACTIVE", 1) in camera.calls
+    assert ("prop_setvalue", "TRIGGER_MODE", 1) in camera.calls
+    assert ("prop_setgetvalue", "TRIGGERTIMES", 1, 0) in camera.calls
+    assert ("prop_setgetvalue", "TRIGGERDELAY", 0.0, 0) in camera.calls
+    assert backend.read_min_trigger_interval() == pytest.approx(0.01)
 
 
 def test_configure_sequence_partial_failure_does_not_update_sequence_settings():
