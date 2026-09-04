@@ -48,7 +48,8 @@ class HardwareBundle:
 
 def validate_live_valve_resource(resource: str) -> None:
     """Reject the TEC's current serial resource on a live valve path."""
-    if resource.strip().upper() == "COM6":
+    normalized_resource = resource.strip().removesuffix(":").upper()
+    if normalized_resource.removeprefix("\\\\.\\") == "COM6":
         raise ValueError("COM6 is reserved for TEC and cannot be used as the valve resource.")
 
 

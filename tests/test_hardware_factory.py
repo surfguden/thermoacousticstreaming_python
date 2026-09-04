@@ -102,9 +102,18 @@ def test_factory_builds_real_tec_adapter_only_when_enabled_and_not_simulated():
     assert bundle.tec.backend.port == "COM9"
 
 
-def test_factory_rejects_com6_as_live_valve_without_opening_hardware():
+@pytest.mark.parametrize(
+    "resource",
+    ["COM6", "com6", " COM6 ", r"\\.\COM6", r"\\.\com6", "COM6:", r"\\.\COM6:"],
+)
+def test_factory_rejects_equivalent_com6_live_valve_resources_before_backend_construction(monkeypatch, resource):
+    def fail_if_constructed(**_kwargs):
+        raise AssertionError("live valve backend must not be constructed for a rejected resource")
+
+    monkeypatch.setattr(hardware_factory, "SerialTextCommandBackend", fail_if_constructed)
+
     with pytest.raises(ValueError, match="COM6 is reserved for TEC"):
-        build_hardware_bundle(runtime_config(valve_enabled=True, sim_valve=False, valve_resource="COM6"))
+        build_hardware_bundle(runtime_config(valve_enabled=True, sim_valve=False, valve_resource=resource))
 
 
 def test_factory_preserves_com6_for_tec_and_simulated_valve_fixture():
