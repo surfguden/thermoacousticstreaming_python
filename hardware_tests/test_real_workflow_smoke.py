@@ -23,7 +23,12 @@ from thermo_acoustic.experiment_presets import (
     labview_screenshot_working_preset,
 )
 from thermo_acoustic.hardware_config import default_hardware_config
-from thermo_acoustic.hardware_factory import HardwareRuntimeConfig, apply_hardware_bundle, build_hardware_bundle
+from thermo_acoustic.hardware_factory import (
+    HardwareRuntimeConfig,
+    apply_hardware_bundle,
+    build_hardware_bundle,
+    validate_live_valve_resource,
+)
 from thermo_acoustic.waveforms import WaveFormsBackend
 from thermo_acoustic.workflows import Experiment2, ExperimentSeries2, FlushSettings
 
@@ -245,8 +250,12 @@ def real_camera_led_trigger_check_plan() -> SmokePlan:
 
 
 def real_full_workflow_short_plan(valve_port: str, *, flush_enabled: bool = False) -> SmokePlan:
-    if valve_port not in {"COM5", "COM6"}:
-        raise SystemExit("This mode requires explicit --valve-port COM5 or COM6")
+    try:
+        validate_live_valve_resource(valve_port)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if valve_port != "COM5":
+        raise SystemExit("This mode requires explicit --valve-port COM5")
     defaults = default_hardware_config()
     return SmokePlan(
         name="real-full-workflow-short",
@@ -1371,7 +1380,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frames", type=int, default=None)
     parser.add_argument("--exposure-ms", type=float, default=None)
     parser.add_argument("--device-index", type=int, default=0, help="WaveForms device index for real AD2 smoke modes. Default: 0.")
-    parser.add_argument("--valve-port", choices=["COM5", "COM6"], default=None, help="Explicit real valve serial port for full workflow mode.")
+    parser.add_argument("--valve-port", default=None, help="Explicit real valve serial port for full workflow mode (current valve: COM5).")
     parser.add_argument("--flush-enabled", action="store_true", help="Enable the controlled pump/valve flush in full workflow mode.")
     parser.add_argument(
         "--include-ad2-laser",
@@ -1497,7 +1506,11 @@ def main() -> int:
         if not args.acknowledge_pump_valve_real:
             raise SystemExit(PUMP_VALVE_REAL_REFUSAL)
         if args.valve_port is None:
-            raise SystemExit("This mode requires explicit --valve-port COM5 or COM6")
+            raise SystemExit("This mode requires explicit --valve-port COM5")
+        try:
+            validate_live_valve_resource(args.valve_port)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
         if args.flush_enabled and not args.acknowledge_pump_valve_real:
             raise SystemExit(PUMP_VALVE_REAL_REFUSAL)
         prune_old_run_dirs(args.output_dir, "full_workflow_short", args.keep_last)

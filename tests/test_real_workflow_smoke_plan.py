@@ -4,6 +4,8 @@ import importlib.util
 from pathlib import Path
 import sys
 
+import pytest
+
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "hardware_tests" / "test_real_workflow_smoke.py"
 HARDWARE_SDK_MODULE_NAMES = ("pylablib", "qmixsdk", "serial", "dcam", "dwf")
@@ -98,7 +100,7 @@ def test_led_trigger_check_plan_keeps_other_hardware_disabled():
 def test_real_full_workflow_short_plan_uses_real_pump_valve_and_keeps_z_disabled():
     module = load_smoke_module()
 
-    plan = module.real_full_workflow_short_plan("COM6", flush_enabled=True)
+    plan = module.real_full_workflow_short_plan("COM5", flush_enabled=True)
 
     assert plan.name == "real-full-workflow-short"
     assert plan.flush_enabled is True
@@ -111,7 +113,7 @@ def test_real_full_workflow_short_plan_uses_real_pump_valve_and_keeps_z_disabled
     assert plan.config.sim_pump is False
     assert plan.config.valve_enabled is True
     assert plan.config.sim_valve is False
-    assert plan.config.valve_resource == "COM6"
+    assert plan.config.valve_resource == "COM5"
     assert plan.config.z_enabled is False
     assert "Cetoni_1pump_config_FM" in str(plan.config.cetoni_config_path)
     assert "two_pumps" not in str(plan.config.cetoni_config_path).lower()
@@ -616,7 +618,7 @@ def test_real_full_workflow_short_requires_confirmation(monkeypatch, tmp_path):
             "test_real_workflow_smoke.py",
             "--real-full-workflow-short",
             "--valve-port",
-            "COM6",
+            "COM5",
             "--acknowledge-timing-uncertain",
             "--acknowledge-pump-valve-real",
             "--output-dir",
@@ -646,7 +648,7 @@ def test_real_full_workflow_short_requires_timing_acknowledgement(monkeypatch, t
             "test_real_workflow_smoke.py",
             "--real-full-workflow-short",
             "--valve-port",
-            "COM6",
+            "COM5",
             "--confirm",
             "CONFIRM_REAL_HARDWARE",
             "--acknowledge-pump-valve-real",
@@ -678,7 +680,7 @@ def test_real_full_workflow_short_requires_pump_valve_acknowledgement_when_flush
             "--real-full-workflow-short",
             "--flush-enabled",
             "--valve-port",
-            "COM6",
+            "COM5",
             "--confirm",
             "CONFIRM_REAL_HARDWARE",
             "--acknowledge-timing-uncertain",
@@ -720,9 +722,37 @@ def test_real_full_workflow_short_requires_explicit_valve_port(monkeypatch, tmp_
     try:
         module.main()
     except SystemExit as exc:
-        assert "--valve-port COM5 or COM6" in str(exc)
+        assert "--valve-port COM5" in str(exc)
     else:
         raise AssertionError("missing explicit valve port should raise SystemExit")
+
+
+def test_real_full_workflow_short_rejects_com6_as_valve_before_runner(monkeypatch, tmp_path):
+    module = load_smoke_module()
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("COM6 must be rejected before the real runner")
+
+    monkeypatch.setattr(module, "run_real_full_workflow_short", fail_if_called)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "test_real_workflow_smoke.py",
+            "--real-full-workflow-short",
+            "--valve-port",
+            "COM6",
+            "--confirm",
+            "CONFIRM_REAL_HARDWARE",
+            "--acknowledge-timing-uncertain",
+            "--acknowledge-pump-valve-real",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+
+    with pytest.raises(SystemExit, match="COM6 is reserved for TEC"):
+        module.main()
 
 
 def test_real_ad2_open_close_runs_only_with_confirmation(monkeypatch):
@@ -999,7 +1029,7 @@ def test_real_full_workflow_short_runs_only_with_all_confirmations(monkeypatch, 
             "0.5",
             "--flush-enabled",
             "--valve-port",
-            "COM6",
+            "COM5",
             "--output-dir",
             str(tmp_path),
             "--confirm",
@@ -1012,7 +1042,7 @@ def test_real_full_workflow_short_runs_only_with_all_confirmations(monkeypatch, 
     )
 
     assert module.main() == 0
-    assert calls == [(tmp_path, 20, None, "labview-screenshot", True, "COM6", True, 1, 0.5, False)]
+    assert calls == [(tmp_path, 20, None, "labview-screenshot", True, "COM5", True, 1, 0.5, False)]
 
 
 def test_cli_forwards_legacy_laser_flag_to_runner_for_rejection(monkeypatch, tmp_path):
@@ -1050,7 +1080,7 @@ def test_cli_forwards_legacy_laser_flag_to_runner_for_rejection(monkeypatch, tmp
             "2.0",
             "--flush-enabled",
             "--valve-port",
-            "COM6",
+            "COM5",
             "--include-ad2-laser",
             "--output-dir",
             str(tmp_path),
@@ -1062,7 +1092,7 @@ def test_cli_forwards_legacy_laser_flag_to_runner_for_rejection(monkeypatch, tmp
     )
 
     assert module.main() == 0
-    assert calls == [(tmp_path, 100, None, "labview-screenshot", True, "COM6", True, 0, 2.0, True)]
+    assert calls == [(tmp_path, 100, None, "labview-screenshot", True, "COM5", True, 0, 2.0, True)]
 
 
 def test_low_risk_ad2_output_parameters_are_not_labview_acoustic_candidate():
@@ -1251,7 +1281,7 @@ def test_real_full_workflow_short_refuses_full_labview_duration_before_hardware(
             exposure_ms=None,
             preset_name="labview-screenshot",
             apply_roi=True,
-            valve_port="COM6",
+            valve_port="COM5",
             flush_enabled=True,
             duration_s=60.0,
         )

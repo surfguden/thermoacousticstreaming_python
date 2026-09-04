@@ -46,6 +46,12 @@ class HardwareBundle:
     tec: TecController
 
 
+def validate_live_valve_resource(resource: str) -> None:
+    """Reject the TEC's current serial resource on a live valve path."""
+    if resource.strip().upper() == "COM6":
+        raise ValueError("COM6 is reserved for TEC and cannot be used as the valve resource.")
+
+
 def _ensure_qmixsdk_env() -> None:
     # qmix_sdk_for_codex/python/qmixsdk/_qmixloadlib.py resolves the real Qmix
     # SDK's native DLL directory from the QMIXSDK environment variable the
@@ -62,6 +68,8 @@ def _ensure_qmixsdk_env() -> None:
 
 
 def build_hardware_bundle(config: HardwareRuntimeConfig) -> HardwareBundle:
+    if config.valve_enabled and not config.sim_valve:
+        validate_live_valve_resource(config.valve_resource)
     if not config.sim_pump:
         _ensure_qmixsdk_env()
     ad2 = SimulatedAD2Sdk(enabled=config.ad2_enabled) if config.sim_ad2 else AD2Sdk(enabled=config.ad2_enabled)

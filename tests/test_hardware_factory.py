@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 from thermo_acoustic import hardware_factory
 from thermo_acoustic.hardware_config import default_hardware_config
 from thermo_acoustic.hardware_factory import HardwareRuntimeConfig, build_hardware_bundle
@@ -72,6 +74,7 @@ def test_factory_selects_real_backend_classes_when_simulation_is_disabled(monkey
             sim_camera=False,
             sim_pump=False,
             sim_valve=False,
+            valve_resource="COM5",
             z_enabled=True,
         )
     )
@@ -99,10 +102,30 @@ def test_factory_builds_real_tec_adapter_only_when_enabled_and_not_simulated():
     assert bundle.tec.backend.port == "COM9"
 
 
+def test_factory_rejects_com6_as_live_valve_without_opening_hardware():
+    with pytest.raises(ValueError, match="COM6 is reserved for TEC"):
+        build_hardware_bundle(runtime_config(valve_enabled=True, sim_valve=False, valve_resource="COM6"))
+
+
+def test_factory_preserves_com6_for_tec_and_simulated_valve_fixture():
+    bundle = build_hardware_bundle(
+        runtime_config(
+            valve_enabled=False,
+            sim_valve=True,
+            tec_enabled=True,
+            sim_tec=False,
+            tec_port="COM6",
+        )
+    )
+
+    assert bundle.valve.backend is None
+    assert bundle.tec.backend.port == "COM6"
+
+
 def test_factory_keeps_z_stage_disabled_when_z_is_off(monkeypatch):
     monkeypatch.setattr(hardware_factory, "SerialTextCommandBackend", FakeSerialBackend)
 
-    bundle = build_hardware_bundle(runtime_config(z_enabled=False, sim_valve=False))
+    bundle = build_hardware_bundle(runtime_config(z_enabled=False, sim_valve=False, valve_resource="COM5"))
 
     assert isinstance(bundle.valve.backend, FakeSerialBackend)
     assert bundle.z_motor.enabled is False
