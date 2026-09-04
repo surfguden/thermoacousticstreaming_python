@@ -629,13 +629,15 @@ def build_result_from_existing_plan(
             )
         )
     for name in _disabled_devices(request):
-        issues.append(
-            PreflightIssue(
-                code=f"{name}_disabled",
-                message=f"{name.upper()} is disabled; the current runtime will skip its hardware actions.",
-                blocking=False,
-            )
+        # Canonical acquisition is externally triggered from DIO0, so a disabled
+        # AD2 is not a skipped subsystem: the run fails closed before capture.
+        message = (
+            "AD2 is disabled; canonical External-trigger acquisition requires it to generate DIO0 "
+            "camera triggers and will fail closed before camera capture."
+            if name == "ad2"
+            else f"{name.upper()} is disabled; the current runtime will skip its hardware actions."
         )
+        issues.append(PreflightIssue(code=f"{name}_disabled", message=message, blocking=False))
     if request.tec_scan_enabled and "tec" in _simulated_devices(request):
         issues.append(
             PreflightIssue(

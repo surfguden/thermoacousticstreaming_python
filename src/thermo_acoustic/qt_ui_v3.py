@@ -1424,9 +1424,10 @@ class MainWindowV3(MainWindowV3Compatibility):
             "camera trigger settings."
         )
         self.dynamic_camera_start.setToolTip(
-            "When enabled, each repeat records its corresponding camera-start metadata request instead of "
-            "the fixed value. The list has 10 slots. Normal production does not apply these values "
-                "as a shared DIO wait before canonical DIO0 camera triggering and DIO1 LED timing."
+            "When enabled, each repeat uses its corresponding camera-start request instead of the fixed "
+            "value. The list has 10 slots. Canonical production applies the selected value as the shared "
+            "DigitalOut wait before DIO0 camera triggering and DIO1 LED timing. That is a planned "
+            "software timing request, not measured camera exposure or LED emission timing."
         )
         acquisition_grid = group.layout()
         if not isinstance(acquisition_grid, QGridLayout):
@@ -2889,8 +2890,8 @@ class MainWindowV3(MainWindowV3Compatibility):
 
         note = QLabel(
             "Camera setup and manual operation. Automated experiments inherit the applied ROI and selected "
-            "sequence defaults, then reapply experiment exposure/frame count and force Internal trigger source. "
-            "Display conversion affects preview only, not saved image data."
+            "sequence defaults, then reapply experiment exposure/frame count and force External positive-edge "
+            "triggering from DIO0. Display conversion affects preview only, not saved image data."
         )
         note.setObjectName("v3CameraSharedStateSummary")
         note.setWordWrap(True)
@@ -3058,8 +3059,9 @@ class MainWindowV3(MainWindowV3Compatibility):
         form.addRow("Trigger polarity", self.external_polarity)
         form.addRow("Trigger delay (s)", self.external_delay)
         note = QLabel(
-            "Automated runs force trigger source to Internal. Polarity and delay remain inherited sequence "
-            "values, but their physical relevance depends on the selected camera mode and is bench-unverified."
+            "Automated runs force trigger source to External with positive polarity and zero trigger delay. "
+            "These are deterministic requested API settings; their physical relevance depends on the selected "
+            "camera mode and is bench-unverified."
         )
         note.setObjectName("v3CameraTriggerBoundary")
         note.setWordWrap(True)

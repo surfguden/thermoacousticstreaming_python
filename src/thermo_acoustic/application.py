@@ -462,27 +462,42 @@ class Application:
         *,
         preserve_initial_flush_state: bool = False,
     ) -> None:
-        self._preflight_automatic_flush_volume(experiment_series)
+        # The sequence-level initial refresh is owed exactly once, by whichever
+        # call arms it below. A preserved-state group re-uses an already-armed
+        # (or already-consumed) sequence flush, so it must not be charged again.
+        self._preflight_automatic_flush_volume(
+            experiment_series, include_initial_flush=not preserve_initial_flush_state
+        )
         self.experiment_series = experiment_series
         if not preserve_initial_flush_state:
             self._initial_flush_pending = True
 
-    def _preflight_automatic_flush_volume(self, experiment_series: ExperimentSeries2) -> None:
+    def _preflight_automatic_flush_volume(
+        self,
+        experiment_series: ExperimentSeries2,
+        *,
+        include_initial_flush: bool = True,
+    ) -> None:
         """Reject an underfilled automatic-refresh series before its first valve action.
 
-        This uses tracked pump state only as a feasibility gate; it does not
-        assert that any physical volume has been delivered.
+        ``include_initial_flush`` mirrors the sequence lifecycle: exactly one
+        automatic initial refresh belongs to a whole sequence, so a temperature
+        group that reuses an already-armed sequence charges only its own
+        post-repeat refreshes. This uses tracked pump state only as a
+        feasibility gate; it does not assert that any physical volume has been
+        delivered.
         """
         experiments = list(experiment_series.experiments or [])
         automatic = [item for item in experiments if item.flush_enabled]
         if not automatic or not (self.pump.enabled and self.valve.enabled):
             return
-        required_ml = automatic[0].flush_settings.flush_volume_ml + sum(
-            item.flush_settings.flush_volume_ml for item in automatic
-        )
+        flush_count = len(automatic) + (1 if include_initial_flush else 0)
+        required_ml = sum(item.flush_settings.flush_volume_ml for item in automatic)
+        if include_initial_flush:
+            required_ml += automatic[0].flush_settings.flush_volume_ml
         if required_ml > self.pump.fill_level + 1e-12:
             raise ValueError(
-                f"Automatic refresh requires {required_ml} ml for {len(automatic) + 1} flushes, "
+                f"Automatic refresh requires {required_ml} ml for {flush_count} flushes, "
                 f"but tracked pump fill is {self.pump.fill_level} ml; refusing before any valve or pump command."
             )
 

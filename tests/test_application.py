@@ -883,6 +883,77 @@ def test_series_automatic_flush_volume_preflight_uses_n_plus_one_before_commands
         app.set_experiment_series_general(series)
 
 
+class _GuardPump:
+    """Tracked-fill stand-in that fails the test if any pump command is issued."""
+
+    enabled = True
+
+    def __init__(self, fill_level: float) -> None:
+        self.fill_level = fill_level
+
+    def set_fill_level(self, *_args):
+        raise AssertionError("preflight must run before pump command")
+
+    def stop(self, *_args):
+        raise AssertionError("preflight must run before pump command")
+
+
+class _GuardValve:
+    enabled = True
+
+    def set_position(self, *_args):
+        raise AssertionError("preflight must run before valve command")
+
+
+def _flush_group(tmp_path, name: str, repeats: int, volume_ml: float) -> ExperimentSeries2:
+    settings = FlushSettings(flush_flowrate=100.0, flush_volume_ml=volume_ml, wait_after_flush_s=0.0)
+    return ExperimentSeries2(
+        tmp_path / name,
+        [Experiment2(flush_enabled=True, flush_settings=settings) for _ in range(repeats)],
+    )
+
+
+def test_temperature_group_setup_does_not_recharge_the_consumed_sequence_initial_flush(tmp_path):
+    # Reproduces the reported false rejection: 2 temperature groups x 3 repeats
+    # x 0.2 ml is exactly 7 automatic flushes (1.4 ml) for the whole sequence.
+    # Group 2 must be charged only its own 3 refreshes, because the single
+    # sequence-level initial refresh was already consumed by group 1.
+    groups = [_flush_group(tmp_path, "first", 3, 0.2), _flush_group(tmp_path, "second", 3, 0.2)]
+    flattened = ExperimentSeries2(
+        tmp_path, [experiment for group in groups for experiment in group.experiments]
+    )
+    app = Application(ad2=SimulatedAD2Sdk(), pump=_GuardPump(1.4), valve=_GuardValve())
+
+    # Sequence level: the complete flattened sequence still costs N + 1 flushes.
+    app._preflight_automatic_flush_volume(flattened)
+    app.pump.fill_level = 1.399
+    with pytest.raises(ValueError, match="7 flushes"):
+        app._preflight_automatic_flush_volume(flattened)
+
+    app.pump.fill_level = 1.4
+    app.set_experiment_series_general(groups[0], preserve_initial_flush_state=True)
+    # Group 1 consumed the initial refresh plus its three post-repeat refreshes.
+    app.pump.fill_level = 0.6
+    app.set_experiment_series_general(groups[1], preserve_initial_flush_state=True)
+
+    # The preserved-group charge is still a real gate, not a disabled one.
+    app.pump.fill_level = 0.599
+    with pytest.raises(ValueError, match="3 flushes"):
+        app.set_experiment_series_general(groups[1], preserve_initial_flush_state=True)
+
+
+def test_temperature_series_rejects_insufficient_full_sequence_fill_before_any_group_runs(tmp_path):
+    groups = [_flush_group(tmp_path, "first", 3, 0.2), _flush_group(tmp_path, "second", 3, 0.2)]
+    app = Application(ad2=SimulatedAD2Sdk(), pump=_GuardPump(1.399), valve=_GuardValve())
+
+    with pytest.raises(ValueError, match="7 flushes"):
+        app.run_temperature_series(TemperatureSeries(temperature_points_c=[20.0, 21.0]), groups)
+
+    # Rejected before the sequence armed its initial refresh or touched a group.
+    assert app._initial_flush_pending is False
+    assert app.get_experiment_series_general() is not groups[0]
+
+
 def test_temperature_series_preflights_all_groups_before_its_first_action(monkeypatch, tmp_path):
     app = Application(ad2=SimulatedAD2Sdk())
     groups = [
@@ -891,7 +962,7 @@ def test_temperature_series_preflights_all_groups_before_its_first_action(monkey
     ]
     observed: list[Experiment2] = []
 
-    def stop_after_full_preflight(self, series):
+    def stop_after_full_preflight(self, series, **_kwargs):
         observed.extend(series.experiments or [])
         raise RuntimeError("preflight observed")
 

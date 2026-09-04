@@ -308,8 +308,16 @@ def test_v3_reuses_the_supplied_application_and_separates_operator_workspaces(mo
             "Engineering and calibration",
             "Current run context",
         } <= groups
-        assert "metadata" in window.dynamic_camera_start.toolTip()
-        assert "shared DIO wait" in window.dynamic_camera_start.toolTip()
+        # Direction-sensitive: a negated claim ("does not apply ... shared
+        # DigitalOut wait") must fail, because canonical production really does
+        # use the selected camera-start value as the shared DigitalOut wait.
+        camera_start_tooltip = window.dynamic_camera_start.toolTip()
+        assert (
+            "Canonical production applies the selected value as the shared DigitalOut wait"
+            in camera_start_tooltip
+        )
+        assert "not apply" not in camera_start_tooltip
+        assert "not measured camera exposure or LED emission timing" in camera_start_tooltip
         assert "unchanged" in window.global_exposure.toolTip()
         assert "unresolved" in window.global_exposure.toolTip()
         acquisition = next(
@@ -908,6 +916,8 @@ def test_v3_readiness_distinguishes_disabled_not_required_and_unverified_state(m
         assert "Blank output path resolves to the current working directory" in warnings.text()
         assert "TEC evidence is simulated, not physical" in warnings.text()
         assert "current runtime will skip its hardware actions" in warnings.text()
+        # A disabled AD2 is not a skipped subsystem on the canonical path.
+        assert "will fail closed before camera capture" in warnings.text()
 
         window.exp_flush_enabled.setChecked(False)
         window.exp_tec_scan_enable.setChecked(False)
@@ -1545,14 +1555,17 @@ def test_v3_camera_panel_has_ordered_acquisition_sequence_and_advanced_display(m
         assert window.capture_mode in sequence_sections.widget(3).findChildren(type(window.capture_mode))
         shared_summary = dialog.findChild(QLabel, "v3CameraSharedStateSummary")
         assert "inherit the applied ROI" in shared_summary.text()
-        assert "force Internal trigger source" in shared_summary.text()
+        # Canonical automated acquisition is External positive-edge from DIO0.
+        # Any resurfaced "Internal" claim must fail these two panels.
+        assert "force External positive-edge triggering from DIO0" in shared_summary.text()
+        assert "Internal" not in shared_summary.text()
         assert "preview only" in shared_summary.text()
         assert "replace the capture-buffer" in dialog.findChild(
             QLabel, "v3CameraSequenceBoundary"
         ).text()
-        assert "force trigger source to Internal" in dialog.findChild(
-            QLabel, "v3CameraTriggerBoundary"
-        ).text()
+        trigger_boundary = dialog.findChild(QLabel, "v3CameraTriggerBoundary").text()
+        assert "force trigger source to External with positive polarity" in trigger_boundary
+        assert "Internal" not in trigger_boundary
         capture_labels = {label.text() for label in tasks.widget(0).findChildren(QLabel)}
         assert {
             "Horizontal offset (px)",

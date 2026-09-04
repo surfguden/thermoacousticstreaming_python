@@ -8,8 +8,8 @@ but they do not override this page, current source, tests, Git state, or newer
 retained evidence.
 
 Last current-truth convergence: 2026-09-04, at the post-handover mainline
-correction checkpoint. This page records current project implications, not an
-uncheckpointed change set.
+correction checkpoint `a3d226f838a52da6b84f00d665627ad024276e10`. The narrow
+closure of that checkpoint's focused-review residues follows it on this branch.
 
 ## Authority hierarchy
 
@@ -47,10 +47,16 @@ evidence appears.
 
 ## Current checkpoint and handover authority
 
-- `POST_HANDOVER_MAINLINE_REVIEW_CORRECTIONS`: **IMPLEMENTED / VALIDATION
-  PENDING COMMIT**. This is the current checkpoint; the earlier
+- `POST_HANDOVER_MAINLINE_REVIEW_CORRECTIONS`: **IMPLEMENTED / PUSHED /
+  FOCUSED CLOSURE REVIEW COMPLETED** at `a3d226f`. The earlier
   `PUMP_QMIX_TOOL_HARDENING` commit remains retained historical evidence, not
   the current convergence pointer.
+- `POST_HANDOVER_MAINLINE_NARROW_CLOSURE`: **IMPLEMENTED /
+  READY_FOR_MICRO_REVIEW**. It closes the focused review's remaining bounded
+  residues: the temperature-group automatic-refresh volume double-count, three
+  stale current-authority statements, and the stale V3 trigger wording. The
+  post-handover mainline is not `FINAL_VALIDATED` until this narrow closure is
+  independently rechecked.
 - The colleague handover evidence was ingested without merging its branch:
   [`experiment_sequence_timeline.txt`](experiment_sequence_timeline.txt) and
   [`M-042_iBEAM_smart_manual_v09.pdf`](vendor_manuals/M-042_iBEAM_smart_manual_v09.pdf).
@@ -512,9 +518,10 @@ manual setting.
 Current owner-supplied truth is W2 -> laser Analog In/control, DIO0/pink ->
 camera `EXT.TRIG`, and DIO1/green -> LED timing/control. The earlier DIO1 ->
 laser Digital In statement is superseded historical project truth. Normal
-production rejects W2 carrier/FM before hardware configuration and programs
-neither digital line. Laser alignment and optical power remain manual/fixed for
-the current experiment.
+production rejects W2 carrier/FM before hardware configuration; it does program
+DIO0 as the camera `EXT.TRIG` train and DIO1 as the LED timing window, and
+neither line carries laser control. Laser alignment and optical power remain
+manual/fixed for the current experiment.
 
 The ingested iBEAM manual establishes vendor-family semantics, not installed
 unit configuration: Analog modulation is documented as 0...+5 V on channel 2,
@@ -568,8 +575,9 @@ Do not reopen these without new contradictory evidence:
 
 - The independent request/plan authority and explicit legacy adapter are the
   normal Start architecture.
-- Normal production DO output is disabled; generic DO Clock is not part of the
-  current steady experiment.
+- Canonical production DigitalOut is active for DIO0/DIO1 as the bounded
+  camera/LED trigger program; the generic legacy DO Clock configuration remains
+  superseded and is not part of the current steady experiment.
 - W2 is a real laser route, not an unused generic channel, and remains
   production-disabled pending semantics.
 - DIO0/pink is the canonical camera trigger and DIO1/green is canonical LED
