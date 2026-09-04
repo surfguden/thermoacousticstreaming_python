@@ -30,6 +30,23 @@ Owner-supplied physical routing is authoritative as owner workflow truth when
 identified as such; it remains distinct from protocol acknowledgement and
 independent physical observation.
 
+## Authorized software-maintenance state
+
+**AUTHORIZED_SOFTWARE_MAINTENANCE_ACTIVE** — the owner lifted the repository
+software freeze on 2026-09-04 for software-only work. Source, tests, current
+authority documentation, offline validation, and the approved V2 retirement
+work may proceed; this does not authorize hardware initialization, enumeration,
+communication, motion, output, capture, fault clearing, or persistence writes.
+The colleague's hardware-workflow evidence remains expected next week, and
+physical reconciliation and commissioning remain incomplete.
+
+V1 remains the retained fallback. V3 is the candidate-primary opt-in surface;
+the owner approved early V2 retirement only after safe V3 decoupling. The
+`MASTER v7 FINAL_VALIDATED` recovery package is closed freeze-period historical
+evidence, not current operational authority. No further broad freeze-period
+audit is required unless contradictory current source, vendor, or physical
+evidence appears.
+
 ## Current software architecture
 
 Normal Qt Start has one planning authority:
@@ -103,9 +120,9 @@ accepted camera-only Gate 2.
 V3 is the tracked opt-in instrument-control surface launched by
 `launch_gui_v3.bat` or `python tools/run_ui_v3.py`. It shares the same
 `Application` and hardware backends as v1/v2; it is not a simulator and opening
-it does not authorize hardware. V1 remains the default launcher and v2 remains
-the transitional rollback/reference surface until the owner separately changes
-that policy.
+it does not authorize hardware. V1 remains the default launcher. V2 remains
+the retained rollback/reference surface during the approved, compatibility-
+preserving V3 decoupling checkpoint; it is not being removed in that checkpoint.
 
 | Surface | Purpose and evidence boundary |
 | --- | --- |

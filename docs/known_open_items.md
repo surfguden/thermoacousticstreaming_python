@@ -10,6 +10,14 @@ No item in this document authorizes hardware. An item classified
 `DEFER_UNTIL_FEATURE_USED` is not a prerequisite for the minimal camera+AD2 run
 while that feature remains disabled.
 
+Software-only maintenance is currently authorized under the owner-approved
+`AUTHORIZED_SOFTWARE_MAINTENANCE_ACTIVE` state recorded in
+[`project_control.md`](project_control.md). Physical reconciliation remains
+incomplete and hardware access is not authorized by that state. The supplied
+`MASTER v7 FINAL_VALIDATED` recovery package is historical freeze-period
+evidence; it does not replace these current records or require another broad
+freeze-period audit absent contradictory evidence.
+
 ## Classification
 
 - `OPEN_NOW` — current software/repository issue worth addressing independently
@@ -39,7 +47,7 @@ while that feature remains disabled.
 | TEST-QT-LIFETIME-001 | NONBLOCKING_FOLLOWUP | PySide/Shiboken tests can nondeterministically delete C++ widgets or hang during full-window construction/teardown. Failures are visible and documented; affected tests pass in fresh isolation. | Reproduce minimally and remove/isolate the ownership fault without blanket retries, skips, or xfails. | No demonstrated production-path defect; keep monitoring offline results. |
 | TOOL-VALVE-PORT-001 | NONBLOCKING_FOLLOWUP | The manual `hardware_tests/test_real_workflow_smoke.py` full-workflow CLI and its plan fixtures still accept/use historical `COM6` as a valve candidate. Current production valve truth is `COM5`; current `COM6` evidence belongs to the TEC path. The tool is not the normal production runtime, but this stale option could direct a future operator toward the wrong resource. | Separately authorize a documentation/tool cleanup that removes the historical valve option from the action-capable runner and updates its offline plan fixtures. Do not use the full-workflow mode before that cleanup and the physical valve gate. | None while full workflow and refresh remain disabled. |
 | UI-MANUAL-INTERLOCK-001 | OWNER_DECISION_REQUIRED | V3 separates Manual & Service actions and preserves action-specific confirmations, but the GUI has no universal command-line-style real-hardware acknowledgement gate after initialization. | Owner decides whether the existing context/action gates are sufficient or a global manual/service policy is required. | None when the operator stays in Experiment and deferred devices remain disabled. |
-| UI-V3-DEFAULT-001 | OWNER_DECISION_REQUIRED | V3 is tracked, opt-in, and offline UX-reviewed; v1 remains default and v2 rollback/reference. | Decide promotion only after separate operator/current-hardware evaluation. | None; launch V3 explicitly for its reviewed workflow. |
+| UI-V3-DEFAULT-001 | OWNER_DECISION_REQUIRED | V3 is tracked, opt-in, and offline UX-reviewed; v1 remains default. V2 is retained as rollback/reference during owner-approved early retirement after safe V3 decoupling. | Decide promotion only after separate operator/current-hardware evaluation. | None; launch V3 explicitly for its reviewed workflow. |
 
 ## Closed or superseded — not live backlog
 
