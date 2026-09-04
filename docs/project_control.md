@@ -601,10 +601,11 @@ separately authorized.
 - Software laser Analog/Digital control.
 - External camera trigger and transient/onset synchronization.
 - Automated sample refresh and pump motion until physical readiness closes.
-- Handover sequence design: external camera triggering, DIO timing, output-window
-  versus flush overlap, and save/flush concurrency remain intended design only;
-  the current output-completion barrier and sequential flush-before-save runtime
-  remain implemented behavior.
+- Handover sequence: external camera triggering, DIO timing, and physical
+  output-window verification remain unimplemented. Runtime now uses a
+  conservative programmed-output completion barrier before repeat refresh,
+  then joins concurrent save and hardware-only flush work before the next
+  repeat; this is software policy, not physical timing proof.
 - Automated Z motion until current identity/direction/scale/datum are verified.
 - Active TEC scientific use until imaging-plane equilibration is justified.
 - Rhodamine-B thermometry until calibration provenance is defined.

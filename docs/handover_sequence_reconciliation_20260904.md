@@ -28,13 +28,15 @@ optical emission, or physical synchronization.
 - Production programs neither DIO0 nor DIO1 and clears/disables DigitalOut.
 - Current W1 commonly uses `trigsrcNone`; `pc_trigger()` therefore is not a
   current W1-start claim under that trigger source.
-- Current repeat execution is sequential: it waits for the programmed AD2
-  completion window, performs enabled flush before normal TIFF/TDMS image
-  saving, and a flush failure can prevent that normal save step.
-- Current TDMS persists `FlushCompleted`; production has no save/flush
-  concurrency.
+- Current repeat execution performs a conservative programmed AD2-completion
+  software barrier before it starts enabled repeat refresh. After that barrier,
+  TIFF/TDMS saving and a hardware-only flush worker may run concurrently; the
+  main thread joins both before the next repeat.
+- Current TDMS persists `FlushCompleted` only after that rendezvous. A flush
+  failure does not suppress saving acquired scientific data, and the worker
+  does not write `Experiment2` or TDMS.
 
-## INTENDED_FUTURE_DESIGN — NOT IMPLEMENTED
+## IMPLEMENTED_SOFTWARE_SEQUENCE — NOT PHYSICAL TIMING PROOF
 
 The colleague timeline is intended hardware-action-sequence evidence, not a
 replacement for the canonical runtime. A high-level candidate is:
@@ -46,7 +48,7 @@ preflight -> initial flush if enabled -> configure/arm AD2 -> configure/arm came
 concurrency -> rendezvous -> canonical final evidence/outcome -> next repeat
 ```
 
-This does not finalize the output-completion barrier, authorize W1/W2 overlap
+This does not establish physical output completion, authorize W1/W2 overlap
 with flush/save, define a competing planner/executor, or claim physical
 simultaneity. Canonical execution remains:
 
@@ -55,9 +57,9 @@ ExperimentRequest -> build_independent_run_plan() -> RunPlan / RunCondition
 -> legacy_series_from_run_plan() -> Application -> hardware backends
 ```
 
-A possible future TDMS ownership shape is hardware-only flush worker ->
-structured `FlushResult` -> rendezvous/finalizer writes `FlushCompleted` and
-outcome evidence. It is a design candidate, not current behavior.
+Current TDMS ownership is hardware-only flush worker -> main-thread rendezvous
+and finalizer writes `FlushCompleted` and terminal outcome evidence. It does
+not make the worker a source of physical timing proof.
 
 ## PHYSICAL_VERIFICATION_PENDING
 

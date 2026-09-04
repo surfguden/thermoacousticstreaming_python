@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 
 import pytest
 
@@ -925,8 +926,89 @@ def test_run_experiment2_reports_flush_failure_instead_of_completing(tmp_path, m
     assert app.status == "ExperimentFlushFailed"
     assert any("Flush failed for experiment repeat 1:" in str(error) for error in app.errors)
     assert any("Flush failed for experiment repeat 1:" in record.message for record in caplog.records)
-    assert not any(call[:2] == ("camera", "save_sequence") for call in calls)
+    assert any(call[:2] == ("camera", "save_sequence") for call in calls)
     assert ("experiment", "cleanup") in calls
+
+
+def test_canonical_sequence_runs_initial_and_each_repeat_flush_once(tmp_path, monkeypatch):
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+    first = make_recording_experiment(calls, tmp_path, flush_enabled=True)
+    first.repeat_id = 0
+    second = make_recording_experiment(calls, tmp_path, flush_enabled=True)
+    second.repeat_id = 1
+    second.experiment_folder = tmp_path / "repeat_002"
+    app.set_experiment_series_general(
+        ExperimentSeries2(series_path=tmp_path, experiments=[first, second])
+    )
+    flushes = []
+    monkeypatch.setattr(
+        Application,
+        "flush",
+        lambda self, settings, progress=None: flushes.append(settings) or True,
+    )
+
+    assert app.run_experiment2() is True
+    assert app.run_experiment2() is True
+    assert len(flushes) == 3, "one initial refresh plus one refresh after each of two repeats"
+
+
+def test_canonical_sequence_waits_for_output_barrier_then_overlaps_save_and_flush(tmp_path, monkeypatch):
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+    experiment = make_recording_experiment(calls, tmp_path, flush_enabled=True)
+    experiment.wfg_config = finite_wfg_config(sec_run=0.1, sec_wait=0.1)
+    app.experiment_series.enqueue_experiments([experiment])
+    barrier_complete = threading.Event()
+    flush_started = threading.Event()
+    save_started = threading.Event()
+    flush_thread_ids = []
+    tdms_writer_thread_ids = []
+    main_thread_id = threading.get_ident()
+
+    monkeypatch.setattr(Application, "wait", lambda self, seconds: barrier_complete.set())
+
+    def flush(self, settings, progress=None):
+        assert barrier_complete.is_set(), "repeat refresh must wait for the programmed-output barrier"
+        flush_thread_ids.append(threading.get_ident())
+        flush_started.set()
+        assert save_started.wait(timeout=1.0), "save and flush should overlap after the barrier"
+        return True
+
+    original_save_image_data = experiment.save_image_data
+
+    def save_image_data(image_data, frame_timestamps=None):
+        assert flush_started.wait(timeout=1.0)
+        save_started.set()
+        tdms_writer_thread_ids.append(threading.get_ident())
+        return original_save_image_data(image_data, frame_timestamps=frame_timestamps)
+
+    monkeypatch.setattr(Application, "flush", flush)
+    experiment.save_image_data = save_image_data
+
+    assert app.run_experiment2() is True
+    assert flush_thread_ids and flush_thread_ids[0] != main_thread_id
+    assert tdms_writer_thread_ids == [main_thread_id]
+    assert experiment._tdms_properties["FlushCompleted"] is True
+
+
+def test_canonical_sequence_preserves_save_failure_when_flush_also_fails(tmp_path, monkeypatch):
+    calls = []
+    app = make_fake_app(calls, tmp_path)
+    experiment = make_recording_experiment(calls, tmp_path, flush_enabled=True)
+    app.experiment_series.enqueue_experiments([experiment])
+    monkeypatch.setattr(Application, "flush", lambda self, settings, progress=None: False)
+
+    def fail_save(image_data, folder):
+        raise RuntimeError("save failed")
+
+    app.camera.save_sequence = fail_save
+
+    with pytest.raises(RuntimeError, match="save failed"):
+        app.run_experiment2()
+
+    assert experiment._tdms_properties["FlushCompleted"] is False
+    assert "Flush failure while preserving save failure" in experiment._tdms_properties["CleanupFailure"]
 
 
 # -- Phase 1 of the v2 sequence-visualization feature: run_experiment2()/
@@ -999,7 +1081,14 @@ def test_run_experiment2_step_sequence_with_flush_enabled(tmp_path):
         "Flush",
         "SaveResults",
     ]
-    assert step_names(progress_calls, "step_completed") == started
+    assert step_names(progress_calls, "step_completed") == [
+        "InitializeExperiment",
+        "ConfigureWfg",
+        "ConfigureCamera",
+        "CaptureFrames",
+        "SaveResults",
+        "Flush",
+    ]
     assert step_names(progress_calls, "step_failed") == []
 
 
@@ -1184,12 +1273,14 @@ def test_run_experiment2_step_failure_in_flush(tmp_path):
         "ConfigureCamera",
         "CaptureFrames",
         "Flush",
+        "SaveResults",
     ]
     assert step_names(progress_calls, "step_completed") == [
         "InitializeExperiment",
         "ConfigureWfg",
         "ConfigureCamera",
         "CaptureFrames",
+        "SaveResults",
     ]
     assert progress_calls[-1] == ("step_failed", ("Flush", "boom: valve.set_position"))
 

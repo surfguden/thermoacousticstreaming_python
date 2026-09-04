@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from contextvars import copy_context
 from datetime import datetime, timezone
 import logging
 from dataclasses import dataclass, field
 import math
+import threading
 import time
 from typing import Callable
 
@@ -159,6 +161,11 @@ class Application:
     # distinguishable after the fact from one where it never faulted.
     pump_fault_manually_cleared_this_session: bool = False
     _active_experiment: Experiment2 | None = field(default=None, init=False, repr=False)
+    # A sequence owner calls set_experiment_series_general() before its first
+    # repeat.  Keep the optional pre-repeat refresh there rather than inferring
+    # a new sequence from Experiment2.repeat_id, which is local to a condition
+    # and can restart at zero in a temperature scan.
+    _initial_flush_pending: bool = field(default=False, init=False, repr=False)
 
     def create_queues(self) -> None:
         self.main_queue = LabViewQueue("Main Queue")
@@ -449,8 +456,62 @@ class Application:
     def get_experiment_series_general(self) -> ExperimentSeries2:
         return self.experiment_series
 
-    def set_experiment_series_general(self, experiment_series: ExperimentSeries2) -> None:
+    def set_experiment_series_general(
+        self,
+        experiment_series: ExperimentSeries2,
+        *,
+        preserve_initial_flush_state: bool = False,
+    ) -> None:
         self.experiment_series = experiment_series
+        if not preserve_initial_flush_state:
+            self._initial_flush_pending = True
+
+    def _run_initial_flush_if_required(
+        self,
+        experiment: Experiment2,
+        progress: Callable[[str, object], None] | None,
+    ) -> bool:
+        """Run the one series-level automatic refresh before repeat one.
+
+        This is intentionally outside Experiment2: it has no repeat TDMS
+        record to mutate, and it must not be repeated for later temperature
+        groups whose local repeat index also starts at zero.
+        """
+        if not self._initial_flush_pending:
+            return True
+        self._initial_flush_pending = False
+        if not experiment.flush_enabled:
+            return True
+        if not (self.pump.enabled and self.valve.enabled):
+            self.fire_status_event("InitialFlushSkippedInstrumentDisabled")
+            return True
+
+        completed = self.flush(experiment.flush_settings, progress=progress)
+        if not completed:
+            message = (
+                "Initial flush failed before experiment repeat 1: "
+                f"flush_flowrate={experiment.flush_settings.flush_flowrate}, "
+                f"flush_volume_ml={experiment.flush_settings.flush_volume_ml}, "
+                f"wait_after_flush_s={experiment.flush_settings.wait_after_flush_s}"
+            )
+            logger.error(message)
+            self.check_loop_error(message)
+            self.fire_status_event("InitialFlushFailed")
+            return False
+        log_action(
+            "sample_refresh",
+            "initial_series_refresh",
+            evidence_stage="OBSERVED",
+            verification_scope=("SOFTWARE" if self.pump.simulate or self.valve.simulate else "PROTOCOL"),
+            status="COMPLETED",
+            requested=experiment.flush_settings,
+            result={
+                "wait_after_flush_s": experiment.flush_settings.wait_after_flush_s,
+                "physical_fluid_refresh_verified": False,
+            },
+            source="application._run_initial_flush_if_required",
+        )
+        return True
 
     def check_loop_error(self, error: BaseException | str | None = None) -> bool:
         if error is None:
@@ -1026,6 +1087,8 @@ class Application:
                 source="application.run_experiment2",
             )
             try:
+                if not self._run_initial_flush_if_required(experiment, progress):
+                    return False
                 completed = self._run_experiment2_unfinalized(experiment, progress=progress)
             except BaseException as exc:
                 cleanup_failure = experiment._tdms_properties.get("CleanupFailure") or None
@@ -1327,92 +1390,136 @@ class Application:
                     self.fire_status_event("Waiting for AD2 completion")
                     self.wait(remaining_ad2_wait_s)
 
-        if experiment.flush_enabled:
-            if self.pump.enabled and self.valve.enabled:
-                flush_completed = self.flush(experiment.flush_settings, progress=progress)
-                # Finding D (silent-failure/data-integrity sweep): record the
-                # flush result into this repeat's own data.tdms, on both the
-                # success and failure paths -- Session 7 already made a failed
-                # flush surface loudly (status event, log, Application.errors),
-                # but only at the process level, not into the saved record
-                # itself.
-                experiment.save_flush_result(flush_completed)
-                if not flush_completed:
-                    message = (
-                        f"Flush failed for experiment repeat {experiment.repeat_id + 1}: "
-                        f"flush_flowrate={experiment.flush_settings.flush_flowrate}, "
-                        f"flush_volume_ml={experiment.flush_settings.flush_volume_ml}, "
-                        f"wait_after_flush_s={experiment.flush_settings.wait_after_flush_s}"
+        # The AD2 wait above is the conservative programmed-output completion
+        # barrier.  It is software timing policy, not physical proof.  Only
+        # after that barrier may the next-sample refresh begin.  The flush
+        # worker never touches Experiment2 or TDMS; the main thread remains
+        # the sole writer and finalizes the worker result after both branches
+        # rendezvous.
+        flush_requested = experiment.flush_enabled and self.pump.enabled and self.valve.enabled
+        flush_result: dict[str, bool] = {}
+        flush_error: list[BaseException] = []
+        flush_worker: threading.Thread | None = None
+        if flush_requested:
+            worker_context = copy_context()
+
+            def run_flush() -> None:
+                try:
+                    flush_result["completed"] = bool(
+                        worker_context.run(self.flush, experiment.flush_settings, None)
                     )
-                    logger.error(message)
-                    self.check_loop_error(message)
-                    self.fire_status_event("ExperimentFlushFailed")
-                    experiment.cleanup()
-                    return False
+                except BaseException as exc:  # re-raised by the main finalizer after the rendezvous
+                    flush_error.append(exc)
+
+            log_action(
+                "run", STEP_FLUSH, evidence_stage="OBSERVED", verification_scope="SOFTWARE",
+                status="STARTED", source="application._run_experiment2_unfinalized",
+            )
+            if progress:
+                progress("step_started", STEP_FLUSH)
+            flush_worker = threading.Thread(target=run_flush, name="repeat-flush", daemon=False)
+            flush_worker.start()
+        elif experiment.flush_enabled:
+            # Flush requires both the pump and the valve.  This remains a
+            # skipped request, not an attempted/failed refresh.
+            self.fire_status_event("FlushSkippedInstrumentDisabled")
+            log_action(
+                "sample_refresh", "repeat_to_repeat_refresh", evidence_stage="EFFECTIVE",
+                verification_scope="SOFTWARE", status="DISABLED", requested=experiment.flush_settings,
+                result="pump and/or valve disabled; no refresh command attempted",
+                source="application._run_experiment2_unfinalized",
+            )
+
+        save_error: BaseException | None = None
+        try:
+            with _report_step(progress, STEP_SAVE_RESULTS):
+                if self.camera.enabled:
+                    self.camera.save_sequence(image_data, experiment_folder)
+                    experiment.save_image_data(image_data, frame_timestamps=frame_timestamps)
+                    experiment.save_camera_settings(
+                        {
+                            "buffer_size": self.camera.get_camera_buffer_size(),
+                            "sub_region": self.camera.get_sub_region(),
+                            "readout_time": self.camera.read_readout_time(),
+                        }
+                    )
+                else:
+                    experiment.save_image_data(image_data, frame_timestamps=frame_timestamps)
+                    experiment.save_camera_settings({"buffer_size": 0, "sub_region": {}, "readout_time": 0.0})
+                experiment.cleanup()
                 log_action(
-                    "sample_refresh",
-                    "repeat_to_repeat_refresh",
-                    evidence_stage="OBSERVED",
-                    verification_scope=(
-                        "SOFTWARE" if experiment.sim_pump or experiment.sim_valve else "PROTOCOL"
-                    ),
+                    "run", "results_saved", evidence_stage="OBSERVED", verification_scope="SOFTWARE",
                     status="COMPLETED",
-                    requested=experiment.flush_settings,
                     result={
-                        "p01_confirmed_by_protocol": True,
-                        "pump_refresh_completed_by_software": True,
-                        "p02_confirmed_by_protocol": True,
-                        "wait_after_flush_s": experiment.flush_settings.wait_after_flush_s,
-                        "physical_fluid_refresh_verified": False,
+                        "experiment_folder": experiment.experiment_folder,
+                        "tdms_path": experiment.tdms_path,
+                        "frame_count": len(image_data),
+                        "camera_timestamp_count": len(frame_timestamps),
                     },
                     source="application._run_experiment2_unfinalized",
                 )
-            else:
-                # Flush requires both the pump and the valve -- flush() moves
-                # fluid via the pump between two valve positions, it isn't
-                # meaningful with either one disabled. Skipped, not attempted,
-                # not marked failed -- PumpEnabled/ValveEnabled in data.tdms
-                # (alongside FlushFlowrate/FlushVolume still recording what
-                # was requested) is what distinguishes this from either "flush
-                # wasn't requested" or "flush was requested and failed."
-                self.fire_status_event("FlushSkippedInstrumentDisabled")
+        except BaseException as exc:
+            save_error = exc
+        finally:
+            if flush_worker is not None:
+                flush_worker.join()
+
+        if flush_requested:
+            flush_completed = not flush_error and flush_result.get("completed", False)
+            # Canonical single-writer finalization: this is the only point at
+            # which the asynchronous hardware result becomes repeat evidence.
+            experiment.save_flush_result(flush_completed)
+            if flush_error:
                 log_action(
-                    "sample_refresh",
-                    "repeat_to_repeat_refresh",
-                    evidence_stage="EFFECTIVE",
-                    verification_scope="SOFTWARE",
-                    status="DISABLED",
-                    requested=experiment.flush_settings,
-                    result="pump and/or valve disabled; no refresh command attempted",
+                    "run", STEP_FLUSH, evidence_stage="OBSERVED", verification_scope="SOFTWARE",
+                    status="FAILED", error=str(flush_error[0]),
                     source="application._run_experiment2_unfinalized",
                 )
-
-        with _report_step(progress, STEP_SAVE_RESULTS):
-            if self.camera.enabled:
-                self.camera.save_sequence(image_data, experiment_folder)
-                experiment.save_image_data(image_data, frame_timestamps=frame_timestamps)
-                experiment.save_camera_settings(
-                    {
-                        "buffer_size": self.camera.get_camera_buffer_size(),
-                        "sub_region": self.camera.get_sub_region(),
-                        "readout_time": self.camera.read_readout_time(),
-                    }
-                )
+                if progress:
+                    progress("step_failed", (STEP_FLUSH, str(flush_error[0])))
             else:
-                experiment.save_image_data(image_data, frame_timestamps=frame_timestamps)
-                experiment.save_camera_settings({"buffer_size": 0, "sub_region": {}, "readout_time": 0.0})
-            experiment.cleanup()
+                log_action(
+                    "run", STEP_FLUSH, evidence_stage="OBSERVED", verification_scope="SOFTWARE",
+                    status="COMPLETED", source="application._run_experiment2_unfinalized",
+                )
+                if progress:
+                    progress("step_completed", STEP_FLUSH)
+        else:
+            flush_completed = True
+
+        if save_error is not None:
+            if not flush_completed:
+                experiment._tdms_properties["CleanupFailure"] = (
+                    "Flush failure while preserving save failure: "
+                    + (str(flush_error[0]) if flush_error else "flush returned False")
+                )
+            raise save_error
+
+        if not flush_completed:
+            message = (
+                f"Flush failed for experiment repeat {experiment.repeat_id + 1}: "
+                f"flush_flowrate={experiment.flush_settings.flush_flowrate}, "
+                f"flush_volume_ml={experiment.flush_settings.flush_volume_ml}, "
+                f"wait_after_flush_s={experiment.flush_settings.wait_after_flush_s}"
+            )
+            logger.error(message)
+            self.check_loop_error(message)
+            self.fire_status_event("ExperimentFlushFailed")
+            if flush_error:
+                raise flush_error[0]
+            return False
+
+        if flush_requested:
             log_action(
-                "run",
-                "results_saved",
-                evidence_stage="OBSERVED",
-                verification_scope="SOFTWARE",
-                status="COMPLETED",
+                "sample_refresh", "repeat_to_repeat_refresh", evidence_stage="OBSERVED",
+                verification_scope=("SOFTWARE" if experiment.sim_pump or experiment.sim_valve else "PROTOCOL"),
+                status="COMPLETED", requested=experiment.flush_settings,
                 result={
-                    "experiment_folder": experiment.experiment_folder,
-                    "tdms_path": experiment.tdms_path,
-                    "frame_count": len(image_data),
-                    "camera_timestamp_count": len(frame_timestamps),
+                    "p01_confirmed_by_protocol": True,
+                    "pump_refresh_completed_by_software": True,
+                    "p02_confirmed_by_protocol": True,
+                    "wait_after_flush_s": experiment.flush_settings.wait_after_flush_s,
+                    "physical_fluid_refresh_verified": False,
                 },
                 source="application._run_experiment2_unfinalized",
             )
@@ -1451,6 +1558,9 @@ class Application:
                 ),
                 update_legacy_status=False,
             )
+        # Temperature groups are one canonical experiment sequence for this
+        # purpose: permit one pre-repeat refresh before group one's repeat one.
+        self._initial_flush_pending = True
         for group_index, group in enumerate(experiment_groups, start=1):
             # Safety-behavior change (2026-08-04, closing a gap Session 78's
             # non-TEC abort fix didn't reach): self.stop_fired is the ONLY
@@ -1599,7 +1709,10 @@ class Application:
                 )
                 self.wait(temperature_series.post_stable_hold_s)
             self.fire_status_event(f"Running temperature group {group_index}/{len(experiment_groups)}")
-            self.set_experiment_series_general(group)
+            # Each temperature group has its own local repeat numbering, but
+            # the optional initial refresh belongs to the enclosing sequence
+            # and must already have happened before its first group.
+            self.set_experiment_series_general(group, preserve_initial_flush_state=True)
             while self.experiment_series.see_elements_left():
                 if lifecycle_manifest is not None:
                     lifecycle_manifest.repeat_started()
