@@ -3391,6 +3391,12 @@ class FakeWaveFormsBackend:
     def close(self, handle):
         self.calls.append(("close", handle))
 
+    def analog_out_configure(self, handle, channel_index, start):
+        self.calls.append(("analog_out_configure", handle, channel_index, start))
+
+    def analog_out_reset(self, handle, channel_index):
+        self.calls.append(("analog_out_reset", handle, channel_index))
+
     def trigger_pc(self, handle):
         self.calls.append(("trigger_pc", handle))
 
@@ -4329,8 +4335,47 @@ def test_ad2_real_class_dispatches_to_waveforms_backend():
         ("configure_do", 777, True, 1),
         ("capture_analog_in_channels", 777, (0, 1), 1000.0, 2, 1.0, 0.0, TriggerSource.PC),
         ("reset_do", 777),
+        ("analog_out_configure", 777, 0, False),
+        ("analog_out_reset", 777, 0),
+        ("analog_out_configure", 777, 1, False),
+        ("analog_out_reset", 777, 1),
         ("close", 777),
     ]
+
+
+def test_ad2_cleanup_attempts_both_channel_stop_resets_and_close_after_failures():
+    class FailingCleanupBackend(FakeWaveFormsBackend):
+        def analog_out_configure(self, handle, channel_index, start):
+            super().analog_out_configure(handle, channel_index, start)
+            if channel_index == 0:
+                raise WaveFormsError("simulated W1 stop failure")
+
+        def analog_out_reset(self, handle, channel_index):
+            super().analog_out_reset(handle, channel_index)
+            if channel_index == 1:
+                raise WaveFormsError("simulated W2 reset failure")
+
+        def close(self, handle):
+            super().close(handle)
+            raise WaveFormsError("simulated close failure")
+
+    backend = FailingCleanupBackend()
+    ad2 = AD2Sdk(backend=backend, device_handle=777, triggered=True)
+
+    with pytest.raises(AD2SdkError, match="channel 0 stop failed") as exc_info:
+        ad2.cleanup()
+
+    assert "channel 1 reset failed" in str(exc_info.value)
+    assert "device close failed" in str(exc_info.value)
+    assert backend.calls == [
+        ("analog_out_configure", 777, 0, False),
+        ("analog_out_reset", 777, 0),
+        ("analog_out_configure", 777, 1, False),
+        ("analog_out_reset", 777, 1),
+        ("close", 777),
+    ]
+    assert ad2.get_phdwf() is None
+    assert ad2.triggered is False
 
 
 class FakeWaveFormsBackendThatRaisesOnConfigure(FakeWaveFormsBackend):

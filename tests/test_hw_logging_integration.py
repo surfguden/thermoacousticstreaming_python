@@ -201,6 +201,18 @@ def test_ad2_analog_out_configure_is_logged(tmp_path):
     assert "OK" in log_text
 
 
+def test_ad2_analog_out_reset_is_logged(tmp_path):
+    log_file = _redirect(tmp_path)
+    backend = WaveFormsBackend(dwf=_FakeDwf())
+
+    backend.analog_out_reset(1, 0)
+
+    log_text = _read_log(log_file)
+    assert "ad2" in log_text
+    assert "analog_out_reset" in log_text
+    assert "OK" in log_text
+
+
 def test_ad2_analog_out_node_enable_set_is_logged(tmp_path):
     log_file = _redirect(tmp_path)
     backend = WaveFormsBackend(dwf=_FakeDwf())

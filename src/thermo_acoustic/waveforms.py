@@ -156,6 +156,7 @@ class WaveFormsBackend:
             "FDwfAnalogOutIdleSet": ([c_int, c_int, c_int], c_int),
             "FDwfAnalogOutMasterSet": ([c_int, c_int, c_int], c_int),
             "FDwfAnalogOutConfigure": ([c_int, c_int, c_int], c_int),
+            "FDwfAnalogOutReset": ([c_int, c_int], c_int),
             "FDwfAnalogInChannelEnableSet": ([c_int, c_int, c_int], c_int),
             "FDwfAnalogInChannelRangeSet": ([c_int, c_int, c_double], c_int),
             "FDwfAnalogInChannelOffsetSet": ([c_int, c_int, c_double], c_int),
@@ -451,6 +452,15 @@ class WaveFormsBackend:
         with log_call("ad2", "analog_out_configure", command=(channel_index, start)) as result:
             self._analog_out_set_int("FDwfAnalogOutConfigure", handle, channel_index, int(start))
             result["response"] = "applied"
+
+    def analog_out_reset(self, handle: int, channel_index: int) -> None:
+        """Reset one AnalogOut channel before the owning device is closed."""
+        with log_call("ad2", "analog_out_reset", command=channel_index) as result:
+            self._check(
+                self._dwf.FDwfAnalogOutReset(c_int(handle), c_int(channel_index)),
+                "FDwfAnalogOutReset",
+            )
+            result["response"] = "reset"
 
     def configure_wfg(self, handle: int, config: WfgConfig) -> None:
         with log_call(

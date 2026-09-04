@@ -227,10 +227,32 @@ class AD2Sdk:
             self.open_and_use_first_device()
 
     def cleanup(self) -> None:
-        if self.device_handle is not None:
-            self.get_backend().close(self.device_handle)
-        self.device_handle = None
-        self.triggered = False
+        handle = self.device_handle
+        errors: list[str] = []
+        try:
+            if handle is None:
+                return
+            backend = self.get_backend()
+            for channel_index in (0, 1):
+                for operation, action in (
+                    ("stop", lambda channel_index=channel_index: backend.analog_out_configure(handle, channel_index, False)),
+                    ("reset", lambda channel_index=channel_index: backend.analog_out_reset(handle, channel_index)),
+                ):
+                    try:
+                        action()
+                    except Exception as exc:
+                        errors.append(
+                            f"AnalogOut channel {channel_index} {operation} failed: {exc}"
+                        )
+            try:
+                backend.close(handle)
+            except Exception as exc:
+                errors.append(f"device close failed: {exc}")
+        finally:
+            self.device_handle = None
+            self.triggered = False
+        if errors:
+            raise AD2SdkError("; ".join(errors))
 
     def open_and_use_first_device(self) -> int | None:
         if not self.enabled:

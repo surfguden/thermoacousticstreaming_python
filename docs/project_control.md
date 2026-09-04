@@ -264,6 +264,10 @@ documentation:
   exposes device name and a unique serial through `FDwfEnumDeviceName` and
   `FDwfEnumSN`, matching the repository enumeration path. The AD2 carrier
   buffer is up to 16 KiS and its two-channel AM/FM buffer is 2 KiS.
+- Before closing a production AD2 handle, software explicitly stops and resets
+  AnalogOut channels 0/W1 and 1/W2 through `FDwfAnalogOutConfigure(..., false)`
+  and `FDwfAnalogOutReset(...)`. This is software/protocol defense in depth;
+  it does not establish the physical post-close BNC state.
 - The official Digilent BNC Adapter is SKU `410-263`; the published schematic
   is document/assembly `500-263`, circuit revision `C.0`. `J4` is W1, `J5` is
   W2, and `J1`/`J3` are Scope Ch1/Ch2. The 30-pin header passes through DIO,
