@@ -127,7 +127,11 @@ class InitializationDialog(QDialog):
     def _z_stage_simulate_placeholder() -> QCheckBox:
         checkbox = QCheckBox("N/A")
         checkbox.setEnabled(False)
-        checkbox.setToolTip("Z stage has no simulated initialization backend.")
+        checkbox.setToolTip(
+            "Z stage has no Simulate checkbox on the Initialization tab either -- when enabled, "
+            "hardware_factory.build_hardware_bundle() always connects to the real Thorlabs piezo "
+            "(thorlabs_piezo.PiezoStage), with no simulated variant."
+        )
         return checkbox
 
     def _hardware_details_group(self, window: QWidget) -> QGroupBox:
@@ -165,31 +169,32 @@ _STEP_BREADCRUMB_TITLES = {
 
 class _StepBreadcrumb(QWidget):
     _STATE_STYLE = {
-        "pending": ("○", "gray"), "active": ("●", "#1f6feb"),
-        "completed": ("●", "#22863a"), "failed": ("●", "#cb2431"),
+        "pending": ("○", "gray"), "active": ("●", "dodgerblue"),
+        "completed": ("●", "green"), "failed": ("●", "red"),
     }
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._states = {step: "pending" for step in STEP_ORDER}
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
+        layout.setSpacing(6)
         self._markers: dict[str, QLabel] = {}
-        for index, step in enumerate(STEP_ORDER, start=1):
+        self._states: dict[str, str] = {}
+        for step in STEP_ORDER:
             marker = QLabel()
-            marker.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            marker.setToolTip(f"{index}. {_STEP_BREADCRUMB_TITLES.get(step, step)}")
+            marker.setToolTip(_STEP_BREADCRUMB_TITLES[step])
             self._markers[step] = marker
             layout.addWidget(marker)
-        self.set_states(self._states)
+        layout.addStretch(1)
+        self.set_states(dict.fromkeys(STEP_ORDER, "pending"))
 
     def set_states(self, states: dict[str, str]) -> None:
-        self._states = dict(states)
-        for step, marker in self._markers.items():
-            symbol, color = self._STATE_STYLE.get(states.get(step, "pending"), self._STATE_STYLE["pending"])
-            marker.setText(symbol)
-            marker.setStyleSheet(f"color: {color};")
+        for index, (step, marker) in enumerate(self._markers.items(), start=1):
+            state = states.get(step, "pending")
+            self._states[step] = state
+            symbol, color = self._STATE_STYLE[state]
+            marker.setText(f"{symbol}{index}")
+            marker.setStyleSheet(f"color: {color}; font-weight: bold;")
 
     def state_of(self, step_name: str) -> str:
         return self._states.get(step_name, "pending")
@@ -237,6 +242,13 @@ class MainWindowV3Compatibility(MainWindow):
         group.setMinimumHeight(187)
         outer = QVBoxLayout(group)
         self.step_breadcrumb = _StepBreadcrumb()
+        self.step_breadcrumb.setToolTip(
+            "Live progress through the current repeat's 7-step sequence "
+            "(hover a marker for its step name). During a TEC temperature "
+            "scan, this same sequence is reused/reset once per temperature "
+            "point -- SetTecTarget/WaitTecStable/the post-stable hold run "
+            "before it, not shown here."
+        )
         outer.addWidget(self.step_breadcrumb)
         self.status = HistoryLogWidget()
         self.status.setMaximumHeight(90)
@@ -335,6 +347,12 @@ class MainWindowV3Compatibility(MainWindow):
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.error_log = HistoryLogWidget()
         self.error_log.setMaximumHeight(90)
+        self.error_log.setToolTip(
+            "Full session history of every status/code/source event, newest at the "
+            "bottom -- not just the most recent one. code is always '0' when "
+            "status='OK', '1' on any caught exception -- not a real DCAM/AD2/Qmix "
+            "error code, just a boolean flag (_handle_worker_finished())."
+        )
         form.addRow("Status and error history", self.error_log)
         for attribute, caption in (("ad2_connection_status", "AD2"), ("camera_connection_status", "Camera"), ("pump_connection_status", "Pump"), ("valve_connection_status", "Valve")):
             label = QLabel("Not connected")
@@ -423,6 +441,20 @@ class MainWindowV3Compatibility(MainWindow):
         self.valve_position_status.setText(self._valve_position_text())
         dosing = "dosing" if getattr(self.app.pump, "dosing", False) else "idle"
         self.pump_state_status.setText(f"{dosing}, fill {getattr(self.app.pump, 'fill_level', 0.0):.3f} ml")
+
+        def _fix_wrapped_label_heights() -> None:
+            try:
+                for label in (
+                    self.ad2_connection_status,
+                    self.camera_connection_status,
+                    self.pump_connection_status,
+                    self.valve_connection_status,
+                ):
+                    label.resize(label.width(), label.heightForWidth(label.width()))
+            except RuntimeError:
+                pass
+
+        QTimer.singleShot(0, _fix_wrapped_label_heights)
 
     @staticmethod
     def _connected_text(enabled: bool, handle: object | None) -> str:

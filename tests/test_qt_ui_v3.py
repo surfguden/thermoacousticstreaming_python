@@ -13,6 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QGroupBox,
     QLabel,
@@ -25,7 +26,7 @@ from PySide6.QtWidgets import (
 
 from thermo_acoustic import qt_ui, qt_ui_v2, qt_ui_v3, qt_ui_v3_support
 from thermo_acoustic.qt_ui_v3_support import MainWindowV3Compatibility
-from thermo_acoustic.application import Application
+from thermo_acoustic.application import Application, STEP_ORDER
 from thermo_acoustic.experiment_planning import normalize_experiment
 from thermo_acoustic.instruments import SimulatedAD2Sdk
 from thermo_acoustic.tec import TecStatus
@@ -323,10 +324,12 @@ def test_v3_reuses_the_supplied_application_and_separates_operator_workspaces(mo
 
 
 def test_v3_field_bound_adapters_survive_inherited_caption_changes(monkeypatch, tmp_path):
-    original_status_builder = qt_ui_v2.MainWindowV2._v2_status_progress_group
-    original_acquisition_builder = qt_ui_v2.MainWindowV2._v2_acquisition_group
+    original_status_builder = MainWindowV3Compatibility._v2_status_progress_group
+    original_acquisition_builder = MainWindowV3Compatibility._v2_acquisition_group
+    invoked: list[str] = []
 
     def status_with_changed_captions(self):
+        invoked.append("status")
         group = original_status_builder(self)
         inherited = {
             "Elapsed Time",
@@ -339,6 +342,7 @@ def test_v3_field_bound_adapters_survive_inherited_caption_changes(monkeypatch, 
         return group
 
     def acquisition_with_changed_captions(self):
+        invoked.append("acquisition")
         group = original_acquisition_builder(self)
         inherited = {
             "Camera FPS (Internal trigger)",
@@ -356,11 +360,12 @@ def test_v3_field_bound_adapters_survive_inherited_caption_changes(monkeypatch, 
                 nested_group.setTitle("Changed upstream camera-start group")
         return group
 
-    monkeypatch.setattr(qt_ui_v2.MainWindowV2, "_v2_status_progress_group", status_with_changed_captions)
-    monkeypatch.setattr(qt_ui_v2.MainWindowV2, "_v2_acquisition_group", acquisition_with_changed_captions)
+    monkeypatch.setattr(MainWindowV3Compatibility, "_v2_status_progress_group", status_with_changed_captions)
+    monkeypatch.setattr(MainWindowV3Compatibility, "_v2_acquisition_group", acquisition_with_changed_captions)
 
     window = make_window(monkeypatch, tmp_path)
     try:
+        assert {"status", "acquisition"} <= set(invoked)
         assert window.findChild(QLabel, "v3ElapsedTimeCaption").text() == "Elapsed time"
         assert window.findChild(QLabel, "v3CameraFrameRateCaption").text() == (
             "Camera frame rate — Internal trigger"
@@ -371,6 +376,74 @@ def test_v3_field_bound_adapters_survive_inherited_caption_changes(monkeypatch, 
         assert window.findChild(QGroupBox, "v3PerRepeatCameraStartGroup").title() == (
             "Per-repeat camera-start metadata (s)"
         )
+    finally:
+        window.close()
+
+
+def test_v3_global_status_preserves_tooltip_wrapper_and_noncollapsed_geometry(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    window.resize(1440, 900)
+    window.show()
+    window._v3_workspace_tabs.setCurrentIndex(3)
+    QApplication.processEvents()
+    try:
+        group = next(group for group in window.findChildren(QGroupBox) if group.title() == "Global Status")
+        assert group.maximumHeight() >= group.minimumSizeHint().height()
+        assert "Full session history" in window.error_log.toolTip()
+        assert window.error_log.parentWidget() is not group
+        assert window.error_log.parentWidget().maximumHeight() == 90
+        assert window.error_log.height() > 0
+        assert window.ad2_connection_status.height() > 0
+        assert window.camera_connection_status.height() > 0
+    finally:
+        window.close()
+
+
+def test_v3_breadcrumb_preserves_v2_marker_and_state_presentation(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        breadcrumb = window.step_breadcrumb
+        layout = breadcrumb.layout()
+        assert layout.spacing() == 6
+        assert layout.count() == len(STEP_ORDER) + 1
+        assert layout.itemAt(layout.count() - 1).spacerItem() is not None
+        first_step = STEP_ORDER[0]
+        first_marker = breadcrumb._markers[first_step]
+        assert first_marker.text() == "○1"
+        assert "font-weight: bold" in first_marker.styleSheet()
+        assert first_marker.toolTip() == "Initialize Experiment"
+        assert "Live progress through the current repeat" in breadcrumb.toolTip()
+        breadcrumb.set_states({first_step: "completed"})
+        assert first_marker.text() == "●1"
+        assert breadcrumb.state_of(first_step) == "completed"
+        assert breadcrumb.state_of("unknown") == "pending"
+        with pytest.raises(KeyError):
+            breadcrumb.set_states({first_step: "unexpected"})
+    finally:
+        window.close()
+
+
+def test_v3_initialization_dialog_retains_real_z_stage_warning(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        dialog = window._ensure_initialization_dialog()
+        z_placeholder = next(
+            checkbox
+            for checkbox in dialog.findChildren(QCheckBox)
+            if checkbox.text() == "N/A"
+        )
+        assert "always connects to the real Thorlabs piezo" in z_placeholder.toolTip()
+        assert "no simulated variant" in z_placeholder.toolTip()
+    finally:
+        window.close()
+
+
+def test_v3_status_refresh_retains_deferred_wrapped_label_height_fix(monkeypatch, tmp_path):
+    scheduled: list[int] = []
+    monkeypatch.setattr(qt_ui_v3_support.QTimer, "singleShot", lambda delay, callback: scheduled.append(delay))
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        assert 0 in scheduled
     finally:
         window.close()
 
