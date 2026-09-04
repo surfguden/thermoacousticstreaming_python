@@ -7,11 +7,9 @@ Historical audits and evidence records preserve how conclusions were reached,
 but they do not override this page, current source, tests, Git state, or newer
 retained evidence.
 
-Last current-truth convergence: 2026-09-03, at the accepted pushed
-pre-acoustic software baseline `0855e411e93a5636be841375c96b540bb04c7399`.
-The preceding parameter-semantics corrections were reviewed and checkpointed
-there; this page records their current project implications, not an
-uncheckpointed change set.
+Last current-truth convergence: 2026-09-04, at pushed checkpoint
+`a9fcfa6e79e045b350ed984b26fad1a77f08735e`. This page records current
+project implications, not an uncheckpointed change set.
 
 ## Authority hierarchy
 
@@ -46,6 +44,22 @@ the owner approved and completed V2 retirement after safe V3 decoupling. The
 evidence, not current operational authority. No further broad freeze-period
 audit is required unless contradictory current source, vendor, or physical
 evidence appears.
+
+## Current checkpoint and handover authority
+
+- `PUMP_QMIX_TOOL_HARDENING`: **IMPLEMENTED / PUSHED /
+  READY_FOR_INDEPENDENT_REVIEW** at `a9fcfa6`; it is not closed.
+- The colleague handover evidence was ingested without merging its branch:
+  [`experiment_sequence_timeline.txt`](experiment_sequence_timeline.txt) and
+  [`M-042_iBEAM_smart_manual_v09.pdf`](vendor_manuals/M-042_iBEAM_smart_manual_v09.pdf).
+- The current-vs-intended reconciliation is retained in
+  [`handover_sequence_reconciliation_20260904.md`](handover_sequence_reconciliation_20260904.md).
+  It is reconciliation evidence, not a competing planner or operational
+  authority.
+- Current owner-supplied apparatus routing supersedes the earlier DIO1 laser
+  statement: W1/API 0 is the acoustic path; W2/API 1 is laser Analog In/control;
+  DIO0/pink is camera `EXT.TRIG`; DIO1/green is LED timing/control. This is
+  owner-supplied current truth, not physical timing verification.
 
 ## Current software architecture
 
@@ -188,7 +202,7 @@ Hamamatsu timing remains controlling for this installed camera.
 | Project Ch1 / `exp_ad2_channels[0]` / WaveForms API index 0 | W1 | W1 BNC `J4`; `JP4` selects direct or 49.9-ohm series path | Custom laboratory acoustic amplifier -> transducer | Software mapping, official connector semantics, owner wiring, and current custom-amplifier enclosure are owner/photo confirmed. Installed JP4 position, exact external connector roles, amplifier input impedance/gain/output envelope, current transducer identity, and downstream voltage are unverified; W1 commissioning is blocked. |
 | Project Ch2 / `exp_ad2_channels[1]` / WaveForms API index 1 | W2 | W2 BNC `J5`; `JP5` selects direct or approximately 49.9-ohm series path | TOPTICA laser Analog In | Physical route confirmed by owner evidence; exact input range, impedance, transfer function, polarity, and enable semantics unresolved. Normal production fails closed if W2 is enabled. |
 | No normal-production digital-output request | DIO0, pink | `J6` pass-through; no BNC or AWG jumper | Camera `EXT.TRIG` | Physically connected but unused in normal Internal-trigger acquisition. External/transient timing deferred. |
-| Explicit disabled normal-production digital-output payload | DIO1, green | `J6` pass-through; no BNC or AWG jumper | TOPTICA laser Digital In | Physically connected but unprogrammed. Installed digital-option/configuration and active semantics unresolved. |
+| Explicit disabled normal-production digital-output payload | DIO1, green | `J6` pass-through; no BNC or AWG jumper | LED timing/control | Owner-supplied current route; physically unprogrammed in normal production. Electrical compatibility and physical timing are unverified. The earlier laser-Digital-In statement is superseded historical truth. |
 
 The green adapter is the official Digilent BNC Adapter family, SKU `410-263`,
 not a generic/custom breakout. W1/W2 are routed to BNC connectors; DIO and T1/T2
@@ -207,7 +221,7 @@ is derived or measured.
 | AD2 | Analog Discovery 2, freshly enumerated 2026-09-02 as `SN:210321A18CE2`; W1 acoustic route; official BNC Adapter family | JP4/JP5 positions, loaded downstream voltage, acoustic pressure, physical timing |
 | Acoustic amplifier | Custom/home-built mains-powered laboratory unit. Owner-supplied current photographs show a metal enclosure with IEC entry/switch, external coax/BNC-type connectors, and handwritten engineering annotations; no commercial manufacturer/model label is visible. | `CUSTOM_ACOUSTIC_AMPLIFIER_CHARACTERIZATION_REQUIRED`: external input/output connector roles, controls, approximate input impedance and gain near 1.9-2.0 MHz, plausible output range/load, limiting/clipping indication, and same-chain history/build evidence needed before energized W1. Blurry annotation values are not evidence. |
 | Acoustic transducer | Lund apparatus used Ferroperm/Meggitt Pz26, `30 x 4.0 x 1.0 mm`, bonded to the chip glass lid; this is a prior-apparatus candidate, not current physical identity | Owner confirmation that the installed element is that part; assembled impedance/resonance and safe-drive evidence |
-| Laser | TOPTICA `iBEAM-SMART-785-S-HP`, nominal 785-nm family, Class 3B; exact model string is owner-label evidence | Exact installed rated power/options, Analog/Digital electrical input semantics, and actual optical power; safety/model label is not power-at-sample evidence |
+| Laser | TOPTICA `iBEAM-SMART-785-S-HP`, nominal 785-nm family, Class 3B; W2 is owner-supplied Analog In/control route | Installed option set, modulation polarity/scaling/trim, input impedance, electrical semantics, and actual optical power remain unknown; safety/model label is not power-at-sample evidence |
 | Pump | One CETONI Low-pressure module 14:1: `NEM-B101-02 E 5`, `CET-003455-1505`; logical node `neMESYS_Low_Pressure_1_Pump`, node 2 | Exact base/interface identity, installed syringe/loading/travel, harmless route, fill truth, stop latency, bounded motion |
 | Valve | `COM5`, 19200 baud, IDEX/Rheodyne MX Series II protocol family; software position 1 -> `P01`, position 2 -> `P02`; owner route truth: P01 through-chip, P02 bypass | `MODEL_IDENTITY_REQUIRED`: readable manufacturer/model/part/serial label; independent physical observation of each route |
 | Z | Current manual path is Thorlabs `PPC001`/`PFM450E` through Kinesis; candidate controller serial `44533854` | Fresh identity, direction, scale, travel, and microscope physical datum. Prior/COM7 is historical compatibility only. |
@@ -491,12 +505,20 @@ manual setting.
 
 ## Laser boundary
 
-Owner evidence supersedes the historical “CH2 unused” and generic DIO1 stories:
-W2 reaches laser Analog In and DIO1 reaches laser Digital In. That routing does
-not resolve the installed unit's electrical semantics. Normal production
-therefore rejects W2 carrier/FM before hardware configuration and programs
+Current owner-supplied truth is W2 -> laser Analog In/control, DIO0/pink ->
+camera `EXT.TRIG`, and DIO1/green -> LED timing/control. The earlier DIO1 ->
+laser Digital In statement is superseded historical project truth. Normal
+production rejects W2 carrier/FM before hardware configuration and programs
 neither digital line. Laser alignment and optical power remain manual/fixed for
 the current experiment.
+
+The ingested iBEAM manual establishes vendor-family semantics, not installed
+unit configuration: Analog modulation is documented as 0...+5 V on channel 2,
+with documented default `sub` polarity in which increasing input reduces power.
+Consequently 0 V is not a generic optical-off claim, and a zero-offset bipolar
+AD2 waveform can be outside the documented input range. Do not enable W2 or
+infer optical output from an electrical command. Installed polarity, scaling,
+trim, impedance, and option set remain unknown.
 
 Electrical command, protocol/readback, laser emission, and in-channel optical
 power are separate claims. Reopen software laser control only after exact
@@ -541,8 +563,9 @@ Do not reopen these without new contradictory evidence:
   current steady experiment.
 - W2 is a real laser route, not an unused generic channel, and remains
   production-disabled pending semantics.
-- DIO0 is the connected camera trigger and DIO1 the connected laser trigger;
-  neither is used by normal production.
+- DIO0/pink is the connected camera trigger and DIO1/green is LED
+  timing/control; neither is used by normal production. The earlier DIO1 laser
+  trigger mapping is superseded historical truth.
 - The current pump profile is one-pump; old two-pump assumptions are migration
   history.
 - Valve transport is COM5; COM6-as-valve was a documentation error.
@@ -578,6 +601,10 @@ separately authorized.
 - Software laser Analog/Digital control.
 - External camera trigger and transient/onset synchronization.
 - Automated sample refresh and pump motion until physical readiness closes.
+- Handover sequence design: external camera triggering, DIO timing, output-window
+  versus flush overlap, and save/flush concurrency remain intended design only;
+  the current output-completion barrier and sequential flush-before-save runtime
+  remain implemented behavior.
 - Automated Z motion until current identity/direction/scale/datum are verified.
 - Active TEC scientific use until imaging-plane equilibration is justified.
 - Rhodamine-B thermometry until calibration provenance is defined.

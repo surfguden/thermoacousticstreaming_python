@@ -42,10 +42,11 @@ Enforcement: `PROJECT_CONTROL`, `KNOWN_OPEN_ITEMS`, and `HISTORICAL_ONLY`.
 ### A physical connection has a role even when software deliberately does nothing
 
 Earlier documentation alternated between treating CH2/DIO1 as unused and
-treating a generic DO clock as active camera/LED timing. Owner wiring evidence
-later established specific routes: W2 is laser Analog In, DIO1 is laser Digital
-In, and DIO0 is camera `EXT.TRIG`. Normal production still programs none of
-those paths. The durable lesson is to record both truths: a connector can have a
+treating a generic DO clock as active camera/LED timing. Current owner truth is
+W2 -> laser Analog In/control, DIO0/pink -> camera `EXT.TRIG`, and DIO1/green
+-> LED timing/control; the earlier DIO1 -> laser Digital In statement is
+superseded historical truth. Normal production still programs none of those
+paths. The durable lesson is to record both truths: a connector can have a
 confirmed physical destination while its current software role is explicitly
 disabled. “Connected,” “configured,” “commanded,” and “verified effect” are
 different states.
@@ -234,6 +235,42 @@ operating evidence.
 
 Enforcement: `PROJECT_CONTROL`, powered-down owner/lab inspection only, and a
 separately reviewed bounded characterization plan if build records are absent.
+
+### Later owner routing truth supersedes earlier owner routing truth
+
+Historical owner statements remain provenance, but they are not immutable
+physical truth. Record the newer statement as current authority and label the
+older statement superseded; do not copy the older mapping into new code or UI.
+For this apparatus, DIO1/green is LED timing/control, not laser Digital In.
+
+Enforcement: `PROJECT_CONTROL`, `KNOWN_OPEN_ITEMS`, and current implementation
+reviews.
+
+### Canonical execution outranks rollback-builder descriptions
+
+Handover claims about “current implementation” must be checked against the
+normal `ExperimentRequest -> RunPlan -> legacy adapter -> Application` Start
+path. A rollback-only builder can preserve useful design provenance without
+describing current production behavior.
+
+Enforcement: current source/tests before any implementation claim.
+
+### Hardware work and durable evidence writing have separate owners
+
+A future flush worker may do hardware-only work and return a structured result;
+the canonical rendezvous/finalizer can then persist `FlushCompleted` and outcome
+evidence. This is a design candidate, not current concurrency behavior.
+
+Enforcement: future worker lifecycle and TDMS single-writer design review.
+
+### Laser Analog In voltage is not an optical-off claim
+
+The iBEAM family manual documents 0...+5 V Analog modulation on channel 2 and
+default `sub` polarity, where increased input reduces power. Therefore 0 V is
+not generic optical off, and zero-offset bipolar AD2 drive can be out of range
+without installed-unit polarity/configuration evidence.
+
+Enforcement: vendor/manual review and bounded future laser-control design.
 
 ## Lesson-to-control matrix
 
