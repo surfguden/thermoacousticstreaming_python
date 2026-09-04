@@ -5,11 +5,18 @@ The repository originated as a LabVIEW migration, but the current normal
 experiment is governed by the Python request/plan/runtime path; retained
 LabVIEW exports are migration evidence, not current operational authority.
 
-Read [`docs/project_control.md`](docs/project_control.md) first for current
-architecture, workflow, routing, evidence semantics, readiness, and the single
-next project step. Genuine unresolved/deferred work is in
-[`docs/known_open_items.md`](docs/known_open_items.md). Historical audits,
-handovers, and changelogs preserve reasoning but may describe superseded state.
+## Where to start
+
+| Question | Document |
+| --- | --- |
+| What is current architecture, routing, trigger/sequence policy, evidence semantics, readiness, and the next project step? | [`docs/project_control.md`](docs/project_control.md) — **read this first** |
+| What is still unresolved, and in which category? | [`docs/known_open_items.md`](docs/known_open_items.md) |
+| What engineering principles must a change preserve? | [`docs/lessons_learned.md`](docs/lessons_learned.md) — read before modifying the area it covers |
+| Which review or checkpoint established a conclusion? | [`docs/audit_index.md`](docs/audit_index.md) — provenance only, non-authoritative |
+| What are the durable working, safety, and Git boundaries? | `AGENTS.md` |
+
+This README is navigation, not authority. Historical audits, handovers, and
+changelogs preserve reasoning but may describe superseded state.
 
 ## Useful Commands
 
@@ -69,15 +76,16 @@ front panel tabs that are still in scope:
 - Camera
 - Experiment
 
-The direct DOCustom, DOClock, and Zstack tabs are intentionally omitted.
-Normal production plans explicitly disable digital output on DIO0 and DIO1,
-and the experiment runtime does not program DO Clock Special; retained DO
-helpers are legacy/manual capabilities only. Owner-supplied current wiring maps project Ch1
-to AD2 API 0 / W1 / acoustic amplifier and transducer, and project Ch2 to API 1
-/ W2 / laser Analog In. Normal production rejects enabled W2 pending exact
-laser input semantics. DIO0/pink is connected to camera trigger and DIO1/green
-to laser trigger, but neither digital line is programmed in the current
-steady-state workflow.
+The direct DOCustom, DOClock, and Zstack tabs are intentionally omitted; the
+retained generic DO-clock helper is a legacy/manual capability only. Canonical
+production instead programs one finite shared PC-triggered DigitalOut program.
+Owner-supplied current wiring maps project Ch1 to AD2 API 0 / W1 / acoustic
+amplifier and transducer; project Ch2 to API 1 / W2 / laser Analog In;
+DIO0/pink to camera `EXT.TRIG`; and DIO1/green to LED timing/control. The
+earlier DIO1-as-laser-trigger mapping is superseded. Normal production rejects
+enabled W2 pending exact laser input semantics, and neither DIO line carries
+laser control. See [`docs/project_control.md`](docs/project_control.md) for the
+current trigger architecture; none of it is physical timing verification.
 `src/thermo_acoustic/qt_ui_v3.py` (`MainWindowV3`) is the tracked, opt-in,
 offline-UX-reviewed instrument surface. It has V3-owned compatibility support,
 does not import a retired V2 module or subclass a V2 class, and shares the same

@@ -1,108 +1,113 @@
 # Known Open Items
 
-Canonical registry of genuinely unresolved or deliberately deferred work.
+This register answers one question: **what is still unresolved?**
+
 Current architecture, workflow, routing, inventory, evidence semantics, and the
-single next step are in [`project_control.md`](project_control.md). Historical
-audits and Git history preserve closed investigations; they are not duplicated
-here as live backlog.
+next project step are in [`project_control.md`](project_control.md). Durable
+engineering principles are in [`lessons_learned.md`](lessons_learned.md).
+Review/checkpoint provenance is in [`audit_index.md`](audit_index.md).
 
-No item in this document authorizes hardware. An item classified
-`DEFER_UNTIL_FEATURE_USED` is not a prerequisite for the minimal camera+AD2 run
-while that feature remains disabled.
+No item in this document authorizes hardware. Closed software work is not
+repeated here as live backlog; the closed-provenance table at the end exists
+only to stop settled questions being reopened by accident.
 
-Software-only maintenance is currently authorized under the owner-approved
-`AUTHORIZED_SOFTWARE_MAINTENANCE_ACTIVE` state recorded in
-[`project_control.md`](project_control.md). Physical reconciliation remains
-incomplete and hardware access is not authorized by that state. The supplied
-`MASTER v7 FINAL_VALIDATED` recovery package is historical freeze-period
-evidence; it does not replace these current records or require another broad
-freeze-period audit absent contradictory evidence.
+## Categories
 
-## Classification
+| Category | Meaning |
+| --- | --- |
+| `BLOCKING_BEFORE_HARDWARE` | Must be closed before the relevant energized/physical action. Stops commissioning now. |
+| `PHYSICAL_VALIDATION_PENDING` | Software is sufficiently understood; a physical/electrical claim still needs a separately authorized bench step. |
+| `NONBLOCKING_SOFTWARE` | Real software debt that does not block the next experiment. |
+| `OWNER_DECISION_REQUIRED` | Evidence cannot choose the policy or product preference. |
+| `SCIENCE_VALIDATION` | A scientific method/criterion must be defined before the measurement means anything. |
 
-- `OPEN_NOW` — current software/repository issue worth addressing independently
-  of optional future capabilities.
-- `REQUIRES_PHYSICAL_VALIDATION` — source is sufficiently understood, but a
-  physical claim or safe action still needs a separately authorized bench step.
-- `DEFER_UNTIL_FEATURE_USED` — do not spend current effort on it while the
-  capability remains disabled.
-- `OWNER_DECISION_REQUIRED` — evidence cannot choose the policy or product
-  preference.
-- `NONBLOCKING_FOLLOWUP` — real issue, but it does not block the narrow next
-  experiment.
+An item marked "deferred while disabled" is not a prerequisite for the minimal
+camera+AD2 run while that capability stays off.
 
-## Current registry
+## BLOCKING_BEFORE_HARDWARE
 
-| ID | Classification | Current boundary | Reopen/closure condition | Minimal camera+AD2 impact |
-| --- | --- | --- | --- | --- |
-| HW-PUMP-MOTION-001 | REQUIRES_PHYSICAL_VALIDATION | H2B closed stable no-motion startup recovery, not motion readiness. Fresh `position_sensing_initialized=false` fails closed before enable. Installed syringe identity/geometry/loading, available travel, harmless route, fill truth, stop latency, and bounded motion remain unverified. `reference_move()` timeout-stop behavior needs review if reference is actually required. | First perform a no-command physical readiness inspection. Then obtain a fresh single-client readiness result. Only if the gate requires it, separately review/authorize reference; then validate fill truth, stop latency, and one minimal bounded move in that order. | None while pump and refresh remain disabled. |
-| HW-VALVE-001 | REQUIRES_PHYSICAL_VALIDATION | Software transport is COM5 and maps position 1 -> `P01`, position 2 -> `P02`. Owner workflow truth identifies P01 as through-chip and P02 as bypass. Protocol acknowledgement and independent physical route observation remain different evidence. | If automatic refresh is to be used, separately observe each route with pump inactive before combining valve and pump actions. | None while refresh remains disabled. |
-| HW-LASER-PATH-001 | DEFER_UNTIL_FEATURE_USED | Owner current truth maps Project Ch2/API 1/W2 to iBEAM Analog In/control; DIO1/green is LED timing/control, not laser Digital In. Vendor-family manual: Analog modulation is 0...+5 V on channel 2; documented default `sub` polarity reduces power as input rises, so 0 V is not generic optical off and bipolar zero-offset drive may be out of range. In documented external analog-modulation configuration, RS232 Laser ON/OFF and FINE ON/OFF may be unavailable because modulation opens the microprocessor-to-driver connection. Installed option set, polarity, scaling/trim, impedance, and emission behavior remain unknown. Production rejects W2; canonical DIO0/DIO1 serve camera/LED only. | Retain installed-unit configuration and separately design/verify only the required bounded control behavior. Do not infer optical power from command voltage. | None while software laser control remains disabled and power/alignment remain manual. |
-| HW-AD2-BNC-001 | REQUIRES_PHYSICAL_VALIDATION | Official SKU `410-263` schematic `500-263` revision C.0 establishes W1/J4/JP4 and W2/J5/JP5. JP4/JP5 select direct or 49.9-ohm **series-source** paths; they are not 50-ohm shunt loads. Installed PCB revision and jumper positions remain unverified. | During a powered-down authorized inspection, retain readable PCB/jumper evidence. Combine the installed series path with exact downstream input impedance to derive or later measure loaded voltage. | Blocks energized W1 until combined with closure of HW-ACOUSTIC-CHAIN-001. |
-| HW-ACOUSTIC-CHAIN-001 | REQUIRES_PHYSICAL_VALIDATION | `CUSTOM_ACOUSTIC_AMPLIFIER_CHARACTERIZATION_REQUIRED`. Owner-supplied current photos confirm a custom/home-built mains-powered metal enclosure with IEC entry/switch, external coax/BNC-type connectors, and handwritten annotations, but no commercial identity. Blurry values are not usable gain/bandwidth/impedance/output evidence. The active external input/output roles, controls, approximate input impedance/gain near 2 MHz, output/load envelope, limiting indication, current transducer, JP4 state, and same-chain starting evidence remain unresolved. | Search retained build/schematic/PCB/component/project records, not commercial-model catalogs. If absent, design a later bounded electrical characterization sufficient to identify connector roles and justify a conservative first input. Any internal inspection is owner/lab-only, powered down and disconnected from mains. Retain JP4/load and amplitude semantics. | **Hard blocker:** stop before Gate 3/Gate 4 and before every energized W1/acoustic output. Camera-only Gate 2 remains accepted and must not be repeated. A full amplifier datasheet is not required. |
-| HW-TIMING-001 | SOFTWARE_IMPLEMENTED_PHYSICAL_VALIDATION_REQUIRED | Canonical runtime plans W1/DIO0/DIO1/camera for one PC-triggered software logical t=0, uses achieved DIO0 cadence for the finite N-frame window, and applies External-trigger timing/readback gates. Software corrections are closed; electrical compatibility and physical W1/DIO/camera/LED timing remain unmeasured. | Perform separately authorized electrical/timing validation with explicit camera mode/polarity and one common-timebase observation. | No physical synchronization, exposure-onset, LED-emission, or BNC-onset claim is allowed. |
-| SW-HANDOVER-SEQUENCE-001 | IMPLEMENTED_SOFTWARE_POLICY | Runtime performs one initial automatic refresh before repeat 1 when enabled, then after each repeat's programmed AD2 completion barrier starts a hardware-only flush worker alongside TIFF/TDMS saving. Before the initial automatic flush it rejects insufficient tracked fill for the complete N+1 automatic-refresh series. The main thread joins both, is the sole TDMS writer, persists `FlushCompleted` after the rendezvous, and keeps save and flush failures distinct through `PrimaryFailure`/`CleanupFailure`. This is conservative software timing policy, not physical output/fluid proof. | Before enabling real automated refresh, satisfy the separately retained pump/valve and physical-output readiness gates. Any change to the barrier or worker/finalizer ownership requires focused offline concurrency and failure evidence. | No W1/W2 physical overlap or synchronization claim; no automatic retry. |
-| HW-Z-001 | DEFER_UNTIL_FEATURE_USED | Current manual Z path is Thorlabs PPC001/PFM450E through Kinesis. Candidate serial `44533854` is not fresh current identity evidence. Controller coordinate zero is not a microscope physical datum. Prior/COM7 is historical only. | Before automated/current Z use, freshly identify the controller/stage and separately verify direction, scale, travel bounds, and the required physical datum. | None while Z remains disabled. |
-| SCI-TEC-EQUIL-001 | DEFER_UNTIL_FEATURE_USED | Retained TEC evidence covers communication and narrow controller operations. Controller-reported stability does not establish imaging-plane fluid equilibrium. | Before temperature-controlled scientific claims, define and validate an imaging-plane equilibration criterion or experimentally justified transfer model. | None while TEC remains disabled. |
-| SCI-RHB-CAL-001 | DEFER_UNTIL_FEATURE_USED | No active Rhodamine-B thermometry workflow links measurements to calibration provenance. | Before thermometry is enabled, retain a compatible calibration identifier/date plus illumination, requested/applied exposure, camera mode/gain, filters, and condition contract. | None for non-thermometry imaging. |
-| TEST-QT-LIFETIME-001 | NONBLOCKING_FOLLOWUP | PySide/Shiboken tests can nondeterministically delete C++ widgets or hang during full-window construction/teardown. The retained reproduction is `tests/test_qt_ui_v3.py::test_v3_constructs_on_first_attempt_without_retry`; it deliberately performs one direct V3 construction with no retry. Failures are visible and documented; affected tests pass in fresh isolation. | Reproduce minimally and remove/isolate the ownership fault without blanket retries, skips, or xfails. | No demonstrated production-path defect; keep monitoring offline results. |
-| TOOL-VALVE-PORT-001 | CLOSED OFFLINE | The manual `hardware_tests/test_real_workflow_smoke.py` full-workflow plan/CLI now accepts only current valve resource `COM5`; `COM6` is hard-rejected as reserved for the TEC. The shared hardware factory applies the same rejection whenever a non-simulated live valve is configured. Disabled/simulated fixtures and TEC `COM6` remain valid. | Reopen only if current source or physical evidence changes the instrument-resource truth. Physical valve routing remains covered by `HW-VALVE-001`. | None while full workflow and refresh remain disabled. |
-| UI-MANUAL-INTERLOCK-001 | OWNER_DECISION_REQUIRED | V3 separates Manual & Service actions and preserves action-specific confirmations, but the GUI has no universal command-line-style real-hardware acknowledgement gate after initialization. | Owner decides whether the existing context/action gates are sufficient or a global manual/service policy is required. | None when the operator stays in Experiment and deferred devices remain disabled. |
-| UI-V3-DEFAULT-001 | OWNER_DECISION_REQUIRED | V3 is tracked, opt-in, and offline UX-reviewed; v1 remains default. V2 has been retired after safe V3 decoupling. | Decide promotion only after separate operator/current-hardware evaluation. | None; launch V3 explicitly for its reviewed workflow. |
-
-## Closed or superseded — not live backlog
-
-These conclusions remain important but should not be reopened without new
-contradictory evidence.
-
-| ID / topic | Current disposition | Retained evidence |
+| ID | Boundary | Closure condition |
 | --- | --- | --- |
-| ARCH-PREFLIGHT-001 | CLOSED | Normal Start uses `ExperimentRequest` -> independent immutable plan -> explicit legacy adapter. The old UI builder is rollback-only; V3 `BuildResult` is presentation/audit only. |
-| ARCH-RECORD-001 | CLOSED | Atomic `series_manifest.json` records aggregate lifecycle; TDMS remains per-repeat authority and links to the action stream. |
-| SW-ACTION-TRACE-001 | CLOSED OFFLINE | Correlated `action_log.jsonl`, TDMS linkage, manifest linkage, phase-aware backend diagnostics, bounded vocabulary, and separate primary/cleanup failures are implemented and tested. |
-| SW-FM-SPAN-001 | CLOSED OFFLINE | Authoritative endpoints now survive request -> plan -> adapter -> experiment; AD2 FM index is `100 * half_deviation / center`; 1.909--1.959 MHz yields 50 kHz total span, +/-25 kHz, and approximately 1.2926577%. V3 and durable requested/effective evidence distinguish endpoints, total span, half deviation, and modulation index. Zero/reversed spans fail closed. Historical affected range starts at commit `d30be02`; no tracked run artifact was available for automatic reinterpretation. This software closure does not establish physical output. |
-| SW-FM-SHAPE-001 | CLOSED OFFLINE at `bfd1b31` | Official Digilent function/symmetry semantics now map Symmetric to Triangle/50%/bidirectional-between-endpoints, RampUp to RampUp/100%/start-stop-reset, and RampDown to RampDown/100%/stop-start-reset. The undocumented Triangle phase-origin endpoint is not claimed. Requested and effective evidence retains type, direction, function, symmetry, period, endpoints, span, half-deviation, and modulation index. Independently expected tests cover all three shapes. |
-| SW-WFG-EVIDENCE-001 | CLOSED OFFLINE at `bfd1b31` | Requested carrier/FM objects remain unchanged. Successful backend configuration stores separate post-clamp software-effective SDK arguments. Low-level and high-level action evidence plus TDMS preserve 10 V requested versus 5 V effective (and equivalent frequency clamping); high-level status is `EFFECTIVE`, not `APPLIED`/`OBSERVED`. Effective evidence explicitly disclaims device readback and physical output. |
-| SW-SCI-INTEGRITY-001 | CLOSED OFFLINE | Requested FPS remains canonical request truth while achieved DIO0 cadence defines the finite DigitalOut run. Canonical External acquisition uses fresh minimum-trigger-interval validation; Internal paths retain the documented overlapping `max(exposure, readout)` limit. Requested/applied exposure and one automated `WaitAfterFlush` source are retained. |
-| SW-ACQ-DETERMINISM-001 | CLOSED OFFLINE | Requested ROI is applied and freshly read back; normal enabled CH0 requires Repeat=1; FM Sweep conflicts with Frequency Scan and requires explicit CH0 enable. |
-| SW-AD2-ROUTING-001 | CLOSED OFFLINE | Project Ch1/API 0/W1 is acoustic and canonical runs use PC trigger. Project Ch2/API 1/W2 is laser Analog In and fails closed. DIO0 is camera frame trigger and DIO1 is LED timing, never laser Digital In. |
-| SW-V3-UX-001 | CLOSED OFFLINE | V3 has compact persistent state/run controls; separate Configure and Review run phases; run-focused Monitor context; grouped Manual & Service tasks; and Diagnostics. Pre-run and requested/effective evidence use existing planning/log sources. |
-| HW-QMIX-CAN-001 startup recovery | CLOSED FOR NO-MOTION STARTUP | H2A retained fresh startup events; H2B retained five stable accepted clear/fault-false/no-motion/clean-close trials. This does not close HW-PUMP-MOTION-001. |
-| Generic production DO Clock | SUPERSEDED | The retained legacy DO-clock helper and its generic configuration are not used by normal production. Canonical production instead programs one finite shared PC-triggered DigitalOut program in which DIO0 is the camera `EXT.TRIG` train and DIO1 the LED timing window; neither is laser Digital In, and neither is physical timing verification. |
-| CH2 “unused” | SUPERSEDED | Owner evidence establishes W2 as laser Analog In. Exact electrical semantics remain HW-LASER-PATH-001. |
-| DIO1 laser-vs-LED identity conflict | SUPERSEDED / OWNER_ADJUDICATED | Current owner truth is DIO1/green -> LED timing/control and DIO0/pink -> camera `EXT.TRIG`. The earlier DIO1 -> laser Digital In statement is historical only. Canonical production programs both lines for camera/LED timing, and neither carries laser control. |
-| Two-pump profile | SUPERSEDED | Current configuration selects one pump and rejects the legacy two-pump profile. |
-| Valve on COM6 | SUPERSEDED ERROR | Current valve path is COM5. COM6 belongs to the TEC path in current configuration/evidence. |
-| Prior COM7 as current Z | OBSOLETE | Current Z work uses Thorlabs/Kinesis. The disabled Prior field is compatibility/migration history only. |
-| ROI inherited from manual state | SUPERSEDED | Normal plan carries requested ROI; runtime applies it and performs fresh readback before saving. |
-| Exposure request equals applied value | SUPERSEDED | `RequestedExposureMs` and `AppliedExposureMs` are separate; `ExposureTime` is compatibility effective/applied state. |
-| Duplicate post-P02 pump target | CLOSED | Refresh now sends one target command before P02 and only waits after P02. |
-| Pre-redesign V3 everything-dashboard | SUPERSEDED | Current V3 operator model is in `project_control.md` and current source/tests. |
+| **HW-ACOUSTIC-CHAIN-001** | `CUSTOM_ACOUSTIC_AMPLIFIER_CHARACTERIZATION_REQUIRED`. Owner photographs confirm a custom/home-built mains-powered enclosure with IEC entry/switch and external coax/BNC-type connectors, but no commercial identity. Blurry annotations are not gain/bandwidth/impedance evidence. External connector roles, controls, approximate input impedance and gain near 1.9–2.0 MHz, output/load envelope, limiting indication, current transducer identity, installed JP4 state, and same-chain starting evidence are all unresolved. | Search retained build/schematic/PCB/component records — not commercial catalogs. If absent, design a separately reviewed bounded electrical characterization. Any internal inspection is owner/lab-only, powered down and disconnected from mains. **Hard blocker: stop before every energized W1 output.** |
+| **HW-AD2-BNC-001** | Official SKU `410-263`, schematic `500-263` rev `C.0`, establishes W1/`J4`/`JP4` and W2/`J5`/`JP5`. `JP4`/`JP5` select a direct path or a 49.9-ohm **series-source** path; they are not 50-ohm shunt loads. Installed PCB revision and jumper positions are unverified. | During a powered-down authorized inspection, retain readable PCB/jumper evidence. Combine the installed series path with the exact downstream input impedance to derive or later measure loaded voltage. Blocks energized W1 together with HW-ACOUSTIC-CHAIN-001. |
 
-## Retained evidence and historical navigation
+## PHYSICAL_VALIDATION_PENDING
 
-- [`p0_hardware_truth_20260828.md`](p0_hardware_truth_20260828.md) — dated P0
-  hardware/evidence boundary; preserve negative and read-only findings.
-- [`hardware_repair_plan.md`](hardware_repair_plan.md) — detailed historical
-  repair/verification procedures. Re-derive any action against this registry
-  and current source before use.
-- [`qt_lifetime_investigation.md`](qt_lifetime_investigation.md) — bounded Qt
-  failure-family evidence.
-- [`labview_migration_completeness_audit.md`](labview_migration_completeness_audit.md),
-  [`labview_ui_field_reference.md`](labview_ui_field_reference.md), and
-  [`PORTING_TBD.md`](PORTING_TBD.md) — migration history, not current backlog.
-- [`pending_feedback.md`](pending_feedback.md) and
-  [`claude_code_change_log.md`](claude_code_change_log.md) — raw issue/session
-  history; resolved entries remain historical.
-- `runs/qmix_h1_*`, `runs/qmix_h2a_*`, and `runs/qmix_h2b_*` — retained
-  point-in-time Qmix evidence; not permission to repeat or broaden a session.
+| ID | Boundary | Closure condition |
+| --- | --- | --- |
+| **HW-TIMING-001** | Canonical runtime plans W1/DIO0/DIO1/camera around one PC-triggered software logical t=0, derives the finite DigitalOut run from the achieved DIO0 cadence, and applies External-trigger camera property and timing gates. **The software corrections are closed.** Unmeasured: electrical levels, actual DIO0 edge timing and edge count at the run boundary, first-edge phase, DIO1 electrical window, camera trigger recognition and exposure latency/jitter, LED optical latency, cross-signal alignment on a common timebase, and post-cleanup pin state. | Separately authorized electrical/timing validation with explicit camera mode/polarity and one common-timebase observation. No physical synchronization, exposure-onset, LED-emission, or BNC-onset claim is permitted until then. |
+| **HW-PUMP-MOTION-001** | H2B closed stable no-motion startup recovery, not motion readiness. Fresh `position_sensing_initialized=false` fails closed before enable. Installed syringe identity/geometry/loading, available travel, harmless route, fill truth, stop latency, and bounded motion remain unverified. `reference_move()` timeout-stop behavior needs review if reference is actually required. | No-command physical readiness inspection, then a fresh single-client readiness result. Only if the gate requires it, separately review/authorize reference; then validate fill truth, stop latency, and one minimal bounded move, in that order. None of this is implied by tracked fill arithmetic. |
+| **HW-VALVE-001** | Software transport is COM5; position 1 → `P01`, position 2 → `P02`. Owner workflow truth identifies P01 as through-chip and P02 as bypass. Protocol acknowledgement and independent physical route observation are different evidence. Valve label is still `MODEL_IDENTITY_REQUIRED`. | If automatic refresh is to be used, separately observe each route with the pump inactive before combining valve and pump actions. |
+| **HW-LASER-PATH-001** | Owner truth maps Project Ch2 / API 1 / W2 to iBEAM Analog In/control; DIO1/green is LED timing/control, not laser Digital In. Vendor-family manual: analog modulation is 0…+5 V on channel 2; documented default `sub` polarity reduces power as input rises, so 0 V is not generic optical off and bipolar zero-offset drive may be out of range. Under documented external analog modulation, RS232 Laser ON/OFF and FINE ON/OFF may be unavailable because modulation opens the microprocessor-to-driver connection. Installed option set, polarity, scaling/trim, impedance, and emission behavior are unknown. Production rejects W2; canonical DIO0/DIO1 serve camera/LED only. | Retain installed-unit configuration, then separately design and verify only the bounded control behavior actually required. Never infer optical power from a command voltage. Deferred while software laser control stays disabled. |
+| **HW-Z-001** | Current manual Z path is Thorlabs `PPC001`/`PFM450E` through Kinesis. Candidate serial `44533854` is not fresh identity evidence. Controller coordinate zero is not a microscope physical datum. Prior/COM7 is historical only. | Before automated Z use, freshly identify the controller/stage and separately verify direction, scale, travel bounds, and the required physical datum. Deferred while Z stays disabled. |
+
+## NONBLOCKING_SOFTWARE
+
+| ID | Boundary | Closure condition |
+| --- | --- | --- |
+| **TEST-QT-LIFETIME-001** | PySide/Shiboken tests can nondeterministically delete C++ widgets **or hang** during full-window construction/teardown. Observed across several different tests and exception types, and reproduced at the parent commit in an isolated export, so it is not attributable to any recent checkpoint. Affected tests pass in isolation; the full `tests/` suite passes. Retained reproduction: `tests/test_qt_ui_v3.py::test_v3_constructs_on_first_attempt_without_retry`. | Reproduce minimally and remove/isolate the ownership fault. **No blanket retries, skips, or xfails** — the failure must stay visible. |
+| **SW-NONBLOCKING-FOLLOWUP-001** | Aggregated small software debts recorded by the post-handover reviews, none of which blocks the next experiment. (a) The External-trigger feasibility gate validates the *requested* frame period while the device is programmed at the *achieved* cadence; the difference is bounded by one DigitalOut clock step (~20 ns at 100 MHz). (b) Whether `TIMING_MINTRIGGERINTERVAL` already accounts for applied exposure is `INSUFFICIENT_EVIDENCE` from vendor documentation. (c) The `TRIGGERTIMES` backend bound is 65535 while the model document specifies 1–10000; inert because the planner always sends 1. (d) V3's plan-blocked note is shown only when W1 is enabled, and its wording is generic rather than naming W2. (e) Three of four V3 horizontal-overflow assertions remain deleted, and the restored one is weakened by the scroll-content size policy. (f) The `ad2_disabled` preflight issue is non-blocking while the canonical runtime hard-fails, and the V3 readiness chip still uses generic "skips this subsystem" wording for AD2. (g) The aggregate refresh-volume requirement is enforced at Start but not surfaced as a Review preflight issue. | Address opportunistically under normal maintenance. Do not expand any of these into an architecture change without new evidence. |
+
+## OWNER_DECISION_REQUIRED
+
+| ID | Boundary | Decision needed |
+| --- | --- | --- |
+| **UI-V3-DEFAULT-001** | V3 is tracked, opt-in, and offline UX-reviewed; V1 remains the default launcher. V2 is retired. V3 has not had an operator-journey evaluation on current hardware. | Decide promotion only after a separate operator/current-hardware evaluation. Until then launch V3 explicitly. |
+| **UI-MANUAL-INTERLOCK-001** | V3 separates Manual & Service actions and preserves action-specific confirmations, but the GUI has no universal command-line-style real-hardware acknowledgement gate after initialization. | Owner decides whether existing context/action gates suffice or a global manual/service policy is required. |
+| **V3 Prepare confirmations** | The Preparation checklist's confirmations are local presentation state. They are correctly labelled as not persisted run evidence and not `PHYSICAL_VERIFIED`. | Owner decides whether operator preparation confirmations should become durable run evidence; if so it becomes a scoped software item, not a label change. |
+
+## SCIENCE_VALIDATION
+
+| ID | Boundary | Closure condition |
+| --- | --- | --- |
+| **SCI-TEC-EQUIL-001** | Retained TEC evidence covers communication and narrow controller operations. Controller-reported stability does not establish imaging-plane fluid equilibrium. | Before temperature-controlled scientific claims, define and validate an imaging-plane equilibration criterion or an experimentally justified transfer model. Deferred while TEC stays disabled. |
+| **SCI-RHB-CAL-001** | No active Rhodamine-B thermometry workflow links measurements to calibration provenance. | Before thermometry is enabled, retain a compatible calibration identifier/date plus illumination, requested/applied exposure, camera mode/gain, filters, and condition contract. |
+
+## Closed — provenance only, do not reopen without contradictory evidence
+
+| Topic | Disposition |
+| --- | --- |
+| ARCH-PREFLIGHT-001 | CLOSED. Normal Start is `ExperimentRequest` → independent immutable plan → explicit legacy adapter. The old UI builder is rollback-only; V3 `BuildResult` is presentation/audit only. |
+| ARCH-RECORD-001 | CLOSED. Atomic `series_manifest.json` records aggregate lifecycle; TDMS remains per-repeat authority and links to the action stream. |
+| SW-ACTION-TRACE-001 | CLOSED OFFLINE. Correlated `action_log.jsonl`, TDMS/manifest linkage, phase-aware diagnostics, bounded vocabulary, and separate primary/cleanup failures. |
+| SW-FM-SPAN-001 | CLOSED OFFLINE. AD2 FM index is `100 * half_deviation / center`; 1.909–1.959 MHz gives 50 kHz total span, ±25 kHz, ≈1.2926577 %. Zero/reversed spans fail closed. Historical affected range starts at `d30be02`; no tracked run artifact was available for automatic reinterpretation. Not physical output. |
+| SW-FM-SHAPE-001 | CLOSED OFFLINE at `bfd1b31`. Symmetric → Triangle/50 %/bidirectional; RampUp → RampUp/100 %; RampDown → RampDown/100 %. |
+| SW-WFG-EVIDENCE-001 | CLOSED OFFLINE at `bfd1b31`. Requested carrier/FM unchanged; post-clamp software-effective SDK arguments stored separately; status is `EFFECTIVE`, never `APPLIED`/`OBSERVED`. |
+| SW-SCI-INTEGRITY-001 | CLOSED OFFLINE. Requested FPS is request truth; achieved DIO0 cadence defines the finite DigitalOut run. External acquisition uses fresh minimum-trigger-interval validation; Internal paths keep the documented overlapping `max(exposure, readout)` limit. |
+| SW-ACQ-DETERMINISM-001 | CLOSED OFFLINE. Requested ROI applied and freshly read back; enabled CH0 requires `Repeat=1`; FM Sweep conflicts with Frequency Scan. |
+| SW-AD2-ROUTING-001 | CLOSED OFFLINE. W1 acoustic with PC trigger; W2 laser Analog In and fails closed; DIO0 camera frame trigger; DIO1 LED timing, never laser Digital In. |
+| SW-HANDOVER-SEQUENCE-001 | CLOSED OFFLINE as implemented software policy. One sequence-level initial refresh when enabled; programmed-output completion barrier; concurrent save + hardware-only flush worker; explicit rendezvous; main-thread single-writer TDMS; `FlushCompleted` persisted after rendezvous; separate `PrimaryFailure`/`CleanupFailure`; aggregate `TotalExperiments + 1` tracked-fill preflight before the initial refresh; temperature subgroups do not recharge it. Conservative software timing policy, **not** physical output or fluid proof. Physical prerequisites remain HW-PUMP-MOTION-001 and HW-VALVE-001. |
+| SW-V3-UX-001 | CLOSED OFFLINE. Compact persistent state/run controls; Preparation checklist / Configure / Review phases; run-focused Monitor; grouped Manual & Service; Diagnostics. |
+| TOOL-VALVE-PORT-001 | CLOSED OFFLINE. The manual full-workflow plan/CLI and the shared hardware factory accept only valve resource `COM5`; `COM6` is hard-rejected as the TEC path. Physical routing remains HW-VALVE-001. |
+| HW-QMIX-CAN-001 startup recovery | CLOSED FOR NO-MOTION STARTUP. H2A/H2B evidence. Does not close HW-PUMP-MOTION-001. |
+| Generic production DO Clock | SUPERSEDED. The legacy DO-clock helper and its generic configuration are unused by normal production. Canonical production programs one finite shared PC-triggered DigitalOut program: DIO0 the camera `EXT.TRIG` train, DIO1 the LED timing window. Neither is laser Digital In; neither is physical timing verification. |
+| CH2 "unused" | SUPERSEDED. W2 is laser Analog In. Electrical semantics remain HW-LASER-PATH-001. |
+| DIO1 laser-vs-LED identity conflict | SUPERSEDED / OWNER_ADJUDICATED. DIO1/green is LED timing/control; DIO0/pink is camera `EXT.TRIG`. Canonical production programs both for camera/LED timing; neither carries laser control. |
+| Two-pump profile | SUPERSEDED. One-pump configuration; the legacy two-pump profile is rejected. |
+| Valve on COM6 | SUPERSEDED ERROR. Valve is COM5; COM6 is the TEC path. |
+| Prior COM7 as current Z | OBSOLETE. Current Z uses Thorlabs/Kinesis. |
+| ROI inherited from manual state | SUPERSEDED. Normal plan carries requested ROI; runtime applies it and reads it back. |
+| Exposure request equals applied value | SUPERSEDED. `RequestedExposureMs` and `AppliedExposureMs` are separate. |
+| Duplicate post-P02 pump target | CLOSED. One target command before P02; wait only after P02. |
+| AnalogOut-only deterministic cleanup | SUPERSEDED BY EXTENSION. Cleanup now also stops and resets DigitalOut before device close, because canonical production programs DIO0/DIO1. |
+| Pre-redesign V3 everything-dashboard | SUPERSEDED. Current V3 operator model is in `project_control.md` and current source/tests. |
+
+## Retained evidence navigation
+
+Point-in-time and historical material is indexed in
+[`audit_index.md`](audit_index.md). The records most often needed alongside this
+register are [`p0_hardware_truth_20260828.md`](p0_hardware_truth_20260828.md),
+[`hardware_repair_plan.md`](hardware_repair_plan.md),
+[`qt_lifetime_investigation.md`](qt_lifetime_investigation.md), and the retained
+`runs/qmix_h1_*`, `runs/qmix_h2a_*`, `runs/qmix_h2b_*` evidence. Retained
+evidence is not permission to repeat or broaden a hardware session.
 
 ## Immediate project gate
 
-The immediate step is the no-output evidence closure in `project_control.md`:
-retain the custom-amplifier minimum characterization envelope, installed JP4,
-cable route, current transducer, and a defensible same-chain starting amplitude.
-SW-FM-SPAN-001 is closed offline, but that does not close the physical acoustic
-chain. Do not energize W1 or resume commissioning Gate 3/Gate 4 until the
-remaining physical blocker is closed and the run is separately authorized.
-Camera-only Gate 2 is accepted and must not be repeated.
+Close HW-ACOUSTIC-CHAIN-001 and HW-AD2-BNC-001: retain the custom-amplifier
+minimum characterization envelope, installed JP4 position, cable route, current
+transducer identity, and a defensible same-chain starting amplitude. Offline
+software closure does **not** close the physical acoustic chain. Do not energize
+W1 or resume commissioning Gate 3/Gate 4 until that closure is explicit and the
+run is separately authorized. Camera-only Gate 2 is accepted and must not be
+repeated.

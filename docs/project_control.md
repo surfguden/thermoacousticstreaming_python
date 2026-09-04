@@ -2,14 +2,16 @@
 
 Authoritative current-state dashboard for `junjiebranch`. Read this first.
 Current unresolved work is in [`known_open_items.md`](known_open_items.md);
-durable engineering judgment is in [`lessons_learned.md`](lessons_learned.md).
-Historical audits and evidence records preserve how conclusions were reached,
-but they do not override this page, current source, tests, Git state, or newer
-retained evidence.
+durable engineering principles are in
+[`lessons_learned.md`](lessons_learned.md); review and checkpoint provenance is
+in [`audit_index.md`](audit_index.md). Historical audits and evidence records
+preserve how conclusions were reached, but they do not override this page,
+current source, tests, Git state, or newer retained evidence.
 
-Last current-truth convergence: 2026-09-04, at the post-handover mainline
-correction checkpoint `a3d226f838a52da6b84f00d665627ad024276e10`. The narrow
-closure of that checkpoint's focused-review residues follows it on this branch.
+Last current-truth convergence: 2026-09-04, at the validated post-handover
+software checkpoint `7a0b9f1600f4e64d9ec379535ef70bc31d900796`
+(`Close post-handover narrow review residues`). This page records current
+project implications, not an uncheckpointed change set.
 
 ## Authority hierarchy
 
@@ -47,16 +49,16 @@ evidence appears.
 
 ## Current checkpoint and handover authority
 
-- `POST_HANDOVER_MAINLINE_REVIEW_CORRECTIONS`: **IMPLEMENTED / PUSHED /
-  FOCUSED CLOSURE REVIEW COMPLETED** at `a3d226f`. The earlier
-  `PUMP_QMIX_TOOL_HARDENING` commit remains retained historical evidence, not
-  the current convergence pointer.
-- `POST_HANDOVER_MAINLINE_NARROW_CLOSURE`: **IMPLEMENTED /
-  READY_FOR_MICRO_REVIEW**. It closes the focused review's remaining bounded
-  residues: the temperature-group automatic-refresh volume double-count, three
-  stale current-authority statements, and the stale V3 trigger wording. The
-  post-handover mainline is not `FINAL_VALIDATED` until this narrow closure is
-  independently rechecked.
+- **Current software phase: post-handover mainline software closed; physical
+  commissioning not started.** The post-handover implementation window
+  (`a9fcfa6` … `2122dd1`), its integrated correction checkpoint `a3d226f`, and
+  its narrow closure `7a0b9f1` are implemented, pushed, and independently
+  reviewed. The final micro closure review returned
+  `POST_HANDOVER_MAINLINE_VALIDATED_WITH_NONBLOCKING_FOLLOWUP`; the remaining
+  items are tracked as `SW-NONBLOCKING-FOLLOWUP-001` and
+  `TEST-QT-LIFETIME-001`.
+- Per-checkpoint scope, reviewed ranges, and verdicts are in
+  [`audit_index.md`](audit_index.md). Do not re-derive them from chat history.
 - The colleague handover evidence was ingested without merging its branch:
   [`experiment_sequence_timeline.txt`](experiment_sequence_timeline.txt) and
   [`M-042_iBEAM_smart_manual_v09.pdf`](vendor_manuals/M-042_iBEAM_smart_manual_v09.pdf).
@@ -93,6 +95,81 @@ and executes the authoritative independent plan.
 
 This boundary is closed for ordinary maintenance. Do not reopen it without a
 concrete contradictory defect supported by current source/tests.
+
+The retained UI-based series builder is **rollback-only and deliberately not
+equivalent** to the canonical planner: it carries `Internal` trigger and no
+canonical DIO program, and the runtime clears any digital-output payload on a
+record that lacks the canonical trigger architecture. Rollback therefore
+degrades safely to the pre-canonical acquisition behavior; it must never be
+described as canonical equivalence.
+
+## Current trigger architecture
+
+Software/API architecture, established offline. **No physical simultaneity is
+claimed.**
+
+- Canonical W1 (Project Ch1 / API 0) uses `trigsrcPC` and is armed before the
+  trigger; `FDwfAnalogOutTriggerSourceSet` precedes `FDwfAnalogOutConfigure`.
+- Canonical production programs one finite shared PC-triggered DigitalOut:
+  **DIO0** is the N-frame camera trigger train, **DIO1** is the finite LED
+  timing window. Both use `idle_state = Low` and `repeat_count = 1`.
+- WaveForms applies Wait/Run/Repeat/TriggerSource **per instrument**, while
+  divider/counter/type/idle are **per channel**. Both DIO lines therefore share
+  one trigger signature; the backend refuses divergent signatures rather than
+  silently applying the last one.
+- DIO0 uses the `High=1 / Low=1` pulse idiom; DIO1 uses `High=1 / Low=0`, which
+  the SDK documents as a non-toggling (continuously high) window.
+- The integer divider means the **achieved** DIO cadence is ≥ the requested
+  cadence. The finite DigitalOut run is derived from the achieved DIO0
+  frequency so it spans exactly N periods; the requested FPS remains the
+  scientific request and both are retained separately.
+- Canonical camera acquisition explicitly establishes **External / Positive /
+  Edge / Normal / TriggerTimes = 1 / TriggerDelay = 0**. Two of these are
+  non-default on the installed model.
+- Configure/arm order is W1 → DigitalOut → camera, then exactly **one**
+  `FDwfDeviceTriggerPC` call, which is the software logical `t=0` for the
+  prepared API paths.
+- Canonical External-trigger acquisition **requires AD2 enabled** and fails
+  closed before camera arming if it is not.
+- W2 (Project Ch2 / API 1) remains blocked at both the planner and the runtime,
+  before any hardware configuration call.
+- Before closing the AD2 handle, software explicitly stops and resets AnalogOut
+  channels 0/1 **and** DigitalOut. This is commanded cleanup, not physical pin
+  state.
+
+## Current experiment sequence policy
+
+```text
+optional sequence-level initial automatic refresh
+  -> configure/arm W1 and shared DigitalOut
+  -> configure/arm External-trigger camera
+  -> one software logical pc_trigger t=0
+  -> acquire requested frames
+  -> conservative programmed-output completion barrier
+  -> save scientific data  ||  repeat-refresh flush worker
+  -> explicit rendezvous (join both)
+  -> main-thread flush-result and outcome finalization
+  -> next repeat
+```
+
+- The automatic initial refresh is **sequence-level**, not group-level. With
+  refresh enabled the total automatic refresh count is `TotalExperiments + 1`.
+- Full-sequence tracked-fill feasibility is checked **before** the initial
+  refresh and before any valve or pump command. Temperature subgroups validate
+  their own remaining refresh volume but do not re-charge the sequence-level
+  initial refresh.
+- Automated refresh is repeat-to-repeat sample refresh only. **Cleaning and
+  initial sample loading remain manual.** `WaitAfterFlush` is an intentional
+  post-P02 settling delay.
+- The flush worker performs hardware-only work and never owns or mutates
+  `Experiment2`/TDMS. The main thread is the sole TDMS writer; `FlushCompleted`
+  and the terminal outcome are persisted only after the rendezvous.
+- Save failure and flush failure remain separately representable
+  (`PrimaryFailure` / `CleanupFailure`), and a flush failure never suppresses
+  saving acquired scientific data.
+- There is **no automatic hardware retry** anywhere in the sequence.
+- Tracked-volume feasibility is a software gate; it is not physical-delivery
+  verification.
 
 ## Current normal experimental workflow
 
@@ -146,11 +223,21 @@ V3 is the tracked opt-in instrument-control surface launched by
 it does not authorize hardware. V1 remains the default launcher. V2 was
 retired after the approved, compatibility-preserving V3 decoupling checkpoint.
 
+**UI lifecycle:**
+
+| Surface | Status |
+| --- | --- |
+| V1 (`qt_ui.py`) | Retained fallback and current default launcher, until a separate owner decision changes it (`UI-V3-DEFAULT-001`). |
+| V2 | Retired and removed. Historical only; not a development target. |
+| V3 (`qt_ui_v3.py`) | Sole modern development target and candidate primary. Workspaces are Experiment (Preparation checklist → Configure → Review run), Monitor, Manual & Service, and Diagnostics. Execution remains the inherited canonical path; V3 owns no execution. Promotion to default still depends on operator-journey validation on current hardware. |
+| Legacy Tkinter (`ui.py`) | Quarantined migration reference. No launcher or production module imports it, and it is currently import-broken because `PriorZMotor` was retired. It is **not** part of the V1/V2/V3 lifecycle and must not be modernized as part of current mainline. |
+
 | Surface | Purpose and evidence boundary |
 | --- | --- |
 | Persistent instrument state | Compact Readiness, Run, Alerts, Acoustic/W1, Camera, and Output state needed across workspaces. Software/backend state only unless explicitly labeled otherwise. |
-| Experiment — Configure | Series identity plus Acquisition, Acoustic, Sample Refresh, and Advanced/Deferred configuration, with explicit units on high-frequency numeric inputs. |
-| Experiment — Review run | Full-width canonical-request-derived run scope, sequence, camera, Acoustic/W1, unavailable laser control, refresh, output, required devices, blockers, warnings, and requested/latest-applied evidence. |
+| Experiment — 1 Preparation checklist | Operator preparation prompts for equipment readiness, environment/temperature, sample/fluidics, pump preparation, imaging/focus, laser/optics, and acoustic precheck. **Local presentation state only:** its confirmations are not persisted run evidence and are never `PHYSICAL_VERIFIED`. Opening it performs no hardware I/O. |
+| Experiment — 2 Configure | Series identity plus Acquisition, Acoustic/W1, Conditions, Repeat Sample Refresh, and Advanced WFG configuration, with explicit units on high-frequency numeric inputs. |
+| Experiment — 3 Review run | Full-width canonical-request-derived run scope, sequence, camera, Acoustic/W1, unavailable laser control, refresh, output, required devices, blockers, warnings, and requested/latest-applied evidence. Its DIO/completion timing rows are projected from the canonical plan, not recomputed from widgets. |
 | Monitor | Run progress and operator events plus requested run context. Its waveform is a requested/computed preview; measured camera rate remains distinct and no physical telemetry is inferred. |
 | Manual & Service | Existing immediate-action panels grouped as routine camera/fluidics tasks versus engineering/calibration AD2 and Z tasks, clearly outside the experiment plan. Opening a panel is inert; actions retain their established gates and use `MANUAL_SERVICE` logging context. |
 | Diagnostics | Detailed cached/device state, action-evidence location, and diagnostic history. |
@@ -616,13 +703,13 @@ separately authorized.
 ### Deferred capabilities
 
 - Software laser Analog/Digital control.
-- External camera trigger and transient/onset synchronization.
+- Transient/onset synchronization. External camera triggering and the canonical
+  DIO0/DIO1 program are **implemented in software**; what remains deferred is
+  any physically synchronized/transient mode and every physical timing claim.
 - Automated sample refresh and pump motion until physical readiness closes.
-- Handover sequence: external camera triggering, DIO timing, and physical
-  output-window verification remain unimplemented. Runtime now uses a
-  conservative programmed-output completion barrier before repeat refresh,
-  then joins concurrent save and hardware-only flush work before the next
-  repeat; this is software policy, not physical timing proof.
+- Physical output-window verification. The runtime's conservative
+  programmed-output completion barrier, concurrent save/flush, and rendezvous
+  are implemented software policy, not physical timing proof.
 - Automated Z motion until current identity/direction/scale/datum are verified.
 - Active TEC scientific use until imaging-plane equilibration is justified.
 - Rhodamine-B thermometry until calibration provenance is defined.
