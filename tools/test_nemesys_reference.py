@@ -18,7 +18,10 @@ from thermo_acoustic.nemesys_pump import (  # noqa: E402
 )
 
 
-def parse_args() -> argparse.Namespace:
+CONFIRM_TEXT = "CONFIRM_REAL_CETONI_QMIX"
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Connect to one CETONI neMESYS pump, reference its axis, and disconnect."
     )
@@ -40,11 +43,30 @@ def parse_args() -> argparse.Namespace:
         default=60.0,
         help="Reference-move timeout in seconds (default: %(default)s)",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--confirm",
+        default=None,
+        help=(
+            "Required exact acknowledgement before operating REAL CETONI/QMIX hardware: "
+            f"{CONFIRM_TEXT}"
+        ),
+    )
+    return parser.parse_args(argv)
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    if args.confirm != CONFIRM_TEXT:
+        print(
+            "REFUSING: this tool can operate REAL CETONI/QMIX hardware. "
+            f"Pass --confirm {CONFIRM_TEXT} exactly to acknowledge that risk. "
+            "This acknowledgement does not establish physical readiness, syringe readiness, "
+            "safe direction, safe flow, safe fill state, or physical verification.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 2
+
     pump = NemesysPump(
         configuration_path=args.configuration,
         pump_index=args.pump_index,
@@ -54,6 +76,7 @@ def main() -> int:
     print(f"Configuration: {args.configuration}", flush=True)
     print(f"Pump selection: index {args.pump_index}", flush=True)
 
+    result = 0
     try:
         print("Connecting to pump...", flush=True)
         pump.connect()
@@ -73,13 +96,12 @@ def main() -> int:
         )
         pump.reference_move(timeout_s=args.timeout)
         print("Reference move completed successfully.", flush=True)
-        return 0
     except KeyboardInterrupt:
         print("Test interrupted by operator.", file=sys.stderr, flush=True)
-        return 130
+        result = 130
     except Exception as exc:
         print(f"Test failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
-        return 1
+        result = 1
     finally:
         print("Closing pump connection...", flush=True)
         try:
@@ -90,8 +112,11 @@ def main() -> int:
                 file=sys.stderr,
                 flush=True,
             )
+            if result == 0:
+                result = 1
         else:
             print("Pump connection closed.", flush=True)
+    return result
 
 
 if __name__ == "__main__":

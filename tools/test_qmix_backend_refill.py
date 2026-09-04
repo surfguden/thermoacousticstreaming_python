@@ -24,9 +24,10 @@ DEFAULT_CONFIGURATION_PATH = Path(
     r"C:\Users\Public\Documents\QmixElements\Projects\default_project\Configurations\single"
 )
 DEFAULT_QMIXSDK_PATH = Path(r"C:\Users\Ola\AppData\Local\CETONI_SDK")
+CONFIRM_TEXT = "CONFIRM_REAL_CETONI_QMIX"
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Connect through QmixPumpBackend, reference the pump, then refill "
@@ -63,7 +64,15 @@ def parse_args() -> argparse.Namespace:
         default=120.0,
         help="Maximum refill time in seconds (default: %(default)s)",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--confirm",
+        default=None,
+        help=(
+            "Required exact acknowledgement before operating REAL CETONI/QMIX hardware: "
+            f"{CONFIRM_TEXT}"
+        ),
+    )
+    return parser.parse_args(argv)
 
 
 def require_positive(value: float, name: str) -> float:
@@ -73,15 +82,27 @@ def require_positive(value: float, name: str) -> float:
     return value
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     poll_interval_s = require_positive(args.poll_interval, "--poll-interval")
     refill_timeout_s = require_positive(args.refill_timeout, "--refill-timeout")
     if args.pump_index < 0:
         raise ValueError("--pump-index must be zero or greater")
 
+    if args.confirm != CONFIRM_TEXT:
+        print(
+            "REFUSING: this tool can operate REAL CETONI/QMIX hardware. "
+            f"Pass --confirm {CONFIRM_TEXT} exactly to acknowledge that risk. "
+            "This acknowledgement does not establish physical readiness, syringe readiness, "
+            "safe direction, safe flow, safe fill state, or physical verification.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 2
+
     os.environ["QMIXSDK"] = str(args.qmixsdk)
     backend = QmixPumpBackend(pump_index=args.pump_index)
+    result = 0
 
     print("QmixPumpBackend reference-and-refill test", flush=True)
     print(f"Configuration: {args.configuration}", flush=True)
@@ -142,21 +163,20 @@ def main() -> int:
             f"({final_level_ml * 1000.0:.3f} uL).",
             flush=True,
         )
-        return 0
     except KeyboardInterrupt:
         print("Interrupted by operator; stopping pump...", file=sys.stderr, flush=True)
         try:
             backend.stop()
         except Exception as stop_exc:
             print(f"Warning: stop failed: {stop_exc}", file=sys.stderr, flush=True)
-        return 130
+        result = 130
     except Exception as exc:
         print(f"Test failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
         try:
             backend.stop()
         except Exception as stop_exc:
             print(f"Warning: stop failed: {stop_exc}", file=sys.stderr, flush=True)
-        return 1
+        result = 1
     finally:
         print("Closing pump connection...", flush=True)
         try:
@@ -167,8 +187,11 @@ def main() -> int:
                 file=sys.stderr,
                 flush=True,
             )
+            if result == 0:
+                result = 1
         else:
             print("Pump connection closed.", flush=True)
+    return result
 
 
 if __name__ == "__main__":
