@@ -78,8 +78,8 @@ to AD2 API 0 / W1 / acoustic amplifier and transducer, and project Ch2 to API 1
 laser input semantics. DIO0/pink is connected to camera trigger and DIO1/green
 to laser trigger, but neither digital line is programmed in the current
 steady-state workflow.
-`src/thermo_acoustic/qt_ui_v2.py` (`MainWindowV2`) is an actively maintained
-transitional UI that reuses `qt_ui.py`'s widget-building, manual-test-panel
+`src/thermo_acoustic/qt_ui_v2.py` (`MainWindowV2`) is the retained transitional
+rollback/reference UI that reuses `qt_ui.py`'s widget-building, manual-test-panel
 code, and the same `Application`/hardware-backend instance (WFG/MSO/
 Pump&Valve/Camera open as dialogs from a sidebar). It is **not a simulated
 sandbox or an independent hardware stack**: when the operator initializes a
@@ -89,14 +89,16 @@ must be launched explicitly (see "Launchers" below), never by running
 `tools/run_ui.py`/`launch_gui.bat` alone.
 
 `src/thermo_acoustic/qt_ui_v3.py` (`MainWindowV3`) is the tracked, opt-in,
-offline-UX-reviewed instrument surface. It subclasses v2 and shares the same
+offline-UX-reviewed instrument surface. It has V3-owned compatibility support,
+does not import or subclass v2, and shares the same
 `Application` and hardware backends; it is not a simulator or a separate
 execution stack. Its persistent instrument state and run controls surround four
 workspaces: Experiment, Monitor, Manual & Service, and Diagnostics. Experiment
 contains the canonical-request-derived “Start will run” review and surfaces
 requested-versus-latest-applied evidence without becoming a second planner.
 V3 remains non-default and not independently hardware-verified. V1 remains the
-default operator UI; v2 remains the rollback/reference path.
+default operator UI; v2 remains present for rollback/reference during the
+owner-approved early-retirement sequence.
 
 ## Environment Setup
 

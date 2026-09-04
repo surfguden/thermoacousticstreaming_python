@@ -223,7 +223,7 @@ def audit_symbols(root: Path, symbols: list[str]) -> dict[str, object]:
 
     ui_override_summary: list[dict[str, object]] = []
     for item in method_defs:
-        if item.owner not in {"MainWindowV2", "MainWindowV3"}:
+        if item.owner not in {"MainWindowV2", "MainWindowV3Compatibility", "MainWindowV3"}:
             continue
         inherited_from = sorted(
             ancestor

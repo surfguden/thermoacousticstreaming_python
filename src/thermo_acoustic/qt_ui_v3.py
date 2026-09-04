@@ -46,7 +46,7 @@ from .experiment_planning import (
 from .instruments import SimulatedAD2Sdk
 from .piezo_zscan import ZScanCalibration
 from .qt_ui import bind_waveform_parameter_policy, install_focus_wheel_guard
-from .qt_ui_v2 import InitializationDialog, MainWindowV2
+from .qt_ui_v3_support import InitializationDialog, MainWindowV3Compatibility
 from .runtime_truth import RuntimeEvent, RuntimeEventSeverity
 from .workflows import Experiment2
 
@@ -206,8 +206,8 @@ class InitializationDialogV3(InitializationDialog):
         return group
 
 
-class MainWindowV3(MainWindowV2):
-    """Tracked, opt-in layout evolution of v2 using the same application runtime."""
+class MainWindowV3(MainWindowV3Compatibility):
+    """Tracked, opt-in layout evolution using the shared V3 compatibility support."""
 
     _PANEL_DISPLAY_NAMES: dict[str, str] = {"PumpValve": "Pump & Valve", "ZScan": "Z-Scan"}
     _WFG_PREVIEW_CHANNEL_LABELS: tuple[str, str] = ("AD2 channel 0", "AD2 channel 1")

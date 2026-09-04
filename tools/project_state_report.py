@@ -22,6 +22,7 @@ UI_FILES = {
     ),
     "v3": (
         "src/thermo_acoustic/qt_ui_v3.py",
+        "src/thermo_acoustic/qt_ui_v3_support.py",
         "launch_gui_v3.bat",
         "tools/run_ui_v3.py",
         "tests/test_qt_ui_v3.py",

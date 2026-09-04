@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -21,7 +23,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from thermo_acoustic import qt_ui, qt_ui_v2, qt_ui_v3
+from thermo_acoustic import qt_ui, qt_ui_v2, qt_ui_v3, qt_ui_v3_support
+from thermo_acoustic.qt_ui_v3_support import MainWindowV3Compatibility
 from thermo_acoustic.application import Application
 from thermo_acoustic.experiment_planning import normalize_experiment
 from thermo_acoustic.instruments import SimulatedAD2Sdk
@@ -102,11 +105,12 @@ def test_v1_v2_main_construct_offline_application_without_qt_loop(monkeypatch, m
         assert isinstance(captured[0].ad2, SimulatedAD2Sdk)
 
 
-def test_v3_is_a_layout_evolution_of_v2_and_v2_remains_available(monkeypatch, tmp_path):
+def test_v3_is_decoupled_from_v2_and_v2_remains_available(monkeypatch, tmp_path):
     v3 = make_window(monkeypatch, tmp_path)
     v2 = build_with_retry(qt_ui_v2.MainWindowV2)
     try:
-        assert isinstance(v3, qt_ui_v2.MainWindowV2)
+        assert isinstance(v3, MainWindowV3Compatibility)
+        assert not isinstance(v3, qt_ui_v2.MainWindowV2)
         assert type(v3) is qt_ui_v3.MainWindowV3
         assert type(v2) is qt_ui_v2.MainWindowV2
         assert v3.windowTitle() == "Thermoacoustic Streaming — Instrument Control (V3)"
@@ -115,6 +119,59 @@ def test_v3_is_a_layout_evolution_of_v2_and_v2_remains_available(monkeypatch, tm
     finally:
         v3.close()
         v2.close()
+
+
+def test_v3_clean_import_does_not_load_qt_ui_v2():
+    code = (
+        "import sys; import thermo_acoustic.qt_ui_v3; "
+        "assert 'thermo_acoustic.qt_ui_v2' not in sys.modules"
+    )
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[1] / "src")}
+    result = subprocess.run([sys.executable, "-B", "-c", code], capture_output=True, text=True, env=env)
+    assert result.returncode == 0, result.stderr
+
+
+def test_v3_constructs_on_first_attempt_without_retry(monkeypatch, tmp_path):
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(json.dumps({}), encoding="utf-8")
+    monkeypatch.setattr(qt_ui, "SETTINGS_PATH", settings_path)
+    QApplication.instance() or QApplication([])
+    window = qt_ui_v3.MainWindowV3()
+    try:
+        assert window.findChild(QTabWidget, "v3WorkspaceTabs") is not None
+    finally:
+        window.close()
+
+
+def test_v3_compatibility_refuses_replacement_when_cleanup_fails(monkeypatch, tmp_path):
+    class FailingCleanupApplication:
+        def __init__(self):
+            self.errors = []
+
+        def cleanup(self):
+            raise RuntimeError("simulated blocked hardware cleanup")
+
+        def check_loop_error(self, error):
+            self.errors.append(error)
+
+    class WindowHolder:
+        app = FailingCleanupApplication()
+
+    replacement_calls = []
+    monkeypatch.setattr(qt_ui_v3_support, "build_hardware_bundle", lambda config: replacement_calls.append("build"))
+    monkeypatch.setattr(qt_ui_v3_support, "apply_hardware_bundle", lambda app, bundle: replacement_calls.append("apply"))
+    config = qt_ui_v3_support.HardwareRuntimeConfig(
+        ad2_enabled=False, sim_ad2=True, camera_enabled=False, sim_camera=True,
+        pump_enabled=False, sim_pump=True, valve_enabled=False, sim_valve=True,
+        z_enabled=False, thorlabs_apt_serial="", valve_resource="COM5",
+        cetoni_config_path=tmp_path,
+    )
+
+    with pytest.raises(RuntimeError, match="refusing to initialize a replacement hardware bundle"):
+        qt_ui_v3.MainWindowV3._initialize_system(WindowHolder(), config)
+
+    assert replacement_calls == []
+    assert len(WindowHolder.app.errors) == 1
 
 
 def test_v3_waveform_policy_locks_dc_and_labels_square(monkeypatch, tmp_path):
@@ -1596,7 +1653,7 @@ def test_v3_zscan_keeps_motion_warning_compact_and_groups_top_aligned(monkeypatc
         window.close()
 
 
-def test_v3_shell_controls_dispatch_to_shared_v1_v2_callbacks(monkeypatch, tmp_path):
+def test_v3_shell_controls_dispatch_to_shared_v1_v3_compatibility_callbacks(monkeypatch, tmp_path):
     events: list[str] = []
 
     monkeypatch.setattr(qt_ui.MainWindow, "_start_experiment", lambda self: events.append("experiment"))
@@ -1605,12 +1662,12 @@ def test_v3_shell_controls_dispatch_to_shared_v1_v2_callbacks(monkeypatch, tmp_p
     monkeypatch.setattr(qt_ui.MainWindow, "_save_settings", lambda self: events.append("save-settings"))
     monkeypatch.setattr(qt_ui.MainWindow, "_load_settings", lambda self: events.append("load-settings"))
     monkeypatch.setattr(
-        qt_ui_v2.MainWindowV2,
+        MainWindowV3Compatibility,
         "_open_initialization_dialog",
         lambda self: events.append("initialize-dialog"),
     )
     monkeypatch.setattr(
-        qt_ui_v2.MainWindowV2,
+        MainWindowV3Compatibility,
         "_open_manual_panel",
         lambda self, panel_name: events.append(f"panel:{panel_name}"),
     )
