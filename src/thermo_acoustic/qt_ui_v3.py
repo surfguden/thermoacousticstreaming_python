@@ -8,6 +8,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QFormLayout,
     QGridLayout,
@@ -23,7 +24,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .ad2 import coerce_do_config
 from .application import (
     Application,
     STEP_CAPTURE_FRAMES,
@@ -48,7 +48,6 @@ from .piezo_zscan import ZScanCalibration
 from .qt_ui import bind_waveform_parameter_policy, install_focus_wheel_guard
 from .qt_ui_v3_support import InitializationDialog, MainWindowV3Compatibility
 from .runtime_truth import RuntimeEvent, RuntimeEventSeverity
-from .workflows import Experiment2
 
 
 def _rename_unique_text_widget(
@@ -431,6 +430,8 @@ class MainWindowV3(MainWindowV3Compatibility):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
 
+        prepare = self._v3_prepare_workspace()
+
         configure = QWidget()
         configure_layout = QVBoxLayout(configure)
         configure_layout.setContentsMargins(8, 8, 8, 8)
@@ -459,11 +460,55 @@ class MainWindowV3(MainWindowV3Compatibility):
 
         phases = QTabWidget()
         phases.setObjectName("v3ExperimentPhaseTabs")
-        phases.addTab(configure, "1  Configure")
-        phases.addTab(review, "2  Review run")
+        phases.addTab(prepare, "1  Prepare")
+        phases.addTab(configure, "2  Configure")
+        phases.addTab(review, "3  Review run")
         self._v3_experiment_phase_tabs = phases
         layout.addWidget(phases, 1)
         return page
+
+    def _v3_prepare_workspace(self) -> QScrollArea:
+        """Show operator preparation tasks without introducing a second run state."""
+        content = QWidget()
+        content.setObjectName("v3PrepareWorkspace")
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+        boundary = QLabel(
+            "Preparation records OPERATOR_CONFIRMED_PREPARATION_EVIDENCE only. It does not query, "
+            "command, or physically verify equipment; authoritative requested values remain in Configure."
+        )
+        boundary.setObjectName("v3PreparationEvidenceBoundary")
+        boundary.setWordWrap(True)
+        boundary.setStyleSheet("font-weight: bold; color: darkorange;")
+        layout.addWidget(boundary)
+        tasks = (
+            ("Equipment readiness", "Select/initialize devices when authorized; inspect cached software status."),
+            ("Environment / Temperature", "Record bench conditions; configure an optional TEC scan in Conditions."),
+            ("Sample / Fluidics", "Record sample readiness; automatic refresh remains a Configure request."),
+            ("Guided Pump Preparation", "Open the manual Pump & Valve panel only for its separately confirmed service actions."),
+            ("Imaging / Focus", "Use the manual Camera panel for preview/focus; ROI and exposure requests live in Configure."),
+            ("Laser / Optics", "Inspect readiness without enabling W2: W2 remains blocked and no emission is inferred."),
+            ("Acoustic Precheck", "Review requested W1 settings; PC-triggered execution is shown in Review."),
+        )
+        for index, (title, detail) in enumerate(tasks):
+            group = QGroupBox(title)
+            group.setObjectName(f"v3PrepareTask{index + 1}")
+            task_layout = QHBoxLayout(group)
+            note = QLabel(detail)
+            note.setWordWrap(True)
+            task_layout.addWidget(note, 1)
+            confirmed = QCheckBox("Operator confirmed preparation evidence")
+            confirmed.setObjectName(f"v3PrepareConfirmed{index + 1}")
+            confirmed.setToolTip("Presentation metadata only; this is not physical verification.")
+            task_layout.addWidget(confirmed)
+            layout.addWidget(group)
+        configure_button = QPushButton("Continue to Configure")
+        configure_button.setObjectName("v3PrepareContinueButton")
+        configure_button.clicked.connect(lambda: self._v3_experiment_phase_tabs.setCurrentIndex(1))
+        layout.addWidget(configure_button, 0, Qt.AlignmentFlag.AlignRight)
+        layout.addStretch(1)
+        return self._v3_scroll_page(content, "v3PrepareScroll")
 
     def _v3_monitor_workspace(self) -> QWidget:
         page = QWidget()
@@ -841,7 +886,7 @@ class MainWindowV3(MainWindowV3Compatibility):
         review.setObjectName("v3OpenRunReviewButton")
         review.setMinimumHeight(38)
         review.setMinimumWidth(130)
-        review.clicked.connect(lambda: self._v3_experiment_phase_tabs.setCurrentIndex(1))
+        review.clicked.connect(lambda: self._v3_experiment_phase_tabs.setCurrentIndex(2))
         layout.addWidget(review)
         start = QPushButton("Start experiment")
         start.setObjectName("v3StartExperimentButton")
@@ -883,7 +928,14 @@ class MainWindowV3(MainWindowV3Compatibility):
         ad2_layout = QVBoxLayout(ad2_content)
         ad2_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         ad2_layout.addWidget(self._v3_ad2_output_group())
-        tabs.addTab(self._v3_scroll_page(ad2_content, "v3Ad2SetupScroll"), "Acoustic")
+        tabs.addTab(self._v3_scroll_page(ad2_content, "v3Ad2SetupScroll"), "Acoustic / W1")
+
+        conditions_content = QWidget()
+        conditions_layout = QVBoxLayout(conditions_content)
+        conditions_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        conditions_layout.addWidget(self._experiment_temperature_group())
+        conditions_layout.addStretch(1)
+        tabs.addTab(self._v3_scroll_page(conditions_content, "v3ConditionsSetupScroll"), "Conditions")
 
         fluidics_content = QWidget()
         fluidics_layout = QVBoxLayout(fluidics_content)
@@ -908,15 +960,20 @@ class MainWindowV3(MainWindowV3Compatibility):
         fluidics_layout.addWidget(flush_group)
         fluidics_layout.addWidget(self._v3_flush_summary_group())
         fluidics_layout.addStretch(1)
-        tabs.addTab(self._v3_scroll_page(fluidics_content, "v3FluidicsSetupScroll"), "Sample Refresh")
+        tabs.addTab(self._v3_scroll_page(fluidics_content, "v3FluidicsSetupScroll"), "Repeat Sample Refresh")
 
         advanced_content = QWidget()
         advanced_layout = QVBoxLayout(advanced_content)
         advanced_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         advanced_layout.addWidget(self._v3_camera_metadata_advanced_group)
-        advanced_layout.addWidget(self._experiment_temperature_group())
+        advanced_note = QLabel(
+            "Advanced request metadata only. WFG execution remains derived by the canonical planner; "
+            "this page does not create a V3-specific execution path."
+        )
+        advanced_note.setWordWrap(True)
+        advanced_layout.addWidget(advanced_note)
         advanced_layout.addStretch(1)
-        tabs.addTab(self._v3_scroll_page(advanced_content, "v3AdvancedSetupScroll"), "Advanced / Deferred")
+        tabs.addTab(self._v3_scroll_page(advanced_content, "v3AdvancedSetupScroll"), "Advanced WFG")
         return tabs
 
     def _v3_ad2_output_group(self) -> QGroupBox:
@@ -982,8 +1039,8 @@ class MainWindowV3(MainWindowV3Compatibility):
             role = QLabel(
                 "AD2 API channel 1 / physical W2 (project/LabVIEW Ch2) is owner-confirmed connected "
                 "to the laser Analog In. Normal production rejects this output while the current "
-                "laser input polarity, scaling, and enable semantics remain unverified. DIO1 is a "
-                "separate laser digital-trigger cable and also remains unprogrammed."
+                "laser input polarity, scaling, and enable semantics remain unverified. DIO1 is reserved "
+                "for the canonical LED timing window and is not laser digital input."
             )
             role.setObjectName("v3Channel1RoleNote")
             role.setWordWrap(True)
@@ -1080,9 +1137,10 @@ class MainWindowV3(MainWindowV3Compatibility):
         grid.addWidget(self._v3_timing_delta_header, 0, 4)
         self._v3_timing_labels: dict[str, dict[str, QLabel]] = {}
         rows = (
-            ("ch0", "Acoustic / W1 / Project Ch1"),
+            ("ch0", "Acoustic / W1 (PC trigger)"),
+            ("dio0", "DIO0 camera frame trigger"),
+            ("dio1", "DIO1 LED timing window"),
             ("ch1", "Laser analog control / W2 (blocked)"),
-            ("dio1", "DIO1 laser trigger (disabled)"),
         )
         for row, (key, title) in enumerate(rows, start=1):
             grid.addWidget(QLabel(title), row, 0)
@@ -1317,7 +1375,7 @@ class MainWindowV3(MainWindowV3Compatibility):
         # Use the shared field objects as the binding contract. The previous
         # exact-caption adapter broke whenever v1/v2 clarified their wording.
         captions = (
-            (self.exp_camera_fps, "Camera frame rate — Internal trigger", "v3CameraFrameRateCaption"),
+            (self.exp_camera_fps, "Camera frame rate — external trigger cadence", "v3CameraFrameRateCaption"),
             (self.exp_camera_start, "Fixed camera-start request — metadata only", "v3CameraStartDelayCaption"),
             (self.exp_frames, "Frames per repeat", "v3FramesPerRepeatCaption"),
             (self.exp_exposure_ms, "Exposure request", "v3ExposureRequestCaption"),
@@ -1394,15 +1452,15 @@ class MainWindowV3(MainWindowV3Compatibility):
         advanced_form.addRow(camera_start_group)
         advanced_form.addRow("Request global exposure reset", global_reset)
         advanced_note = QLabel(
-            "Normal acquisition uses Internal trigger and programs neither DIO0 nor DIO1. Camera-start values "
-            "are retained as metadata only; GLOBALRESET applicability remains mode-dependent."
+            "Canonical acquisition configures the camera for External positive trigger. DIO0 supplies the finite "
+            "frame train and DIO1 the LED window; camera-start remains a requested planner delay."
         )
         advanced_note.setWordWrap(True)
         advanced_form.addRow(advanced_note)
         self._add_tooltip_icons(advanced_form)
         self._v3_camera_metadata_advanced_group = advanced_group
 
-        summary = QGroupBox("Camera request and feasibility (DIO outputs disabled)")
+        summary = QGroupBox("Camera request and canonical trigger plan")
         summary.setObjectName("v3DioTimingSummary")
         summary_form = QFormLayout(summary)
         self._v3_dio_duration = QLabel()
@@ -1415,14 +1473,29 @@ class MainWindowV3(MainWindowV3Compatibility):
         summary_form.addRow("Per-repeat slot budget", self._v3_dio_slot_budget)
         summary_form.addRow("Existing run-start check", self._v3_camera_feasibility)
         acquisition_grid.addWidget(summary, 6, 0, 1, 3)
+        imaging_request = QGroupBox("Authoritative imaging request")
+        imaging_request.setObjectName("v3ConfigureImagingRequest")
+        imaging_form = QFormLayout(imaging_request)
+        self._v3_configure_roi_request = QLabel()
+        self._v3_configure_exposure_request = QLabel()
+        self._v3_configure_roi_request.setWordWrap(True)
+        self._v3_configure_exposure_request.setWordWrap(True)
+        imaging_form.addRow("ROI", self._v3_configure_roi_request)
+        imaging_form.addRow("Exposure", self._v3_configure_exposure_request)
+        imaging_note = QLabel(
+            "This is the same canonical ROI/exposure request reviewed before Start; it is not a separate V3 setting."
+        )
+        imaging_note.setWordWrap(True)
+        imaging_form.addRow(imaging_note)
+        acquisition_grid.addWidget(imaging_request, 7, 0, 1, 3)
         self._v3_sync_uncertainty = QLabel(
-            "Automated camera trigger is Internal. DIO0/pink is physically connected to camera trigger "
-            "but currently unused; DIO1/green is the separate laser trigger and is also unprogrammed."
+            "Canonical plan: DIO0 is the camera frame trigger and DIO1 is LED timing control, both from "
+            "the logical PC trigger. Electrical timing and physical simultaneity remain unverified."
         )
         self._v3_sync_uncertainty.setObjectName("v3SyncUncertaintyBanner")
         self._v3_sync_uncertainty.setWordWrap(True)
         self._v3_sync_uncertainty.setStyleSheet("color: darkorange; font-weight: bold;")
-        acquisition_grid.addWidget(self._v3_sync_uncertainty, 7, 0, 1, 3)
+        acquisition_grid.addWidget(self._v3_sync_uncertainty, 8, 0, 1, 3)
         return group
 
     def _connect_v3_relationship_refresh(self) -> None:
@@ -1432,6 +1505,10 @@ class MainWindowV3(MainWindowV3Compatibility):
             self.exp_camera_fps,
             self.exp_camera_start,
             self.exp_exposure_ms,
+            self.roi_h_offset,
+            self.roi_v_offset,
+            self.roi_h_size,
+            self.roi_v_size,
             self.exp_freq_scan_count,
             self.exp_freq_scan_step_khz,
             self.exp_freq_scan_start_khz,
@@ -1979,42 +2056,59 @@ class MainWindowV3(MainWindowV3Compatibility):
         self._apply_v3_context_state()
         try:
             wfg = self._experiment_wfg_config()
-            # Normal production explicitly carries a disabled digital-output
-            # payload. Do not preview the retained legacy DIO1/DO-clock builder
-            # as though it were part of the authoritative run.
-            do_config = coerce_do_config(None)
+            # Derive the presentation from the same canonical planner state
+            # used by Start.  This is a read-only review projection, not a
+            # second executor or a separate V3 trigger model.
+            result = self._v3_shadow_build_result()
+            trigger_start = (
+                float(result.request.camera_start_s[0])
+                if self.dynamic_camera_start.isChecked() and result.request.camera_start_s
+                else float(self.exp_camera_start.value())
+            )
+            trigger_run = (
+                float(result.request.frames) / float(result.request.camera_fps)
+                if result.request.camera_fps > 0
+                else 0.0
+            )
             rows = {
                 "ch0": (
                     bool(wfg.running and wfg.channels[0].carrier.enable),
                     float(wfg.channels[0].trigger.sec_wait),
                     float(wfg.channels[0].trigger.sec_run),
                 ),
+                "dio0": (
+                    result.plan is not None,
+                    trigger_start,
+                    trigger_run,
+                ),
+                "dio1": (
+                    result.plan is not None,
+                    trigger_start,
+                    trigger_run,
+                ),
                 "ch1": (
                     bool(wfg.running and wfg.channels[1].carrier.enable),
                     float(wfg.channels[1].trigger.sec_wait),
                     float(wfg.channels[1].trigger.sec_run),
                 ),
-                "dio1": (
-                    False,
-                    0.0,
-                    0.0,
-                ),
             }
-            preview = Experiment2(wfg_config=wfg, do_clock_settings=do_config)
-            completion = self.app._ad2_completion_wait_seconds(preview)
+            completion = max(
+                (start + run for enabled, start, run in rows.values() if enabled),
+                default=0.0,
+            )
             ch0_enabled, ch0_start, ch0_run = rows["ch0"]
             if ch0_enabled:
                 anchor_end = ch0_start + ch0_run
-                self._v3_timing_delta_header.setText("End delta vs CH0 (s)")
+                self._v3_timing_delta_header.setText("End delta vs Acoustic / W1 (s)")
                 self._v3_timing_anchor_note.setText(
-                    "CH0 is enabled, so end deltas use CH0's requested end. Deltas are neutral "
-                    "comparisons, not validation or automatic linking."
+                    "W1, DIO0, and DIO1 are all planned from the single logical pc_trigger t0. "
+                    "These are requested API timings, not measured electrical or physical simultaneity."
                 )
             else:
                 anchor_end = completion
                 self._v3_timing_delta_header.setText("End delta vs completion driver (s)")
                 self._v3_timing_anchor_note.setText(
-                    "CH0 is disabled; end deltas are anchored to the shared completion budget "
+                    "W1 is disabled; end deltas are anchored to the shared completion budget "
                     "(the maximum enabled analog/digital end) used by experiment execution."
                 )
             for key, (enabled, start, run) in rows.items():
@@ -2027,7 +2121,7 @@ class MainWindowV3(MainWindowV3Compatibility):
                 for label in values.values():
                     label.setEnabled(enabled)
             self._v3_completion_budget.setText(
-                f"Shared AD2 completion budget: {completion:.3f} s (maximum enabled analog end; DIO disabled)."
+                f"Shared completion budget: {completion:.3f} s (maximum enabled analog/digital requested end)."
             )
         except (IndexError, TypeError, ValueError) as exc:
             self._v3_completion_budget.setText(f"Shared AD2 completion budget unavailable: {exc}")
@@ -2098,8 +2192,8 @@ class MainWindowV3(MainWindowV3Compatibility):
             "color: darkorange; font-weight: bold;" if temperature_error is not None else ""
         )
         self._v3_repeat_workflow.setText(
-            "create record → configure AD2 WFG (DIO disabled) → configure camera → capture frames → wait for AD2 "
-            "completion → optional flush → save frames and metadata"
+            "create record → configure W1 and shared DIO0/DIO1 → configure/arm external-positive camera → "
+            "logical pc_trigger t0 → capture → barrier → save + optional flush → finalize"
         )
         camera_fps = float(self.exp_camera_fps.value())
         if camera_fps > 0:
@@ -2108,11 +2202,22 @@ class MainWindowV3(MainWindowV3Compatibility):
             camera_request = (
                 f"{self.exp_frames.value()} frame(s) at {camera_fps:g} fps request a "
                 f"{acquisition_s:.3f} s acquisition duration; {self.exp_exposure_ms.value():.3f} ms exposure vs "
-                f"{frame_interval_ms:.3f} ms frame interval. Live DCAM readout margin is checked only at run start."
+                f"{frame_interval_ms:.3f} ms frame interval. Camera plan is External positive; live DCAM readout "
+                f"margin is checked only at run start."
             )
         else:
             camera_request = "Camera FPS must be greater than zero before acquisition duration can be derived."
         self._v3_camera_request_summary.setText(camera_request)
+        requested_roi = {
+            "horizontal_offset": int(self.roi_h_offset.value()),
+            "vertical_offset": int(self.roi_v_offset.value()),
+            "horizontal_size": int(self.roi_h_size.value()),
+            "vertical_size": int(self.roi_v_size.value()),
+        }
+        self._v3_configure_roi_request.setText(f"Requested {requested_roi}")
+        self._v3_configure_exposure_request.setText(
+            f"Requested {self.exp_exposure_ms.value():.6g} ms (same value shown in Review evidence)."
+        )
         channel0 = self.exp_ad2_channels[0]
         acoustic_state = "enabled" if channel0["enable"].isChecked() else "disabled"
         acoustic_request = (
@@ -2135,8 +2240,8 @@ class MainWindowV3(MainWindowV3Compatibility):
             acoustic_request += " Static carrier mode."
         self._v3_acoustic_request_summary.setText(acoustic_request)
         self._v3_laser_request_summary.setText(
-            "W2 / Project Ch2 analog control and DIO1 digital trigger are production-disabled. "
-            "No electrical command or optical-emission claim is planned."
+            "W2 / Project Ch2 analog control is production-blocked. DIO1 is LED timing control, not laser "
+            "digital input. No W2 command or optical-emission claim is planned."
         )
         if self.exp_flush_enabled.isChecked():
             flush = self._flush_settings(experiment=True)

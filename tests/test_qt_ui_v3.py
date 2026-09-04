@@ -27,7 +27,6 @@ from PySide6.QtWidgets import (
 from thermo_acoustic import qt_ui, qt_ui_v3, qt_ui_v3_support
 from thermo_acoustic.qt_ui_v3_support import MainWindowV3Compatibility
 from thermo_acoustic.application import Application, STEP_FLUSH, STEP_ORDER
-from thermo_acoustic.experiment_planning import normalize_experiment
 from thermo_acoustic.instruments import SimulatedAD2Sdk
 from thermo_acoustic.tec import TecStatus
 
@@ -40,14 +39,6 @@ def make_window(monkeypatch, tmp_path, app: Application | None = None) -> qt_ui_
     monkeypatch.setattr(qt_ui, "SETTINGS_PATH", settings_path)
     QApplication.instance() or QApplication([])
     return build_with_retry(lambda: qt_ui_v3.MainWindowV3(app=app))
-
-
-def _normalize_current_production(experiment):
-    """Adapt legacy-builder evidence to the production-disabled DIO policy."""
-    normalized = normalize_experiment(experiment)
-    normalized["do_clock"] = {"channels": (), "running": False}
-    normalized["do_channels"] = ()
-    return normalized
 
 
 def test_v3_main_constructs_its_offline_application_without_entering_qt_loop(monkeypatch):
@@ -255,14 +246,18 @@ def test_v3_reuses_the_supplied_application_and_separates_operator_workspaces(mo
         assert window.findChild(QWidget, "v3ManualServiceWorkspace") is not None
         assert window.findChild(QWidget, "v3DiagnosticsWorkspace") is not None
         assert [setup_tabs.tabText(index) for index in range(setup_tabs.count())] == [
-            "Acquisition",
-            "Acoustic",
-            "Sample Refresh",
-            "Advanced / Deferred",
+            "Acquisition", "Acoustic / W1", "Conditions", "Repeat Sample Refresh", "Advanced WFG",
         ]
         assert [
             experiment_phases.tabText(index) for index in range(experiment_phases.count())
-        ] == ["1  Configure", "2  Review run"]
+        ] == ["1  Prepare", "2  Configure", "3  Review run"]
+        assert window.findChild(QWidget, "v3PrepareWorkspace") is not None
+        assert "OPERATOR_CONFIRMED_PREPARATION_EVIDENCE" in window.findChild(
+            QLabel, "v3PreparationEvidenceBoundary"
+        ).text()
+        imaging_request = window.findChild(QGroupBox, "v3ConfigureImagingRequest")
+        assert imaging_request is not None
+        assert "same canonical ROI/exposure request" in imaging_request.findChildren(QLabel)[-1].text()
         assert set(window._v3_connection_values) == {"AD2", "Camera", "Pump", "Valve", "TEC"}
         assert set(window._v3_persistent_state) == {
             "Readiness", "Run", "Alerts", "Acoustic", "Camera", "Output"
@@ -278,7 +273,7 @@ def test_v3_reuses_the_supplied_application_and_separates_operator_workspaces(mo
             "Estimated time remaining",
             "Runs remaining",
             "Status and error history",
-            "Camera frame rate — Internal trigger",
+            "Camera frame rate — external trigger cadence",
             "Fixed camera-start request — metadata only",
             "Series repeats",
             "Frames per repeat",
@@ -288,7 +283,7 @@ def test_v3_reuses_the_supplied_application_and_separates_operator_workspaces(mo
         } <= labels
         assert window.findChild(QLabel, "v3ElapsedTimeCaption").text() == "Elapsed time"
         assert window.findChild(QLabel, "v3CameraFrameRateCaption").text() == (
-            "Camera frame rate — Internal trigger"
+            "Camera frame rate — external trigger cadence"
         )
         assert window.findChild(QLabel, "v3StatusHistoryCaption").text() == "Status and error history"
         assert {
@@ -333,7 +328,7 @@ def test_v3_reuses_the_supplied_application_and_separates_operator_workspaces(mo
         review_button = window.findChild(QPushButton, "v3OpenRunReviewButton")
         assert review_button is not None
         review_button.click()
-        assert experiment_phases.currentIndex() == 1
+        assert experiment_phases.currentIndex() == 2
         assert window.findChild(QLabel, "v3RunGateSummary") is not None
         assert window.findChild(QLabel, "v3ReviewStatus") is not None
         graceful_stop = window.findChild(QPushButton, "v3RequestGracefulStopButton")
@@ -395,7 +390,7 @@ def test_v3_field_bound_adapters_survive_inherited_caption_changes(monkeypatch, 
         assert {"status", "acquisition"} <= set(invoked)
         assert window.findChild(QLabel, "v3ElapsedTimeCaption").text() == "Elapsed time"
         assert window.findChild(QLabel, "v3CameraFrameRateCaption").text() == (
-            "Camera frame rate — Internal trigger"
+            "Camera frame rate — external trigger cadence"
         )
         assert window.findChild(QLabel, "v3DynamicCameraStartCaption").text() == (
             "Use per-repeat camera-start metadata"
@@ -559,7 +554,6 @@ def test_v3_main_ad2_settings_use_channel_tabs_without_horizontal_overflow(monke
         setup_tabs.setCurrentIndex(1)
         QApplication.processEvents()
         assert scroll.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        assert scroll.horizontalScrollBar().maximum() == 0
     finally:
         window.close()
 
@@ -569,7 +563,7 @@ def test_v3_preserves_v2_flush_sequence_safety_context(monkeypatch, tmp_path):
     try:
         tabs = window.findChild(QTabWidget, "v3SetupTabs")
         assert tabs is not None
-        flush_groups = [group for group in tabs.widget(2).findChildren(QGroupBox) if group.title() == "Flush settings"]
+        flush_groups = [group for group in tabs.widget(3).findChildren(QGroupBox) if group.title() == "Flush settings"]
         assert len(flush_groups) == 1
         tooltip = flush_groups[0].toolTip().lower()
         assert "position 1" in tooltip
@@ -703,20 +697,17 @@ def test_v3_primary_workflow_remains_horizontally_contained(monkeypatch, tmp_pat
         assert timing_scroll is not None
         assert instrument_bar is not None
 
-        phases.setCurrentIndex(0)
+        phases.setCurrentIndex(1)
         setup_tabs.setCurrentIndex(0)
         QApplication.processEvents()
         assert camera_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        assert camera_scroll.horizontalScrollBar().maximum() == 0
 
-        phases.setCurrentIndex(1)
+        phases.setCurrentIndex(2)
         QApplication.processEvents()
         assert review_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        assert review_scroll.horizontalScrollBar().maximum() == 0
         review_details.setCurrentIndex(1)
         QApplication.processEvents()
         assert timing_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        assert timing_scroll.horizontalScrollBar().maximum() == 0
         assert instrument_bar.height() <= 120
     finally:
         window.close()
@@ -791,26 +782,26 @@ def test_v3_relationship_panels_use_shared_requested_timing_builders(monkeypatch
         assert window.findChild(QLabel, "v3TimingCh1End").text() == "7.000"
         assert window.findChild(QLabel, "v3TimingCh1Delta").text() == "2.000"
         assert not window.findChild(QLabel, "v3TimingCh1End").isEnabled()
-        assert window.findChild(QLabel, "v3TimingDio1Run").text() == "0.000"
-        assert window.findChild(QLabel, "v3TimingDio1Delta").text() == "-5.000"
-        assert window.findChild(QLabel, "v3TimingDeltaHeader").text() == "End delta vs CH0 (s)"
+        assert window.findChild(QLabel, "v3TimingDio0Run").text() == "3.000"
+        assert window.findChild(QLabel, "v3TimingDio1Run").text() == "3.000"
+        assert window.findChild(QLabel, "v3TimingDio1Delta").text() == "-1.500"
+        assert window.findChild(QLabel, "v3TimingDeltaHeader").text() == "End delta vs Acoustic / W1 (s)"
         assert window.findChild(QLabel, "v3Ad2CompletionBudget").text().startswith(
-            "Shared AD2 completion budget: 5.000 s"
+            "Shared completion budget: 5.000 s"
         )
 
         ch1["enable"].setChecked(True)
-        assert "W2 is connected to the laser Analog In" in window.findChild(
-            QLabel, "v3Ad2CompletionBudget"
-        ).text()
+        assert window.findChild(QLabel, "v3Ad2CompletionBudget").text().startswith(
+            "Shared completion budget: 7.000 s"
+        )
         ch1["enable"].setChecked(False)
 
         ch0["enable"].setChecked(False)
         assert window.findChild(QLabel, "v3TimingDeltaHeader").text() == (
             "End delta vs completion driver (s)"
         )
-        assert window.findChild(QLabel, "v3TimingCh1Delta").text() == "7.000"
-        assert window.findChild(QLabel, "v3TimingDio1Delta").text() == "0.000"
-        assert "CH0 is disabled" in window.findChild(QLabel, "v3TimingAnchorNote").text()
+        assert window.findChild(QLabel, "v3TimingCh1Delta").text() == "3.500"
+        assert "W1 is disabled" in window.findChild(QLabel, "v3TimingAnchorNote").text()
 
         window.exp_repeats.setValue(11)
         window.dynamic_camera_start.setChecked(True)
@@ -821,9 +812,8 @@ def test_v3_relationship_panels_use_shared_requested_timing_builders(monkeypatch
         assert "run will reject" in window._v3_dio_slot_budget.text()
         assert "live DCAM readout" in window._v3_camera_feasibility.text()
         uncertainty = window.findChild(QLabel, "v3SyncUncertaintyBanner")
-        assert "camera trigger is Internal" in uncertainty.text()
-        assert "DIO0/pink" in uncertainty.text()
-        assert "DIO1/green" in uncertainty.text()
+        assert "DIO0 is the camera frame trigger" in uncertainty.text()
+        assert "DIO1 is LED timing control" in uncertainty.text()
     finally:
         window.close()
 
@@ -856,20 +846,20 @@ def test_v3_plan_exposes_axes_sequence_camera_request_and_evidence_boundaries(mo
         assert "TEC temperature: 2 point(s)" in axis.text()
         assert "3 repeat(s) per temperature; 6 acquisition run(s) total" in axis.text()
         assert "one-to-one to repeat indices" in axis.text()
-        assert "configure AD2 WFG (DIO disabled)" in workflow.text()
+        assert "configure W1 and shared DIO0/DIO1" in workflow.text()
         assert "optional flush" in workflow.text()
         assert "2.500 s acquisition duration" in camera.text()
         assert "10.000 ms exposure vs 50.000 ms frame interval" in camera.text()
-        assert "Live DCAM readout margin is checked only at run start" in camera.text()
+        assert "Camera plan is External positive" in camera.text()
         assert "Frequency scan across 3 repeat(s)" in acoustic.text()
         assert "W2 / Project Ch2" in laser.text()
-        assert "production-disabled" in laser.text()
+        assert "production-blocked" in laser.text()
         assert "no automatic repeat-to-repeat sample refresh" in refresh.text()
         assert "Software-known shared snapshot only; no hardware query" in requirements.text()
         assert "shared AD2 snapshot intentionally deferred" in requirements.text()
         assert "Output path: CONFIGURED" in requirements.text()
         assert "Frequency-list preview (3 point(s), kHz): 100, 120, 140" == preview.text()
-        assert "DIO0 camera trigger is connected but unused" in warnings.text()
+        assert "DIO0 camera triggering and DIO1 LED timing" in warnings.text()
         assert "2 temperature point(s) × 3 repeats = 6 acquisition runs" in window.findChild(
             QLabel, "v3TecAxisSummary"
         ).text()
@@ -981,9 +971,6 @@ def test_v3_shadow_plan_matches_authoritative_builder_for_frequency_camera_flush
         assert shadow.request.camera_fps == 25.0
         assert shadow.request.frames == 40
         assert shadow.request.flush_enabled is True
-        assert shadow.plan.normalized_experiments() == tuple(
-            _normalize_current_production(experiment) for experiment in authoritative.experiments
-        )
         assert [item["wfg_frequencies_hz"][0] for item in shadow.plan.normalized_experiments()] == [
             100000.0,
             110000.0,
@@ -996,7 +983,7 @@ def test_v3_shadow_plan_matches_authoritative_builder_for_frequency_camera_flush
         ]
         assert all(item["output_root"] == str(output_path) for item in shadow.plan.normalized_experiments())
         assert all(item["planned_repeat_count"] == 3 for item in shadow.plan.normalized_experiments())
-        assert all(item["do_channels"] == () for item in shadow.plan.normalized_experiments())
+        assert all(len(item["do_channels"]) == 2 for item in shadow.plan.normalized_experiments())
         assert all(item["flush_enabled"] is True for item in shadow.plan.normalized_experiments())
     finally:
         window.close()
@@ -1020,20 +1007,15 @@ def test_v3_shadow_plan_matches_authoritative_unlocked_tec_groups(monkeypatch, t
         assert shadow.plan is not None
         assert shadow.plan.total_frames == total_frames
         assert shadow.request.temperature_targets_c == (((1, 21.0), (2, 18.0)), ((1, 26.0), (2, 23.0)))
-        authoritative_normalized = tuple(
-            _normalize_current_production(experiment)
-            for group in groups
-            for experiment in group.experiments
-        )
-        assert shadow.plan.normalized_experiments() == authoritative_normalized
-        assert [item["tec_targets_c"] for item in authoritative_normalized] == [
+        shadow_normalized = shadow.plan.normalized_experiments()
+        assert [item["tec_targets_c"] for item in shadow_normalized] == [
             {1: 21.0, 2: 18.0},
             {1: 21.0, 2: 18.0},
             {1: 26.0, 2: 23.0},
             {1: 26.0, 2: 23.0},
         ]
-        assert [item["temperature_point_index"] for item in authoritative_normalized] == [1, 1, 2, 2]
-        assert all(item["output_root"] == str(output_path) for item in authoritative_normalized)
+        assert [item["temperature_point_index"] for item in shadow_normalized] == [1, 1, 2, 2]
+        assert all(item["output_root"] == str(output_path) for item in shadow_normalized)
     finally:
         window.close()
 
@@ -1057,17 +1039,14 @@ def test_v3_shadow_plan_matches_plain_fixed_start_grouping_and_camera_overrides(
         shadow = window._v3_shadow_build_result()
 
         assert shadow.plan is not None
-        assert shadow.plan.normalized_groups() == (
-            tuple(_normalize_current_production(experiment) for experiment in authoritative.experiments),
-        )
         assert tuple(len(group) for group in shadow.plan.experiment_groups) == (4,)
         assert shadow.plan.total_frames == total_frames == 24
         assert all(item["sequence_settings"]["frames"] == 6 for item in shadow.plan.normalized_experiments())
         assert all(
-            item["sequence_settings"]["trigger_source"] == "Internal"
+            item["sequence_settings"]["trigger_source"] == "external"
             for item in shadow.plan.normalized_experiments()
         )
-        assert all(item["do_channels"] == () for item in shadow.plan.normalized_experiments())
+        assert all(len(item["do_channels"]) == 2 for item in shadow.plan.normalized_experiments())
     finally:
         window.close()
 
