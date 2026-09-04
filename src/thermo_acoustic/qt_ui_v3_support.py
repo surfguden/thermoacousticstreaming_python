@@ -252,6 +252,12 @@ class MainWindowV3Compatibility(MainWindow):
         outer.addWidget(self.step_breadcrumb)
         self.status = HistoryLogWidget()
         self.status.setMaximumHeight(90)
+        self.status.setToolTip(
+            "Full session history of every status change, newest at the bottom -- "
+            "not just the most recent one. Scroll up to review; scroll back to the "
+            "bottom (or wait for the next update while already at the bottom) to "
+            "resume auto-scrolling."
+        )
         self.queue_count = QLabel("0")
         top_row = QGridLayout()
         for column, (caption, value) in enumerate((("Elapsed Time", self._elapsed_time_label()), ("Estimated time remaining", self._time_left_label()), ("# elements in queue", self.queue_count))):

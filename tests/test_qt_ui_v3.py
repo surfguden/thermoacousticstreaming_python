@@ -399,6 +399,26 @@ def test_v3_global_status_preserves_tooltip_wrapper_and_noncollapsed_geometry(mo
         window.close()
 
 
+def test_v3_status_log_preserves_tooltip_wrapper_and_noncollapsed_geometry(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    window.resize(1440, 900)
+    window.show()
+    QApplication.processEvents()
+    try:
+        status_group = next(
+            group
+            for group in window.findChildren(QGroupBox)
+            if group.title() == "Experiment status and progress"
+        )
+        assert "Full session history of every status change" in window.status.toolTip()
+        assert "resume auto-scrolling" in window.status.toolTip()
+        assert window.status.parentWidget() is not status_group
+        assert window.status.parentWidget().maximumHeight() == 90
+        assert window.status.height() > 0
+    finally:
+        window.close()
+
+
 def test_v3_breadcrumb_preserves_v2_marker_and_state_presentation(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
     try:
