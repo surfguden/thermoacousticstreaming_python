@@ -20,7 +20,7 @@ import sys
 
 # name -> (module to import, why it's needed, which real file imports it)
 CORE_DEPENDENCIES: dict[str, tuple[str, str]] = {
-    "PySide6": ("PySide6.QtWidgets", "qt_ui.py / qt_ui_v2.py -- the whole GUI"),
+    "PySide6": ("PySide6.QtWidgets", "qt_ui.py / qt_ui_v3.py -- the whole GUI"),
     "Pillow": ("PIL", "used for image handling"),
     "pyserial": ("serial", "instruments.py -- valve serial backend"),
     "npTDMS": ("nptdms", "workflows.py -- writing data.tdms; missing until 2026-07-31"),

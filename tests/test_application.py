@@ -776,7 +776,7 @@ def test_application_empty_resyncs_fill_level_from_real_hardware_when_wait_for_p
     assert app.pump.backend.stop_calls == 1
 
 
-# Finding 1 (qt_ui.py/qt_ui_v2.py targeted UI audit, 2026-07-31):
+# Finding 1 (targeted UI audit, 2026-07-31):
 # Application.go_to_level() wraps CetoniPump.set_fill_level() with the same
 # wait_for_pump()/resync architecture refill()/empty() already use -- mirrors
 # the refill()/empty() tests above.
@@ -2197,7 +2197,7 @@ def test_cetoni_pump_initialize_does_not_falsely_claim_referenced():
 
     pump.initialize()
 
-    # initialize() itself succeeded (used by qt_ui_v2.py's pump connection-
+    # initialize() itself succeeded (used by the former transitional pump connection-
     # status row) even though no reference move ever happened.
     assert pump.initialized is True
     assert pump.referenced is False

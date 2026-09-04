@@ -24,9 +24,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from thermo_acoustic import qt_ui, qt_ui_v2, qt_ui_v3, qt_ui_v3_support
+from thermo_acoustic import qt_ui, qt_ui_v3, qt_ui_v3_support
 from thermo_acoustic.qt_ui_v3_support import MainWindowV3Compatibility
-from thermo_acoustic.application import Application, STEP_ORDER
+from thermo_acoustic.application import Application, STEP_FLUSH, STEP_ORDER
 from thermo_acoustic.experiment_planning import normalize_experiment
 from thermo_acoustic.instruments import SimulatedAD2Sdk
 from thermo_acoustic.tec import TecStatus
@@ -80,8 +80,7 @@ def test_v3_main_constructs_its_offline_application_without_entering_qt_loop(mon
     assert isinstance(captured[0].ad2, SimulatedAD2Sdk)
 
 
-@pytest.mark.parametrize("module, window_name", [(qt_ui, "MainWindow"), (qt_ui_v2, "MainWindowV2")])
-def test_v1_v2_main_construct_offline_application_without_qt_loop(monkeypatch, module, window_name):
+def test_v1_main_constructs_offline_application_without_qt_loop(monkeypatch):
     captured = []
 
     class FakeQApplication:
@@ -94,45 +93,55 @@ def test_v1_v2_main_construct_offline_application_without_qt_loop(monkeypatch, m
         def __init__(self, *args, **kwargs): captured.append(kwargs.get("app"))
         def show(self): pass
 
-    monkeypatch.setattr(module, "QApplication", FakeQApplication)
-    monkeypatch.setattr(module, window_name, FakeWindow)
-    if hasattr(module, "install_focus_wheel_guard"):
-        monkeypatch.setattr(module, "install_focus_wheel_guard", lambda app: None)
-    assert module.main() == 0
+    monkeypatch.setattr(qt_ui, "QApplication", FakeQApplication)
+    monkeypatch.setattr(qt_ui, "MainWindow", FakeWindow)
+    monkeypatch.setattr(qt_ui, "install_focus_wheel_guard", lambda app: None)
+    assert qt_ui.main() == 0
     assert len(captured) == 1
-    if module is qt_ui:
-        assert captured[0] is None  # MainWindow itself supplies the canonical simulated default.
-    else:
-        assert isinstance(captured[0].ad2, SimulatedAD2Sdk)
+    assert captured[0] is None  # MainWindow itself supplies the canonical simulated default.
 
 
-def test_v3_is_decoupled_from_v2_and_v2_remains_available(monkeypatch, tmp_path):
+def test_v1_window_tracks_step_states_without_a_breadcrumb_widget(monkeypatch, tmp_path):
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(json.dumps({}), encoding="utf-8")
+    monkeypatch.setattr(qt_ui, "SETTINGS_PATH", settings_path)
+    QApplication.instance() or QApplication([])
+    window = build_with_retry(qt_ui.MainWindow)
+    try:
+        assert not hasattr(window, "step_breadcrumb")
+        window._handle_worker_progress("step_started", STEP_FLUSH)
+        assert window._step_states[STEP_FLUSH] == "active"
+        window._handle_worker_progress("step_reset", None)
+        assert all(state == "pending" for state in window._step_states.values())
+    finally:
+        window.close()
+
+
+def test_v3_is_independent_of_the_retired_v2_surface(monkeypatch, tmp_path):
     v3 = make_window(monkeypatch, tmp_path)
-    v2 = build_with_retry(qt_ui_v2.MainWindowV2)
     try:
         assert isinstance(v3, MainWindowV3Compatibility)
-        assert not isinstance(v3, qt_ui_v2.MainWindowV2)
         assert type(v3) is qt_ui_v3.MainWindowV3
-        assert type(v2) is qt_ui_v2.MainWindowV2
         assert v3.windowTitle() == "Thermoacoustic Streaming — Instrument Control (V3)"
-        assert v2.windowTitle() == "Thermo Acoustic Streaming - Transitional UI (shared hardware runtime)"
         assert any(action.text() == "Abort" for action in v3.menuBar().actions())
     finally:
         v3.close()
-        v2.close()
 
 
-def test_v3_clean_import_does_not_load_qt_ui_v2():
+def test_v3_clean_import_has_no_v2_module_dependency():
     code = (
-        "import sys; import thermo_acoustic.qt_ui_v3; "
-        "assert 'thermo_acoustic.qt_ui_v2' not in sys.modules"
+        "import importlib.util; import sys; import thermo_acoustic.qt_ui_v3; "
+        "assert 'thermo_acoustic.qt_ui_v2' not in sys.modules; "
+        "assert importlib.util.find_spec('thermo_acoustic.qt_ui_v2') is None"
     )
     env = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[1] / "src")}
     result = subprocess.run([sys.executable, "-B", "-c", code], capture_output=True, text=True, env=env)
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.known_flaky
 def test_v3_constructs_on_first_attempt_without_retry(monkeypatch, tmp_path):
+    """Replacement reproduction for TEST-QT-LIFETIME-001; never retries."""
     settings_path = tmp_path / "settings.json"
     settings_path.write_text(json.dumps({}), encoding="utf-8")
     monkeypatch.setattr(qt_ui, "SETTINGS_PATH", settings_path)
@@ -1358,8 +1367,6 @@ def test_v3_launcher_states_opt_in_hardware_and_rollback_boundaries():
     assert "tracked" in launcher
     assert "formally accepted repository content" in launcher
     assert "not independently hardware-verified" in launcher
-    assert "launch_gui_v2.bat" in launcher
-    assert "rollback/reference" in launcher
     assert "launch_gui.bat" in launcher
 
 

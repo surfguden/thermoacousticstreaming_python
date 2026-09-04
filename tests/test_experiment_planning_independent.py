@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 import thermo_acoustic.experiment_planning as planning
-from thermo_acoustic import qt_ui, qt_ui_v2, qt_ui_v3
+from thermo_acoustic import qt_ui, qt_ui_v3
 from thermo_acoustic.ad2 import WaveformFunction
 from thermo_acoustic.experiment_planning import (
     ExperimentRequest,
@@ -267,10 +267,8 @@ def test_normal_start_routes_through_shared_planner_and_adapter(monkeypatch, tmp
     assert calls == ["planner", "adapter", "runtime"]
 
 
-def test_all_ui_versions_inherit_one_request_extraction_seam():
-    assert "_experiment_request" not in qt_ui_v2.MainWindowV2.__dict__
+def test_retained_ui_versions_inherit_one_request_extraction_seam():
     assert "_experiment_request" not in qt_ui_v3.MainWindowV3.__dict__
-    assert qt_ui_v2.MainWindowV2._experiment_request is qt_ui.MainWindow._experiment_request
     assert qt_ui_v3.MainWindowV3._experiment_request is qt_ui.MainWindow._experiment_request
 
 

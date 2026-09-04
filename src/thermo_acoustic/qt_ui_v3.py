@@ -1294,8 +1294,8 @@ class MainWindowV3(MainWindowV3Compatibility):
         group = super()._v2_status_progress_group()
         group.setTitle("Experiment status and progress")
         # Bind these inherited display captions to queue_count's stable grid,
-        # not to v2's presentation text. V2 wording can evolve without
-        # breaking construction of this deliberately divergent surface.
+        # not to a retired transitional presentation surface. This keeps
+        # construction independent of historical UI wording.
         queue_grid, _row, _column = _grid_cell_containing(group, self.queue_count)
         captions = (
             (0, "Elapsed time", "v3ElapsedTimeCaption"),

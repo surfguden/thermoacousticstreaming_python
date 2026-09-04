@@ -227,8 +227,7 @@ def _widen_for_content(widget: QLineEdit, padding: int = 40) -> QLineEdit:
     """Size a QLineEdit to fit its current text instead of Qt's small
     default sizeHint -- path values (Qmix SDK / QMIXSDK / Cetoni config)
     can be long Windows paths that would otherwise be visually cramped.
-    Shared by qt_ui.py's own Initialization tab and qt_ui_v2.py's
-    InitializationDialog, which re-parent these same widget instances."""
+    Used by qt_ui.py's own Initialization tab and retained shared widgets."""
     required_width = widget.fontMetrics().horizontalAdvance(widget.text()) + padding
     widget.setMinimumWidth(max(widget.minimumWidth(), required_width))
     return widget
@@ -240,8 +239,8 @@ def _hardware_reference_tabs(window: QWidget, mark_unwired_stub) -> QTabWidget:
     actually reads (Connections) from informational-only reference paths
     and fields retained for migration reference that it never reads (v3
     design-idea adoption, Proposal 5, 2026-08-06). Shared by qt_ui.py's own
-    Initialization tab and qt_ui_v2.py's InitializationDialog, which
-    re-parent these same widget instances -- same convention as
+    Initialization tab and retained UI support, which re-parents these same
+    widget instances -- same convention as
     _widen_for_content() above. `mark_unwired_stub` is each caller's own
     static helper (their tooltip wording differs slightly), not duplicated
     here."""
@@ -772,8 +771,8 @@ class MainWindow(QMainWindow):
         # executing (set/cleared via the "experiment_series_active" progress
         # kind below, not read directly from a worker thread -- see
         # _run_experiment_series()). Distinct from `self.app.status` string
-        # matching, which qt_ui_v2.py's "Experiment running" indicator used
-        # to rely on and which was found to go stale the instant Abort is
+        # matching, which a retired transitional indicator used to rely on
+        # and which was found to go stale the instant Abort is
         # clicked (its own "Stopping after {unit}..." status overwrites
         # app.status while the series' current repeat may still genuinely
         # be in flight).
@@ -812,7 +811,7 @@ class MainWindow(QMainWindow):
         # avoid).
         self._stopping_after_current_repeat = False
         # Phase 3 step-progress breadcrumb (2026-08-04): tracked here in the
-        # base class, not just qt_ui_v2.py, so the underlying state exists
+        # base class so the underlying state exists
         # regardless of whether a widget is listening to it -- matches
         # _experiment_series_active's own base-class-tracks-state,
         # subclass-renders-it split. "pending" for every step until its own
@@ -956,9 +955,9 @@ class MainWindow(QMainWindow):
         self.thorlabs_apt_discovery_only.setChecked(hardware_defaults.z_stage.thorlabs_apt_discovery_only)
         self.valve_resource = QLineEdit("COM5")  # Current application default; confirm physical wiring at the bench.
         # Relocated here from _instrument_group() (Session 40): that method
-        # is v1-tab-only -- qt_ui_v2.py's InitializationDialog builds its own
-        # separate form around this same widget without ever calling
-        # _instrument_group(), so a tooltip set there never reached v2 users
+        # is v1-tab-only -- retained support can build a separate form around
+        # this same widget without ever calling _instrument_group(), so a
+        # tooltip set there must be applied at the shared widget instead.
         # at all. Every other tooltip in this codebase lives in _build_state()
         # for exactly this reason (guaranteed to apply regardless of which
         # UI's layout method runs).
@@ -1899,7 +1898,7 @@ class MainWindow(QMainWindow):
         # applied to it) and without its own click-triggered "ⓘ" icon.
         # Wrapping it explicitly here matches how every other grid-placed
         # tooltip widget in this codebase already does it (e.g. the
-        # Elapsed Time/Time Left labels in qt_ui_v2.py's equivalent group).
+        # Elapsed Time/Time Left labels in the compatible status group).
         top.addWidget(self._wrap_with_tooltip_icon(self.status), 1, 4)
         # Extra grid width now goes to Status (col 4, already has its own
         # setMinimumWidth(280) above and benefits from more room for a
@@ -1950,7 +1949,7 @@ class MainWindow(QMainWindow):
         return tab
 
     def _instrument_group(self) -> QGroupBox:
-        # qt_ui_v2.py's InitializationDialog already disables these same six
+        # Retained compatibility support also disables these same six
         # fields with "Not wired to a real backend" (Session 3, confirmed
         # against hardware_factory.build_hardware_bundle(), which never reads
         # them) -- this tab never got that same treatment, so it still shows
@@ -1984,7 +1983,7 @@ class MainWindow(QMainWindow):
         # discovery only) -- all disabled the same way regardless of which
         # of those two very different categories they were actually in.
         # Grouped into task-oriented tabs instead, same shared helper
-        # qt_ui_v2.py's InitializationDialog now also uses.
+        # retained initialization support also uses.
         outer.addWidget(_hardware_reference_tabs(self, self._mark_unwired_stub))
         return group
 
@@ -2166,7 +2165,7 @@ class MainWindow(QMainWindow):
         # this session's longer live-use labels. Both dimensions are short here
         # (unlike _ad_settings_group(), where only height was short), so this uses
         # setWidgetResizable(False) with both scrollbars as-needed -- the same
-        # pattern already proven for qt_ui_v2.py's AD2 Output Parameters table --
+        # pattern proven for an earlier transitional AD2 Output Parameters table --
         # rather than setWidgetResizable(True), which would still try to compress
         # the width.
         group = QGroupBox(title)
@@ -3546,9 +3545,9 @@ class MainWindow(QMainWindow):
         # widgets already used by _add_experiment_channel_sections()'s CH0
         # inline Sweep section (qt_ui.py's own Experiment tab) -- not new
         # widgets, not new state, just a second, standalone QGroupBox surface
-        # for qt_ui_v2.py to reach them from, since v2 never calls
-        # _experiment_tab()/_add_experiment_channel_sections() at all (its
-        # own AD2 Output Parameters table is a separately-built view). This
+        # for a former transitional surface to reach them from, since it never
+        # called _experiment_tab()/_add_experiment_channel_sections() at all.
+        # This
         # is the same "no controls at all in v2" gap Session 24 already found
         # and fixed once for Symmetry/Phase/Repeat Trigger -- FM Sweep and
         # Frequency Scanning (below) were the two remaining Experiment-tab
@@ -3570,9 +3569,8 @@ class MainWindow(QMainWindow):
         form.addRow("Total Span, Start-to-Stop (kHz)", self.exp_sweep_width_khz)
         form.addRow("Sweep Time (ms)", self.exp_sweep_time_ms)
         form.addRow("Sweep Type", self.exp_sweep_type)
-        # v1's own call lives inside _add_experiment_channel_sections(), which
-        # qt_ui_v2.MainWindowV2 never invokes -- this window needs its own
-        # independent wiring of the same widgets, exactly like
+        # v1's own call lives inside _add_experiment_channel_sections(); this
+        # helper keeps independent wiring of the same widgets, exactly like
         # _v2_acquisition_group() independently builds its own Camera Start
         # Array(s) group rather than calling qt_ui.py's _camera_start_group().
         self._connect_sweep_dual_mode_refresh(
@@ -3980,7 +3978,7 @@ class MainWindow(QMainWindow):
         flow_rate = self.flow_rate.value()
         self._run_action(lambda progress: self._go_to_level(level, flow_rate), "Setting pump level")
 
-    # Finding 1 (qt_ui.py/qt_ui_v2.py targeted UI audit): this button used to
+    # Finding 1 (targeted UI audit): this button used to
     # call self.app.pump.set_fill_level() directly, the same fire-and-forget
     # shape refill()/empty() were fixed for -- now routes through
     # Application.go_to_level() (same wait_for_pump()/resync pattern), same
@@ -4619,8 +4617,8 @@ class MainWindow(QMainWindow):
         # "experiment_series_active" progress kind brackets the entire method
         # body (try/finally, so it clears on every exit path: normal
         # completion, ExperimentSeriesAborted, or a raised RuntimeError) --
-        # this is the ground truth qt_ui_v2.py's "Experiment running"
-        # indicator now reads (see _handle_worker_progress()), instead of
+        # this is the ground truth used by the compatible "Experiment running"
+        # indicator (see _handle_worker_progress()), instead of
         # its old "experiment" in self.app.status.lower() heuristic, which
         # went stale the instant Abort was clicked (Abort's own
         # "Stopping after {unit}..." status overwrites app.status while the
@@ -5151,9 +5149,9 @@ class MainWindow(QMainWindow):
 
     def _refresh_step_breadcrumb(self) -> None:
         # No-op in the base (v1) window -- there is no breadcrumb widget to
-        # update, only the underlying _step_states being tracked. qt_ui_v2.py's
-        # MainWindowV2 overrides this to actually paint its _StepBreadcrumb,
-        # the same base-tracks/subclass-renders split _refresh_status() and
+        # update, only the underlying _step_states being tracked. A retired
+        # transitional window painted a breadcrumb here; the same
+        # base-tracks/subclass-renders split as _refresh_status() and
         # _experiment_series_active already use elsewhere in this class.
         pass
 
@@ -5803,9 +5801,7 @@ class MainWindow(QMainWindow):
 
 
 # Standalone entry point for the day-to-day application (see tools/run_ui.py
-# and launch_gui.bat). qt_ui_v2.MainWindowV2 subclasses MainWindow and reuses
-# its tab-building methods (WFG, MSO, Pump&Valve, Camera) as sidebar dialogs,
-# but is a transitional UI and not yet the default launch target.
+# and launch_gui.bat).
 def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     window = MainWindow()

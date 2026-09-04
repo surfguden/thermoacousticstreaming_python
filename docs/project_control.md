@@ -41,7 +41,7 @@ The colleague's hardware-workflow evidence remains expected next week, and
 physical reconciliation and commissioning remain incomplete.
 
 V1 remains the retained fallback. V3 is the candidate-primary opt-in surface;
-the owner approved early V2 retirement only after safe V3 decoupling. The
+the owner approved and completed V2 retirement after safe V3 decoupling. The
 `MASTER v7 FINAL_VALIDATED` recovery package is closed freeze-period historical
 evidence, not current operational authority. No further broad freeze-period
 audit is required unless contradictory current source, vendor, or physical
@@ -52,7 +52,7 @@ evidence appears.
 Normal Qt Start has one planning authority:
 
 ```text
-V3/V2/V1 controls
+V3/V1 controls
   -> ExperimentRequest
   -> build_independent_run_plan()
   -> immutable RunPlan / RunCondition
@@ -119,10 +119,9 @@ accepted camera-only Gate 2.
 
 V3 is the tracked opt-in instrument-control surface launched by
 `launch_gui_v3.bat` or `python tools/run_ui_v3.py`. It shares the same
-`Application` and hardware backends as v1/v2; it is not a simulator and opening
-it does not authorize hardware. V1 remains the default launcher. V2 remains
-the retained rollback/reference surface during the approved, compatibility-
-preserving V3 decoupling checkpoint; it is not being removed in that checkpoint.
+`Application` and hardware backends as v1; it is not a simulator and opening
+it does not authorize hardware. V1 remains the default launcher. V2 was
+retired after the approved, compatibility-preserving V3 decoupling checkpoint.
 
 | Surface | Purpose and evidence boundary |
 | --- | --- |

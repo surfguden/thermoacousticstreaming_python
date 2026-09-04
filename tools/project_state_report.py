@@ -15,11 +15,6 @@ UI_FILES = {
         "launch_gui.bat",
         "tools/run_ui.py",
     ),
-    "v2": (
-        "src/thermo_acoustic/qt_ui_v2.py",
-        "launch_gui_v2.bat",
-        "tools/run_ui_v2.py",
-    ),
     "v3": (
         "src/thermo_acoustic/qt_ui_v3.py",
         "src/thermo_acoustic/qt_ui_v3_support.py",

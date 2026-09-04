@@ -16,7 +16,7 @@ from PySide6.QtGui import QWheelEvent
 from PySide6.QtWidgets import QAbstractSpinBox, QCheckBox, QComboBox, QDoubleSpinBox, QGroupBox, QLabel, QLineEdit, QMainWindow, QPushButton, QScrollArea, QSpinBox, QWidget
 from PySide6.QtWidgets import QApplication
 
-from thermo_acoustic import qt_ui, qt_ui_v2, qt_ui_v3
+from thermo_acoustic import qt_ui, qt_ui_v3
 from thermo_acoustic.ad2 import (
     WaveformFunction,
     WaveformParameterPolicy,
@@ -43,10 +43,8 @@ def make_window(monkeypatch, tmp_path, settings: dict | None = None) -> qt_ui.Ma
     return build_with_retry(qt_ui.MainWindow)
 
 
-def test_build_state_is_one_shared_widget_contract_across_all_ui_surfaces():
-    assert "_build_state" not in qt_ui_v2.MainWindowV2.__dict__
+def test_build_state_is_one_shared_widget_contract_across_retained_ui_surfaces():
     assert "_build_state" not in qt_ui_v3.MainWindowV3.__dict__
-    assert qt_ui_v2.MainWindowV2._build_state is qt_ui.MainWindow._build_state
     assert qt_ui_v3.MainWindowV3._build_state is qt_ui.MainWindow._build_state
 
     QApplication.instance() or QApplication([])
@@ -63,9 +61,9 @@ def test_build_state_is_one_shared_widget_contract_across_all_ui_surfaces():
         return False
 
     state_holders = []
-    for window_class in (qt_ui.MainWindow, qt_ui_v2.MainWindowV2, qt_ui_v3.MainWindowV3):
+    for window_class in (qt_ui.MainWindow, qt_ui_v3.MainWindowV3):
         # Exercise the inherited method on each real subclass type without
-        # constructing any layout. Full v2/v3 layouts re-parent these shared
+        # constructing any layout. Full retained layouts re-parent these shared
         # widgets and are intentionally outside this state-contract test.
         holder = window_class.__new__(window_class)
         QMainWindow.__init__(holder)
@@ -80,7 +78,7 @@ def test_build_state_is_one_shared_widget_contract_across_all_ui_surfaces():
 
     expected_attributes, expected_widget_attributes = snapshots[qt_ui.MainWindow]
     assert len(expected_widget_attributes) > 100, "sanity check: capture the real shared widget state"
-    for window_class in (qt_ui_v2.MainWindowV2, qt_ui_v3.MainWindowV3):
+    for window_class in (qt_ui_v3.MainWindowV3,):
         assert snapshots[window_class][0] == expected_attributes
         assert snapshots[window_class][1] == expected_widget_attributes
 
@@ -923,11 +921,8 @@ def test_qt_ui_uses_passive_hardware_config_defaults(monkeypatch, tmp_path):
 
 
 def test_initialization_tab_path_fields_are_widened_to_fit_their_real_content(monkeypatch, tmp_path):
-    # Pending feedback item 3: qt_ui_v2.py's InitializationDialog already
-    # widens these same shared widget instances for itself
-    # (_widen_for_content()) -- confirm v1's own Initialization tab (which
-    # renders the same three fields in _instrument_group(), never opening
-    # v2's dialog) gets that same treatment, not left at Qt's small default
+    # Confirm v1's Initialization tab (which renders the same three fields in
+    # _instrument_group()) gets the required treatment, not left at Qt's small default
     # sizeHint for a real, often-long Windows path.
     window = make_window(monkeypatch, tmp_path)
     try:
@@ -3361,7 +3356,7 @@ def test_series_manifest_records_failures_before_and_after_completed_repeats(mon
 
 
 def test_run_experiment_series_brackets_experiment_series_active_progress(monkeypatch, tmp_path):
-    # Category 2 (Session 39): qt_ui_v2.py's "Experiment running" indicator
+    # Category 2 (Session 39): the former transitional UI's "Experiment running" indicator
     # used to derive its Yes/No from "experiment" in self.app.status.lower(),
     # which goes stale the instant Abort is clicked (Abort's own
     # "Aborting..." status overwrites app.status while the current repeat may

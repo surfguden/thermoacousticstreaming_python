@@ -782,8 +782,8 @@ class CetoniPump:
     referenced: bool = False
     # Set True once initialize() completes (mirrors Valve/QmixPumpBackend's
     # own "initialized" flags) -- distinct from `referenced`, which now only
-    # means "a physical reference move was confirmed". qt_ui_v2.py's pump
-    # connection-status row uses this, not `referenced`, matching the same
+    # means "a physical reference move was confirmed". The retired transitional
+    # UI pump connection-status row used this, not `referenced`, matching the same
     # pattern the Valve row already uses (`valve.initialized`).
     initialized: bool = False
     # Used by refill() when simulating (backend=None) to fill to the

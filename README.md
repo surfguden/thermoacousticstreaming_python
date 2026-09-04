@@ -28,7 +28,7 @@ python tools\check_repository_hygiene.py
 
 `AGENTS.md` is the concise repository working contract. The offline GitHub
 Actions workflow compiles Python, validates tracked-file/LabVIEW-export
-consistency, runs fake/unit coverage, and exercises selected shared v1/v2/v3
+consistency, runs fake/unit coverage, and exercises selected shared v1/v3
 contracts. It never collects `hardware_tests/` or manual probes and does not
 authorize real devices. Recommended repository policy: require this workflow
 to pass before merging, while leaving hardware evidence as a separate reviewed
@@ -54,7 +54,7 @@ are in `docs/p0_hardware_truth_20260828.md`.
 On Windows, `launch_gui.bat` (double-click, or run from a terminal) does the
 same thing as `python tools\run_ui.py`, using a fixed Conda environment path
 instead of whatever `python` currently resolves to on your PATH -- see the
-"Launchers" section below for the tracked v1, v2, and v3 variants.
+"Launchers" section below for the tracked v1 and v3 variants.
 
 ## Application Status
 
@@ -78,32 +78,21 @@ to AD2 API 0 / W1 / acoustic amplifier and transducer, and project Ch2 to API 1
 laser input semantics. DIO0/pink is connected to camera trigger and DIO1/green
 to laser trigger, but neither digital line is programmed in the current
 steady-state workflow.
-`src/thermo_acoustic/qt_ui_v2.py` (`MainWindowV2`) is the retained transitional
-rollback/reference UI that reuses `qt_ui.py`'s widget-building, manual-test-panel
-code, and the same `Application`/hardware-backend instance (WFG/MSO/
-Pump&Valve/Camera open as dialogs from a sidebar). It is **not a simulated
-sandbox or an independent hardware stack**: when the operator initializes a
-real device there, it uses the shared real runtime. It is not yet independently
-hardware-verified and is **not the default launch target** until approved -- it
-must be launched explicitly (see "Launchers" below), never by running
-`tools/run_ui.py`/`launch_gui.bat` alone.
-
 `src/thermo_acoustic/qt_ui_v3.py` (`MainWindowV3`) is the tracked, opt-in,
 offline-UX-reviewed instrument surface. It has V3-owned compatibility support,
-does not import or subclass v2, and shares the same
+does not import a retired V2 module or subclass a V2 class, and shares the same
 `Application` and hardware backends; it is not a simulator or a separate
 execution stack. Its persistent instrument state and run controls surround four
 workspaces: Experiment, Monitor, Manual & Service, and Diagnostics. Experiment
 contains the canonical-request-derived “Start will run” review and surfaces
 requested-versus-latest-applied evidence without becoming a second planner.
 V3 remains non-default and not independently hardware-verified. V1 remains the
-default operator UI; v2 remains present for rollback/reference during the
-owner-approved early-retirement sequence.
+default operator UI.
 
 ## Environment Setup
 
 Production (real hardware) runs use a dedicated Conda environment named
-`exp_ctrl` -- `launch_gui.bat`/`launch_gui_v2.bat` and this project's
+`exp_ctrl` -- `launch_gui.bat` and this project's
 own real-hardware verification scripts (`hardware_tests/`) point at it. It
 is hand-assembled, not created fresh from a manifest each time, so it can
 drift from what the code actually needs -- this happened once already
@@ -141,12 +130,11 @@ covered by either file -- see the comments at the top of
 
 ## Launchers
 
-Three tracked, clearly-separated launchers exist for the repository UIs:
+Two tracked, clearly-separated launchers exist for the repository UIs:
 
 | Launches | Windows batch file (double-click) | Dev command |
 | --- | --- | --- |
 | v1 (`qt_ui.py`, `MainWindow`) -- default operator UI | `launch_gui.bat` | `python tools\run_ui.py` |
-| v2 (`qt_ui_v2.py`, `MainWindowV2`) -- older transitional layout and rollback/reference path | `launch_gui_v2.bat` | `python tools\run_ui_v2.py` |
 | v3 (`qt_ui_v3.py`, `MainWindowV3`) -- offline-UX-reviewed opt-in instrument workflow, not independently hardware-verified | `launch_gui_v3.bat` | `python tools\run_ui_v3.py` |
 
 V3 is available from a fresh checkout but is not the default launch target.

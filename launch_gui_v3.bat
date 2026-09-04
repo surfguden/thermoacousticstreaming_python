@@ -3,9 +3,7 @@ setlocal
 
 rem Launch the tracked, opt-in Thermo Acoustic Streaming v3 layout.
 rem V3 is formally accepted repository content but is not independently hardware-verified.
-rem v2 remains available through
-rem launch_gui_v2.bat as the rollback/reference path; launch_gui.bat remains
-rem the validated day-to-day v1 UI.
+rem launch_gui.bat remains the validated day-to-day v1 UI.
 rem Machine-specific settings: edit these if the Conda environment or CETONI SDK moves.
 set "PYTHON_EXE=C:\Users\Lab user\.conda\envs\exp_ctrl\python.exe"
 set "QMIXSDK=C:\Users\Lab user\AppData\Local\CETONI_SDK"
