@@ -45,9 +45,9 @@ a human decision, hardware confirmation, or focused implementation resolves them
   (renamed from `tools/test_hamamatsu_camera.py`/`tools/test_qmix_pump.py`,
   file/structure audit cleanup), and the two
   `tools/capture_ad2_wavegen_scope*.py` scripts sit outside pytest collection
-  and are now explicitly marked `__test__ = False`. They can still perform
-  real actions without the confirmation gates used by newer hardware tools, so
-  they are retained as historical diagnostics rather than approved procedures.
+  and are explicitly marked `__test__ = False`. The two AD2 diagnostics now
+  require a typed REAL AD2/W1 confirmation before constructing the device, but
+  remain engineering diagnostics rather than approved/commissioned procedures.
 - **Passive Thorlabs/APT discovery remains separate from PPC001 motion.**
   `thorlabs_apt.py` and `hardware_tests/test_thorlabs_apt_discovery.py` are
   discovery-only helpers. Do not use their "discovery-only" status to describe

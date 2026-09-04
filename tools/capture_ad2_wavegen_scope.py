@@ -1,19 +1,25 @@
-"""Legacy manual AD2 output/capture diagnostic, not automated pytest coverage.
+"""Manual real-AD2/W1 output/capture engineering diagnostic.
 
-Running this script configures a real AD2 waveform output. It is retained for
-historical diagnostics and is not a gated first-contact hardware tool.
+This diagnostic does not commission the acoustic chain. No bundled amplitude
+is a trusted safe default for the unresolved physical W1 path.
 """
 
 from __future__ import annotations
 
 __test__ = False
 
+import argparse
 import csv
 import math
 import time
 from pathlib import Path
 
 from thermo_acoustic.ad2 import CarrierSettings, TriggerSettings, WaveformFunction, WfgChannelConfig, WfgConfig
+from thermo_acoustic.ad2_capture_tooling import (
+    REAL_AD2_W1_CONFIRMATION,
+    require_real_ad2_w1_confirmation,
+    run_capture_with_cleanup,
+)
 from thermo_acoustic.instruments import AD2Sdk
 
 
@@ -66,14 +72,29 @@ def write_svg(samples: list[float], sample_frequency_hz: float, wave_frequency_h
     SVG_PATH.write_text(svg, encoding="utf-8")
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Engineering diagnostic that drives REAL AD2 / REAL W1 OUTPUT and captures Scope 1. "
+            "It does not commission the acoustic chain; no bundled amplitude is a trusted safe default."
+        )
+    )
+    parser.add_argument("--confirm", help=f"Required exact acknowledgement: {REAL_AD2_W1_CONFIRMATION}")
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = parse_args()
+    require_real_ad2_w1_confirmation(args.confirm)
+
     sample_frequency_hz = 10_000.0
     sample_count = 4096
     wave_frequency_hz = 100.0
     amplitude_v = 0.2
 
     ad2 = AD2Sdk()
-    try:
+
+    def capture() -> list[float]:
         ad2.initialize()
         print(f"handle {ad2.get_phdwf()}")
 
@@ -101,20 +122,18 @@ def main() -> None:
             range_v=1.0,
         )
         ad2.wfg_start_stop_all_ch(False)
-    finally:
-        try:
-            ad2.wfg_start_stop_all_ch(False)
-        except Exception:
-            pass
-        ad2.cleanup()
 
-    with CSV_PATH.open("w", newline="", encoding="utf-8") as file:
-        writer = csv.writer(file)
-        writer.writerow(["time_s", "voltage_v"])
-        for i, value in enumerate(samples):
-            writer.writerow([i / sample_frequency_hz, value])
+        return samples
 
-    write_svg(samples, sample_frequency_hz, wave_frequency_hz, amplitude_v)
+    def finalize_evidence(samples: list[float]) -> None:
+        with CSV_PATH.open("w", newline="", encoding="utf-8") as file:
+            writer = csv.writer(file)
+            writer.writerow(["time_s", "voltage_v"])
+            for i, value in enumerate(samples):
+                writer.writerow([i / sample_frequency_hz, value])
+        write_svg(samples, sample_frequency_hz, wave_frequency_hz, amplitude_v)
+
+    samples = run_capture_with_cleanup(ad2, capture, finalize_evidence)
 
     vmin = min(samples)
     vmax = max(samples)
