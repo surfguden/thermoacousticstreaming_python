@@ -153,7 +153,17 @@ def test_v3_constructs_on_first_attempt_without_retry(monkeypatch, tmp_path):
         window.close()
 
 
-def test_v3_compatibility_refuses_replacement_when_cleanup_fails(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("window_class", "authority_module"),
+    [
+        (qt_ui.MainWindow, qt_ui),
+        (qt_ui_v3.MainWindowV3, qt_ui_v3_support),
+    ],
+    ids=("v1", "v3"),
+)
+def test_retained_ui_refuses_replacement_when_cleanup_fails(
+    monkeypatch, tmp_path, window_class, authority_module
+):
     class FailingCleanupApplication:
         def __init__(self):
             self.errors = []
@@ -168,9 +178,17 @@ def test_v3_compatibility_refuses_replacement_when_cleanup_fails(monkeypatch, tm
         app = FailingCleanupApplication()
 
     replacement_calls = []
-    monkeypatch.setattr(qt_ui_v3_support, "build_hardware_bundle", lambda config: replacement_calls.append("build"))
-    monkeypatch.setattr(qt_ui_v3_support, "apply_hardware_bundle", lambda app, bundle: replacement_calls.append("apply"))
-    config = qt_ui_v3_support.HardwareRuntimeConfig(
+    monkeypatch.setattr(
+        authority_module,
+        "build_hardware_bundle",
+        lambda config: replacement_calls.append("build"),
+    )
+    monkeypatch.setattr(
+        authority_module,
+        "apply_hardware_bundle",
+        lambda app, bundle: replacement_calls.append("apply"),
+    )
+    config = qt_ui.HardwareRuntimeConfig(
         ad2_enabled=False, sim_ad2=True, camera_enabled=False, sim_camera=True,
         pump_enabled=False, sim_pump=True, valve_enabled=False, sim_valve=True,
         z_enabled=False, thorlabs_apt_serial="", valve_resource="COM5",
@@ -178,7 +196,7 @@ def test_v3_compatibility_refuses_replacement_when_cleanup_fails(monkeypatch, tm
     )
 
     with pytest.raises(RuntimeError, match="refusing to initialize a replacement hardware bundle"):
-        qt_ui_v3.MainWindowV3._initialize_system(WindowHolder(), config)
+        window_class._initialize_system(WindowHolder(), config)
 
     assert replacement_calls == []
     assert len(WindowHolder.app.errors) == 1
