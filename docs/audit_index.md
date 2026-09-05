@@ -61,7 +61,22 @@ Implementation and offline validation only; no hardware was accessed.
 | --- | --- | --- | --- |
 | `2920559` | Commissioning trace observability | Passive observer hook on the canonical `log_action()` stream; `CommissioningTraceRecorder` writing `commissioning_trace.jsonl` and a derived summary beside the run's `action_log.jsonl`; `pc_trigger_command_sent`, `save_flush_rendezvous`, and `sequence_started`/`sequence_completed` added at the Application/UI boundary. | Closed offline. |
 | `86fd19f` | Live V3 execution indicator | Persistent read-only Execution line in V3's instrument strip projecting the canonical progress/event stream, plus the Configure trace-recording option. | Closed offline. |
-| Commissioning-readiness follow-ups | Bounded residue closure | Achieved-cadence External camera gate; exact-model `TRIGGERTIMES` bound; AD2-disabled Review/runtime consistency; aggregate refresh requirement in Review; V3 W2 contextual note; V3 overflow test honesty; `TIMING_MINTRIGGERINTERVAL` adjudication recorded as `INSUFFICIENT_EVIDENCE`. | Closed offline; see `known_open_items.md`. |
+| `62d244f` | Commissioning-readiness follow-ups | Bounded residue closure: achieved-cadence External camera gate; exact-model `TRIGGERTIMES` bound; AD2-disabled Review/runtime consistency; aggregate refresh requirement in Review; V3 W2 contextual note; V3 overflow test honesty; `TIMING_MINTRIGGERINTERVAL` adjudication recorded as `INSUFFICIENT_EVIDENCE`. | Closed offline; see `known_open_items.md`. |
+
+Independently cross-validated 2026-09-05 at `d19f6d8`; residual gaps are tracked
+in `known_open_items.md` (`SW-TRACE-IO-COST-001`, `SW-TRACE-CONCURRENCY-TEST-001`,
+`SW-REVIEW-FLUID-PREDICATE-001`, `UI-V1-NO-PREFLIGHT-001`,
+`SW-V3-INDICATOR-LAST-ACTION-001`, `SW-V3-SEVERITY-COLLISION-001`,
+`SW-TRACE-ABORT-REQUEST-001`), not repeated here.
+
+## Dispatched programs
+
+Programs are instructions, not commits. A program recorded here has been
+executed; re-dispatching the same instruction produces no new work.
+
+| Dispatched | Program | Instruction revision | Authorization | Commits produced | Status |
+| --- | --- | --- | --- | --- | --- |
+| 2026-09-05 | `COMMISSIONING_OBSERVABILITY_AND_OPERATOR_FEEDBACK` | v1 (narrower; `CLOSED`/`OPEN`/... adjudication vocabulary, 16-section report) | Owner, bounded checkpoints A/B/C on `junjiebranch` | `2920559`, `86fd19f`, `62d244f` | Executed. Independently cross-validated 2026-09-05 (`d19f6d8`). Gap-audited against instruction v2; residual gaps in `known_open_items.md`. |
 
 ## Independent reviews
 
