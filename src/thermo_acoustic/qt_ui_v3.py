@@ -37,6 +37,7 @@ from .application import (
     STEP_WAIT_FOR_AD2_COMPLETION,
     STEP_WAIT_TEC_STABLE,
 )
+from .commissioning_trace import TraceState
 from .experiment_planning import (
     BuildResult,
     blocking_build_result,
@@ -255,6 +256,45 @@ class MainWindowV3(MainWindowV3Compatibility):
         STEP_SET_TEC_TARGET: ("tec",),
         STEP_WAIT_TEC_STABLE: ("tec",),
     }
+    # Operator-facing state token per canonical software step. These describe
+    # what the SOFTWARE is doing; they never assert a physical effect.
+    _EXECUTION_STEP_STATES = {
+        STEP_INITIALIZE_EXPERIMENT: "PREPARING",
+        STEP_CONFIGURE_WFG: "PREPARING",
+        STEP_CONFIGURE_CAMERA: "PREPARING",
+        STEP_CAPTURE_FRAMES: "RUNNING",
+        STEP_WAIT_FOR_AD2_COMPLETION: "WAITING",
+        STEP_FLUSH: "FLUSHING",
+        STEP_SAVE_RESULTS: "SAVING",
+        STEP_SET_TEC_TARGET: "PREPARING",
+        STEP_WAIT_TEC_STABLE: "WAITING",
+    }
+    # Truthful action wording. Each phrase describes a command the software
+    # issued or a software result it received. Deliberately never "W1
+    # triggered", "LED is illuminated", or "acoustic output has ended": no
+    # electrical, optical, acoustic, or fluid effect is observed anywhere on
+    # this path, and none may be implied by the indicator.
+    _EXECUTION_STEP_ACTIONS = {
+        STEP_INITIALIZE_EXPERIMENT: "Creating the repeat record and settings snapshot",
+        STEP_CONFIGURE_WFG: "Configuring and arming W1 and the shared DigitalOut program",
+        STEP_CONFIGURE_CAMERA: "Configuring and arming camera acquisition properties",
+        STEP_CAPTURE_FRAMES: "PC trigger command sent; waiting for requested camera frames",
+        STEP_WAIT_FOR_AD2_COMPLETION: "Waiting for the software output-completion barrier",
+        STEP_FLUSH: "Automatic sample-refresh commands in progress",
+        STEP_SAVE_RESULTS: "Saving acquired frames, metadata and settings",
+        STEP_SET_TEC_TARGET: "TEC target command sent to the controller",
+        STEP_WAIT_TEC_STABLE: "Waiting for controller-reported TEC stability",
+    }
+    # With AD2 disabled no PC trigger command is issued at all, so the capture
+    # wording must not claim one was sent.
+    _EXECUTION_CAPTURE_WITHOUT_AD2 = (
+        "Waiting for requested camera frames; AD2 disabled, no PC trigger command sent"
+    )
+    _TRACE_STATE_CAPTIONS = {
+        TraceState.OFF: "Trace: OFF",
+        TraceState.RECORDING: "Trace: RECORDING",
+        TraceState.DEGRADED: "Trace: DEGRADED — recorded evidence is incomplete",
+    }
 
     def __init__(self, app: Application | None = None) -> None:
         self._v3_execution_context: dict[str, object] = {}
@@ -422,6 +462,34 @@ class MainWindowV3(MainWindowV3Compatibility):
             layout.addWidget(heading, 0, column)
             layout.addWidget(value, 1, column)
         layout.setColumnStretch(len(captions), 1)
+
+        # Read-only live execution line. It is part of the persistent strip
+        # rather than a Diagnostics panel so the operator can see what the run
+        # is doing from every workspace without leaving the normal journey.
+        # It renders the canonical progress/event stream Monitor already
+        # consumes; it owns no timer, no elapsed-time inference, and no second
+        # state machine.
+        execution_heading = QLabel("Execution")
+        execution_heading.setStyleSheet("font-weight: bold;")
+        layout.addWidget(execution_heading, 2, 0)
+        execution_host = QWidget()
+        execution_layout = QHBoxLayout(execution_host)
+        execution_layout.setContentsMargins(0, 0, 0, 0)
+        execution_layout.setSpacing(12)
+        self._v3_execution_line_state = QLabel("IDLE")
+        self._v3_execution_line_state.setObjectName("v3PersistentExecutionState")
+        self._v3_execution_line_action = QLabel("Current: No run in progress")
+        self._v3_execution_line_action.setObjectName("v3PersistentExecutionAction")
+        self._v3_execution_line_next = QLabel("Next: No queued software action")
+        self._v3_execution_line_next.setObjectName("v3PersistentExecutionNext")
+        self._v3_execution_line_trace = QLabel(self._TRACE_STATE_CAPTIONS[TraceState.OFF])
+        self._v3_execution_line_trace.setObjectName("v3PersistentExecutionTrace")
+        execution_layout.addWidget(self._v3_execution_line_state)
+        execution_layout.addWidget(self._v3_execution_line_action)
+        execution_layout.addWidget(self._v3_execution_line_next, 1)
+        execution_layout.addWidget(self._v3_execution_line_trace)
+        layout.addWidget(execution_host, 2, 1, 1, len(captions))
+
         group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         return group
 
@@ -741,9 +809,26 @@ class MainWindowV3(MainWindowV3Compatibility):
         repeats_caption.setObjectName("v3ExperimentRepeatsCaption")
         grid.addWidget(repeats_caption, 1, 0)
         grid.addWidget(repeats_host, 1, 1)
-        grid.addWidget(self._v3_series_relationship_summary, 2, 0, 1, 3)
+        self._v3_trace_toggle = QCheckBox("Record commissioning trace")
+        self._v3_trace_toggle.setObjectName("v3CommissioningTraceToggle")
+        self._v3_trace_toggle.setToolTip(
+            "Record a passive software trace of this series beside the existing action log. "
+            "Execution is identical whether this is on or off: the recorder observes the "
+            "canonical event stream and issues no device command. Trace events are software "
+            "evidence and never establish physical timing or physical effect."
+        )
+        self._v3_trace_toggle.setChecked(bool(self.app.commissioning_trace_enabled))
+        self._v3_trace_toggle.toggled.connect(self._v3_apply_commissioning_trace_option)
+        grid.addWidget(self._v3_trace_toggle, 2, 0, 1, 3)
+        grid.addWidget(self._v3_series_relationship_summary, 3, 0, 1, 3)
         grid.setColumnStretch(1, 1)
         return group
+
+    def _v3_apply_commissioning_trace_option(self, enabled: bool) -> None:
+        """Arm/disarm recording for the NEXT sequence. Never touches hardware."""
+
+        self.app.commissioning_trace_enabled = bool(enabled)
+        self._refresh_v3_execution_indicator()
 
     def _v3_experiment_plan_group(self) -> QGroupBox:
         group = QGroupBox("Start will run")
@@ -1764,6 +1849,7 @@ class MainWindowV3(MainWindowV3Compatibility):
         self._v3_persistent_state["Camera"].setText(camera_text)
         output = self.series_path.text().strip()
         self._v3_persistent_state["Output"].setText(output or "UNSET — working directory")
+        self._refresh_v3_execution_indicator()
         if hasattr(self, "_v3_review_status"):
             if blocking:
                 review_text = f"BLOCKED — resolve {blocking} issue(s) before Start"
@@ -1917,6 +2003,127 @@ class MainWindowV3(MainWindowV3Compatibility):
             f"Acoustic / W1: {self._v3_acoustic_request_summary.text()}"
         )
 
+    def _start_shutdown(self, *, close_after: bool) -> None:
+        # Cleanup must be visible on the persistent line rather than silently
+        # reading IDLE while handles are still being released.
+        super()._start_shutdown(close_after=close_after)
+        self._refresh_v3_execution_indicator()
+
+    def _handle_shutdown_finished(self, *args, **kwargs):
+        result = super()._handle_shutdown_finished(*args, **kwargs)
+        self._refresh_v3_execution_indicator()
+        return result
+
+    def _v3_execution_action_text(self, step: str) -> str:
+        """Truthful software wording for one canonical step."""
+
+        if step == STEP_CAPTURE_FRAMES and not bool(
+            dict(self._v3_execution_context.get("subsystems", {})).get("ad2", False)
+        ):
+            return self._EXECUTION_CAPTURE_WITHOUT_AD2
+        return self._EXECUTION_STEP_ACTIONS.get(step, self._EXECUTION_STEP_TITLES.get(step, step))
+
+    def _refresh_v3_execution_indicator(self) -> None:
+        """Project the canonical run state onto the persistent Execution line.
+
+        Everything here is derived from progress/state the canonical execution
+        path emitted (`_step_states`, `_v3_execution_context`,
+        `_experiment_series_active`, the shutdown flag) plus the recorder's own
+        reported trace state. No elapsed time is used to guess a phase, and no
+        state is invented locally.
+        """
+
+        if not hasattr(self, "_v3_execution_line_state"):
+            return
+        context = self._v3_execution_context
+        states = getattr(self, "_step_states", {})
+        steps = self._v3_execution_steps()
+        failed_step = next((step for step in steps if states.get(step) == "failed"), None)
+        active_steps = [step for step in steps if states.get(step) == "active"]
+        series_active = bool(getattr(self, "_experiment_series_active", False))
+        shutting_down = bool(getattr(self, "_shutdown_in_progress", False))
+
+        if shutting_down:
+            state = "CLEANUP"
+            current = "Releasing hardware handles during shutdown"
+            following = "No queued software action"
+        elif failed_step is not None:
+            # An error stays on the line instead of snapping back to IDLE, so
+            # the operator can still see which phase stopped the run.
+            state = "ERROR"
+            current = f"Faulted during: {self._v3_execution_action_text(failed_step)}"
+            following = "No next software action — current phase faulted"
+        elif active_steps:
+            state = self._EXECUTION_STEP_STATES.get(active_steps[0], "RUNNING")
+            current = " + ".join(self._v3_execution_action_text(step) for step in active_steps)
+            last_active = max(steps.index(step) for step in active_steps)
+            next_step = next(
+                (
+                    step
+                    for step in steps[last_active + 1 :]
+                    if states.get(step, "pending") == "pending"
+                ),
+                None,
+            )
+            following = (
+                self._v3_execution_action_text(next_step)
+                if next_step is not None
+                else "Complete the current run unit"
+            )
+        elif series_active:
+            state = "RUNNING"
+            current = "Between software phases"
+            next_step = next(
+                (step for step in steps if states.get(step, "pending") == "pending"), None
+            )
+            following = (
+                self._v3_execution_action_text(next_step)
+                if next_step is not None
+                else "Complete the current run unit"
+            )
+        elif bool(steps) and all(states.get(step) == "completed" for step in steps):
+            state = "COMPLETE"
+            current = "Last run unit completed in software"
+            following = "No queued software action"
+        else:
+            state = "IDLE"
+            current = "No run in progress"
+            following = "No queued software action"
+
+        condition = str(context.get("condition") or "no condition")
+        repeat = context.get("repeat")
+        repeat_total = context.get("repeat_total")
+        if repeat is None:
+            repeat_text = "repeat -"
+        elif repeat_total is None:
+            repeat_text = f"repeat {repeat}"
+        else:
+            repeat_text = f"repeat {repeat}/{repeat_total}"
+        self._v3_execution_line_state.setText(f"{state} | {condition} | {repeat_text}")
+        self._v3_execution_line_state.setStyleSheet(
+            "color: darkred; font-weight: bold;"
+            if state == "ERROR"
+            else "color: green; font-weight: bold;"
+            if state == "COMPLETE"
+            else "color: dodgerblue; font-weight: bold;"
+            if state not in {"IDLE"}
+            else "font-weight: bold;"
+        )
+        self._v3_execution_line_action.setText(f"Current: {current}")
+        self._v3_execution_line_next.setText(f"Next: {following}")
+
+        trace_state = self.app.commissioning_trace_state()
+        self._v3_execution_line_trace.setText(
+            self._TRACE_STATE_CAPTIONS.get(trace_state, f"Trace: {trace_state.value}")
+        )
+        self._v3_execution_line_trace.setStyleSheet(
+            "color: darkred; font-weight: bold;"
+            if trace_state is TraceState.DEGRADED
+            else "color: dodgerblue; font-weight: bold;"
+            if trace_state is TraceState.RECORDING
+            else ""
+        )
+
     def _v3_execution_steps(self) -> list[str]:
         context = self._v3_execution_context
         steps: list[str] = []
@@ -1930,6 +2137,7 @@ class MainWindowV3(MainWindowV3Compatibility):
         return steps
 
     def _refresh_v3_current_execution(self) -> None:
+        self._refresh_v3_execution_indicator()
         if not hasattr(self, "_v3_execution_phase"):
             return
         context = self._v3_execution_context
