@@ -463,6 +463,130 @@ def test_sequence_boundary_records_a_graceful_abort_truthfully(monkeypatch, tmp_
     assert final["result"]["series_result"] == "ExperimentSeriesAborted"
 
 
+def _stop_request_events(series_path: Path) -> list[dict]:
+    return [
+        event
+        for event in read_trace_events(series_path)
+        if event["event"] == "operator_stop_requested"
+    ]
+
+
+def test_operator_stop_request_is_recorded_against_the_running_sequence(monkeypatch, tmp_path):
+    """Abort during a sequence records WHEN the operator asked, not just the outcome."""
+
+    class AbortedByOperatorApplication(qt_ui.Application):
+        window: qt_ui.MainWindow | None = None
+
+        def run_experiment2(self, progress=None) -> bool:
+            self.experiment_series.dequeue_experiment()
+            self.status = "ExperimentComplete"
+            # The operator presses Abort while this repeat is in flight.
+            self.window._abort()
+            return True
+
+    monkeypatch.setattr(qt_ui, "SETTINGS_PATH", tmp_path / "settings.json")
+    QApplication.instance() or QApplication([])
+    app = AbortedByOperatorApplication()
+    app.commissioning_trace_enabled = True
+    window = build_with_retry(lambda: qt_ui.MainWindow(app=app))
+    app.window = window
+    try:
+        series = ExperimentSeries2(
+            series_path=tmp_path, experiments=[Experiment2(), Experiment2()]
+        )
+        result = window._run_experiment_series(
+            series, 1, window._experiment_wfg_config(), window._handle_worker_progress
+        )
+    finally:
+        window.close()
+
+    # A stop was genuinely requested -- this is not a string-presence test.
+    assert app.stop_fired is True
+    assert result == "ExperimentSeriesAborted"
+
+    requests = _stop_request_events(tmp_path)
+    assert len(requests) == 1, "the operator stop request reached no trace event"
+    request = requests[0]
+
+    # Identity: correlated to the sequence it interrupted, on the sequence phase.
+    assert request["run_id"] == tmp_path.name
+    assert request["software_phase"] == "SEQUENCE"
+    # Stage: operator intent received, not a device command and not an
+    # observed hardware result.
+    assert request["evidence_stage"] == "REQUESTED"
+    assert request["status"] == "REQUESTED"
+    assert request["verification_scope"] == "SOFTWARE"
+
+    # Wording discipline: the event must not claim the run stopped.
+    assert request["result"]["run_stopped"] is False
+    assert request["result"]["in_flight_unit_runs_to_completion"] is True
+    assert request["result"]["hardware_stop_commanded"] is False
+    assert request["requested"]["unit_that_still_completes"] == "repeat"
+
+    # The request precedes the terminal outcome, and the terminal outcome is
+    # still the authority on how the sequence ended.
+    ordered = [(event["event"], event["status"]) for event in read_trace_events(tmp_path)]
+    assert ordered.index(("operator_stop_requested", "REQUESTED")) < ordered.index(
+        ("sequence_completed", "GRACEFULLY_ABORTED")
+    )
+    assert ordered[-1] == ("sequence_completed", "GRACEFULLY_ABORTED")
+
+
+def test_stop_request_is_recorded_at_the_ui_boundary_not_in_fire_stop_event(
+    monkeypatch, tmp_path
+):
+    """fire_stop_event() is shared by abort, loop error and cleanup.
+
+    Only the operator surface may assert operator intent, so the primitive
+    itself must stay silent.
+    """
+
+    class FlagOnlyApplication(qt_ui.Application):
+        def run_experiment2(self, progress=None) -> bool:
+            self.experiment_series.dequeue_experiment()
+            self.status = "ExperimentComplete"
+            # Same flag, reached the way cleanup()/error_handler_main_loop()
+            # reach it: no operator asked for anything.
+            self.fire_stop_event()
+            return True
+
+    monkeypatch.setattr(qt_ui, "SETTINGS_PATH", tmp_path / "settings.json")
+    QApplication.instance() or QApplication([])
+    app = FlagOnlyApplication()
+    app.commissioning_trace_enabled = True
+    window = build_with_retry(lambda: qt_ui.MainWindow(app=app))
+    try:
+        series = ExperimentSeries2(series_path=tmp_path, experiments=[Experiment2()])
+        window._run_experiment_series(
+            series, 1, window._experiment_wfg_config(), window._handle_worker_progress
+        )
+    finally:
+        window.close()
+
+    assert app.stop_fired is True
+    assert _stop_request_events(tmp_path) == []
+
+
+def test_operator_stop_request_outside_a_sequence_records_nothing(monkeypatch, tmp_path):
+    """Abort is reachable when idle; there is then no run to correlate to."""
+
+    monkeypatch.setattr(qt_ui, "SETTINGS_PATH", tmp_path / "settings.json")
+    QApplication.instance() or QApplication([])
+    app = qt_ui.Application()
+    app.commissioning_trace_enabled = True
+    app.start_commissioning_trace(tmp_path)
+    window = build_with_retry(lambda: qt_ui.MainWindow(app=app))
+    try:
+        assert window._active_sequence_trace_context is None
+        window._abort()
+    finally:
+        window.close()
+        app.stop_commissioning_trace()
+
+    assert app.stop_fired is True
+    assert _stop_request_events(tmp_path) == []
+
+
 def test_action_records_outside_a_run_scope_are_not_traced(tmp_path):
     series = tmp_path / "series"
     series.mkdir()

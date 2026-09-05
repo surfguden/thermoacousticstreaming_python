@@ -11,6 +11,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 from PySide6.QtCore import QEvent, QObject, QPointF, QThread, Qt, QTimer, Signal
@@ -778,6 +779,15 @@ class MainWindow(QMainWindow):
         # app.status while the series' current repeat may still genuinely
         # be in flight).
         self._experiment_series_active = False
+        # Correlation identity for the sequence currently bracketed by
+        # _sequence_evidence_scope(), or None when no sequence is running.
+        # Set/cleared ONLY via the "sequence_trace_context" progress kind, for
+        # the same reason _experiment_series_active above is: the scope is
+        # entered on the worker QThread, and this is read on the GUI thread by
+        # _abort().  Reading the worker's ContextVar from here is impossible --
+        # contextvars are per-thread, which is why the concurrent refresh
+        # worker needs copy_context() in application.py.
+        self._active_sequence_trace_context: dict[str, object] | None = None
         # Distinct from _experiment_series_active above (set True whenever
         # EITHER kind of series runs): tracks specifically whether the
         # currently-running series is a TEC temperature scan
@@ -4589,13 +4599,20 @@ class MainWindow(QMainWindow):
         *,
         total_repeats: int,
         tec_points: int | None = None,
+        progress: Callable[[str, object], None] | None = None,
     ):
         """Bracket one canonical sequence with correlated sequence-level evidence.
 
-        Two things belong at this boundary and nowhere else: the optional
-        commissioning-trace observer (armed for exactly one sequence) and the
+        Three things belong at this boundary and nowhere else: the optional
+        commissioning-trace observer (armed for exactly one sequence), the
         sequence start/finish transitions, which the per-repeat action scope
-        cannot express because it is scoped to a single repeat.
+        cannot express because it is scoped to a single repeat, and publishing
+        this sequence's correlation identity to the GUI thread so an operator
+        stop request can be recorded against the run it interrupts.
+
+        That last part travels through `progress`, not through a shared
+        attribute, for the same reason `experiment_series_active` does: this
+        scope runs on the worker QThread and `_abort()` runs on the GUI thread.
 
         Entirely passive. It opens no device, issues no command, adds no wait,
         and cannot change the sequence outcome: a trace recorder that cannot
@@ -4605,6 +4622,14 @@ class MainWindow(QMainWindow):
         series_root = Path(series_path)
         self.app.start_commissioning_trace(series_root)
         state: dict[str, object] = {}
+        if progress:
+            progress(
+                "sequence_trace_context",
+                {
+                    "log_file": str(series_root / "action_log.jsonl"),
+                    "run_id": series_root.name or "unscoped_run",
+                },
+            )
         try:
             with action_scope(
                 series_root / "action_log.jsonl",
@@ -4654,6 +4679,8 @@ class MainWindow(QMainWindow):
                     )
         finally:
             self.app.stop_commissioning_trace()
+            if progress:
+                progress("sequence_trace_context", None)
 
     def _run_experiment_series(
         self,
@@ -4692,7 +4719,7 @@ class MainWindow(QMainWindow):
             progress("experiment_series_active", True)
         try:
             with self._sequence_evidence_scope(
-                series.series_path, total_repeats=total_repeats
+                series.series_path, total_repeats=total_repeats, progress=progress
             ) as sequence_state:
                 result = self._run_experiment_series_body(
                     series,
@@ -4773,7 +4800,10 @@ class MainWindow(QMainWindow):
 
         try:
             with self._sequence_evidence_scope(
-                series_path, total_repeats=total_repeats, tec_points=len(groups)
+                series_path,
+                total_repeats=total_repeats,
+                tec_points=len(groups),
+                progress=progress,
             ) as sequence_state:
                 # Same fix as _run_experiment_series_body()'s run_experiment2() call
                 # just below it in this file: `progress` was previously dropped
@@ -4934,6 +4964,61 @@ class MainWindow(QMainWindow):
         if selected:
             target.setText(selected)
 
+    def _log_operator_stop_requested(self, *, surface: str) -> None:
+        """Record that the operator ASKED the sequence to stop.
+
+        Passive evidence only. This does not stop anything and must not be
+        read as the run having stopped: `fire_stop_event()` sets a flag that
+        `_run_experiment_series_body()` checks BETWEEN repeats, so the
+        in-flight repeat or temperature point always runs to completion first.
+        The terminal fact stays where it already is -- `sequence_completed`
+        with status GRACEFULLY_ABORTED.
+
+        Recorded here rather than inside `Application.fire_stop_event()`
+        because that primitive is shared by three unrelated facts: this
+        operator request, `error_handler_main_loop()`'s error stop, and
+        `cleanup()`'s teardown. Logging inside it would assert operator intent
+        for the other two.
+
+        A scope is opened here because this runs on the GUI thread while the
+        sequence's own `action_scope` is bound on the worker QThread, where
+        this thread cannot see it -- `log_action` would drop the record on
+        `if context is None: return`. The correlation identity was published to
+        this thread by `_sequence_evidence_scope()` through the progress path.
+        When no sequence is running there is no run to correlate to and no
+        trace armed, so nothing is recorded.
+        """
+
+        context = self._active_sequence_trace_context
+        if not context:
+            return
+        with action_scope(
+            Path(str(context["log_file"])),
+            run_id=str(context["run_id"]),
+            condition="sequence",
+            repeat=None,
+            phase="SEQUENCE",
+        ):
+            log_action(
+                "run",
+                "operator_stop_requested",
+                evidence_stage="REQUESTED",
+                verification_scope="SOFTWARE",
+                status="REQUESTED",
+                requested={
+                    "surface": surface,
+                    "unit_that_still_completes": (
+                        "temperature_point" if self._temperature_scan_active else "repeat"
+                    ),
+                },
+                result={
+                    "run_stopped": False,
+                    "in_flight_unit_runs_to_completion": True,
+                    "hardware_stop_commanded": False,
+                },
+                source="qt_ui._log_operator_stop_requested",
+            )
+
     def _abort(self) -> None:
         # Safety-behavior change (2026-08-04): Abort no longer forces
         # hardware to stop mid-operation (the removed _abort_hardware(),
@@ -4949,6 +5034,7 @@ class MainWindow(QMainWindow):
         # wired independently) is unaffected -- that's a distinct,
         # operator-initiated single-instrument action, not part of Abort.
         self.app.fire_stop_event()
+        self._log_operator_stop_requested(surface="Abort")
         # Part C follow-up, extended 2026-08-04 (TEC-scan abort fix): the
         # unit that finishes before stopping differs by what's running --
         # a plain experiment series finishes "this repeat"; a TEC
@@ -5138,6 +5224,8 @@ class MainWindow(QMainWindow):
                 self._refresh_series_timing()
         elif kind == "temperature_scan_active":
             self._temperature_scan_active = bool(value)
+        elif kind == "sequence_trace_context":
+            self._active_sequence_trace_context = value if isinstance(value, dict) else None
         elif kind == "experiment_series_active":
             self._experiment_series_active = bool(value)
             if not self._experiment_series_active:
