@@ -2055,6 +2055,27 @@ class MainWindowV3(MainWindowV3Compatibility):
             return self._EXECUTION_CAPTURE_WITHOUT_AD2
         return self._EXECUTION_STEP_ACTIONS.get(step, self._EXECUTION_STEP_TITLES.get(step, step))
 
+    @staticmethod
+    def _v3_set_execution_field(label: QLabel, text: str) -> None:
+        """Set one Execution-line field, with its full text reachable on hover.
+
+        The strip is horizontally over-budget on every supported display:
+        measured offscreen, the five fields together need roughly 2780 px of
+        window width (2840 px with AD2 disabled and the trace degraded), so at
+        1366 px and 1440 px each field is compressed well below its sizeHint
+        and QLabel hard-clips the tail. There is no scroll ancestor and no
+        wrap, so the hidden text is unreachable by any other means.
+
+        The tooltip is exactly the string the label was given -- not a
+        composed or expanded variant, which would be a second copy of the same
+        fact and would drift. It is set on every refresh, including when the
+        text is short enough to fit, because a tooltip left over from a
+        previous run state is worse than no tooltip at all.
+        """
+
+        label.setText(text)
+        label.setToolTip(text)
+
     def _refresh_v3_execution_indicator(self) -> None:
         """Project the canonical run state onto the persistent Execution line.
 
@@ -2131,7 +2152,9 @@ class MainWindowV3(MainWindowV3Compatibility):
             repeat_text = f"repeat {repeat}"
         else:
             repeat_text = f"repeat {repeat}/{repeat_total}"
-        self._v3_execution_line_state.setText(f"{state} | {condition} | {repeat_text}")
+        self._v3_set_execution_field(
+            self._v3_execution_line_state, f"{state} | {condition} | {repeat_text}"
+        )
         self._v3_execution_line_state.setStyleSheet(
             "color: darkred; font-weight: bold;"
             if state == "ERROR"
@@ -2156,13 +2179,14 @@ class MainWindowV3(MainWindowV3Compatibility):
             if completed_indexes
             else self._EXECUTION_NO_COMPLETED_ACTION
         )
-        self._v3_execution_line_last.setText(f"Last: {previous}")
-        self._v3_execution_line_action.setText(f"Current: {current}")
-        self._v3_execution_line_next.setText(f"Next: {following}")
+        self._v3_set_execution_field(self._v3_execution_line_last, f"Last: {previous}")
+        self._v3_set_execution_field(self._v3_execution_line_action, f"Current: {current}")
+        self._v3_set_execution_field(self._v3_execution_line_next, f"Next: {following}")
 
         trace_state = self.app.commissioning_trace_state()
-        self._v3_execution_line_trace.setText(
-            self._TRACE_STATE_CAPTIONS.get(trace_state, f"Trace: {trace_state.value}")
+        self._v3_set_execution_field(
+            self._v3_execution_line_trace,
+            self._TRACE_STATE_CAPTIONS.get(trace_state, f"Trace: {trace_state.value}"),
         )
         # Severity separation, deliberate. A degraded trace means the
         # EVIDENCE is lossy; a runtime ERROR on the state label means the

@@ -77,14 +77,18 @@ def make_window(monkeypatch, tmp_path, app: Application | None = None) -> qt_ui_
     return build_with_retry(lambda: qt_ui_v3.MainWindowV3(app=app))
 
 
-def indicator(window) -> dict[str, str]:
+def execution_fields(window) -> dict[str, QLabel]:
     return {
-        "state": window.findChild(QLabel, "v3PersistentExecutionState").text(),
-        "last": window.findChild(QLabel, "v3PersistentExecutionLast").text(),
-        "current": window.findChild(QLabel, "v3PersistentExecutionAction").text(),
-        "next": window.findChild(QLabel, "v3PersistentExecutionNext").text(),
-        "trace": window.findChild(QLabel, "v3PersistentExecutionTrace").text(),
+        "state": window.findChild(QLabel, "v3PersistentExecutionState"),
+        "last": window.findChild(QLabel, "v3PersistentExecutionLast"),
+        "current": window.findChild(QLabel, "v3PersistentExecutionAction"),
+        "next": window.findChild(QLabel, "v3PersistentExecutionNext"),
+        "trace": window.findChild(QLabel, "v3PersistentExecutionTrace"),
     }
+
+
+def indicator(window) -> dict[str, str]:
+    return {name: field.text() for name, field in execution_fields(window).items()}
 
 
 def indicator_styles(window) -> dict[str, str]:
@@ -499,6 +503,75 @@ def test_execution_line_stays_one_row_per_field(monkeypatch, tmp_path):
         assert shown == "Last: Camera acquisition armed"
         assert chr(10) not in shown
         assert ";" not in shown and " + " not in shown
+    finally:
+        window.close()
+
+
+def test_every_execution_field_carries_its_full_text_as_a_tooltip(monkeypatch, tmp_path):
+    """The strip clips; hover must be able to recover what was clipped."""
+
+    app = Application()
+    window = make_window(monkeypatch, tmp_path, app=app)
+    try:
+        series = tmp_path / "series"
+        series.mkdir()
+        app.commissioning_trace_enabled = True
+        app.start_commissioning_trace(series)
+        window._refresh_v3_execution_indicator()
+
+        enter_running_repeat(window)
+        transitions = [
+            ("step_started", STEP_INITIALIZE_EXPERIMENT),
+            ("step_completed", STEP_INITIALIZE_EXPERIMENT),
+            ("step_started", STEP_CONFIGURE_WFG),
+            ("step_completed", STEP_CONFIGURE_WFG),
+            ("step_started", STEP_CAPTURE_FRAMES),
+            ("step_completed", STEP_CAPTURE_FRAMES),
+            ("step_started", STEP_SAVE_RESULTS),
+        ]
+        distinct: set[str] = set()
+        for kind, step in transitions:
+            window._handle_worker_progress(kind, step)
+            for name, field in execution_fields(window).items():
+                # Exactly the label's own text -- not an expanded variant.
+                assert field.toolTip() == field.text(), name
+                assert field.toolTip() != "", name
+            distinct.add(execution_fields(window)["current"].text())
+
+        # The run genuinely moved through several distinct states, so a
+        # tooltip set once at construction and never refreshed would have gone
+        # stale at some point above rather than trivially matching.
+        assert len(distinct) > 2
+
+        app.stop_commissioning_trace()
+    finally:
+        window.close()
+
+
+def test_execution_field_tooltips_do_not_go_stale_on_trace_state_change(
+    monkeypatch, tmp_path
+):
+    app = Application()
+    window = make_window(monkeypatch, tmp_path, app=app)
+    try:
+        trace = execution_fields(window)["trace"]
+        assert trace.toolTip() == trace.text() == "Trace: OFF"
+
+        series = tmp_path / "series"
+        series.mkdir()
+        app.commissioning_trace_enabled = True
+        app.start_commissioning_trace(series)
+        window._refresh_v3_execution_indicator()
+        assert trace.toolTip() == trace.text() == "Trace: RECORDING"
+
+        app.commissioning_trace._degrade("simulated write failure")
+        window._refresh_v3_execution_indicator()
+        assert trace.text().startswith("Trace: DEGRADED")
+        assert trace.toolTip() == trace.text()
+        # The superseded caption must not survive in the tooltip.
+        assert "RECORDING" not in trace.toolTip()
+
+        app.stop_commissioning_trace()
     finally:
         window.close()
 
