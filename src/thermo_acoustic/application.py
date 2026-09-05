@@ -6,11 +6,13 @@ from datetime import datetime, timezone
 import logging
 from dataclasses import dataclass, field
 import math
+from pathlib import Path
 import threading
 import time
 from typing import Callable
 
 from .ad2 import coerce_do_config, coerce_wfg_config
+from .commissioning_trace import CommissioningTraceRecorder, TraceState
 from .hw_logging import action_phase, action_scope, log_action, run_with_timeout
 from .instruments import AD2Sdk, CetoniPump, HamamatsuCamera, SimulatedAD2Sdk, Valve, ZStage
 from .messages import Message, MessageName, QueueResult, UiEvent
@@ -160,6 +162,12 @@ class Application:
     # a run whose pump fault was manually cleared this session is
     # distinguishable after the fact from one where it never faulted.
     pump_fault_manually_cleared_this_session: bool = False
+    # Commissioning trace recording is an observability option over the normal
+    # canonical experiment, never a second execution mode: execution behaves
+    # identically whether it is off, recording, or degraded. The recorder is a
+    # passive observer of the existing action stream (see commissioning_trace).
+    commissioning_trace_enabled: bool = False
+    commissioning_trace: CommissioningTraceRecorder | None = field(default=None, init=False, repr=False)
     _active_experiment: Experiment2 | None = field(default=None, init=False, repr=False)
     # A sequence owner calls set_experiment_series_general() before its first
     # repeat.  Keep the optional pre-repeat refresh there rather than inferring
@@ -452,6 +460,37 @@ class Application:
             update_legacy_status=False,
         )
         return result
+
+    def commissioning_trace_state(self) -> TraceState:
+        """Current recording state for read-only presentation. No I/O."""
+
+        recorder = self.commissioning_trace
+        return TraceState.OFF if recorder is None else recorder.state
+
+    def start_commissioning_trace(self, series_path) -> TraceState:
+        """Arm passive trace recording for one sequence, if the operator asked.
+
+        Called from the same sequence boundary that already creates the series
+        lifecycle manifest. It touches no instrument and cannot fail the run:
+        a recorder that cannot write reports DEGRADED and the sequence
+        proceeds unchanged.
+        """
+
+        self.stop_commissioning_trace()
+        if not self.commissioning_trace_enabled:
+            self.commissioning_trace = None
+            return TraceState.OFF
+        recorder = CommissioningTraceRecorder(series_path=Path(series_path))
+        self.commissioning_trace = recorder
+        return recorder.start()
+
+    def stop_commissioning_trace(self) -> TraceState:
+        """Disarm trace recording and persist its derived summary."""
+
+        recorder = self.commissioning_trace
+        if recorder is None:
+            return TraceState.OFF
+        return recorder.stop()
 
     def get_experiment_series_general(self) -> ExperimentSeries2:
         return self.experiment_series
@@ -1419,6 +1458,30 @@ class Application:
                 if self.ad2.enabled:
                     self.ad2.pc_trigger()
                     ad2_triggered_at = time.monotonic()
+                    # The single FDwfDeviceTriggerPC call is the software
+                    # logical t=0 for the already-armed W1/DIO0/DIO1 paths.
+                    # COMMAND_SENT is the strongest stage software can claim:
+                    # no electrical edge, acoustic onset, LED emission, or
+                    # camera exposure start is observed here. Recorded after
+                    # the monotonic reading so the reading is not delayed, and
+                    # immediately before the status event that already writes
+                    # at this point, so no hardware call spacing changes.
+                    log_action(
+                        "acoustic_laser_control",
+                        "pc_trigger_command_sent",
+                        evidence_stage="COMMAND_SENT",
+                        verification_scope=("SOFTWARE" if experiment.sim_ad2 else "PROTOCOL"),
+                        status="SENT",
+                        requested={
+                            "call": "FDwfDeviceTriggerPC",
+                            "armed_paths": ["w1_analog_out", "dio0_camera_trigger", "dio1_led_timing"],
+                        },
+                        result={
+                            "logical_t0": "software",
+                            "physical_onset_verified": False,
+                        },
+                        source="application._run_experiment2_unfinalized",
+                    )
                 else:
                     self.fire_status_event("AD2Disabled -- PC trigger skipped")
 
@@ -1555,6 +1618,26 @@ class Application:
                     progress("step_completed", STEP_FLUSH)
         else:
             flush_completed = True
+
+        # The save branch and the hardware-only refresh worker have both
+        # finished by here (the join above is the rendezvous) and the main
+        # thread has finalized the worker result. Recorded as one explicit
+        # transition so the trace can show where the concurrent branches
+        # rejoined instead of leaving it implied by adjacent step events.
+        log_action(
+            "run",
+            "save_flush_rendezvous",
+            evidence_stage="OBSERVED",
+            verification_scope="SOFTWARE",
+            status="COMPLETED",
+            result={
+                "refresh_requested": bool(flush_requested),
+                "refresh_completed": bool(flush_completed),
+                "save_failed": save_error is not None,
+                "physical_fluid_refresh_verified": False,
+            },
+            source="application._run_experiment2_unfinalized",
+        )
 
         if save_error is not None:
             if not flush_completed:

@@ -29,6 +29,14 @@ rotating text log remains the global transport diagnostic timeline; per-repeat
 TDMS and the series lifecycle manifest retain their existing scientific and
 aggregate authority.
 
+That JSONL stream is also the project's single canonical software event
+stream. `register_action_observer()` lets an additional passive consumer --
+the commissioning-trace recorder, a live execution indicator -- receive the
+SAME records rather than deriving its own parallel interpretation of what the
+run did. Observers are read-only projections: they never issue hardware I/O,
+never call back into `log_action()`, and an observer that raises is swallowed
+here, exactly like a failed JSONL write.
+
 `run_with_timeout()` below is a separate, unrelated utility that DOES use a
 background thread -- shared home in this module because it's the other
 piece of cross-cutting hardware infrastructure (the standard
@@ -66,6 +74,37 @@ _action_lock = threading.Lock()
 _action_context: ContextVar[dict[str, Any] | None] = ContextVar(
     "thermo_acoustic_action_context", default=None
 )
+_observer_lock = threading.Lock()
+_action_observers: dict[int, Callable[[dict[str, Any]], None]] = {}
+_next_observer_token = 0
+
+
+def register_action_observer(observer: Callable[[dict[str, Any]], None]) -> int:
+    """Subscribe a passive consumer to the canonical software action stream.
+
+    Observers exist so a second consumer (the commissioning trace recorder, a
+    live execution indicator) can project the SAME records `action_log.jsonl`
+    already receives, instead of running a parallel logger with its own
+    interpretation of what happened. An observer is called synchronously, on
+    whatever thread produced the action, with a private JSON-safe copy of the
+    record plus a ``monotonic_ns`` field. It must never raise (``log_action``
+    swallows it if it does), must never issue hardware I/O, and must never
+    call ``log_action`` itself.
+    """
+
+    global _next_observer_token
+    with _observer_lock:
+        _next_observer_token += 1
+        token = _next_observer_token
+        _action_observers[token] = observer
+    return token
+
+
+def unregister_action_observer(token: int) -> None:
+    """Remove a previously registered observer; unknown tokens are ignored."""
+
+    with _observer_lock:
+        _action_observers.pop(token, None)
 
 
 @contextmanager
@@ -86,13 +125,15 @@ def action_scope(
     diagnostic chronology, not a hardware-synchronization measurement.
     """
 
+    started_monotonic_ns = time.monotonic_ns()
     context = {
         "log_file": None if log_file is None else Path(log_file),
         "run_id": str(run_id),
         "condition": str(condition),
         "repeat": None if repeat is None else int(repeat),
         "phase": str(phase),
-        "started_monotonic": time.monotonic(),
+        "started_monotonic": started_monotonic_ns / 1_000_000_000,
+        "started_monotonic_ns": started_monotonic_ns,
     }
     token = _action_context.set(context)
     try:
@@ -173,15 +214,27 @@ def log_action(
     PHYSICAL_VERIFIED distinct. Callers must not use PHYSICAL_VERIFIED for a
     software/API result. This function never raises: evidence persistence
     failure must not trigger or interrupt hardware.
+
+    Registered observers receive the same record after the JSONL append is
+    attempted, so a live indicator and a durable trace always describe the
+    same event. Observers run inside the caller's thread but cannot affect it.
     """
 
     context = _action_context.get()
-    if context is None or context.get("log_file") is None:
+    if context is None:
         return
+    # One monotonic reading serves both the existing diagnostic elapsed_s and
+    # the observer stream's nanosecond ordering field, so one record can never
+    # carry two slightly different notions of when it happened.
+    monotonic_ns = time.monotonic_ns()
+    started_monotonic_ns = int(
+        context.get("started_monotonic_ns")
+        or float(context["started_monotonic"]) * 1_000_000_000
+    )
     payload: dict[str, object] = {
         "schema_version": 1,
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "elapsed_s": max(time.monotonic() - float(context["started_monotonic"]), 0.0),
+        "elapsed_s": max((monotonic_ns - started_monotonic_ns) / 1_000_000_000, 0.0),
         "run_id": context["run_id"],
         "condition": context["condition"],
         "repeat": context["repeat"],
@@ -200,16 +253,32 @@ def log_action(
         "source": source,
     }
     payload.update({key: _json_safe(value) for key, value in optional.items() if value is not None})
-    try:
-        target = Path(context["log_file"])
-        with _action_lock:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with target.open("a", encoding="utf-8", newline="\n") as handle:
-                json.dump(payload, handle, separators=(",", ":"), sort_keys=True)
-                handle.write("\n")
-                handle.flush()
-    except Exception:  # pragma: no cover - logging must never alter hardware behavior
-        pass
+    log_file = context.get("log_file")
+    if log_file is not None:
+        try:
+            target = Path(log_file)
+            with _action_lock:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with target.open("a", encoding="utf-8", newline="\n") as handle:
+                    json.dump(payload, handle, separators=(",", ":"), sort_keys=True)
+                    handle.write("\n")
+                    handle.flush()
+        except Exception:  # pragma: no cover - logging must never alter hardware behavior
+            pass
+    with _observer_lock:
+        observers = list(_action_observers.values())
+    if not observers:
+        return
+    # Observers get a private copy carrying the extra monotonic_ns field, so
+    # no consumer can mutate what action_log.jsonl already wrote and the
+    # persisted action-log schema stays exactly as before.
+    record = dict(payload)
+    record["monotonic_ns"] = monotonic_ns
+    for observer in observers:
+        try:
+            observer(record)
+        except Exception:  # pragma: no cover - evidence must never alter hardware behavior
+            pass
 
 
 def configure(log_file: Path | None = None, *, max_bytes: int = 5_000_000, backup_count: int = 5) -> Path:

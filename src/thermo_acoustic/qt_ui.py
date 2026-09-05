@@ -8,6 +8,7 @@ import queue
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 
@@ -67,7 +68,7 @@ from .experiment_planning import (
 )
 from .hardware_factory import HardwareRuntimeConfig, apply_hardware_bundle, build_hardware_bundle
 from .hardware_config import ZStageBackend, default_hardware_config
-from .hw_logging import action_scope
+from .hw_logging import action_scope, log_action
 from .instruments import SimulatedAD2Sdk
 from .tec import TEC_TARGET_MAX_C, TEC_TARGET_MIN_C
 from .workflows import Experiment2, ExperimentSeries2, FlushSettings, SeriesLifecycleManifest, TemperatureSeries
@@ -4581,6 +4582,79 @@ class MainWindow(QMainWindow):
         _ = repeat_index
         return DoConfig(running=False)
 
+    @contextmanager
+    def _sequence_evidence_scope(
+        self,
+        series_path: Path,
+        *,
+        total_repeats: int,
+        tec_points: int | None = None,
+    ):
+        """Bracket one canonical sequence with correlated sequence-level evidence.
+
+        Two things belong at this boundary and nowhere else: the optional
+        commissioning-trace observer (armed for exactly one sequence) and the
+        sequence start/finish transitions, which the per-repeat action scope
+        cannot express because it is scoped to a single repeat.
+
+        Entirely passive. It opens no device, issues no command, adds no wait,
+        and cannot change the sequence outcome: a trace recorder that cannot
+        write reports DEGRADED while execution continues unchanged.
+        """
+
+        series_root = Path(series_path)
+        self.app.start_commissioning_trace(series_root)
+        state: dict[str, object] = {}
+        try:
+            with action_scope(
+                series_root / "action_log.jsonl",
+                run_id=series_root.name or "unscoped_run",
+                condition="sequence",
+                repeat=None,
+                phase="SEQUENCE",
+            ):
+                log_action(
+                    "run",
+                    "sequence_started",
+                    evidence_stage="PLANNED",
+                    verification_scope="SOFTWARE",
+                    status="STARTED",
+                    requested={
+                        "series_path": str(series_root),
+                        "requested_repeats": int(total_repeats),
+                        "tec_points": tec_points,
+                        "commissioning_trace": self.app.commissioning_trace_state().value,
+                    },
+                    source="qt_ui._sequence_evidence_scope",
+                )
+                failed = False
+                try:
+                    yield state
+                except BaseException:
+                    failed = True
+                    raise
+                finally:
+                    # Bounded status vocabulary, like every other action
+                    # record; the runner's own return string is kept beside it
+                    # rather than becoming an unbounded status value.
+                    outcome = "FAILED" if failed else str(state.get("outcome") or "COMPLETED")
+                    log_action(
+                        "run",
+                        "sequence_completed",
+                        evidence_stage="OBSERVED",
+                        verification_scope="SOFTWARE",
+                        status=outcome,
+                        result={
+                            "series_path": str(series_root),
+                            "requested_repeats": int(total_repeats),
+                            "series_result": state.get("result"),
+                            "commissioning_trace": self.app.commissioning_trace_state().value,
+                        },
+                        source="qt_ui._sequence_evidence_scope",
+                    )
+        finally:
+            self.app.stop_commissioning_trace()
+
     def _run_experiment_series(
         self,
         series: ExperimentSeries2,
@@ -4617,15 +4691,22 @@ class MainWindow(QMainWindow):
             )
             progress("experiment_series_active", True)
         try:
-            result = self._run_experiment_series_body(
-                series,
-                total_frames,
-                config,
-                progress,
-                started_at=started_at,
-                total_repeats=total_repeats,
-                lifecycle_manifest=lifecycle_manifest,
-            )
+            with self._sequence_evidence_scope(
+                series.series_path, total_repeats=total_repeats
+            ) as sequence_state:
+                result = self._run_experiment_series_body(
+                    series,
+                    total_frames,
+                    config,
+                    progress,
+                    started_at=started_at,
+                    total_repeats=total_repeats,
+                    lifecycle_manifest=lifecycle_manifest,
+                )
+                sequence_state["result"] = result
+                sequence_state["outcome"] = (
+                    "GRACEFULLY_ABORTED" if result == "ExperimentSeriesAborted" else "COMPLETED"
+                )
             if lifecycle_manifest.outcome == "IN_PROGRESS":
                 lifecycle_manifest.finalize("COMPLETED")
             return result
@@ -4691,32 +4772,37 @@ class MainWindow(QMainWindow):
                 )
 
         try:
-            # Same fix as _run_experiment_series_body()'s run_experiment2() call
-            # just below it in this file: `progress` was previously dropped
-            # here too, so a TEC scan never fired step_started/step_completed/
-            # step_failed either -- the v2 breadcrumb (2026-08-04) needs this.
-            with action_scope(
-                series_path / "action_log.jsonl",
-                run_id=series_path.name or "temperature_series",
-                condition="temperature_series",
-                repeat=None,
-                phase="PRE_RUN",
-            ):
-                completed = self.app.run_temperature_series(
-                    temperature_series,
-                    groups,
-                    progress=timed_progress if progress else None,
-                    lifecycle_manifest=lifecycle_manifest,
-                )
-            if not completed:
-                if lifecycle_manifest.outcome == "IN_PROGRESS":
-                    lifecycle_manifest.finalize(
-                        "GRACEFULLY_ABORTED" if self.app.stop_fired else "FAILED",
-                        graceful_abort_requested=self.app.stop_fired,
+            with self._sequence_evidence_scope(
+                series_path, total_repeats=total_repeats, tec_points=len(groups)
+            ) as sequence_state:
+                # Same fix as _run_experiment_series_body()'s run_experiment2() call
+                # just below it in this file: `progress` was previously dropped
+                # here too, so a TEC scan never fired step_started/step_completed/
+                # step_failed either -- the v2 breadcrumb (2026-08-04) needs this.
+                with action_scope(
+                    series_path / "action_log.jsonl",
+                    run_id=series_path.name or "temperature_series",
+                    condition="temperature_series",
+                    repeat=None,
+                    phase="PRE_RUN",
+                ):
+                    completed = self.app.run_temperature_series(
+                        temperature_series,
+                        groups,
+                        progress=timed_progress if progress else None,
+                        lifecycle_manifest=lifecycle_manifest,
                     )
-                message = f"TEC temperature scan stopped before completion (status={self.app.status!r})."
-                logger.error(message)
-                raise RuntimeError(message)
+                if not completed:
+                    if lifecycle_manifest.outcome == "IN_PROGRESS":
+                        lifecycle_manifest.finalize(
+                            "GRACEFULLY_ABORTED" if self.app.stop_fired else "FAILED",
+                            graceful_abort_requested=self.app.stop_fired,
+                        )
+                    message = f"TEC temperature scan stopped before completion (status={self.app.status!r})."
+                    logger.error(message)
+                    raise RuntimeError(message)
+                sequence_state["result"] = "TemperatureSeriesComplete"
+                sequence_state["outcome"] = "COMPLETED"
             elapsed = max(time.monotonic() - started_at, 0.001)
             if progress:
                 progress("queue_count", 0)
