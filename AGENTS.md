@@ -57,3 +57,27 @@ evidence belongs in `docs/known_open_items.md` and the hardware truth records.
 - For genuinely concurrent overlapping coding work, follow
   `docs/concurrent_worktree_workflow.md`; it is not required for read-only or
   sequential local work.
+- **Only one modifying agent is authorized per worktree at a time.** A second
+  concurrent coding task needs its own worktree, per the workflow above; a
+  read-only check does not.
+
+## UI Surface Ownership
+
+Recorded because the earlier per-surface split no longer matches the tree: V2
+is retired and removed, so there is no v2/v3 division of labour to assign.
+
+- `src/thermo_acoustic/qt_ui.py` — V1, the retained fallback and the current
+  default launcher (`launch_gui.bat`).
+- `src/thermo_acoustic/qt_ui_v3.py` — V3, the sole modern development target
+  and candidate primary (`launch_gui_v3.bat`). Promotion to default remains an
+  owner decision.
+- `qt_ui.py` is a **shared layer, not V1-private**: `MainWindowV3` extends
+  `MainWindowV3Compatibility`, which extends `qt_ui.MainWindow`, and
+  `qt_ui_v3_support.py` imports its widgets and builders directly. An edit
+  there is cross-surface by construction and needs both surfaces considered —
+  run `tools/audit_change_surface.py` for shared UI/runtime changes.
+- `src/thermo_acoustic/ui.py` (legacy Tkinter) is a quarantined migration
+  reference outside the V1/V3 lifecycle; do not modernize it as mainline work.
+
+Current UI-role and promotion status stays in `docs/project_control.md`; this
+section records only the ownership boundary.
