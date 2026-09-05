@@ -16,6 +16,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import QApplication, QCheckBox, QGroupBox, QLabel
 
 from conftest import build_with_retry
@@ -87,8 +88,12 @@ def execution_fields(window) -> dict[str, QLabel]:
     }
 
 
+# The indicator's VALUE is the full string the field was given. `.text()` is
+# only the part that fits at the current width, because the strip elides.
+# Assertions about what the indicator SAYS read the value; assertions about
+# how it RENDERS read `displayed_text()` explicitly.
 def indicator(window) -> dict[str, str]:
-    return {name: field.text() for name, field in execution_fields(window).items()}
+    return {name: field.full_text() for name, field in execution_fields(window).items()}
 
 
 def indicator_styles(window) -> dict[str, str]:
@@ -534,9 +539,9 @@ def test_every_execution_field_carries_its_full_text_as_a_tooltip(monkeypatch, t
             window._handle_worker_progress(kind, step)
             for name, field in execution_fields(window).items():
                 # Exactly the label's own text -- not an expanded variant.
-                assert field.toolTip() == field.text(), name
+                assert field.toolTip() == field.full_text(), name
                 assert field.toolTip() != "", name
-            distinct.add(execution_fields(window)["current"].text())
+            distinct.add(execution_fields(window)["current"].full_text())
 
         # The run genuinely moved through several distinct states, so a
         # tooltip set once at construction and never refreshed would have gone
@@ -555,25 +560,168 @@ def test_execution_field_tooltips_do_not_go_stale_on_trace_state_change(
     window = make_window(monkeypatch, tmp_path, app=app)
     try:
         trace = execution_fields(window)["trace"]
-        assert trace.toolTip() == trace.text() == "Trace: OFF"
+        assert trace.toolTip() == trace.full_text() == "Trace: OFF"
 
         series = tmp_path / "series"
         series.mkdir()
         app.commissioning_trace_enabled = True
         app.start_commissioning_trace(series)
         window._refresh_v3_execution_indicator()
-        assert trace.toolTip() == trace.text() == "Trace: RECORDING"
+        assert trace.toolTip() == trace.full_text() == "Trace: RECORDING"
 
         app.commissioning_trace._degrade("simulated write failure")
         window._refresh_v3_execution_indicator()
-        assert trace.text().startswith("Trace: DEGRADED")
-        assert trace.toolTip() == trace.text()
+        assert trace.full_text().startswith("Trace: DEGRADED")
+        assert trace.toolTip() == trace.full_text()
         # The superseded caption must not survive in the tooltip.
         assert "RECORDING" not in trace.toolTip()
 
         app.stop_commissioning_trace()
     finally:
         window.close()
+
+
+ELLIPSIS = "…"
+
+
+def _running_window(monkeypatch, tmp_path, size, *, ad2=True, degrade=False):
+    """A window at a real supported size, mid-repeat, laid out for measurement."""
+
+    app = Application()
+    window = make_window(monkeypatch, tmp_path, app=app)
+    window.resize(*size)
+    window.show()
+    QApplication.processEvents()
+    if degrade:
+        series = tmp_path / "series"
+        series.mkdir(exist_ok=True)
+        app.commissioning_trace_enabled = True
+        app.start_commissioning_trace(series)
+        app.commissioning_trace._degrade("simulated write failure")
+    context = dict(RUNNING_CONTEXT)
+    if not ad2:
+        context["subsystems"] = dict(RUNNING_CONTEXT["subsystems"], ad2=False)
+        context["ad2_wait_required"] = False
+    enter_running_repeat(window, context)
+    for step in (STEP_INITIALIZE_EXPERIMENT, STEP_CONFIGURE_WFG, STEP_CONFIGURE_CAMERA):
+        window._handle_worker_progress("step_started", step)
+        window._handle_worker_progress("step_completed", step)
+    window._handle_worker_progress("step_started", STEP_CAPTURE_FRAMES)
+    QApplication.processEvents()
+    return app, window
+
+
+@pytest.mark.parametrize("size", [(1366, 768), (1440, 900)])
+def test_clipped_execution_fields_render_an_ellipsis_not_a_mid_word_cut(
+    monkeypatch, tmp_path, size
+):
+    """A field too narrow for its value must SAY so, not stop mid-word."""
+
+    app, window = _running_window(monkeypatch, tmp_path, size, ad2=False)
+    try:
+        fields = execution_fields(window)
+        current = fields["current"]
+
+        # The exact string the wording exists to protect. If this ever fits,
+        # the premise of the test is gone and it must be revisited.
+        assert current.full_text() == (
+            "Current: Waiting for requested camera frames; AD2 disabled, "
+            "no PC trigger command sent"
+        )
+        assert QFontMetrics(current.font()).horizontalAdvance(
+            current.full_text()
+        ) > current.width(), "field unexpectedly fits; this test no longer proves anything"
+
+        shown = current.displayed_text()
+        assert shown != current.full_text()
+        assert shown.endswith(ELLIPSIS), shown
+        # The dangerous reading: a bare truncation looks like an ordinary wait.
+        assert not shown.startswith("Current: Waiting for requested camera frames;")
+
+        # The full text stays recoverable and is NOT replaced by the elision.
+        assert current.toolTip() == current.full_text()
+        assert ELLIPSIS not in current.toolTip()
+    finally:
+        window.close()
+        app.stop_commissioning_trace()
+
+
+@pytest.mark.parametrize("size", [(1366, 768), (1440, 900)])
+def test_every_leading_token_survives_elision(monkeypatch, tmp_path, size):
+    """An operator must always be able to tell which field is which."""
+
+    app, window = _running_window(monkeypatch, tmp_path, size, degrade=True)
+    try:
+        fields = execution_fields(window)
+        expected_leads = {
+            "state": "RUNNING",
+            "last": "Last:",
+            "current": "Current:",
+            "next": "Next:",
+            "trace": "Trace:",
+        }
+        for name, lead in expected_leads.items():
+            shown = fields[name].displayed_text()
+            assert shown.startswith(lead), (name, shown)
+            # A field reduced to nothing but an ellipsis is useless.
+            assert shown.strip(ELLIPSIS).strip() != "", (name, shown)
+    finally:
+        window.close()
+        app.stop_commissioning_trace()
+
+
+@pytest.mark.parametrize("size", [(1366, 768), (1440, 900)])
+def test_trace_degraded_token_survives_elision(monkeypatch, tmp_path, size):
+    """DEGRADED must stay readable; only its explanatory tail may elide.
+
+    The degraded caption is the longest string this field ever holds, and it
+    also widens the field's share of the row, squeezing its neighbours -- so
+    this is the case where the token is most at risk.
+    """
+
+    app, window = _running_window(monkeypatch, tmp_path, size, degrade=True)
+    try:
+        trace = execution_fields(window)["trace"]
+        assert trace.full_text() == "Trace: DEGRADED — recorded evidence is incomplete"
+
+        shown = trace.displayed_text()
+        assert "DEGRADED" in shown, shown
+        assert shown.startswith("Trace: DEGRADED")
+        # The tail is what elides, and it stays reachable on hover.
+        assert shown != trace.full_text()
+        assert trace.toolTip() == trace.full_text()
+        assert "recorded evidence is incomplete" in trace.toolTip()
+    finally:
+        window.close()
+        app.stop_commissioning_trace()
+
+
+def test_elision_does_not_ratchet_across_repeated_layout_passes(monkeypatch, tmp_path):
+    """Eliding must not feed back into the width that decided the elision.
+
+    Setting a shorter text lowers a label's reported sizeHint, the row hands
+    the freed width to the one stretching field, and the next re-elide is
+    computed against a narrower allocation. Measured on a plain QLabel that
+    collapses the fields about 12 px per pass. The size hints are pinned to
+    the full text specifically to stop this.
+    """
+
+    app, window = _running_window(monkeypatch, tmp_path, (1366, 768))
+    try:
+        fields = execution_fields(window)
+        observed: list[tuple] = []
+        for _pass in range(8):
+            window.resize(1366, 768)
+            QApplication.processEvents()
+            window._refresh_v3_execution_indicator()
+            QApplication.processEvents()
+            observed.append(
+                tuple((f.width(), f.displayed_text()) for f in fields.values())
+            )
+        assert len(set(observed)) == 1, "execution field widths/text did not settle"
+    finally:
+        window.close()
+        app.stop_commissioning_trace()
 
 
 def test_execution_indicator_is_event_driven_and_owns_no_local_clock(monkeypatch, tmp_path):

@@ -5,7 +5,8 @@ import json
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -206,6 +207,78 @@ class InitializationDialogV3(InitializationDialog):
         sections.addTab(legacy, "Retained fields")
         layout.addWidget(sections)
         return group
+
+
+class _ExecutionFieldLabel(QLabel):
+    """One field of the persistent Execution line, elided instead of clipped.
+
+    The strip is horizontally over-budget on every supported display: measured
+    offscreen, all five fields together need roughly 2780 px of window width
+    (2840 px with AD2 disabled and the trace degraded), so they are compressed
+    well below their `sizeHint()` at 1366 px and 1440 px alike. A plain QLabel
+    then hard-clips: no scrollbar, no ellipsis, no tooltip, the tail simply
+    unreachable. That is how "Waiting for requested camera frames; AD2
+    disabled, no PC trigger command sent" renders as "Current: Waiting " and
+    reads like an ordinary wait -- the exact implication the wording exists to
+    prevent.
+
+    So this label paints an ellipsis and carries the full string as its
+    tooltip. `full_text()` is the single stored value: the tooltip is set from
+    it and the visible text is derived from it, so the two cannot drift.
+
+    `sizeHint()`/`minimumSizeHint()` deliberately keep reporting the FULL
+    text's width. Eliding through `setText()` alone is not viable here --
+    measured, it ratchets: a shorter text lowers the reported hint, the row
+    hands the freed width to the one stretching field, the next re-elide is
+    computed against a narrower allocation, and the fields collapse ~12 px per
+    resize (18 visible characters down to 9 over ten passes). Pinning the
+    hints to the full text keeps the layout allocating exactly the widths it
+    allocates today, so this class changes no geometry, no policy and no
+    stretch -- only what is painted.
+    """
+
+    def __init__(self, text: str = "", parent=None) -> None:
+        super().__init__(text, parent)
+        self._full_text = text
+        self.setToolTip(text)
+
+    def set_full_text(self, text: str) -> None:
+        """Set the field's value. Tooltip and visible text both follow this."""
+
+        self._full_text = text
+        # Set on every refresh, never only on change: a tooltip left over from
+        # a previous run state is worse than no tooltip at all.
+        self.setToolTip(text)
+        self._apply_elision()
+
+    def full_text(self) -> str:
+        return self._full_text
+
+    def displayed_text(self) -> str:
+        """What is actually painted at the current width."""
+
+        return QFontMetrics(self.font()).elidedText(
+            self._full_text, Qt.TextElideMode.ElideRight, self.contentsRect().width()
+        )
+
+    def _apply_elision(self) -> None:
+        QLabel.setText(self, self.displayed_text())
+
+    def resizeEvent(self, event) -> None:
+        # Re-elide on width change, not only on value change, and without a
+        # timer: the row's per-field width moves whenever a neighbouring
+        # field's value changes length.
+        super().resizeEvent(event)
+        self._apply_elision()
+
+    def sizeHint(self) -> QSize:
+        return QSize(
+            QFontMetrics(self.font()).horizontalAdvance(self._full_text),
+            super().sizeHint().height(),
+        )
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(self.sizeHint().width(), super().minimumSizeHint().height())
 
 
 class MainWindowV3(MainWindowV3Compatibility):
@@ -495,15 +568,15 @@ class MainWindowV3(MainWindowV3Compatibility):
         execution_layout = QHBoxLayout(execution_host)
         execution_layout.setContentsMargins(0, 0, 0, 0)
         execution_layout.setSpacing(12)
-        self._v3_execution_line_state = QLabel("IDLE")
+        self._v3_execution_line_state = _ExecutionFieldLabel("IDLE")
         self._v3_execution_line_state.setObjectName("v3PersistentExecutionState")
-        self._v3_execution_line_last = QLabel(f"Last: {self._EXECUTION_NO_COMPLETED_ACTION}")
+        self._v3_execution_line_last = _ExecutionFieldLabel(f"Last: {self._EXECUTION_NO_COMPLETED_ACTION}")
         self._v3_execution_line_last.setObjectName("v3PersistentExecutionLast")
-        self._v3_execution_line_action = QLabel("Current: No run in progress")
+        self._v3_execution_line_action = _ExecutionFieldLabel("Current: No run in progress")
         self._v3_execution_line_action.setObjectName("v3PersistentExecutionAction")
-        self._v3_execution_line_next = QLabel("Next: No queued software action")
+        self._v3_execution_line_next = _ExecutionFieldLabel("Next: No queued software action")
         self._v3_execution_line_next.setObjectName("v3PersistentExecutionNext")
-        self._v3_execution_line_trace = QLabel(self._TRACE_STATE_CAPTIONS[TraceState.OFF])
+        self._v3_execution_line_trace = _ExecutionFieldLabel(self._TRACE_STATE_CAPTIONS[TraceState.OFF])
         self._v3_execution_line_trace.setObjectName("v3PersistentExecutionTrace")
         execution_layout.addWidget(self._v3_execution_line_state)
         # Chronological reading order: what just finished, what is happening,
@@ -2055,27 +2128,6 @@ class MainWindowV3(MainWindowV3Compatibility):
             return self._EXECUTION_CAPTURE_WITHOUT_AD2
         return self._EXECUTION_STEP_ACTIONS.get(step, self._EXECUTION_STEP_TITLES.get(step, step))
 
-    @staticmethod
-    def _v3_set_execution_field(label: QLabel, text: str) -> None:
-        """Set one Execution-line field, with its full text reachable on hover.
-
-        The strip is horizontally over-budget on every supported display:
-        measured offscreen, the five fields together need roughly 2780 px of
-        window width (2840 px with AD2 disabled and the trace degraded), so at
-        1366 px and 1440 px each field is compressed well below its sizeHint
-        and QLabel hard-clips the tail. There is no scroll ancestor and no
-        wrap, so the hidden text is unreachable by any other means.
-
-        The tooltip is exactly the string the label was given -- not a
-        composed or expanded variant, which would be a second copy of the same
-        fact and would drift. It is set on every refresh, including when the
-        text is short enough to fit, because a tooltip left over from a
-        previous run state is worse than no tooltip at all.
-        """
-
-        label.setText(text)
-        label.setToolTip(text)
-
     def _refresh_v3_execution_indicator(self) -> None:
         """Project the canonical run state onto the persistent Execution line.
 
@@ -2152,9 +2204,7 @@ class MainWindowV3(MainWindowV3Compatibility):
             repeat_text = f"repeat {repeat}"
         else:
             repeat_text = f"repeat {repeat}/{repeat_total}"
-        self._v3_set_execution_field(
-            self._v3_execution_line_state, f"{state} | {condition} | {repeat_text}"
-        )
+        self._v3_execution_line_state.set_full_text(f"{state} | {condition} | {repeat_text}")
         self._v3_execution_line_state.setStyleSheet(
             "color: darkred; font-weight: bold;"
             if state == "ERROR"
@@ -2179,14 +2229,13 @@ class MainWindowV3(MainWindowV3Compatibility):
             if completed_indexes
             else self._EXECUTION_NO_COMPLETED_ACTION
         )
-        self._v3_set_execution_field(self._v3_execution_line_last, f"Last: {previous}")
-        self._v3_set_execution_field(self._v3_execution_line_action, f"Current: {current}")
-        self._v3_set_execution_field(self._v3_execution_line_next, f"Next: {following}")
+        self._v3_execution_line_last.set_full_text(f"Last: {previous}")
+        self._v3_execution_line_action.set_full_text(f"Current: {current}")
+        self._v3_execution_line_next.set_full_text(f"Next: {following}")
 
         trace_state = self.app.commissioning_trace_state()
-        self._v3_set_execution_field(
-            self._v3_execution_line_trace,
-            self._TRACE_STATE_CAPTIONS.get(trace_state, f"Trace: {trace_state.value}"),
+        self._v3_execution_line_trace.set_full_text(
+            self._TRACE_STATE_CAPTIONS.get(trace_state, f"Trace: {trace_state.value}")
         )
         # Severity separation, deliberate. A degraded trace means the
         # EVIDENCE is lossy; a runtime ERROR on the state label means the
