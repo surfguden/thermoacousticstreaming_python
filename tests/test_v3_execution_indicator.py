@@ -86,6 +86,23 @@ def indicator(window) -> dict[str, str]:
     }
 
 
+def indicator_styles(window) -> dict[str, str]:
+    return {
+        "state": window.findChild(QLabel, "v3PersistentExecutionState").styleSheet(),
+        "trace": window.findChild(QLabel, "v3PersistentExecutionTrace").styleSheet(),
+    }
+
+
+def colour_of(style: str) -> str | None:
+    """The colour token a stylesheet actually applies, or None if it is quiet."""
+
+    for part in style.split(";"):
+        name, _, value = part.partition(":")
+        if name.strip() == "color":
+            return value.strip()
+    return None
+
+
 def enter_running_repeat(window, context: dict | None = None) -> None:
     window._handle_worker_progress("experiment_series_active", True)
     window._handle_worker_progress("execution_context", dict(context or RUNNING_CONTEXT))
@@ -306,6 +323,75 @@ def test_execution_indicator_shows_trace_recording_and_degraded_state(monkeypatc
         assert indicator(window)["trace"] == (
             "Trace: DEGRADED — recorded evidence is incomplete"
         )
+        app.stop_commissioning_trace()
+    finally:
+        window.close()
+
+
+def test_trace_degraded_does_not_compete_with_a_runtime_error(monkeypatch, tmp_path):
+    """Lossy evidence and a failed experiment must not read the same.
+
+    Both conditions are forced to be true at once -- the run has faulted AND
+    recording has degraded -- because that is the case where a shared colour
+    actually misleads: the operator cannot tell which of the two the red is
+    for.
+    """
+
+    app = Application()
+    window = make_window(monkeypatch, tmp_path, app=app)
+    try:
+        series = tmp_path / "series"
+        series.mkdir()
+        app.commissioning_trace_enabled = True
+        assert app.start_commissioning_trace(series) is TraceState.RECORDING
+
+        enter_running_repeat(window)
+        window._handle_worker_progress("step_started", STEP_CAPTURE_FRAMES)
+        window._handle_worker_progress(
+            "step_failed", (STEP_CAPTURE_FRAMES, "camera returned no frames")
+        )
+        app.commissioning_trace._degrade("simulated write failure")
+        window._refresh_v3_execution_indicator()
+
+        assert indicator(window)["state"].startswith("ERROR")
+        assert indicator(window)["trace"].startswith("Trace: DEGRADED")
+
+        styles = indicator_styles(window)
+        error_colour = colour_of(styles["state"])
+        degraded_colour = colour_of(styles["trace"])
+
+        # Both are conspicuous...
+        assert error_colour is not None
+        assert degraded_colour is not None
+        # ...but they are different conditions with different consequences,
+        # so they must not render as the same colour.
+        assert error_colour != degraded_colour
+        # The experiment failure keeps the saturated failure colour; the
+        # evidence problem takes this file's existing divergence marker.
+        assert error_colour == "darkred"
+        assert degraded_colour == "darkorange"
+
+        app.stop_commissioning_trace()
+    finally:
+        window.close()
+
+
+def test_routine_trace_states_stay_quiet(monkeypatch, tmp_path):
+    """Normal recording is status, not alarm: no attention colour."""
+
+    app = Application()
+    window = make_window(monkeypatch, tmp_path, app=app)
+    try:
+        assert colour_of(indicator_styles(window)["trace"]) is None
+
+        series = tmp_path / "series"
+        series.mkdir()
+        app.commissioning_trace_enabled = True
+        app.start_commissioning_trace(series)
+        window._refresh_v3_execution_indicator()
+        recording_colour = colour_of(indicator_styles(window)["trace"])
+        assert recording_colour not in {"darkred", "darkorange"}
+
         app.stop_commissioning_trace()
     finally:
         window.close()

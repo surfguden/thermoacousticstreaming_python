@@ -2124,8 +2124,16 @@ class MainWindowV3(MainWindowV3Compatibility):
         self._v3_execution_line_trace.setText(
             self._TRACE_STATE_CAPTIONS.get(trace_state, f"Trace: {trace_state.value}")
         )
+        # Severity separation, deliberate. A degraded trace means the
+        # EVIDENCE is lossy; a runtime ERROR on the state label means the
+        # EXPERIMENT failed. Those consequences are not equivalent, so they
+        # must not read the same at a glance. darkred stays reserved for the
+        # failure; degraded recording uses darkorange, already this file's
+        # marker for "something diverged, look at it" (requested-vs-applied
+        # exposure/ROI, plan warnings, readiness). RECORDING and OFF stay
+        # quiet -- routine status is not an alarm and gets no attention colour.
         self._v3_execution_line_trace.setStyleSheet(
-            "color: darkred; font-weight: bold;"
+            "color: darkorange; font-weight: bold;"
             if trace_state is TraceState.DEGRADED
             else "color: dodgerblue; font-weight: bold;"
             if trace_state is TraceState.RECORDING
