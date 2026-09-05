@@ -80,6 +80,7 @@ def make_window(monkeypatch, tmp_path, app: Application | None = None) -> qt_ui_
 def indicator(window) -> dict[str, str]:
     return {
         "state": window.findChild(QLabel, "v3PersistentExecutionState").text(),
+        "last": window.findChild(QLabel, "v3PersistentExecutionLast").text(),
         "current": window.findChild(QLabel, "v3PersistentExecutionAction").text(),
         "next": window.findChild(QLabel, "v3PersistentExecutionNext").text(),
         "trace": window.findChild(QLabel, "v3PersistentExecutionTrace").text(),
@@ -393,6 +394,111 @@ def test_routine_trace_states_stay_quiet(monkeypatch, tmp_path):
         assert recording_colour not in {"darkred", "darkorange"}
 
         app.stop_commissioning_trace()
+    finally:
+        window.close()
+
+
+def test_last_completed_action_is_derived_from_emitted_completion_events(
+    monkeypatch, tmp_path
+):
+    """Last tracks the furthest step the runtime actually reported completed."""
+
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        enter_running_repeat(window)
+        # Nothing has completed in this repeat yet.
+        assert indicator(window)["last"] == "Last: none yet"
+
+        window._handle_worker_progress("step_started", STEP_INITIALIZE_EXPERIMENT)
+        # Starting a step is not completing it.
+        assert indicator(window)["last"] == "Last: none yet"
+
+        window._handle_worker_progress("step_completed", STEP_INITIALIZE_EXPERIMENT)
+        assert indicator(window)["last"] == "Last: Repeat record created"
+
+        # It advances across a real sequence of transitions, and it always
+        # trails Current rather than duplicating it.
+        seen: list[tuple[str, str]] = []
+        for step, expected in (
+            (STEP_CONFIGURE_WFG, "Last: W1 and DigitalOut armed"),
+            (STEP_CONFIGURE_CAMERA, "Last: Camera acquisition armed"),
+            (STEP_CAPTURE_FRAMES, "Last: Camera capture completed"),
+            (STEP_WAIT_FOR_AD2_COMPLETION, "Last: Software output barrier elapsed"),
+            (STEP_SAVE_RESULTS, "Last: Results saved"),
+        ):
+            window._handle_worker_progress("step_started", step)
+            during = indicator(window)
+            assert during["current"].startswith("Current: ")
+            assert during["last"] != during["current"].replace("Current: ", "Last: ", 1)
+            window._handle_worker_progress("step_completed", step)
+            after = indicator(window)
+            assert after["last"] == expected
+            seen.append((step, after["last"]))
+
+        # Every transition produced a distinct Last value -- a field stuck on
+        # the first completion, or on a constant, would collapse this.
+        assert len({text for _step, text in seen}) == len(seen)
+    finally:
+        window.close()
+
+
+def test_last_completed_action_survives_a_fault_and_shows_the_last_good_step(
+    monkeypatch, tmp_path
+):
+    """After a fault the operator still needs to know how far the run got."""
+
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        enter_running_repeat(window)
+        for step in (STEP_INITIALIZE_EXPERIMENT, STEP_CONFIGURE_WFG):
+            window._handle_worker_progress("step_started", step)
+            window._handle_worker_progress("step_completed", step)
+        window._handle_worker_progress("step_started", STEP_CONFIGURE_CAMERA)
+        window._handle_worker_progress(
+            "step_failed", (STEP_CONFIGURE_CAMERA, "camera property rejected")
+        )
+
+        shown = indicator(window)
+        assert shown["state"].startswith("ERROR")
+        # The failed step is NOT reported as completed.
+        assert shown["last"] == "Last: W1 and DigitalOut armed"
+        assert "Camera acquisition armed" not in shown["last"]
+    finally:
+        window.close()
+
+
+def test_last_completed_action_shows_nothing_meaningful_at_idle(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        shown = indicator(window)
+        assert shown["state"].startswith("IDLE")
+        assert shown["last"] == "Last: none yet"
+
+        # And it returns to that after a run's step state is reset.
+        enter_running_repeat(window)
+        window._handle_worker_progress("step_started", STEP_INITIALIZE_EXPERIMENT)
+        window._handle_worker_progress("step_completed", STEP_INITIALIZE_EXPERIMENT)
+        assert indicator(window)["last"] == "Last: Repeat record created"
+        window._handle_worker_progress("step_reset", None)
+        assert indicator(window)["last"] == "Last: none yet"
+    finally:
+        window.close()
+
+
+def test_execution_line_stays_one_row_per_field(monkeypatch, tmp_path):
+    """Last is one field on the existing line, not a history panel."""
+
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        enter_running_repeat(window)
+        for step in (STEP_INITIALIZE_EXPERIMENT, STEP_CONFIGURE_WFG, STEP_CONFIGURE_CAMERA):
+            window._handle_worker_progress("step_started", step)
+            window._handle_worker_progress("step_completed", step)
+        shown = indicator(window)["last"]
+        # Exactly one completed action is named, not an accumulated list.
+        assert shown == "Last: Camera acquisition armed"
+        assert chr(10) not in shown
+        assert ";" not in shown and " + " not in shown
     finally:
         window.close()
 

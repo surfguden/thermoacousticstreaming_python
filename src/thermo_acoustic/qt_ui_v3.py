@@ -285,6 +285,25 @@ class MainWindowV3(MainWindowV3Compatibility):
         STEP_SET_TEC_TARGET: "TEC target command sent to the controller",
         STEP_WAIT_TEC_STABLE: "Waiting for controller-reported TEC stability",
     }
+    # Completed-form wording for the "Last" field. Each phrase states that a
+    # software call or software wait finished -- "Camera capture completed",
+    # never "camera captured"; "Sample-refresh commands completed", never
+    # "sample refreshed"; "Software output barrier elapsed", never "acoustic
+    # output stopped". Finishing a call is not evidence of a physical effect,
+    # and nothing here may imply one. Kept short deliberately: this field
+    # shares one row with Current and Next.
+    _EXECUTION_STEP_COMPLETED = {
+        STEP_INITIALIZE_EXPERIMENT: "Repeat record created",
+        STEP_CONFIGURE_WFG: "W1 and DigitalOut armed",
+        STEP_CONFIGURE_CAMERA: "Camera acquisition armed",
+        STEP_CAPTURE_FRAMES: "Camera capture completed",
+        STEP_WAIT_FOR_AD2_COMPLETION: "Software output barrier elapsed",
+        STEP_FLUSH: "Sample-refresh commands completed",
+        STEP_SAVE_RESULTS: "Results saved",
+        STEP_SET_TEC_TARGET: "TEC target command completed",
+        STEP_WAIT_TEC_STABLE: "TEC stability reported",
+    }
+    _EXECUTION_NO_COMPLETED_ACTION = "none yet"
     # With AD2 disabled no PC trigger command is issued at all, so the capture
     # wording must not claim one was sent.
     _EXECUTION_CAPTURE_WITHOUT_AD2 = (
@@ -478,6 +497,8 @@ class MainWindowV3(MainWindowV3Compatibility):
         execution_layout.setSpacing(12)
         self._v3_execution_line_state = QLabel("IDLE")
         self._v3_execution_line_state.setObjectName("v3PersistentExecutionState")
+        self._v3_execution_line_last = QLabel(f"Last: {self._EXECUTION_NO_COMPLETED_ACTION}")
+        self._v3_execution_line_last.setObjectName("v3PersistentExecutionLast")
         self._v3_execution_line_action = QLabel("Current: No run in progress")
         self._v3_execution_line_action.setObjectName("v3PersistentExecutionAction")
         self._v3_execution_line_next = QLabel("Next: No queued software action")
@@ -485,6 +506,9 @@ class MainWindowV3(MainWindowV3Compatibility):
         self._v3_execution_line_trace = QLabel(self._TRACE_STATE_CAPTIONS[TraceState.OFF])
         self._v3_execution_line_trace.setObjectName("v3PersistentExecutionTrace")
         execution_layout.addWidget(self._v3_execution_line_state)
+        # Chronological reading order: what just finished, what is happening,
+        # what comes next. One field each -- this line is not a history panel.
+        execution_layout.addWidget(self._v3_execution_line_last)
         execution_layout.addWidget(self._v3_execution_line_action)
         execution_layout.addWidget(self._v3_execution_line_next, 1)
         execution_layout.addWidget(self._v3_execution_line_trace)
@@ -2117,6 +2141,22 @@ class MainWindowV3(MainWindowV3Compatibility):
             if state not in {"IDLE"}
             else "font-weight: bold;"
         )
+        # Last completed meaningful action, derived from the SAME emitted
+        # canonical state the Next computation walks: the furthest step in
+        # canonical order that the runtime actually reported "completed".
+        # Nothing is inferred from elapsed time, and no new event is needed.
+        completed_indexes = [
+            index for index, step in enumerate(steps) if states.get(step) == "completed"
+        ]
+        previous = (
+            self._EXECUTION_STEP_COMPLETED.get(
+                steps[max(completed_indexes)],
+                self._EXECUTION_STEP_TITLES.get(steps[max(completed_indexes)], ""),
+            )
+            if completed_indexes
+            else self._EXECUTION_NO_COMPLETED_ACTION
+        )
+        self._v3_execution_line_last.setText(f"Last: {previous}")
         self._v3_execution_line_action.setText(f"Current: {current}")
         self._v3_execution_line_next.setText(f"Next: {following}")
 
