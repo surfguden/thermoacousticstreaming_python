@@ -295,7 +295,15 @@ class HamamatsuDcamBackend:
             )
             self._check(self.dcam.prop_setvalue(props.TRIGGER_MODE, mode), "set TRIGGER_MODE")
         if "trigger_times" in settings:
-            times = self._bounded_int(settings["trigger_times"], 1, 65535, "TRIGGERTIMES")
+            # The installed model's own property document (dcamsdk4/doc/
+            # camera_properties/propC15440-20UP_en.html) specifies
+            # DCAM_IDPROP_TRIGGERTIMES as LONG 1 to 10000, step 1, default 1.
+            # The previous 65535 bound belongs to the neighbouring
+            # MASTERPULSE_BURSTTIMES property, which the same document does
+            # give as 1 to 65535. Canonical production always sends 1, so this
+            # is a documentation-accuracy correction, not a behavior change
+            # for the normal plan; do not widen it from another model's range.
+            times = self._bounded_int(settings["trigger_times"], 1, 10000, "TRIGGERTIMES")
             self._check(self.dcam.prop_setgetvalue(props.TRIGGERTIMES, times), "set TRIGGERTIMES")
         if "trigger_delay_s" in settings:
             delay_s = self._bounded_float(settings["trigger_delay_s"], 0.0, 10.000002, "TRIGGERDELAY")

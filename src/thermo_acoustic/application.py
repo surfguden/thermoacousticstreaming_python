@@ -866,6 +866,34 @@ class Application:
                 return float(channel.clock_frequency_hz)
         return None
 
+    @staticmethod
+    def _achieved_dio0_frequency_hz(experiment: Experiment2) -> float | None:
+        """Software-effective DIO0 camera-trigger cadence, or None if unknown.
+
+        Only a real ``configure_do()`` sets ``achieved_clock_frequency_hz``,
+        after WaveForms rounds the requested cadence down to an integer clock
+        divider. ``do_configured_by_runtime`` confirms this run actually
+        programmed and read back the canonical DigitalOut program, so a
+        requested-only or simulated configuration falls back to the request
+        rather than presenting a stale or invented cadence as achieved.
+        """
+
+        if not experiment.do_configured_by_runtime:
+            return None
+        do_config = coerce_do_config(experiment.do_clock_settings)
+        dio0 = next(
+            (
+                channel
+                for channel in do_config.channels
+                if channel.channel_index == 0 and channel.enable
+            ),
+            None,
+        )
+        if dio0 is None or dio0.achieved_clock_frequency_hz is None:
+            return None
+        achieved = float(dio0.achieved_clock_frequency_hz)
+        return achieved if achieved > 0 else None
+
     def _check_camera_timing_budget(self, experiment: Experiment2) -> None:
         # Concrete implementation of the previously-deferred "exposure vs.
         # readout timing" check (LabVIEW's Camera tab shows a live-computed
@@ -890,10 +918,32 @@ class Application:
                     "the configured Camera FPS for canonical External-trigger acquisition."
                 )
             requested_period_s = 1.0 / camera_fps
-            if requested_period_s < max(min_interval_s, 0.0):
+            # The camera is paced by DIO0, not by the requested FPS. WaveForms
+            # applies an integer divider, so the achieved DIO0 cadence is >=
+            # the requested cadence and the achieved trigger spacing is <= the
+            # requested spacing. config_do_clock_special() has already run and
+            # its achieved frequency was read back into do_clock_settings
+            # above, so gate the spacing that will actually be programmed;
+            # requested FPS remains the separate scientific request.
+            achieved_hz = self._achieved_dio0_frequency_hz(experiment)
+            effective_period_s = (
+                requested_period_s if achieved_hz is None else 1.0 / achieved_hz
+            )
+            if effective_period_s < max(min_interval_s, 0.0):
+                if achieved_hz is None:
+                    detail = (
+                        f"Configured Camera FPS ({camera_fps:.3f}) requires "
+                        f"{requested_period_s * 1000:.3f} ms external trigger spacing"
+                    )
+                else:
+                    detail = (
+                        f"Configured Camera FPS ({camera_fps:.3f}) is programmed as an achieved DIO0 "
+                        f"cadence of {achieved_hz:.6f} Hz, requiring "
+                        f"{effective_period_s * 1000:.3f} ms external trigger spacing "
+                        f"(requested spacing {requested_period_s * 1000:.3f} ms)"
+                    )
                 raise ValueError(
-                    f"Configured Camera FPS ({camera_fps:.3f}) requires {requested_period_s * 1000:.3f} ms "
-                    f"external trigger spacing, below the camera minimum of {min_interval_s * 1000:.3f} ms."
+                    f"{detail}, below the camera minimum of {min_interval_s * 1000:.3f} ms."
                 )
             return
         # Read back self.camera.exposure_ms (the value configure_exposure_time()

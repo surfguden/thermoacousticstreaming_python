@@ -628,14 +628,34 @@ def build_result_from_existing_plan(
                 verification=VerificationScope.UNVERIFIED,
             )
         )
+    # Whether this plan actually carries the canonical trigger architecture is
+    # read from the plan itself rather than assumed, so Review cannot claim a
+    # runtime gate a different plan would not reach.
+    canonical_external_trigger = any(
+        dict(condition.sequence_settings).get("trigger_architecture")
+        == "canonical_pc_triggered_ad2_camera_led"
+        for condition in plan.conditions
+    )
     for name in _disabled_devices(request):
         # Canonical acquisition is externally triggered from DIO0, so a disabled
-        # AD2 is not a skipped subsystem: the run fails closed before capture.
+        # AD2 is not a skipped subsystem: the runtime raises before camera
+        # arming. Review must present the same fail-closed semantics the
+        # runtime already enforces instead of a non-blocking advisory.
+        if name == "ad2" and canonical_external_trigger:
+            issues.append(
+                PreflightIssue(
+                    code="ad2_disabled",
+                    message=(
+                        "AD2 is disabled; canonical External-trigger acquisition requires it to "
+                        "generate DIO0 camera triggers and the runtime fails closed before camera "
+                        "arming. This run cannot proceed with AD2 disabled."
+                    ),
+                    blocking=True,
+                )
+            )
+            continue
         message = (
-            "AD2 is disabled; canonical External-trigger acquisition requires it to generate DIO0 "
-            "camera triggers and will fail closed before camera capture."
-            if name == "ad2"
-            else f"{name.upper()} is disabled; the current runtime will skip its hardware actions."
+            f"{name.upper()} is disabled; the current runtime will skip its hardware actions."
         )
         issues.append(PreflightIssue(code=f"{name}_disabled", message=message, blocking=False))
     if request.tec_scan_enabled and "tec" in _simulated_devices(request):
@@ -681,16 +701,43 @@ def build_result_from_existing_plan(
                 )
             )
         pump_fill = evidence.pump.values.get("fill_level_ml")
-        if first is not None and pump_fill is not None and pump_fill.value is not None:
-            if first.flush_settings[1] > float(pump_fill.value):
-                issues.append(
-                    PreflightIssue(
-                        code="flush_tracked_fill",
-                        message="Flush volume exceeds the pump's cached tracked fill level.",
-                        blocking=False,
-                        verification=pump_fill.verification,
+        # The runtime gate is the aggregate sequence requirement, not one
+        # flush: with refresh enabled a sequence performs one initial
+        # sequence-level refresh plus one refresh per flush-enabled condition,
+        # so TotalAutomaticFlushes = TotalExperiments + 1. Temperature
+        # subgroups reuse the already-armed sequence refresh and never charge
+        # another initial one, which is why this counts flattened conditions
+        # once rather than per group. Review must present the same requirement
+        # the runtime will enforce at Start.
+        automatic = [
+            condition for condition in plan.conditions if condition.flush_enabled
+        ]
+        if automatic:
+            per_condition_ml = sum(
+                float(condition.flush_settings[1]) for condition in automatic
+            )
+            initial_ml = float(automatic[0].flush_settings[1])
+            required_ml = per_condition_ml + initial_ml
+            flush_count = len(automatic) + 1
+            if pump_fill is not None and pump_fill.value is not None:
+                tracked_fill_ml = float(pump_fill.value)
+                if required_ml > tracked_fill_ml + 1e-12:
+                    issues.append(
+                        PreflightIssue(
+                            code="flush_tracked_fill",
+                            message=(
+                                f"Automatic refresh requires {required_ml:g} ml for {flush_count} "
+                                f"flushes ({len(automatic)} repeat refresh(es) plus one "
+                                f"sequence-level initial refresh), but the pump's cached tracked "
+                                f"fill level is {tracked_fill_ml:g} ml. The runtime applies this "
+                                "same aggregate gate against live tracked state at Start, before "
+                                "any valve or pump command. Tracked fill feasibility is not "
+                                "physical delivered volume."
+                            ),
+                            blocking=False,
+                            verification=pump_fill.verification,
+                        )
                     )
-                )
         issues.append(
             PreflightIssue(
                 code="valve_route_unverified",

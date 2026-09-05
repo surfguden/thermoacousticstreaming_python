@@ -49,7 +49,19 @@ Listed in ancestry order. Every entry is on `junjiebranch`.
 | `4cc2d25` | Trigger timing architecture | Canonical PC-triggered W1, finite shared DigitalOut for DIO0/DIO1, External-positive camera. | Closed after corrections at `a3d226f`. |
 | `2122dd1` | V3 operator workflow reorganization | Prepare / Configure / Review phases, Conditions tab, plan-derived review projections. | Closed after corrections at `a3d226f`/`7a0b9f1`. |
 | `a3d226f` | Integrated correction checkpoint | DigitalOut cleanup, external-trigger timing gate (`TIMING_MINTRIGGERINTERVAL`), achieved-cadence DigitalOut run window, DIO1 counter idiom, deterministic camera trigger property set, AD2-required fail-closed gate, aggregate flush-volume preflight, authority/UI wording. | Closed after `7a0b9f1`. |
-| `7a0b9f1` | Narrow closure | Temperature-group refresh-volume double-count, four stale current-authority statements, three stale V3 operator strings, checkpoint status wording, AD2-disabled operator message. | **Current validated software checkpoint.** |
+| `7a0b9f1` | Narrow closure | Temperature-group refresh-volume double-count, four stale current-authority statements, three stale V3 operator strings, checkpoint status wording, AD2-disabled operator message. | Closed; the anchor the commissioning-readiness window builds on. |
+| `ea77bd5` | Knowledge consolidation | Consolidated verified project knowledge into the current authority documents. | Closed. |
+
+## Commissioning-readiness window
+
+Three logical checkpoints, each independently coherent and rollback-capable.
+Implementation and offline validation only; no hardware was accessed.
+
+| Commit | Checkpoint | Scope | Status |
+| --- | --- | --- | --- |
+| `2920559` | Commissioning trace observability | Passive observer hook on the canonical `log_action()` stream; `CommissioningTraceRecorder` writing `commissioning_trace.jsonl` and a derived summary beside the run's `action_log.jsonl`; `pc_trigger_command_sent`, `save_flush_rendezvous`, and `sequence_started`/`sequence_completed` added at the Application/UI boundary. | Closed offline. |
+| `86fd19f` | Live V3 execution indicator | Persistent read-only Execution line in V3's instrument strip projecting the canonical progress/event stream, plus the Configure trace-recording option. | Closed offline. |
+| Commissioning-readiness follow-ups | Bounded residue closure | Achieved-cadence External camera gate; exact-model `TRIGGERTIMES` bound; AD2-disabled Review/runtime consistency; aggregate refresh requirement in Review; V3 W2 contextual note; V3 overflow test honesty; `TIMING_MINTRIGGERINTERVAL` adjudication recorded as `INSUFFICIENT_EVIDENCE`. | Closed offline; see `known_open_items.md`. |
 
 ## Independent reviews
 

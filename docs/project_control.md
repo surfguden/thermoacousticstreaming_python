@@ -8,10 +8,13 @@ in [`audit_index.md`](audit_index.md). Historical audits and evidence records
 preserve how conclusions were reached, but they do not override this page,
 current source, tests, Git state, or newer retained evidence.
 
-Last current-truth convergence: 2026-09-04, at the validated post-handover
-software checkpoint `7a0b9f1600f4e64d9ec379535ef70bc31d900796`
-(`Close post-handover narrow review residues`). This page records current
-project implications, not an uncheckpointed change set.
+Last current-truth convergence: 2026-09-05, at the commissioning-readiness
+software window built on the validated post-handover checkpoint
+`7a0b9f1600f4e64d9ec379535ef70bc31d900796`
+(`Close post-handover narrow review residues`): commissioning-trace
+observability, the live V3 execution indicator, and the bounded
+commissioning-readiness follow-up closures. This page records current project
+implications, not an uncheckpointed change set.
 
 ## Authority hierarchy
 
@@ -49,14 +52,18 @@ evidence appears.
 
 ## Current checkpoint and handover authority
 
-- **Current software phase: post-handover mainline software closed; physical
-  commissioning not started.** The post-handover implementation window
+- **Current software phase: commissioning-readiness observability added;
+  physical commissioning not started.** The post-handover implementation window
   (`a9fcfa6` … `2122dd1`), its integrated correction checkpoint `a3d226f`, and
   its narrow closure `7a0b9f1` are implemented, pushed, and independently
   reviewed. The final micro closure review returned
-  `POST_HANDOVER_MAINLINE_VALIDATED_WITH_NONBLOCKING_FOLLOWUP`; the remaining
-  items are tracked as `SW-NONBLOCKING-FOLLOWUP-001` and
-  `TEST-QT-LIFETIME-001`.
+  `POST_HANDOVER_MAINLINE_VALIDATED_WITH_NONBLOCKING_FOLLOWUP`. The
+  commissioning-readiness window then added passive commissioning-trace
+  observability and the live V3 execution indicator, and closed the bounded
+  follow-ups; the remaining items are the reduced
+  `SW-NONBLOCKING-FOLLOWUP-001` (minimum-trigger-interval/exposure coupling,
+  `INSUFFICIENT_EVIDENCE`) and `TEST-QT-LIFETIME-001`. None of this window
+  authorizes or performs hardware work.
 - Per-checkpoint scope, reviewed ranges, and verdicts are in
   [`audit_index.md`](audit_index.md). Do not re-derive them from chat history.
 - The colleague handover evidence was ingested without merging its branch:
@@ -122,7 +129,11 @@ claimed.**
 - The integer divider means the **achieved** DIO cadence is ≥ the requested
   cadence. The finite DigitalOut run is derived from the achieved DIO0
   frequency so it spans exactly N periods; the requested FPS remains the
-  scientific request and both are retained separately.
+  scientific request and both are retained separately. The External-trigger
+  camera feasibility gate also validates the achieved DIO0 trigger spacing
+  whenever a real `configure_do()` produced one, because that is the spacing
+  the camera will actually receive; without one it validates the request
+  rather than inventing a cadence.
 - Canonical camera acquisition explicitly establishes **External / Positive /
   Edge / Normal / TriggerTimes = 1 / TriggerDelay = 0**. Two of these are
   non-default on the installed model.
@@ -130,7 +141,11 @@ claimed.**
   `FDwfDeviceTriggerPC` call, which is the software logical `t=0` for the
   prepared API paths.
 - Canonical External-trigger acquisition **requires AD2 enabled** and fails
-  closed before camera arming if it is not.
+  closed before camera arming if it is not. Review presents the same
+  semantics: with the canonical trigger architecture in the plan, a disabled
+  AD2 is a **blocking** preflight issue and the V3 readiness chip says the
+  subsystem is required and the runtime fails closed, not that the run merely
+  skips it.
 - W2 (Project Ch2 / API 1) remains blocked at both the planner and the runtime,
   before any hardware configuration call.
 - Before closing the AD2 handle, software explicitly stops and resets AnalogOut
@@ -157,7 +172,12 @@ optional sequence-level initial automatic refresh
 - Full-sequence tracked-fill feasibility is checked **before** the initial
   refresh and before any valve or pump command. Temperature subgroups validate
   their own remaining refresh volume but do not re-charge the sequence-level
-  initial refresh.
+  initial refresh. Review surfaces the same aggregate requirement from the
+  plan — one refresh per flush-enabled condition plus one sequence-level
+  initial refresh, counted once across temperature groups — instead of
+  comparing a single flush volume. Review uses cached tracked state, so it
+  remains a warning; the runtime applies the gate against live tracked state
+  at Start. Tracked-fill feasibility is not delivered volume.
 - Automated refresh is repeat-to-repeat sample refresh only. **Cleaning and
   initial sample loading remain manual.** `WaitAfterFlush` is an intentional
   post-P02 settling delay.
@@ -234,9 +254,10 @@ retired after the approved, compatibility-preserving V3 decoupling checkpoint.
 
 | Surface | Purpose and evidence boundary |
 | --- | --- |
-| Persistent instrument state | Compact Readiness, Run, Alerts, Acoustic/W1, Camera, and Output state needed across workspaces. Software/backend state only unless explicitly labeled otherwise. |
+| Persistent instrument state | Compact Readiness, Run, Alerts, Acoustic/W1, Camera, and Output state needed across workspaces, plus a read-only **Execution** line. Software/backend state only unless explicitly labeled otherwise. |
+| Persistent Execution line | Read-only run state, condition/repeat context, current software action, next known software action, and commissioning-trace state, visible from every workspace. It projects the canonical progress/event stream; it owns no timer and derives no phase from elapsed time. Wording is restricted to software facts ("PC trigger command sent", "Waiting for the software output-completion barrier"); it makes no electrical, optical, acoustic, or fluid claim. `IDLE / PREPARING / RUNNING / WAITING / SAVING / FLUSHING / CLEANUP / COMPLETE / ERROR`, with cleanup and error remaining visible after the run stops. |
 | Experiment — 1 Preparation checklist | Operator preparation prompts for equipment readiness, environment/temperature, sample/fluidics, pump preparation, imaging/focus, laser/optics, and acoustic precheck. **Local presentation state only:** its confirmations are not persisted run evidence and are never `PHYSICAL_VERIFIED`. Opening it performs no hardware I/O. |
-| Experiment — 2 Configure | Series identity plus Acquisition, Acoustic/W1, Conditions, Repeat Sample Refresh, and Advanced WFG configuration, with explicit units on high-frequency numeric inputs. |
+| Experiment — 2 Configure | Series identity plus Acquisition, Acoustic/W1, Conditions, Repeat Sample Refresh, and Advanced WFG configuration, with explicit units on high-frequency numeric inputs. Series identity also carries the passive commissioning-trace recording option, which changes no execution behavior. |
 | Experiment — 3 Review run | Full-width canonical-request-derived run scope, sequence, camera, Acoustic/W1, unavailable laser control, refresh, output, required devices, blockers, warnings, and requested/latest-applied evidence. Its DIO/completion timing rows are projected from the canonical plan, not recomputed from widgets. |
 | Monitor | Run progress and operator events plus requested run context. Its waveform is a requested/computed preview; measured camera rate remains distinct and no physical telemetry is inferred. |
 | Manual & Service | Existing immediate-action panels grouped as routine camera/fluidics tasks versus engineering/calibration AD2 and Z tasks, clearly outside the experiment plan. Opening a panel is inert; actions retain their established gates and use `MANUAL_SERVICE` logging context. |
@@ -267,7 +288,7 @@ reports. A value never inherits authority from a different layer.
 | AD2 carrier amplitude | Peak source amplitude in volts around Offset for supported periodic waveforms. For a zero-offset sine only, `Vpp=2*Vpeak` and `Vrms=Vpeak/sqrt(2)`; no shape-independent RMS conversion is implied. | UI says `AD2 source peak amplitude (V)`; TDMS convention is `AD2_SOURCE_PEAK_VOLTS_NOT_LOADED_OR_DOWNSTREAM`; requested and post-clamp software-effective values are separate. | VERIFIED |
 | Loaded/acoustic amplitude | BNC JP4 selects approximately 0-ohm/direct or 49.9-ohm series source path. Loaded amplifier input depends on complex input impedance; amplifier output, transducer voltage/current, and acoustic pressure require chain characterization or measurement. | Deliberately absent as measured values. | PHYSICAL_MEASUREMENT_REQUIRED |
 | Camera exposure | Operator/request and authoritative TDMS fields use ms; DCAM receives seconds (`ms/1000`) and set/get seconds return as ms (`s*1000`). The camera quantizes upward according to scan mode. | `RequestedExposureMs`, `AppliedExposureMs`; legacy `ExposureTime` changes from request to configured set/get value after successful configuration. | VERIFIED |
-| Camera cadence | FPS is requested frames/s; interval is `1/FPS`. Canonical External acquisition checks fresh `TIMING_MINTRIGGERINTERVAL`; Internal/free-running paths retain the overlapping `max(applied_exposure_s, fresh_readout_s)` gate. Actual frame chronology requires timestamps. | `CameraFPS` plus `CameraFPSUnit`; legacy `ReadoutTime` plus `ReadoutTimeSeconds`. | VERIFIED_WITH_SOFTWARE_DERIVATION |
+| Camera cadence | FPS is requested frames/s; interval is `1/FPS`. Canonical External acquisition checks fresh `TIMING_MINTRIGGERINTERVAL` against the software-effective achieved DIO0 spacing when one exists, otherwise against the requested interval; Internal/free-running paths retain the overlapping `max(applied_exposure_s, fresh_readout_s)` gate. Actual frame chronology requires timestamps. | `CameraFPS` plus `CameraFPSUnit`; `DOFreq` requested versus `DOFreqActual` achieved; legacy `ReadoutTime` plus `ReadoutTimeSeconds`. | VERIFIED_WITH_SOFTWARE_DERIVATION |
 | ROI/image scale | ROI x/y/width/height are sensor pixels, requested then freshly read back. Exact sensor is 2304 x 2304 with 6.5-micrometre pixel pitch; pixel pitch is a model specification, not calibrated object-space scale. | Applied ROI fields in TDMS; no inferred object-space distance. | VERIFIED |
 | Condition/repeat | Internal `repeat_id`/`RepeatIndex` and temperature point index are zero-based. Operator repeat number, folders, progress, and action records are one-based. Conditions are ordered by temperature group then repeat. | `RepeatIndexBase=0`, `RepeatNumberBase=1`; `repeat_NNN` folders and one-based operator messages. | VERIFIED |
 | Refresh/fluidics | Flow request is positive dispense in uL/min; flush volume/fill level are absolute mL. Travel estimate is `(mL*1000/uL_per_min)*60` s. `WaitAfterFlush` is seconds after confirmed P02. P01 is through-chip; P02 bypass. Commands/controller state do not prove delivered fluid. | Additive unit fields accompany legacy TDMS names; action evidence stays command/protocol scoped. | VERIFIED semantics; PHYSICAL_MEASUREMENT_REQUIRED delivery |
@@ -351,6 +372,26 @@ documentation:
   10 kohm and supports selectable rising/falling polarity. Normal Area Mode
   supports edge, level, global-reset edge/level, synchronous-readout, and start
   triggering as documented; canonical production configures External-positive edge triggering.
+  The installed SDK's own model property document
+  (`dcamsdk4/doc/camera_properties/propC15440-20UP_en.html`, and its `_ja`
+  twin) specifies `DCAM_IDPROP_TRIGGERTIMES` for this exact model as
+  `LONG 1 to 10000, step 1, default 1`; the backend bound now matches that
+  range. `1 to 65535` in the same document belongs to the neighbouring
+  `DCAM_IDPROP_MASTERPULSE_BURSTTIMES`, whose backend bound is unchanged and
+  correct. Canonical production always sends `TRIGGERTIMES = 1`.
+  Whether `DCAM_IDPROP_TIMING_MINTRIGGERINTERVAL` already accounts for the
+  currently applied exposure and ROI is **`INSUFFICIENT_EVIDENCE`**. The
+  installed DCAM property reference
+  (`dcamsdk4/doc/api_reference/property_reference_en.html`) defines it only as
+  "the period from receiving input trigger to trigger ready" (genre
+  *Synchronous timing*, R/O, SECOND), and the model document's Information
+  column says only "return seconds required minimum trigger interval". That
+  document does state dependencies elsewhere when it means to — `TRIGGERDELAY`
+  carries an explicit "Depends on ..." note — and states none here, but an
+  absent dependency note is not a statement of independence either way.
+  Production reads the property **after** the requested ROI and exposure have
+  been applied and read back, which is the most the software can do; the
+  remaining question is a vendor-semantics one and is tracked, not guessed at.
   `TIMING 1/2/3` are 3.3 V LVCMOS outputs with 33-ohm output impedance and
   cable-dependent termination. Exposure ranges are 17 microseconds-10 seconds
   Fast, 65 microseconds-10 seconds Standard, and 280 microseconds-10 seconds
@@ -636,6 +677,7 @@ separately authorized.
 | `<repeat>/data.tdms` | Authoritative per-repeat scientific data/settings, requested/applied camera state, requested WFG settings, separate software-effective post-clamp WFG arguments, enabled/simulated state, output metadata, refresh outcome, and separate primary/cleanup failure. |
 | `<series>/series_manifest.json` | Atomic aggregate lifecycle: requested/started/completed/failed counts, abort/final outcome, timestamps, optional TEC counts, and action-log link. It does not duplicate full configuration. |
 | `logs/hardware_transactions.log` | Rotating global backend/API/transport diagnostic timeline with `SETUP`, `RUN`, `CLEANUP`, or `MANUAL_SERVICE` context. |
+| `<series>/commissioning_trace.jsonl` and `<series>/commissioning_trace_summary.json` | Optional passive commissioning-trace projection of the same canonical action stream, with an event sequence number and `monotonic_ns` for software ordering/intervals. Written only when the operator enables recording; it references the canonical run and never duplicates TDMS. |
 | `Application.runtime_events` / UI event stream | Transient operator chronology, not durable scientific authority. |
 | `runs/` retained records | Point-in-time manual hardware evidence, not normal production output or permission for another run. |
 
@@ -655,6 +697,31 @@ monotonic `elapsed_s` supports duration/timeout diagnosis. Neither is a
 high-resolution physical timing measurement. JSONL persistence failure is
 fail-open with respect to control behavior and cannot initiate hardware or
 change the plan.
+
+### Commissioning-trace observability
+
+`log_action()` is the single canonical software event stream. `action_log.jsonl`
+persists it, and additional consumers subscribe as **passive observers** of the
+same records rather than interpreting runtime state independently. The
+commissioning-trace recorder is such an observer; V3's live Execution indicator
+projects the same canonical progress/event stream Monitor already consumes.
+
+Trace recording is an observability option over the normal canonical
+experiment, **not** a second execution mode. Operator states are
+`OFF` / `RECORDING` / `DEGRADED`, and execution behaves identically in all
+three. The recorder issues no device read or write, adds no sleep, barrier or
+thread rendezvous, and changes no hardware call order. A trace write failure
+marks the recording `DEGRADED`, is reported only through plain module logging so
+it cannot re-enter the action stream, and never interrupts hardware control; a
+degraded recording is never presented as a complete trace.
+
+**Commissioning trace is software evidence and does not establish physical
+timing.** `monotonic_ns` orders software events and measures software intervals
+on one host clock; wall-clock time is provenance and display. Neither is a
+common-timebase physical measurement. No trace event establishes an electrical
+edge, camera exposure onset, LED emission, acoustic pressure, delivered fluid
+volume, or cross-instrument simultaneity, and the software never manufactures a
+`PHYSICAL_VERIFIED` event.
 
 ## Closed and superseded decisions
 

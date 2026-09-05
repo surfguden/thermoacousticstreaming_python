@@ -33,6 +33,28 @@ from thermo_acoustic.tec import TecStatus
 from conftest import build_with_retry
 
 
+def assert_page_fits_horizontally(scroll: QScrollArea, name: str) -> None:
+    """Assert a V3 scroll page is genuinely contained, not merely silent.
+
+    `_v3_scroll_page()` gives its content `QSizePolicy.Ignored` horizontally,
+    which makes the scroll area resize the content down to the viewport and
+    keeps `horizontalScrollBar().maximum()` at 0 even when the content is
+    narrower than its own `minimumSizeHint()` -- i.e. even when it is really
+    being squeezed. Measured on this window: at a 638 px viewport the camera
+    page reported maximum() == 0 with a 842 px minimum hint. So `maximum()`
+    alone cannot prove containment on those pages; the minimum size hint,
+    which the Ignored policy does not suppress, is what actually can.
+    """
+
+    viewport_width = scroll.viewport().width()
+    minimum_width = scroll.widget().minimumSizeHint().width()
+    assert scroll.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff, name
+    assert minimum_width <= viewport_width, (
+        f"{name} needs {minimum_width} px but its viewport is {viewport_width} px; "
+        "the page is clipped behind a disabled horizontal scrollbar"
+    )
+
+
 def make_window(monkeypatch, tmp_path, app: Application | None = None) -> qt_ui_v3.MainWindowV3:
     settings_path = tmp_path / "settings.json"
     settings_path.write_text(json.dumps({}), encoding="utf-8")
@@ -500,6 +522,12 @@ def test_v3_status_refresh_retains_deferred_wrapped_label_height_fix(monkeypatch
 
 def test_v3_main_ad2_settings_use_channel_tabs_without_horizontal_overflow(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
+    # V3's own default geometry (set in MainWindowV3.__init__). The offscreen
+    # platform does not apply it on show() by itself, and containment is a
+    # claim about the window at a real operating size, not at the platform's
+    # fallback size. test_v3_primary_workflow_remains_horizontally_contained
+    # covers the supported size range explicitly.
+    window.resize(1440, 900)
     window.show()
     QApplication.processEvents()
     try:
@@ -559,10 +587,12 @@ def test_v3_main_ad2_settings_use_channel_tabs_without_horizontal_overflow(monke
         ).text()
         assert "blocks Start" in window.findChild(QLabel, "v3FrequencyProgramSummary").text()
         setup_tabs = window.findChild(QTabWidget, "v3SetupTabs")
+        # Containment can only be measured on the page the operator is
+        # actually looking at: an inactive phase page keeps stale geometry.
+        window.findChild(QTabWidget, "v3ExperimentPhaseTabs").setCurrentIndex(1)
         setup_tabs.setCurrentIndex(1)
         QApplication.processEvents()
-        assert scroll.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        assert scroll.horizontalScrollBar().maximum() == 0
+        assert_page_fits_horizontally(scroll, "v3Ad2SetupScroll")
     finally:
         window.close()
 
@@ -709,14 +739,17 @@ def test_v3_primary_workflow_remains_horizontally_contained(monkeypatch, tmp_pat
         phases.setCurrentIndex(1)
         setup_tabs.setCurrentIndex(0)
         QApplication.processEvents()
-        assert camera_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        assert_page_fits_horizontally(camera_scroll, "v3CameraSetupScroll")
 
         phases.setCurrentIndex(2)
         QApplication.processEvents()
-        assert review_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        assert_page_fits_horizontally(review_scroll, "v3PreRunReview")
+        # The Review page's content keeps a real horizontal size policy, so
+        # here the scrollbar extent is itself meaningful and is asserted too.
+        assert review_scroll.horizontalScrollBar().maximum() == 0
         review_details.setCurrentIndex(1)
         QApplication.processEvents()
-        assert timing_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        assert_page_fits_horizontally(timing_scroll, "v3TimingReviewScroll")
         assert instrument_bar.height() <= 120
     finally:
         window.close()
@@ -827,6 +860,36 @@ def test_v3_relationship_panels_use_shared_requested_timing_builders(monkeypatch
         window.close()
 
 
+def test_v3_names_w2_as_the_plan_blocker_whether_or_not_w1_is_enabled(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        note = window.findChild(QLabel, "v3TimingAnchorNote")
+        ch0, ch1 = window.exp_ad2_channels
+
+        # W1 enabled + W2 selected: the planner rejects W2 before any hardware
+        # configuration call, so no canonical DIO timing exists to show.
+        ch0["enable"].setChecked(True)
+        ch1["enable"].setChecked(True)
+        window._refresh_v3_relationships()
+        assert "Laser / W2 (Project Ch2) is selected and remains production-blocked" in note.text()
+
+        # The same authoritative blocker must stay visible with W1 disabled.
+        # Previously the note lived only in the W1-enabled branch, so turning
+        # W1 off silently hid the reason the plan was blocked.
+        ch0["enable"].setChecked(False)
+        window._refresh_v3_relationships()
+        assert "W1 is disabled" in note.text()
+        assert "Laser / W2 (Project Ch2) is selected and remains production-blocked" in note.text()
+
+        # With W2 deselected the note must not blame W2 for anything.
+        ch1["enable"].setChecked(False)
+        ch0["enable"].setChecked(True)
+        window._refresh_v3_relationships()
+        assert "W2" not in note.text()
+    finally:
+        window.close()
+
+
 def test_v3_plan_exposes_axes_sequence_camera_request_and_evidence_boundaries(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
     try:
@@ -907,7 +970,11 @@ def test_v3_readiness_distinguishes_disabled_not_required_and_unverified_state(m
         window.exp_tec_scan_enable.setChecked(True)
         window._refresh_v3_relationships()
 
-        assert "AD2: DISABLED — current runtime skips this subsystem" in readiness.text()
+        # A disabled AD2 is not a skipped subsystem on the canonical path: the
+        # runtime raises before camera arming, so the chip must not offer the
+        # generic "skips this subsystem" wording here.
+        assert "AD2: DISABLED — required by this run; runtime fails closed" in readiness.text()
+        assert "AD2: DISABLED — current runtime skips this subsystem" not in readiness.text()
         assert "Camera: DISABLED — current runtime skips this subsystem" in readiness.text()
         assert "Fluidics: DISABLED — selected flush will be skipped by runtime" in readiness.text()
         assert "TEC: DISABLED — current runtime skips this subsystem" in readiness.text()
@@ -916,8 +983,15 @@ def test_v3_readiness_distinguishes_disabled_not_required_and_unverified_state(m
         assert "Blank output path resolves to the current working directory" in warnings.text()
         assert "TEC evidence is simulated, not physical" in warnings.text()
         assert "current runtime will skip its hardware actions" in warnings.text()
-        # A disabled AD2 is not a skipped subsystem on the canonical path.
-        assert "will fail closed before camera capture" in warnings.text()
+        # The AD2 issue is presented with the runtime's own fail-closed
+        # semantics, in the blocking group rather than as an advisory.
+        assert "the runtime fails closed before camera arming" in warnings.text()
+        assert "Static configuration validity" in warnings.text()
+        result = window._v3_shadow_build_result()
+        ad2_issue = next(
+            issue for issue in result.preflight.issues if issue.code == "ad2_disabled"
+        )
+        assert ad2_issue.blocking is True
 
         window.exp_flush_enabled.setChecked(False)
         window.exp_tec_scan_enable.setChecked(False)

@@ -386,6 +386,40 @@ def test_external_sequence_sets_deterministic_trigger_properties_and_reads_minim
     assert backend.read_min_trigger_interval() == pytest.approx(0.01)
 
 
+@pytest.mark.parametrize("times", [1, 2, 10000])
+def test_trigger_times_accepts_the_exact_model_documented_range(times):
+    # dcamsdk4/doc/camera_properties/propC15440-20UP_en.html (and its _ja
+    # twin) specify DCAM_IDPROP_TRIGGERTIMES for this exact model as
+    # LONG 1 to 10000, step 1, default 1.
+    FakeDcamModule.instances = []
+    backend = HamamatsuDcamBackend()
+    backend.dcam_module = FakeDcamModule
+    backend.dcamapi = FakeDcamApi
+
+    backend.configure_sequence({"trigger_times": times})
+
+    camera = FakeDcamModule.instances[0]
+    assert ("prop_setgetvalue", "TRIGGERTIMES", times, 0) in camera.calls
+
+
+@pytest.mark.parametrize("times", [0, 10001, 65535])
+def test_trigger_times_rejects_values_outside_the_exact_model_range(times):
+    # 65535 belongs to the neighbouring MASTERPULSE_BURSTTIMES property, which
+    # the same document does give as 1 to 65535. It must not be reused as the
+    # TRIGGERTIMES bound, and no other Hamamatsu model's range may widen it.
+    FakeDcamModule.instances = []
+    backend = HamamatsuDcamBackend()
+    backend.dcam_module = FakeDcamModule
+    backend.dcamapi = FakeDcamApi
+
+    with pytest.raises(HamamatsuDcamError, match="TRIGGERTIMES must be between 1 and 10000"):
+        backend.configure_sequence({"trigger_times": times})
+
+    camera = FakeDcamModule.instances[0] if FakeDcamModule.instances else None
+    if camera is not None:
+        assert not any(call[1] == "TRIGGERTIMES" for call in camera.calls if len(call) > 1)
+
+
 def test_configure_sequence_partial_failure_does_not_update_sequence_settings():
     # Finding 1 regression test (hamamatsu_dcam.py review, Session 65):
     # sequence_settings was previously assigned up front, before any of the

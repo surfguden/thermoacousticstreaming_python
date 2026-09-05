@@ -46,6 +46,23 @@ from widget values instead of the plan, it silently stopped surfacing the
 W2-blocked condition that the canonical call had previously exposed. Projections
 now read the plan's frozen configuration.
 
+### 1.2b One canonical software event stream, projected many ways — `ENFORCED`
+
+The same rule as 1.1, applied to observability. A live indicator and a durable
+trace must consume the **same** event records, not each interpret runtime state
+independently — otherwise the screen and the retained evidence can disagree
+about what a run did, with no way to adjudicate afterwards. `log_action()` is
+that single stream; additional consumers subscribe to it as passive observers.
+An observer performs no hardware I/O, never calls back into the stream, and an
+observer that fails is swallowed exactly like a failed evidence write.
+
+**Commissioning trace is software evidence and does not establish physical
+timing.** Its `monotonic_ns` orders software events and measures software
+intervals on one host clock; its wall-clock timestamp is provenance. Neither is
+a common-timebase measurement, and no trace event establishes an electrical
+edge, optical emission, acoustic pressure, delivered fluid, or cross-instrument
+simultaneity.
+
 ### 1.3 Evidence classes are not interchangeable — `ENFORCED`
 
 ```text
@@ -130,6 +147,18 @@ scientific request; the achieved cadence drives the hardware window.
 Amplitude clamping, WFG frequency clamping, camera exposure quantization,
 camera cadence, TEC target versus readback, and Z command versus readback are
 all requested-versus-effective pairs. Treat them the same way.
+
+### 2.5 A feasibility gate must protect the achieved quantity, not the request — `ENFORCED`
+
+**Project example.** The External-trigger camera gate compared the *requested*
+frame period against `TIMING_MINTRIGGERINTERVAL`, while the camera is actually
+paced by the divider-quantized DIO0 cadence, which is faster. A request could
+therefore pass a gate that the spacing really programmed would fail. The gate
+now uses the software-effective achieved DIO0 spacing whenever a real
+`configure_do()` produced one, and falls back to the request rather than
+inventing a cadence. This is 2.3 applied to validation instead of to
+programming: whatever the device is actually configured to do is the thing a
+safety gate must be checked against.
 
 ---
 
@@ -331,6 +360,24 @@ subclasses.
 
 Monitor's waveform is a requested/computed preview. Measured rate and physical
 telemetry remain separate and are never inferred.
+
+### 7.6 A live indicator projects the canonical event stream — `ENFORCED`
+
+V3's persistent Execution line shows run state, condition/repeat context, the
+current software action, the next known software action, and trace state. Every
+one of those is read from the canonical progress/event stream the runtime
+already emits. It owns no timer and never derives a phase from elapsed wall
+time: a second timing state machine in Qt would eventually disagree with the
+runtime, and the operator would have no way to tell which one was lying.
+
+### 7.7 An indicator may only claim what the software observed — `ENFORCED`
+
+"PC trigger command sent", not "W1 triggered". "Waiting for the software
+output-completion barrier", not "acoustic output has ended". "DIO1 LED timing
+program active in software", not "LED is illuminated". When AD2 is disabled and
+no trigger is issued at all, the capture wording says so instead of reusing the
+trigger phrasing. Cleanup and error states stay on the line after a run stops
+rather than reverting to idle before the operator can read them.
 
 ---
 

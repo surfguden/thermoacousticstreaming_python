@@ -1925,8 +1925,16 @@ class MainWindowV3(MainWindowV3Compatibility):
             "valve": snapshot.valve,
             "tec": snapshot.tec,
         }
+        blocking_codes = {issue.code for issue in preflight.blocking_issues}
+
         def device_state(name: str) -> str:
             if name in preflight.disabled_devices:
+                # A disabled subsystem is only "skipped" when the shared
+                # preflight agrees. Canonical External-trigger acquisition
+                # needs AD2 for the DIO0 camera triggers and the runtime fails
+                # closed, so the chip must not say the run simply skips it.
+                if f"{name}_disabled" in blocking_codes:
+                    return "DISABLED — required by this run; runtime fails closed"
                 return "DISABLED — current runtime skips this subsystem"
             if name in preflight.simulated_devices:
                 return "SIMULATED — no physical evidence"
@@ -2287,7 +2295,18 @@ class MainWindowV3(MainWindowV3Compatibility):
                 plan_note = ""
             else:
                 dio0 = dio1 = None
-                plan_note = " Canonical DIO timing is unavailable because the current request is blocked (including W2 if selected)."
+                # Name the authoritative blocker rather than hinting at it.
+                # W2 / Project Ch2 is the laser Analog In route and the
+                # planner rejects it before any hardware configuration call.
+                w2_selected = bool(wfg.running and wfg.channels[1].carrier.enable)
+                plan_note = (
+                    " Canonical DIO timing is unavailable because the current request is blocked:"
+                    " Laser / W2 (Project Ch2) is selected and remains production-blocked, so no"
+                    " plan is produced."
+                    if w2_selected
+                    else " Canonical DIO timing is unavailable because the current request is"
+                    " blocked by shared preflight."
+                )
             rows = {
                 "ch0": (
                     bool(wfg.running and wfg.channels[0].carrier.enable),
@@ -2325,9 +2344,13 @@ class MainWindowV3(MainWindowV3Compatibility):
             else:
                 anchor_end = completion
                 self._v3_timing_delta_header.setText("End delta vs completion driver (s)")
+                # The blocked-plan note belongs here too: it explains why the
+                # rows below are empty, and it must not disappear merely
+                # because Acoustic / W1 happens to be disabled.
                 self._v3_timing_anchor_note.setText(
                     "W1 is disabled; end deltas are anchored to the shared completion budget "
                     "(the maximum enabled analog/digital end) used by experiment execution."
+                    + plan_note
                 )
             for key, (enabled, start, run) in rows.items():
                 end = start + run
