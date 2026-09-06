@@ -379,6 +379,17 @@ no trigger is issued at all, the capture wording says so instead of reusing the
 trigger phrasing. Cleanup and error states stay on the line after a run stops
 rather than reverting to idle before the operator can read them.
 
+### 7.8 A summary chip must expose its own reason, not force navigation to find it — `ENFORCED`
+
+**Project example.** V3's Readiness chip and Run-control gate showed only
+"BLOCKED — N issue(s)"; the actual blocking/warning text existed only on the
+Review page, so reading it meant leaving the panel that told you it existed.
+Both now carry the real `PreflightIssue.message` text as a tooltip, composed
+from the same `PreflightResult` the chip's own count already came from — no
+second computation, no new plan build, no hardware query. A count is not a
+reason; do not make an operator navigate away to learn one that was already
+computed.
+
 ---
 
 ## Part 8 — Test quality
