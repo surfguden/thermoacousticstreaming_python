@@ -3023,6 +3023,24 @@ def test_status_refresh_progress_does_not_double_fire_an_already_recorded_status
         window.close()
 
 
+def test_stop_pump_carries_a_critical_stop_role_distinct_from_ordinary_actuators(monkeypatch, tmp_path):
+    # Minimum CRITICAL_STOP presentation (real-shakedown Section 13):
+    # semantic-property assertion, not a pixel/screenshot test -- the Stop
+    # button must be distinguishable from an ordinary actuator like Refill.
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        stop_button = window._pump_stop_button()
+        assert stop_button.property("uiRole") == "critical_stop"
+
+        refill_group = window._pump_refill_group()
+        for button in refill_group.findChildren(QPushButton):
+            assert button.property("uiRole") != "critical_stop", (
+                f"ordinary actuator {button.text()!r} must not carry the critical_stop role"
+            )
+    finally:
+        window.close()
+
+
 def test_stop_pump_reaches_the_backend_while_a_refill_style_motion_is_still_in_progress(monkeypatch, tmp_path):
     # Real-shakedown finding (2026-09-06): "Stop pump" is a Manual-Service
     # immediate-action button, distinct from graceful series Abort. Before

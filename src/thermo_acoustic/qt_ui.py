@@ -2524,6 +2524,20 @@ class MainWindow(QMainWindow):
         stop.clicked.connect(
             lambda: self._run_action(lambda progress: self.app.pump.stop(), "Pump stopped", force=True)
         )
+        # Minimum CRITICAL_STOP presentation (real-shakedown Section 13):
+        # functional correctness above is necessary but not sufficient --
+        # once Stop actually interrupts a motion, it must also remain
+        # immediately recognizable as the interrupt control while that
+        # motion is visible, not styled identically to an ordinary actuator
+        # like "Move to target fill level" beside it. A narrow, reusable
+        # `uiRole` dynamic property (no broader button-role system, no theme
+        # rewrite -- deliberately deferred to a dedicated UI checkpoint)
+        # lets a stylesheet target this one semantic case.
+        stop.setProperty("uiRole", "critical_stop")
+        stop.setStyleSheet(
+            "QPushButton[uiRole=\"critical_stop\"] {"
+            " font-weight: bold; border: 2px solid #b00020; }"
+        )
         return stop
 
     def _pump_refill_group(self) -> QGroupBox:
