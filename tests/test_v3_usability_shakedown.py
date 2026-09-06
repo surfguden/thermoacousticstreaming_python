@@ -82,13 +82,63 @@ def test_imaging_focus_row_can_open_the_camera_panel_directly(monkeypatch, tmp_p
         window.close()
 
 
-@pytest.mark.parametrize("index", [1, 2, 3, 6, 7])
-def test_checklist_rows_without_a_named_panel_have_no_quick_open_button(monkeypatch, tmp_path, index):
-    """Only the two rows that actually say "open the manual X panel" get one.
+def test_z_positioning_row_can_open_the_zscan_panel_directly(monkeypatch, tmp_path):
+    """Z/focus is its own row: "Imaging / Focus" only ever linked to Camera,
 
-    Equipment readiness, Environment/Temperature, Sample/Fluidics, Laser/
-    Optics, and Acoustic Precheck point at Initialize or Configure/Review,
-    which are already one click away without a shortcut.
+    which has no Z-stage controls -- an operator following that row's own
+    promise of "focus" could never reach the panel that actually moves the
+    stage. Z / Positioning is a separate row for that reason.
+    """
+
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        button = window.findChild(QPushButton, "v3PrepareOpenPanel6")
+        assert button is not None
+        assert button.text() == "Open Z-Scan panel"
+
+        button.click()
+
+        assert "ZScan" in window._manual_panels
+        assert window._manual_panels["ZScan"].isVisible()
+    finally:
+        window.close()
+
+
+def test_environment_temperature_row_can_jump_to_configure_conditions(monkeypatch, tmp_path):
+    """TEC setup is named in prose here but lives in Configure -> Conditions,
+
+    a sub-tab, not the tab Configure opens on by default -- reaching it
+    previously took an extra, unsignposted click past "Configure" itself.
+    This button is Configure-tab navigation, not a Manual & Service panel,
+    so it is a distinct object name/mechanism from v3PrepareOpenPanel*.
+    """
+
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        assert window.findChild(QPushButton, "v3PrepareOpenPanel2") is None
+        button = window.findChild(QPushButton, "v3PrepareOpenConfigure2")
+        assert button is not None
+        assert button.text() == "Open in Configure"
+
+        button.click()
+
+        assert window._v3_experiment_phase_tabs.currentIndex() == 1
+        assert window._v3_configure_tabs.widget(
+            window._v3_configure_tabs.currentIndex()
+        ).objectName() == "v3ConditionsSetupScroll"
+    finally:
+        window.close()
+
+
+@pytest.mark.parametrize("index", [1, 2, 3, 7, 8])
+def test_checklist_rows_without_a_named_panel_have_no_quick_open_button(monkeypatch, tmp_path, index):
+    """Only the three rows that actually say "open the manual X panel" get one.
+
+    Equipment readiness, Sample/Fluidics, Laser/Optics, and Acoustic Precheck
+    point at Initialize or Configure/Review, which are already one click
+    away without a shortcut. Environment/Temperature gets a different kind
+    of button (Configure-tab navigation, `v3PrepareOpenConfigure2`), checked
+    separately -- it never gets a `v3PrepareOpenPanel*` one.
     """
 
     window = make_window(monkeypatch, tmp_path)
@@ -99,11 +149,14 @@ def test_checklist_rows_without_a_named_panel_have_no_quick_open_button(monkeypa
 
 
 def test_opening_a_prepare_checklist_panel_issues_no_hardware_call(monkeypatch, tmp_path):
-    """The navigation button must be exactly that -- navigation.
+    """Every Prepare quick-open button must be exactly that -- navigation.
 
-    A spy Application records every attribute access on its instrument
-    facades; opening the panel and building its widgets must not touch any
-    of them.
+    Covers both kinds: the three that open a Manual & Service panel
+    (Pump & Valve, Camera, Z-Scan) and the one that only switches Configure's
+    current sub-tab (Environment/Temperature -> Conditions). A spy
+    Application records every attribute access on its instrument facades;
+    none of these buttons, or building the widgets they reveal, may touch
+    any of them.
     """
 
     calls: list[str] = []
@@ -132,11 +185,14 @@ def test_opening_a_prepare_checklist_panel_issues_no_hardware_call(monkeypatch, 
     app.pump = WatchedInstrument(calls, "pump")
     app.valve = WatchedInstrument(calls, "valve")
     app.camera = WatchedInstrument(calls, "camera")
+    app.z_motor = WatchedInstrument(calls, "z_motor")
     window = make_window(monkeypatch, tmp_path, app=app)
     try:
         calls.clear()
         window.findChild(QPushButton, "v3PrepareOpenPanel4").click()
         window.findChild(QPushButton, "v3PrepareOpenPanel5").click()
+        window.findChild(QPushButton, "v3PrepareOpenPanel6").click()
+        window.findChild(QPushButton, "v3PrepareOpenConfigure2").click()
         QApplication.processEvents()
         hardware_calls = [c for c in calls if c.endswith("()")]
         assert hardware_calls == [], f"opening a panel issued hardware call(s): {hardware_calls}"

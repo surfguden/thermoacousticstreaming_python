@@ -1541,21 +1541,26 @@ def test_v3_pump_panel_separates_actions_from_static_configuration(monkeypatch, 
         assert tasks is not None
         assert scroll.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         assert scroll.horizontalScrollBar().maximum() == 0
+        # Syringe setup leads: reference move is the one-time-per-mount
+        # calibration that must happen before Refill/Empty in the real
+        # physical sequence, matching the chronology V1's own "Setup"-before-
+        # "Syringe" ordering already established
+        # (test_pump_tab_reference_move_is_promoted_to_a_leading_setup_group).
         assert [tasks.tabText(index) for index in range(tasks.count())] == [
+            "Syringe setup",
             "Pump",
             "Valve",
             "Flush",
-            "Syringe setup",
             "Recovery",
         ]
         assert {group.title() for group in tasks.widget(0).findChildren(QGroupBox)} == {
-            "Immediate pump operations"
-        }
-        assert {group.title() for group in tasks.widget(1).findChildren(QGroupBox)} == {"Valve position"}
-        assert {group.title() for group in tasks.widget(2).findChildren(QGroupBox)} == {"Manual flush"}
-        assert {group.title() for group in tasks.widget(3).findChildren(QGroupBox)} == {
             "Shared syringe setup and calibration"
         }
+        assert {group.title() for group in tasks.widget(1).findChildren(QGroupBox)} == {
+            "Immediate pump operations"
+        }
+        assert {group.title() for group in tasks.widget(2).findChildren(QGroupBox)} == {"Valve position"}
+        assert {group.title() for group in tasks.widget(3).findChildren(QGroupBox)} == {"Manual flush"}
         assert {group.title() for group in tasks.widget(4).findChildren(QGroupBox)} == {
             "Connection recovery"
         }

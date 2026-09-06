@@ -672,24 +672,54 @@ class MainWindowV3(MainWindowV3Compatibility):
         boundary.setWordWrap(True)
         boundary.setStyleSheet("font-weight: bold; color: darkorange;")
         layout.addWidget(boundary)
-        # Each row's optional fourth element names the Manual & Service panel
-        # its own detail text tells the operator to open. Previously that
-        # text was the only way to find the panel -- the operator had to
-        # leave Prepare, find Manual & Service, and locate it themselves.
-        # The button is pure navigation: it calls the same
-        # _open_manual_panel() the Manual & Service workspace itself uses,
-        # which is already established as inert (opening a panel issues no
-        # command; its actions keep their own established gates).
+        # Each row's optional third element names the Manual & Service panel
+        # its own detail text tells the operator to open; the optional fourth
+        # names a Configure sub-tab instead. Previously that text was the
+        # only way to find either -- the operator had to leave Prepare and
+        # locate the destination themselves. Both buttons are pure
+        # navigation: the panel button calls the same _open_manual_panel()
+        # the Manual & Service workspace itself uses (already established as
+        # inert -- opening a panel issues no command; its actions keep their
+        # own established gates); the Configure button only changes which
+        # tab is selected.
+        #
+        # "Imaging / Focus" and "Z / Positioning" are two rows, not one:
+        # they are separate hardware surfaces (camera ROI/exposure vs. Z
+        # stage motion, in two different Manual & Service panels), and the
+        # real preparation chronology treats camera setup and Z/focus as
+        # distinct steps. A single "Imaging / Focus" row could only carry a
+        # button to one of the two panels it named.
         tasks = (
-            ("Equipment readiness", "Select/initialize devices when authorized; inspect cached software status.", None),
-            ("Environment / Temperature", "Record bench conditions; configure an optional TEC scan in Conditions.", None),
-            ("Sample / Fluidics", "Record sample readiness; automatic refresh remains a Configure request.", None),
-            ("Guided Pump Preparation", "Open the manual Pump & Valve panel only for its separately confirmed service actions.", "PumpValve"),
-            ("Imaging / Focus", "Use the manual Camera panel for preview/focus; ROI and exposure requests live in Configure.", "Camera"),
-            ("Laser / Optics", "Inspect readiness without enabling W2: W2 remains blocked and no emission is inferred.", None),
-            ("Acoustic Precheck", "Review requested W1 settings; PC-triggered execution is shown in Review.", None),
+            ("Equipment readiness", "Select/initialize devices when authorized; inspect cached software status.", None, None),
+            (
+                "Environment / Temperature",
+                "Record bench conditions; an optional TEC scan is configured in Configure -> Conditions.",
+                None,
+                "v3ConditionsSetupScroll",
+            ),
+            ("Sample / Fluidics", "Record sample readiness; automatic refresh remains a Configure request.", None, None),
+            (
+                "Guided Pump Preparation",
+                "Open the manual Pump & Valve panel only for its separately confirmed service actions.",
+                "PumpValve",
+                None,
+            ),
+            (
+                "Imaging / Focus",
+                "Use the manual Camera panel for preview and exposure; ROI and exposure requests live in Configure.",
+                "Camera",
+                None,
+            ),
+            (
+                "Z / Positioning",
+                "Open the manual Z calibration scan panel for stage motion and camera-focus calibration.",
+                "ZScan",
+                None,
+            ),
+            ("Laser / Optics", "Inspect readiness without enabling W2: W2 remains blocked and no emission is inferred.", None, None),
+            ("Acoustic Precheck", "Review requested W1 settings; PC-triggered execution is shown in Review.", None, None),
         )
-        for index, (title, detail, panel_name) in enumerate(tasks):
+        for index, (title, detail, panel_name, configure_target) in enumerate(tasks):
             group = QGroupBox(title)
             group.setObjectName(f"v3PrepareTask{index + 1}")
             task_layout = QHBoxLayout(group)
@@ -705,6 +735,17 @@ class MainWindowV3(MainWindowV3Compatibility):
                 )
                 open_panel.clicked.connect(lambda checked=False, name=panel_name: self._open_manual_panel(name))
                 task_layout.addWidget(open_panel)
+            if configure_target is not None:
+                open_configure = QPushButton("Open in Configure")
+                open_configure.setObjectName(f"v3PrepareOpenConfigure{index + 1}")
+                open_configure.setToolTip(
+                    "Switches to the Configure phase and its matching tab. Presentation navigation "
+                    "only -- no experiment field is changed."
+                )
+                open_configure.clicked.connect(
+                    lambda checked=False, name=configure_target: self._v3_open_configure_tab(name)
+                )
+                task_layout.addWidget(open_configure)
             confirmed = QCheckBox("Local checklist confirmation")
             confirmed.setObjectName(f"v3PrepareConfirmed{index + 1}")
             confirmed.setToolTip("Local presentation checklist only; not persisted run evidence or physical verification.")
@@ -1198,7 +1239,27 @@ class MainWindowV3(MainWindowV3Compatibility):
         advanced_layout.addWidget(advanced_note)
         advanced_layout.addStretch(1)
         tabs.addTab(self._v3_scroll_page(advanced_content, "v3AdvancedSetupScroll"), "Advanced WFG")
+        # Kept so Prepare's checklist rows can jump straight to the matching
+        # Configure sub-tab (see _v3_open_configure_tab()) instead of only
+        # naming it in prose and leaving the operator to find it themselves.
+        self._v3_configure_tabs = tabs
         return tabs
+
+    def _v3_open_configure_tab(self, object_name: str) -> None:
+        """Switch to Configure and its named sub-tab. Navigation only.
+
+        Looked up by the sub-tab page's object name (assigned by
+        `_v3_scroll_page`) rather than a hardcoded index, so this keeps
+        working if `_v3_setup_tabs()` ever reorders its tabs.
+        """
+
+        self._v3_experiment_phase_tabs.setCurrentIndex(1)
+        tabs = self._v3_configure_tabs
+        for index in range(tabs.count()):
+            if tabs.widget(index).objectName() == object_name:
+                tabs.setCurrentIndex(index)
+                return
+        raise RuntimeError(f"V3 Configure has no sub-tab named {object_name!r}.")
 
     def _v3_ad2_output_group(self) -> QGroupBox:
         group = QGroupBox("Experiment acoustic output")
@@ -3262,10 +3323,17 @@ class MainWindowV3(MainWindowV3Compatibility):
         recovery_page_layout.addWidget(recovery_group)
         recovery_page_layout.addStretch(1)
 
+        # Syringe setup leads: reference move is the one-time-per-mount
+        # calibration that must happen BEFORE Refill/Empty in the real
+        # physical sequence -- the same chronology V1's own "Setup" group
+        # already establishes ahead of "Syringe" (see
+        # test_pump_tab_reference_move_is_promoted_to_a_leading_setup_group).
+        # Pump/Valve/Flush are the routine day-to-day actions an operator
+        # repeats every run; Recovery is as-needed and stays last.
+        tasks.addTab(setup_page, "Syringe setup")
         tasks.addTab(pump_page, "Pump")
         tasks.addTab(valve_page, "Valve")
         tasks.addTab(flush_page, "Flush")
-        tasks.addTab(setup_page, "Syringe setup")
         tasks.addTab(recovery_page, "Recovery")
         layout.addWidget(tasks)
 
