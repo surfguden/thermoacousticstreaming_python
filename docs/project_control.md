@@ -94,6 +94,41 @@ the pump ready for it — closed by the "Pump / fluidics readiness" row above.
 No Configure tab structure or field placement was reorganized; see the P2
 commit for the full field-classification record.
 
+**Checkpoint P3 (integration/closeout, 2026-09-06)** verified, by diff
+inspection against this program's pre-P1 baseline `e4339653f3d2848694a2d65dbcb9965c31cf36df`
+rather than by assumption, that no line of Start (`_v3_start_experiment_with_shared_preflight`),
+Monitor (`_v3_monitor_workspace`, `_v3_current_execution_group`), or the
+Execution indicator (`_refresh_v3_execution_indicator`, `_v3_execution_line_*`)
+was touched by P1 or P2 -- Start remains the natural continuation of Review,
+Monitor still projects the canonical execution stream, and the trace/
+execution-indicator architecture accepted in the commissioning-readiness
+window is unchanged. The full offline suite passed cleanly in one
+single-process run (836 passed, 1 skipped, 0 failed) after this session had
+intermittently hit `TEST-QT-LIFETIME-001`'s documented full-suite-only
+signature during P1/P2 development (always in files this program did not
+touch, always absent in isolation or a split-batch run); see
+`known_open_items.md` for that item's existing baseline. No open item was
+force-closed; `V3 Prepare confirmations` and `SCI-TEC-EQUIL-001` were
+adjudicated `UNCHANGED` in P1 because the new controls are the same
+evidence class as what already existed.
+
+`V3_OPERATOR_WORKFLOW_PRODUCTIZATION` is now, across P1-P3:
+
+- **DESIGN_PRINCIPLE_ESTABLISHED** and **STRUCTURE_IMPLEMENTED** for Pump/
+  Camera/Z/TEC routine preparation (P1) and for Review's pump/fluidics
+  readiness projection (P2).
+- **OFFLINE_BEHAVIOR_VALIDATED** by the tests and full-suite runs cited in
+  each checkpoint's commit message, plus this P3 integration check.
+- **OPERATOR_VALIDATION_PENDING** in every respect P1 Section 2 already
+  named: no operator has walked this journey on real apparatus, and
+  `UI-V3-DEFAULT-001` remains open and owner-decided. This program does not
+  change that.
+
+Per the program's own Section 22, this implementing session does not have
+authority to accept the program as validated; a fresh session performs the
+independent review over `e433965..55b5cf1` (P1/P2) plus this P3 landing
+commit.
+
 ## Authorized software-maintenance state
 
 **AUTHORIZED_SOFTWARE_MAINTENANCE_ACTIVE** — the owner lifted the repository
