@@ -1183,6 +1183,63 @@ def test_v3_plan_exposes_axes_sequence_camera_request_and_evidence_boundaries(mo
         window.close()
 
 
+def test_v3_review_projects_pump_fluidics_readiness_from_cached_state(monkeypatch, tmp_path):
+    """V3_OPERATOR_WORKFLOW_PRODUCTIZATION P2: Review answers "if I press
+    Start now, what will the canonical software attempt to do?" -- which
+    requires knowing whether Prepare's own pump preparation actually left
+    the pump ready for the automated refresh Configure requested. This
+    reuses the exact self.app.pump/self.app.valve cache Prepare's own
+    readiness label and Manual & Service's cached-status group already
+    read; no new hardware query.
+    """
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        readiness = window.findChild(QLabel, "v3PumpFluidicsReadinessSummary")
+        assert readiness is not None
+        group = window.findChild(QGroupBox, "v3PumpFluidicsReadinessGroup")
+        assert group is not None
+        assert group.title() == "Pump / fluidics readiness"
+
+        # Flush/refresh off: readiness is not required for this plan.
+        window.exp_flush_enabled.setChecked(False)
+        window._refresh_v3_relationships()
+        assert "NOT REQUIRED" in readiness.text()
+
+        # Flush on, pump/valve disabled: matches the existing "required
+        # devices" NOT-AVAILABLE semantics (runtime will skip the refresh).
+        window.exp_flush_enabled.setChecked(True)
+        window.app.pump.enabled = False
+        window._refresh_v3_relationships()
+        assert "NOT AVAILABLE" in readiness.text()
+        assert "skipped by the runtime" in readiness.text()
+
+        # Flush on, pump/valve enabled but not yet prepared: warns without
+        # blocking Start (this is descriptive, not a preflight gate).
+        window.app.pump.enabled = True
+        window.app.valve.enabled = True
+        window.app.pump.referenced = False
+        window.app.pump.syringe_config = None
+        window._refresh_v3_relationships()
+        assert "reference move not confirmed" in readiness.text()
+        assert "syringe not configured" in readiness.text()
+        assert "WARNING: complete Prepare -> Guided Pump Preparation" in readiness.text()
+        assert "not independent physical verification" in readiness.text()
+
+        # Flush on, pump prepared (the state Prepare's own actions produce):
+        # no warning.
+        window.app.pump.initialized = True
+        window.app.pump.referenced = True
+        window.app.pump.syringe_config = {"name": "Custom"}
+        window.app.pump.fill_level = 0.5
+        window._refresh_v3_relationships()
+        assert "reference move confirmed" in readiness.text()
+        assert "syringe configured" in readiness.text()
+        assert "tracked fill 0.500 ml" in readiness.text()
+        assert "WARNING" not in readiness.text()
+    finally:
+        window.close()
+
+
 def test_v3_readiness_distinguishes_disabled_not_required_and_unverified_state(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
     try:

@@ -565,6 +565,20 @@ reassurance is a cost with no evidence attached.
 Where primary documentation is silent, record that. Do not guess and do not
 choose whichever reading supports the desired conclusion.
 
+### 9.6 A named coverage list must be checked item-by-item against source, not assumed satisfied — `DOCUMENTED`
+
+**Project example (`V3_OPERATOR_WORKFLOW_PRODUCTIZATION` P2).** A requirement
+listed Review's expected coverage (run/output/repeats, acquisition, ROI/
+exposure, temperature, pump/fluidics readiness, refresh, acoustic, trigger
+architecture, evidence, blockers). Most of these already existed and it would
+have been easy to conclude Review was already complete from a quick skim.
+Checking each named item against the actual rendered labels found one real
+gap: Review reported what the automated refresh would attempt but nothing
+about whether the operator's own preparation had left the pump ready for it.
+A coverage requirement phrased as a list is itself a checklist to run against
+current source, the same discipline 7.11 already applies to a chronology
+claim's row order.
+
 ---
 
 ## Part 10 — Vendor research

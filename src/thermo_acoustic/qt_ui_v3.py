@@ -1090,6 +1090,8 @@ class MainWindowV3(MainWindowV3Compatibility):
         self._v3_laser_request_summary.setObjectName("v3LaserControlSummary")
         self._v3_refresh_request_summary = QLabel()
         self._v3_refresh_request_summary.setObjectName("v3RefreshSummary")
+        self._v3_pump_fluidics_readiness_summary = QLabel()
+        self._v3_pump_fluidics_readiness_summary.setObjectName("v3PumpFluidicsReadinessSummary")
         self._v3_output_summary = QLabel()
         self._v3_output_summary.setObjectName("v3OutputSummary")
         self._v3_requirements_summary = QLabel()
@@ -1103,6 +1105,7 @@ class MainWindowV3(MainWindowV3Compatibility):
             self._v3_acoustic_request_summary,
             self._v3_laser_request_summary,
             self._v3_refresh_request_summary,
+            self._v3_pump_fluidics_readiness_summary,
             self._v3_output_summary,
             self._v3_requirements_summary,
             self._v3_plan_warnings,
@@ -1116,6 +1119,18 @@ class MainWindowV3(MainWindowV3Compatibility):
             self._v3_laser_request_summary,
             self._v3_refresh_request_summary,
         )
+        # V3_OPERATOR_WORKFLOW_PRODUCTIZATION P2: Review previously said what
+        # the automated repeat-to-repeat refresh WOULD do, but nothing about
+        # whether the operator's own Prepare -> Guided Pump Preparation
+        # actually left the pump/valve/syringe ready for it -- exactly the
+        # "pump/fluidics preparation/readiness" row Section 9.3 names.
+        # Projects the same cached self.app.pump/self.app.valve state
+        # Prepare's readiness label and Manual & Service's cached-status
+        # group already read; no new query, no second authority.
+        fluidics = self._v3_summary_section(
+            "Pump / fluidics readiness", self._v3_pump_fluidics_readiness_summary
+        )
+        fluidics.setObjectName("v3PumpFluidicsReadinessGroup")
         output = self._v3_summary_section(
             "Output and required devices",
             self._v3_output_summary,
@@ -1127,8 +1142,9 @@ class MainWindowV3(MainWindowV3Compatibility):
         grid.addWidget(camera, 0, 1)
         grid.addWidget(acoustic, 1, 0)
         grid.addWidget(optional, 1, 1)
-        grid.addWidget(output, 2, 0)
-        grid.addWidget(blockers, 2, 1)
+        grid.addWidget(fluidics, 2, 0)
+        grid.addWidget(output, 2, 1)
+        grid.addWidget(blockers, 3, 0, 1, 2)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
         layout.addLayout(grid)
@@ -2186,6 +2202,35 @@ class MainWindowV3(MainWindowV3Compatibility):
         if hasattr(self, "_v3_stop_button"):
             self._v3_stop_button.setEnabled(active)
 
+    def _v3_pump_fluidics_readiness_text(self) -> str:
+        """Cached pump/valve/syringe preparation readiness for Review.
+
+        Reuses the exact ``self.app.pump``/``self.app.valve`` cached state
+        Prepare's own readiness label (``_v3_prepare_pump_readiness``) and
+        Manual & Service's cached-status group already read -- no new query,
+        no second authority, and it is gated the same way the existing
+        "required devices" line already gates Pump/Valve (flush-enabled).
+        Cache-only, like the rest of Review; it does not query hardware and
+        tracked fill is not delivered volume.
+        """
+        if not self.exp_flush_enabled.isChecked():
+            return "NOT REQUIRED — repeat-to-repeat sample refresh is off."
+        if not (self.app.pump.enabled and self.app.valve.enabled):
+            return "NOT AVAILABLE — pump/valve disabled; the selected refresh will be skipped by the runtime."
+        p = self.app.pump
+        reference = "confirmed" if p.referenced else "not confirmed"
+        syringe = "configured" if p.syringe_config is not None else "not configured"
+        warning = (
+            ""
+            if p.referenced and p.syringe_config is not None
+            else " WARNING: complete Prepare -> Guided Pump Preparation before Start."
+        )
+        return (
+            f"{'Connected' if p.initialized else 'Not connected'}; reference move {reference}; "
+            f"syringe {syringe}; tracked fill {p.fill_level:.3f} ml.{warning} "
+            "Application cache only; not independent physical verification."
+        )
+
     def _render_v3_shared_preflight(self, result: BuildResult) -> None:
         self._v3_last_build_result = result
         preflight = result.preflight
@@ -2821,6 +2866,7 @@ class MainWindowV3(MainWindowV3Compatibility):
             )
         else:
             self._v3_refresh_request_summary.setText("Off — no automatic repeat-to-repeat sample refresh.")
+        self._v3_pump_fluidics_readiness_summary.setText(self._v3_pump_fluidics_readiness_text())
         status = getattr(self, "_v3_connection_values", {})
         status_text = lambda name: status[name].text() if name in status else "status unavailable"
         selected = [
