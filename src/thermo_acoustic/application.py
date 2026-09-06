@@ -736,6 +736,24 @@ class Application:
                 ("ad2", self.ad2),
             )
         )
+        # Real-shakedown finding (2026-09-06, Checkpoint S): application
+        # exit is a lifecycle boundary distinct from a run's own normal
+        # completion/failure/abort, each of which already reaches
+        # stop_commissioning_trace() through its own finally
+        # (_run_experiment_series()/_run_temperature_experiment_series()).
+        # Nothing previously finalized commissioning trace evidence at
+        # application exit itself: closing the GUI while self.commissioning_
+        # trace was still live (e.g. a run's own finally had not yet run)
+        # would leave commissioning_trace_summary.json unwritten or stale --
+        # not silently wrong (a missing/incomplete summary, or a run's own
+        # series_manifest.json outcome left "IN_PROGRESS", is already
+        # honestly distinguishable from a completed one; no new evidence
+        # vocabulary is introduced here), just never produced. Hardware
+        # cleanup above remains the priority regardless of trace outcome;
+        # stop_commissioning_trace()/CommissioningTraceRecorder.stop() are
+        # both documented as never raising, so this cannot interrupt the
+        # instrument-cleanup errors already collected above.
+        self.stop_commissioning_trace()
         self.fire_stop_event()
         self.fire_status_event("System Not Initialized")
         if errors:

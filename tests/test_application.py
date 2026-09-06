@@ -74,6 +74,7 @@ from thermo_acoustic.runtime_truth import (
     RuntimeEventSeverity,
     VerificationScope,
 )
+from thermo_acoustic.commissioning_trace import TraceState
 from thermo_acoustic.tec import TecController, TecStatus
 from thermo_acoustic.thorlabs_piezo import PiezoStage
 from thermo_acoustic.utilities import (
@@ -1075,6 +1076,87 @@ def test_cleanup_times_out_blocked_device_and_continues_to_later_devices():
     assert ("valve", "cleanup") in calls
     assert ("z_motor", "cleanup") in calls
     assert ("ad2", "cleanup") in calls
+
+
+def test_application_cleanup_disables_tec_output_and_still_cleans_up_other_subsystems():
+    # Real-shakedown finding (2026-09-06, Checkpoint S): a real TEC remained
+    # active after V3 closed. This is the Application-level regression:
+    # proves TEC's new output-disable-before-close step is reached through
+    # the real cleanup lifecycle, and that a TEC cleanup failure does not
+    # skip cleanup of the other subsystems (AC.13's best-effort aggregation).
+    class RecordingTecBackend:
+        def __init__(self):
+            self.calls: list[tuple] = []
+
+        def connect(self):
+            self.calls.append(("connect",))
+
+        def close(self):
+            self.calls.append(("close",))
+
+        def read_status(self, channels):
+            return {
+                channel: TecStatus(channel=channel, output_stage_static_on=False)
+                for channel in channels
+            }
+
+        def set_output_stage_static_off(self, channel):
+            self.calls.append(("set_output_stage_static_off", channel))
+            raise RuntimeError("simulated TEC static-off failure")
+
+        def set_output_stage_static_on(self, channel):
+            pass
+
+    tec_backend = RecordingTecBackend()
+    calls: list[tuple] = []
+
+    class RecordingCleanupInstrument:
+        def __init__(self, name):
+            self.name = name
+
+        def cleanup(self):
+            calls.append((self.name, "cleanup"))
+
+    app = Application(
+        camera=RecordingCleanupInstrument("camera"),
+        pump=RecordingCleanupInstrument("pump"),
+        valve=RecordingCleanupInstrument("valve"),
+        z_motor=RecordingCleanupInstrument("z_motor"),
+        ad2=RecordingCleanupInstrument("ad2"),
+        tec=TecController(enabled=True, simulate=True, backend=tec_backend, initialized=True),
+    )
+
+    with pytest.raises(RuntimeError, match="output-disable"):
+        app.cleanup()
+
+    assert ("set_output_stage_static_off", 1) in tec_backend.calls
+    assert ("close",) in tec_backend.calls, "TEC communication close must still be attempted"
+    assert ("camera", "cleanup") in calls
+    assert ("pump", "cleanup") in calls
+    assert ("valve", "cleanup") in calls
+    assert ("z_motor", "cleanup") in calls
+    assert ("ad2", "cleanup") in calls
+
+
+def test_application_cleanup_finalizes_a_still_recording_commissioning_trace(tmp_path):
+    # Real-shakedown finding (2026-09-06, Checkpoint S): a run's own finally
+    # already reaches stop_commissioning_trace() on normal completion,
+    # failure, or graceful abort -- but application exit is a broader
+    # lifecycle boundary, independently verified here. Before this fix,
+    # closing the application while a trace was still live left
+    # commissioning_trace_summary.json unwritten.
+    app = Application(ad2=SimulatedAD2Sdk())
+    series_path = tmp_path / "series"
+    series_path.mkdir()
+    app.commissioning_trace_enabled = True
+    app.start_commissioning_trace(series_path)
+    assert app.commissioning_trace_state() == TraceState.RECORDING
+    summary_path = series_path / "commissioning_trace_summary.json"
+    assert not summary_path.exists(), "sanity check: summary is not written merely by starting"
+
+    app.cleanup()
+
+    assert summary_path.exists(), "application exit must finalize a still-live trace"
 
 
 def test_application_error_handlers():

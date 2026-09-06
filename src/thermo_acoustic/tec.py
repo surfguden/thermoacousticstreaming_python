@@ -461,10 +461,40 @@ class TecController:
         self.last_status_at_utc = datetime.now(timezone.utc)
 
     def cleanup(self) -> None:
+        # Real-shakedown finding (2026-09-06, Checkpoint S): the TEC remained
+        # actively regulating after V3's application/software was closed.
+        # Root cause: this method only ever closed communication
+        # (backend.close()) -- it never asked the controller to leave Static
+        # ON. A Meerstetter TEC autonomously maintains its last commanded
+        # setpoint once Static ON has been set; closing the serial link does
+        # not command the controller into any different output state
+        # (docs/known_open_items.md SW-DETERMINISTIC-SHUTDOWN-001). Best-
+        # effort, matching this project's established multi-step cleanup
+        # pattern (e.g. AD2's stop-then-reset-then-close): an output-disable
+        # failure must not prevent the communication-close attempt, and both
+        # errors are collected and reported together, not silently dropped.
+        # set_output_stage_static_off() is itself a no-op-safe call when
+        # self.enabled is False; it is deliberately not called when
+        # self.backend is None, matching the pre-existing "nothing was ever
+        # connected" no-op below -- _backend() would otherwise lazily
+        # construct and leave behind an unconnected real backend.
+        errors: list[str] = []
         if self.backend is not None:
+            try:
+                self.set_output_stage_static_off()
+            except Exception as exc:
+                errors.append(f"TEC output-disable before cleanup failed: {exc}")
             cleanup_error = run_with_timeout(self.backend.close, "TEC cleanup", self.cleanup_timeout_s)
             if cleanup_error is not None:
-                raise TecError(cleanup_error)
+                errors.append(cleanup_error)
+            if errors:
+                # Preserves the pre-existing invariant this class already
+                # established: initialized is left unchanged (not forced to
+                # False) when cleanup could not be confirmed -- a stuck/
+                # failed close leaves the connection state genuinely
+                # unknown, so this deliberately does not claim
+                # "uninitialized" for a device that may still be live.
+                raise TecError("; ".join(errors))
         self.initialized = False
 
     def read_status(self, channels: tuple[int, ...] | None = None) -> dict[int, TecStatus]:

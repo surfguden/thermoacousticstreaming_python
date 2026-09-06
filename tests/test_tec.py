@@ -523,6 +523,57 @@ def test_tec_controller_cleanup_bounds_a_stuck_backend_close():
     assert controller.initialized is True
 
 
+def test_tec_controller_cleanup_disables_static_output_before_closing_communication():
+    # Real-shakedown finding (2026-09-06, Checkpoint S): the TEC remained
+    # actively regulating after V3 was closed. cleanup() previously only
+    # closed communication -- it never asked the controller to leave
+    # Static ON, which a Meerstetter TEC otherwise maintains autonomously
+    # regardless of the serial link. This is the deterministic-shutdown
+    # regression: prove the ordering, not just that no exception is raised.
+    backend = RecordingTecBackend()
+    controller = TecController(enabled=True, simulate=True, backend=backend, initialized=True)
+
+    controller.cleanup()
+
+    off_calls = [call for call in backend.calls if call[0] == "set_output_stage_static_off"]
+    close_index = next(i for i, call in enumerate(backend.calls) if call[0] == "close")
+    assert off_calls, "cleanup() must disable the output stage, not just close communication"
+    assert all(
+        backend.calls.index(call) < close_index for call in off_calls
+    ), f"output-disable must happen before close(): {backend.calls!r}"
+    assert controller.initialized is False
+
+
+def test_tec_controller_cleanup_still_closes_communication_when_output_disable_fails():
+    # Best-effort, matching this project's established multi-step cleanup
+    # pattern: an output-disable failure must not prevent the
+    # communication-close attempt.
+    class FailingStaticOffBackend(RecordingTecBackend):
+        def set_output_stage_static_off(self, channel: int) -> None:
+            self.calls.append(("set_output_stage_static_off", channel))
+            raise RuntimeError("simulated static-off failure")
+
+    backend = FailingStaticOffBackend()
+    controller = TecController(enabled=True, simulate=True, backend=backend, initialized=True)
+
+    with pytest.raises(TecError, match="output-disable"):
+        controller.cleanup()
+
+    assert ("close",) in backend.calls, "close() must still be attempted after a static-off failure"
+    assert controller.initialized is True, "cleanup could not be confirmed clean, so this stays unchanged"
+
+
+def test_tec_controller_cleanup_is_a_no_op_when_never_connected():
+    # A never-initialized controller (backend is None) must not lazily
+    # construct a real backend just to command it off.
+    controller = TecController(enabled=True, simulate=False, backend=None, initialized=False)
+
+    controller.cleanup()
+
+    assert controller.backend is None
+    assert controller.initialized is False
+
+
 def test_tec_controller_waits_for_stable_status_without_hardware_sleep():
     backend = SimulatedTecBackend()
     controller = TecController(enabled=True, simulate=True, backend=backend)
