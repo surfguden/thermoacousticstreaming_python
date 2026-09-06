@@ -659,6 +659,72 @@ def _running_window(monkeypatch, tmp_path, size, *, ad2=True, degrade=False):
     return app, window
 
 
+def test_execution_strip_splits_into_two_rows_by_role(monkeypatch, tmp_path):
+    """SW-V3-EXECUTION-STRIP-WIDTH-001: context on row 1, hot status on row 2.
+
+    Proves the restructuring, not just that the fields still exist: state,
+    last and next share one row; current and trace share a second, visually
+    distinct row below it.
+    """
+
+    app, window = _running_window(monkeypatch, tmp_path, (1920, 1080))
+    try:
+        fields = execution_fields(window)
+        top = fields["state"].y()
+        assert fields["last"].y() == top and fields["next"].y() == top
+        bottom = fields["current"].y()
+        assert fields["trace"].y() == bottom
+        assert bottom > top, "the status row must sit below the context row"
+    finally:
+        window.close()
+        app.stop_commissioning_trace()
+
+
+@pytest.mark.parametrize("size", [(1440, 900), (1920, 1080)])
+def test_two_row_split_lets_the_widest_fields_fit_where_one_row_never_could(
+    monkeypatch, tmp_path, size
+):
+    """Non-vacuous proof the split is a real width win, not cosmetic.
+
+    Before the split, `current` and `trace` shared one row with three other
+    fields and were clipped at every supported size (measured: `current`
+    showed about 29% of its text at 1366x768). Sharing a row with only each
+    other, in the ordinary (AD2 enabled, trace off) case, both now fit
+    completely at 1440x900 and 1920x1080.
+    """
+
+    app, window = _running_window(monkeypatch, tmp_path, size, ad2=True, degrade=False)
+    try:
+        fields = execution_fields(window)
+        for name in ("current", "trace"):
+            shown = fields[name].displayed_text()
+            full = fields[name].full_text()
+            assert shown == full, f"{name} still clipped at {size}: {shown!r} != {full!r}"
+    finally:
+        window.close()
+        app.stop_commissioning_trace()
+
+
+def test_two_row_split_stays_within_the_strips_existing_height_budget(monkeypatch, tmp_path):
+    """The known tradeoff of a two-row line is height; confirm it was paid, not exceeded.
+
+    known_open_items.md anticipated a two-row split would cost the strip's
+    105 px height budget. Measured after implementing it: 119 px -- more
+    than before, but still inside the persistent instrument bar's own
+    existing `<= 120 px` contract (see test_qt_ui_v3.py's horizontal-
+    containment test), not a silently expanding strip.
+    """
+
+    app, window = _running_window(monkeypatch, tmp_path, (1366, 768), ad2=False, degrade=True)
+    try:
+        bar = window.findChild(QGroupBox, "v3InstrumentBar")
+        assert bar is not None
+        assert bar.height() <= 120, f"instrument bar grew past its budget: {bar.height()} px"
+    finally:
+        window.close()
+        app.stop_commissioning_trace()
+
+
 @pytest.mark.parametrize("size", [(1366, 768), (1440, 900)])
 def test_clipped_execution_fields_render_an_ellipsis_not_a_mid_word_cut(
     monkeypatch, tmp_path, size
@@ -683,8 +749,14 @@ def test_clipped_execution_fields_render_an_ellipsis_not_a_mid_word_cut(
         shown = current.displayed_text()
         assert shown != current.full_text()
         assert shown.endswith(ELLIPSIS), shown
-        # The dangerous reading: a bare truncation looks like an ordinary wait.
-        assert not shown.startswith("Current: Waiting for requested camera frames;")
+        # The dangerous reading: a truncation that stops before the
+        # AD2-disabled qualifier looks like an ordinary wait. The exact cutoff
+        # point moves with the strip's layout (this field now shares a row
+        # with only one neighbour instead of four, so it keeps far more of
+        # the sentence) -- what must hold regardless is that the qualifying
+        # word survives, not that clipping happens at one particular
+        # character offset.
+        assert "AD2" in shown, f"clipped text lost the AD2-disabled qualifier entirely: {shown!r}"
 
         # The full text stays recoverable and is NOT replaced by the elision.
         assert current.toolTip() == current.full_text()

@@ -561,13 +561,32 @@ class MainWindowV3(MainWindowV3Compatibility):
         # It renders the canonical progress/event stream Monitor already
         # consumes; it owns no timer, no elapsed-time inference, and no second
         # state machine.
+        #
+        # Two rows, not one (SW-V3-EXECUTION-STRIP-WIDTH-001): measured
+        # offscreen, one row needs ~2780-3000 px depending on state -- never
+        # attainable, not even at 1920 px. Splitting by role rather than by
+        # raw width -- context (state/last/next) on row 1, the two fields
+        # that carry the longest and most variable text (current, trace) on
+        # row 2 -- brings the widest row down to roughly 1350-1650 px
+        # depending on state, which DOES fit at 1440 px and 1920 px and comes
+        # far closer at 1366 px than the single-row layout ever did. This is
+        # a real, substantial reduction, not a full elimination: `current`
+        # can still need more than 1366 px in the AD2-disabled/trace-degraded
+        # case, so elision (an explicit ellipsis) and the full-text tooltip
+        # remain the recovery path for whatever residual clipping is left at
+        # the narrowest supported width. No field's semantics, wording, or
+        # evidence stage changed -- only which row it is painted on.
         execution_heading = QLabel("Execution")
         execution_heading.setStyleSheet("font-weight: bold;")
         layout.addWidget(execution_heading, 2, 0)
         execution_host = QWidget()
-        execution_layout = QHBoxLayout(execution_host)
-        execution_layout.setContentsMargins(0, 0, 0, 0)
-        execution_layout.setSpacing(12)
+        execution_rows = QVBoxLayout(execution_host)
+        execution_rows.setContentsMargins(0, 0, 0, 0)
+        execution_rows.setSpacing(2)
+        context_row = QHBoxLayout()
+        context_row.setSpacing(12)
+        status_row = QHBoxLayout()
+        status_row.setSpacing(12)
         self._v3_execution_line_state = _ExecutionFieldLabel("IDLE")
         self._v3_execution_line_state.setObjectName("v3PersistentExecutionState")
         self._v3_execution_line_last = _ExecutionFieldLabel(f"Last: {self._EXECUTION_NO_COMPLETED_ACTION}")
@@ -578,13 +597,17 @@ class MainWindowV3(MainWindowV3Compatibility):
         self._v3_execution_line_next.setObjectName("v3PersistentExecutionNext")
         self._v3_execution_line_trace = _ExecutionFieldLabel(self._TRACE_STATE_CAPTIONS[TraceState.OFF])
         self._v3_execution_line_trace.setObjectName("v3PersistentExecutionTrace")
-        execution_layout.addWidget(self._v3_execution_line_state)
-        # Chronological reading order: what just finished, what is happening,
-        # what comes next. One field each -- this line is not a history panel.
-        execution_layout.addWidget(self._v3_execution_line_last)
-        execution_layout.addWidget(self._v3_execution_line_action)
-        execution_layout.addWidget(self._v3_execution_line_next, 1)
-        execution_layout.addWidget(self._v3_execution_line_trace)
+        # Row 1: where things stand -- run/condition context, what just
+        # finished, what comes next. Row 2: what is happening right now, and
+        # whether it is being recorded -- the two fields whose text length
+        # varies most and dominates the width need.
+        context_row.addWidget(self._v3_execution_line_state)
+        context_row.addWidget(self._v3_execution_line_last)
+        context_row.addWidget(self._v3_execution_line_next, 1)
+        status_row.addWidget(self._v3_execution_line_action, 1)
+        status_row.addWidget(self._v3_execution_line_trace)
+        execution_rows.addLayout(context_row)
+        execution_rows.addLayout(status_row)
         layout.addWidget(execution_host, 2, 1, 1, len(captions))
 
         group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
@@ -1336,8 +1359,19 @@ class MainWindowV3(MainWindowV3Compatibility):
         grid = QGridLayout(group)
         for column, text in enumerate(("Output", "Start (s)", "Run (s)", "End (s)")):
             grid.addWidget(QLabel(text), 0, column)
+        # Column 0 ("Output") and column 4 (this header) were the two
+        # non-wrapping columns actually driving this page's ~1104 px minimum
+        # width (measured: "Laser analog control / W2 (blocked)" alone needs
+        # 420 px, this header 408 px -- together over a third of the total).
+        # The four numeric columns are ~60-108 px each and were never the
+        # problem. Word-wrapping both lets QGridLayout size each column to
+        # its longest WORD rather than its longest full label, and only at
+        # widths tight enough to need it -- at 1920 px they still render on
+        # one line exactly as before. No value, semantics, or evidence stage
+        # changes; only how the label may break across lines.
         self._v3_timing_delta_header = QLabel("End delta vs Acoustic / W1 (s)")
         self._v3_timing_delta_header.setObjectName("v3TimingDeltaHeader")
+        self._v3_timing_delta_header.setWordWrap(True)
         grid.addWidget(self._v3_timing_delta_header, 0, 4)
         self._v3_timing_labels: dict[str, dict[str, QLabel]] = {}
         rows = (
@@ -1347,7 +1381,9 @@ class MainWindowV3(MainWindowV3Compatibility):
             ("ch1", "Laser analog control / W2 (blocked)"),
         )
         for row, (key, title) in enumerate(rows, start=1):
-            grid.addWidget(QLabel(title), row, 0)
+            row_title = QLabel(title)
+            row_title.setWordWrap(True)
+            grid.addWidget(row_title, row, 0)
             values: dict[str, QLabel] = {}
             for column, field in enumerate(("start", "run", "end", "delta"), start=1):
                 label = QLabel("—")
@@ -1672,8 +1708,10 @@ class MainWindowV3(MainWindowV3Compatibility):
         summary.setObjectName("v3DioTimingSummary")
         summary_form = QFormLayout(summary)
         self._v3_dio_duration = QLabel()
+        self._v3_dio_duration.setWordWrap(True)
         self._v3_dio_start_source = QLabel()
         self._v3_dio_slot_budget = QLabel()
+        self._v3_dio_slot_budget.setWordWrap(True)
         self._v3_camera_feasibility = QLabel()
         self._v3_camera_feasibility.setWordWrap(True)
         summary_form.addRow("Requested acquisition duration", self._v3_dio_duration)

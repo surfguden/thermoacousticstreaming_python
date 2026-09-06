@@ -755,6 +755,83 @@ def test_v3_primary_workflow_remains_horizontally_contained(monkeypatch, tmp_pat
         window.close()
 
 
+def test_v3_timing_review_fits_even_at_the_minimum_width_floor(monkeypatch, tmp_path):
+    """SW-V3-NARROW-WINDOW-001, Timing page: closed, not merely improved.
+
+    Previously needed 1104 px at the 980 px `minimumWidth()` floor -- clipped
+    even there, the narrowest attainable width. Word-wrapping the row-title
+    and delta-header labels in `_v3_one_repeat_timing_plan()`'s QGridLayout
+    (the two non-wrapping columns that dominated the grid's minimum width;
+    the four numeric columns were never the problem) drops the requirement to
+    well under the floor's own viewport. No value, semantics, or evidence
+    wording changed -- only how these labels may break across lines.
+    """
+
+    window = make_window(monkeypatch, tmp_path)
+    window.resize(600, 700)  # clamps to minimumWidth() == 980
+    window.show()
+    QApplication.processEvents()
+    try:
+        assert window.width() == window.minimumWidth()
+        phases = window.findChild(QTabWidget, "v3ExperimentPhaseTabs")
+        details = window.findChild(QTabWidget, "v3ReviewDetails")
+        timing_scroll = window.findChild(QScrollArea, "v3TimingReviewScroll")
+        phases.setCurrentIndex(2)
+        QApplication.processEvents()
+        details.setCurrentIndex(1)
+        QApplication.processEvents()
+        assert_page_fits_horizontally(timing_scroll, "v3TimingReviewScroll")
+        # Non-vacuous: the fix is the two setWordWrap(True) calls, not an
+        # accident of this particular width -- confirm the actual number
+        # dropped far below both the old requirement and the new viewport,
+        # not just barely under it.
+        minimum_width = timing_scroll.widget().minimumSizeHint().width()
+        assert minimum_width < 700, (
+            f"Timing page needs {minimum_width} px; expected the word-wrap fix to bring it "
+            "well under 700 px, not merely under this window's viewport"
+        )
+    finally:
+        window.close()
+
+
+def test_v3_camera_and_fluidics_narrow_window_shortfall_is_greatly_reduced(monkeypatch, tmp_path):
+    """SW-V3-NARROW-WINDOW-001, Camera/Fluidics: improved, not closed.
+
+    Word-wrapping two V3-only summary labels ("Camera request and canonical
+    trigger plan") measurably reduced Configure/Acquisition's minimum width
+    at the 980 px floor from a previously documented 996 px to under 950 px.
+    The residual shortfall on both pages is a genuinely different, larger
+    fix -- Acquisition's remaining driver is the Camera Start Array spinbox
+    grid (a dense input layout, not a wrappable label); Fluidics' is
+    `_experiment_flush_group()`, shared with V1 -- and is deliberately left
+    open rather than pursued into a layout redesign or a cross-surface edit.
+    This guards the improvement without claiming more than was achieved.
+    """
+
+    window = make_window(monkeypatch, tmp_path)
+    window.resize(600, 700)  # clamps to minimumWidth() == 980
+    window.show()
+    QApplication.processEvents()
+    try:
+        phases = window.findChild(QTabWidget, "v3ExperimentPhaseTabs")
+        setup_tabs = window.findChild(QTabWidget, "v3SetupTabs")
+        phases.setCurrentIndex(1)
+
+        setup_tabs.setCurrentIndex(0)
+        QApplication.processEvents()
+        camera_scroll = window.findChild(QScrollArea, "v3CameraSetupScroll")
+        camera_min = camera_scroll.widget().minimumSizeHint().width()
+        assert camera_min < 950, f"expected the fix to bring Camera under 950 px; got {camera_min}"
+
+        setup_tabs.setCurrentIndex(3)
+        QApplication.processEvents()
+        fluidics_scroll = window.findChild(QScrollArea, "v3FluidicsSetupScroll")
+        fluidics_min = fluidics_scroll.widget().minimumSizeHint().width()
+        assert fluidics_min < 972, f"expected no regression from the documented 972 px; got {fluidics_min}"
+    finally:
+        window.close()
+
+
 def test_v3_shadow_preflight_presentation_is_explicit_and_wrapped(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
     try:
