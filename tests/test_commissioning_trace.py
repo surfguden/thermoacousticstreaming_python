@@ -240,6 +240,16 @@ def test_recording_adds_no_backend_calls_with_the_concurrent_refresh_worker(tmp_
     assert app_on.commissioning_trace_state() is TraceState.RECORDING
 
     events = read_trace_events(on_path)
+    # Integrity under the actual concurrent path, not only under the fully
+    # sequential one test_trace_records_the_canonical_repeat_timeline_in_order
+    # covers: the save branch and the hardware-only refresh worker both write
+    # through the recorder's single lock, and this proves that interleaving
+    # never produces a gap, a duplicate, or a line the recorder didn't count.
+    assert [event["sequence"] for event in events] == list(range(1, len(events) + 1))
+    assert len(events) == app_on.commissioning_trace.event_count
+    assert app_on.commissioning_trace.dropped_event_count == 0
+    monotonic = [event["monotonic_ns"] for event in events]
+    assert monotonic == sorted(monotonic)
     ordered = [(event["event"], event["status"]) for event in events]
     assert ("Flush", "STARTED") in ordered
     assert ("Flush", "COMPLETED") in ordered
