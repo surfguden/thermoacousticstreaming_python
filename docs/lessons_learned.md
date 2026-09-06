@@ -436,6 +436,38 @@ that chronology explicitly — a row-by-row content review does not catch an
 ordering defect, and two surfaces claiming to follow the same chronology must
 agree with each other, not just each with its own prose.
 
+### 7.12 A launcher button is not productization — `DOCUMENTED`
+
+**Project example (`V3_OPERATOR_WORKFLOW_PRODUCTIZATION` P1).** Giving a
+Preparation checklist row a button that opens the correct Manual & Service
+dialog (7.10/7.11 above) fixed navigation, but the operator still left the
+routine workflow, hunted for the control inside an engineering-oriented
+dialog, acted, and returned. That is information relocation, not interaction
+productization. The fix embeds the routine control directly in the workflow
+surface — Prepare's Guided Pump Preparation, Imaging / Focus, Z / Positioning,
+and Environment / Temperature rows now contain the actual pump/camera/Z/TEC
+widgets and actions, not just a link to them. A launcher remains legitimate
+for what stays genuinely secondary (engineering/recovery/calibration), but a
+program whose acceptance criterion is "operators complete routine preparation
+without decision cost" is not satisfied merely because every control is
+*reachable* in fewer clicks.
+
+### 7.13 One widget instance is the reuse proof, not merely calling the same builder name — `ENFORCED`
+
+**Project example.** Qt widgets have exactly one parent; embedding a routine
+control "in two places" cannot mean constructing it twice, or the second
+construction silently steals the widget away from the first (and, since
+Manual & Service dialogs build lazily on first open, the theft happens the
+first time an operator opens that dialog, not at startup — the kind of defect
+an offline click-through easily misses). The pattern used throughout P1:
+extract the shared widgets into small `_*_group()` builder methods, call each
+exactly once from whichever surface renders it first (Prepare, built eagerly),
+and have the other surface's builder (Manual & Service, built lazily) compose
+only the remaining groups. The regression test is an ancestor-widget
+assertion after opening the second surface (`prepare.isAncestorOf(widget)`
+stays true, `dialog.isAncestorOf(widget)` stays false), not merely that both
+builder methods exist or that construction did not raise.
+
 ---
 
 ## Part 8 — Test quality

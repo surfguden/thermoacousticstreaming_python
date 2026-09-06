@@ -747,6 +747,115 @@ def test_v3_temperature_group_separates_policy_and_shows_cached_readback(monkeyp
         window.close()
 
 
+def test_v3_prepare_temperature_group_is_routine_fixed_target_not_a_scan(monkeypatch, tmp_path):
+    """Environment / Temperature's routine target is a distinct operator
+    concept from Configure -> Conditions' temperature scan (Sections 4.C and
+    7.4 of V3_OPERATOR_WORKFLOW_PRODUCTIZATION), but calls the exact same
+    TecController authority the automated temperature program uses -- no
+    second TEC authority is created.
+    """
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        prepare = window.findChild(QWidget, "v3PrepareWorkspace")
+        temperature_task = prepare.findChild(QGroupBox, "v3PrepareTask5")
+        assert temperature_task is not None
+        assert temperature_task.title() == "Environment / Temperature"
+        content = temperature_task.findChild(QWidget, "v3PrepareTemperatureContent")
+        assert content is not None
+        apply_button = content.findChild(QPushButton, "v3PrepareTecApplyButton")
+        wait_button = content.findChild(QPushButton, "v3PrepareTecWaitButton")
+        assert apply_button is not None
+        assert wait_button is not None
+        equilibrium = content.findChild(QCheckBox, "v3PrepareTecEquilibriumConfirmed")
+        assert equilibrium is not None
+        assert "not persisted run evidence" in equilibrium.toolTip()
+        assert "not physical verification" in equilibrium.toolTip()
+        # Still one Configure -> Conditions launcher for the actual
+        # multi-point program -- ACCEPTABLE_SECONDARY_LAUNCHER, not a
+        # routine-preparation bypass, because the scan is Configure's job.
+        configure_button = prepare.findChild(QPushButton, "v3PrepareOpenConfigure5")
+        assert configure_button is not None
+        assert configure_button.text() == "Open temperature program in Configure"
+
+        # Authority reuse: Apply/Wait call the exact TecController methods
+        # application.py's automated temperature-series runner calls, and
+        # Wait reads Configure -> Conditions' own stability-criteria widgets
+        # rather than a second copy.
+        # TecController is a slots dataclass, so its methods are patched on
+        # the class, not the instance.
+        apply_calls: list[float] = []
+        monkeypatch.setattr(
+            type(window.app.tec),
+            "apply_static_setpoint",
+            lambda self, temperature_c, channels=None: apply_calls.append(temperature_c),
+        )
+        wait_calls: list[dict] = []
+
+        def fake_wait_until_stable(self, target_temperature_c, *, tolerance_c, min_settle_s, max_wait_s, poll_interval_s, channels=None, should_abort=None):
+            wait_calls.append(
+                {
+                    "target": target_temperature_c,
+                    "tolerance_c": tolerance_c,
+                    "min_settle_s": min_settle_s,
+                    "max_wait_s": max_wait_s,
+                    "poll_interval_s": poll_interval_s,
+                }
+            )
+
+        monkeypatch.setattr(type(window.app.tec), "wait_until_stable", fake_wait_until_stable)
+        monkeypatch.setattr(
+            window, "_run_action", lambda action, starting_status, **kwargs: action(None)
+        )
+
+        target_spin = window._v3_prepare_tec_target
+        assert content.isAncestorOf(target_spin)
+        target_spin.setValue(31.5)
+        window.exp_tec_tolerance_c.setValue(0.25)
+        window.exp_tec_min_settle_s.setValue(3.0)
+        window.exp_tec_max_wait_s.setValue(120.0)
+        window.exp_tec_poll_interval_s.setValue(0.5)
+
+        apply_button.click()
+        assert apply_calls == [31.5]
+
+        wait_button.click()
+        assert wait_calls == [
+            {
+                "target": 31.5,
+                "tolerance_c": 0.25,
+                "min_settle_s": 3.0,
+                "max_wait_s": 120.0,
+                "poll_interval_s": 0.5,
+            }
+        ]
+
+        # No second TEC authority: the routine target widget is new and
+        # Prepare-only, but the scan's own multi-point field is untouched
+        # and still lives in Configure.
+        assert target_spin is not window.exp_tec_points
+        assert window.exp_tec_points.parentWidget() is not None
+        assert not content.isAncestorOf(window.exp_tec_points)
+    finally:
+        window.close()
+
+
+def test_v3_prepare_construction_issues_no_hardware_call(monkeypatch, tmp_path):
+    """Building Prepare's embedded routine Pump/Camera/Z/TEC groups is inert:
+    it queries or commands no hardware, matching the pre-existing manual-
+    panel-open guarantee this program extends into Prepare.
+    """
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        assert window.app.camera.handle is None
+        assert window.app.ad2.device_handle is None
+        assert window.app.pump.initialized is False
+        assert window.app.valve.initialized is False
+        assert window.app.tec.initialized is False
+        assert window.app.tec.last_status == {}
+    finally:
+        window.close()
+
+
 @pytest.mark.parametrize("size", [(1366, 768), (1440, 900), (1920, 1080)])
 def test_v3_primary_workflow_remains_horizontally_contained(monkeypatch, tmp_path, size):
     window = make_window(monkeypatch, tmp_path)
@@ -756,6 +865,7 @@ def test_v3_primary_workflow_remains_horizontally_contained(monkeypatch, tmp_pat
     try:
         phases = window.findChild(QTabWidget, "v3ExperimentPhaseTabs")
         setup_tabs = window.findChild(QTabWidget, "v3SetupTabs")
+        prepare_scroll = window.findChild(QScrollArea, "v3PrepareScroll")
         camera_scroll = window.findChild(QScrollArea, "v3CameraSetupScroll")
         review_scroll = window.findChild(QScrollArea, "v3PreRunReview")
         review_details = window.findChild(QTabWidget, "v3ReviewDetails")
@@ -764,11 +874,21 @@ def test_v3_primary_workflow_remains_horizontally_contained(monkeypatch, tmp_pat
 
         assert phases is not None
         assert setup_tabs is not None
+        assert prepare_scroll is not None
         assert camera_scroll is not None
         assert review_scroll is not None
         assert review_details is not None
         assert timing_scroll is not None
         assert instrument_bar is not None
+
+        # V3_OPERATOR_WORKFLOW_PRODUCTIZATION P1: Prepare now embeds routine
+        # Pump/Camera/Z/TEC controls directly (previously launcher-only rows
+        # with negligible width need), so it needs the same geometry proof
+        # every other materially changed Prepare/Configure/Review surface
+        # gets at all three supported window sizes.
+        phases.setCurrentIndex(0)
+        QApplication.processEvents()
+        assert_page_fits_horizontally(prepare_scroll, "v3PrepareScroll")
 
         phases.setCurrentIndex(1)
         setup_tabs.setCurrentIndex(0)
@@ -1564,6 +1684,12 @@ def test_v3_launcher_states_opt_in_hardware_and_rollback_boundaries():
 
 
 def test_v3_pump_panel_separates_actions_from_static_configuration(monkeypatch, tmp_path):
+    # V3_OPERATOR_WORKFLOW_PRODUCTIZATION P1 (2026-09-06): reference move,
+    # syringe specification, refill, and working fill level moved into
+    # Prepare -> Guided Pump Preparation (see
+    # test_v3_prepare_pump_group_reuses_the_same_widgets_and_actions below).
+    # This panel keeps only the engineering/recovery/fluid-routing remainder:
+    # cached status, valve position, manual flush, and fault recovery.
     window = make_window(monkeypatch, tmp_path)
     try:
         dialog = build_with_retry(lambda: window._ensure_manual_panel("PumpValve"))
@@ -1575,51 +1701,36 @@ def test_v3_pump_panel_separates_actions_from_static_configuration(monkeypatch, 
         assert tasks is not None
         assert scroll.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         assert scroll.horizontalScrollBar().maximum() == 0
-        # Syringe setup leads: reference move is the one-time-per-mount
-        # calibration that must happen before Refill/Empty in the real
-        # physical sequence, matching the chronology V1's own "Setup"-before-
-        # "Syringe" ordering already established
-        # (test_pump_tab_reference_move_is_promoted_to_a_leading_setup_group).
         assert [tasks.tabText(index) for index in range(tasks.count())] == [
-            "Syringe setup",
-            "Pump",
             "Valve",
             "Flush",
             "Recovery",
         ]
-        assert {group.title() for group in tasks.widget(0).findChildren(QGroupBox)} == {
-            "Shared syringe setup and calibration"
-        }
-        assert {group.title() for group in tasks.widget(1).findChildren(QGroupBox)} == {
-            "Immediate pump operations"
-        }
-        assert {group.title() for group in tasks.widget(2).findChildren(QGroupBox)} == {"Valve position"}
-        assert {group.title() for group in tasks.widget(3).findChildren(QGroupBox)} == {"Manual flush"}
-        assert {group.title() for group in tasks.widget(4).findChildren(QGroupBox)} == {
+        assert {group.title() for group in tasks.widget(0).findChildren(QGroupBox)} == {"Valve position"}
+        assert {group.title() for group in tasks.widget(1).findChildren(QGroupBox)} == {"Manual flush"}
+        assert {group.title() for group in tasks.widget(2).findChildren(QGroupBox)} == {
             "Connection recovery"
         }
         groups = {group.title() for group in dialog.findChildren(QGroupBox)}
-        assert {
-            "Immediate pump operations",
-            "Valve position",
-            "Manual flush",
-            "Shared syringe setup and calibration",
-        } <= groups
+        assert {"Valve position", "Manual flush"} <= groups
+        # Routine widgets/actions no longer live in this dialog at all --
+        # they were reassigned to Prepare, never duplicated.
+        assert {"Immediate pump operations", "Shared syringe setup and calibration"}.isdisjoint(groups)
         button_texts = {button.text() for button in dialog.findChildren(QPushButton)}
+        assert {
+            "Set valve to position 1 (P01)",
+            "Set valve to position 2 (P02)",
+            "Start flush sequence",
+            "Clear fault and retry connection",
+        } <= button_texts
         assert {
             "Refill syringe",
             "Empty syringe",
             "Start flow at selected rate",
             "Move to target fill level",
             "Stop pump",
-            "Set valve to position 1 (P01)",
-            "Set valve to position 2 (P02)",
-            "Start flush sequence",
             "Configure syringe",
             "Run reference move",
-            "Clear fault and retry connection",
-        } <= button_texts
-        assert {
             "Refill",
             "Empty",
             "Generate",
@@ -1631,7 +1742,7 @@ def test_v3_pump_panel_separates_actions_from_static_configuration(monkeypatch, 
             "Configure",
             "Reference move",
         }.isdisjoint(button_texts)
-        assert window.flow_rate in dialog.findChildren(type(window.flow_rate))
+        assert window.flow_rate not in dialog.findChildren(type(window.flow_rate))
         recovery = dialog.findChild(QGroupBox, "v3PumpConnectionRecovery")
         clear_fault = dialog.findChild(QPushButton, "v3ClearPumpFaultButton")
         assert recovery is not None
@@ -1640,14 +1751,11 @@ def test_v3_pump_panel_separates_actions_from_static_configuration(monkeypatch, 
         assert "underlying CAN cause" in " ".join(
             label.text() for label in recovery.findChildren(QLabel)
         )
-        stop_pump = dialog.findChild(QPushButton, "v3StopPumpButton")
-        assert stop_pump is not None
-        assert "darkred" in stop_pump.styleSheet()
+        assert dialog.findChild(QPushButton, "v3StopPumpButton") is None
         flush_note = dialog.findChild(QLabel, "v3ManualFlushWorkflowNote")
         assert "P01 → pump dispense → valve P02" in flush_note.text()
-        syringe_boundary = dialog.findChild(QLabel, "v3SharedSyringeBoundary")
-        assert "capacity" in syringe_boundary.text()
-        assert "does not apply it" in syringe_boundary.text()
+        moved_note = dialog.findChild(QLabel, "v3PumpMovedToPrepareNote")
+        assert "Guided Pump Preparation" in moved_note.text()
         assert dialog.findChild(QGroupBox, "v3PumpValveLocalStatus") is not None
         pump_state = dialog.findChild(QLabel, "v3PumpLocalState")
         valve_state = dialog.findChild(QLabel, "v3ValveLocalState")
@@ -1674,6 +1782,64 @@ def test_v3_pump_panel_separates_actions_from_static_configuration(monkeypatch, 
         window.close()
 
 
+def test_v3_prepare_pump_group_reuses_the_same_widgets_and_actions(monkeypatch, tmp_path):
+    """Guided Pump Preparation embeds the exact widgets/actions Manual &
+    Service used to build for itself -- proving authority reuse (Section 5 /
+    18 of V3_OPERATOR_WORKFLOW_PRODUCTIZATION): one instance of each
+    routine pump/syringe widget, parented under Prepare, and calling the
+    same manual actions Manual & Service's remainder never rebuilds.
+    """
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        prepare = window.findChild(QWidget, "v3PrepareWorkspace")
+        pump_task = prepare.findChild(QGroupBox, "v3PrepareTask2")
+        assert pump_task is not None
+        assert pump_task.title() == "Guided Pump Preparation"
+        content = pump_task.findChild(QWidget, "v3PreparePumpContent")
+        assert content is not None
+        groups = {group.title() for group in content.findChildren(QGroupBox)}
+        assert groups == {"Shared syringe setup and calibration", "Immediate pump operations"}
+        button_texts = {button.text() for button in content.findChildren(QPushButton)}
+        assert {
+            "Run reference move",
+            "Configure syringe",
+            "Refill syringe",
+            "Empty syringe",
+            "Start flow at selected rate",
+            "Move to target fill level",
+            "Stop pump",
+        } <= button_texts
+        # The exact same widget instances Manual & Service's Pump group
+        # would otherwise need -- proof there is one pump-preparation
+        # authority, not a Prepare-specific copy.
+        assert window.flow_rate in content.findChildren(type(window.flow_rate))
+        assert window.syringe in content.findChildren(type(window.syringe))
+        assert window.level_ml in content.findChildren(type(window.level_ml))
+        readiness = window.findChild(QLabel, "v3PreparePumpReadiness")
+        assert readiness is not None
+        assert "Readiness: pump" in readiness.text()
+
+        # Opening Manual & Service afterwards must not steal these widgets
+        # back out of Prepare (no parallel lifecycle / no reparenting).
+        dialog = window._ensure_manual_panel("PumpValve")
+        assert prepare.isAncestorOf(window.flow_rate)
+        assert prepare.isAncestorOf(window.syringe)
+        assert not dialog.isAncestorOf(window.flow_rate)
+        assert not dialog.isAncestorOf(window.syringe)
+
+        events: list[str] = []
+        monkeypatch.setattr(window, "_start_go_level", lambda checked=False: events.append("go-level"))
+        monkeypatch.setattr(
+            window, "_start_reference_move", lambda checked=False: events.append("reference-move")
+        )
+        buttons = {button.text(): button for button in content.findChildren(QPushButton)}
+        buttons["Move to target fill level"].click()
+        buttons["Run reference move"].click()
+        assert events == ["go-level", "reference-move"]
+    finally:
+        window.close()
+
+
 def test_v3_camera_panel_has_ordered_acquisition_sequence_and_advanced_display(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
     try:
@@ -1686,12 +1852,19 @@ def test_v3_camera_panel_has_ordered_acquisition_sequence_and_advanced_display(m
         assert tasks is not None
         assert scroll.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         assert scroll.horizontalScrollBar().maximum() == 0
-        assert [tasks.tabText(index) for index in range(tasks.count())] == ["Capture", "Sequence", "Display"]
+        assert [tasks.tabText(index) for index in range(tasks.count())] == [
+            "Saved output",
+            "Sequence",
+            "Display",
+        ]
         assert {group.title() for group in tasks.widget(0).findChildren(QGroupBox)} == {
-            "Capture and preview",
-            "Shared applied ROI and manual exposure",
             "Saved-frame output",
         }
+        # Routine preview/ROI/exposure no longer live in this dialog at all --
+        # they were reassigned to Prepare -> Imaging / Focus, never duplicated.
+        assert {"Capture and preview", "Shared applied ROI and manual exposure"}.isdisjoint(
+            {group.title() for group in dialog.findChildren(QGroupBox)}
+        )
         sequence_sections = tasks.widget(1).findChild(QTabWidget, "v3CameraSequenceSections")
         assert sequence_sections is not None
         assert [sequence_sections.tabText(index) for index in range(sequence_sections.count())] == [
@@ -1736,10 +1909,8 @@ def test_v3_camera_panel_has_ordered_acquisition_sequence_and_advanced_display(m
         } <= display_labels
         assert {"Method", "Minimum", "Maximum", "Bit shifts"}.isdisjoint(display_labels)
         button_texts = {button.text() for button in dialog.findChildren(QPushButton)}
-        assert {"Capture single image", "Save last captured image", "Browse..."} <= button_texts
-        assert {"Image", "Save last Image capture", "..."}.isdisjoint(button_texts)
-        labels = {label.text() for label in tasks.widget(0).findChildren(QLabel)}
-        assert "Live preview" in labels
+        assert {"Save last captured image", "Browse..."} <= button_texts
+        assert {"Image", "Save last Image capture", "...", "Capture single image"}.isdisjoint(button_texts)
         assert window.sequence_frames in sequence_sections.widget(1).findChildren(type(window.sequence_frames))
         assert window.dcam_source in sequence_sections.widget(2).findChildren(type(window.dcam_source))
         assert window.capture_mode in sequence_sections.widget(3).findChildren(type(window.capture_mode))
@@ -1757,13 +1928,46 @@ def test_v3_camera_panel_has_ordered_acquisition_sequence_and_advanced_display(m
         assert "force trigger source to External with positive polarity" in trigger_boundary
         assert "Internal" not in trigger_boundary
         capture_labels = {label.text() for label in tasks.widget(0).findChildren(QLabel)}
-        assert {
-            "Horizontal offset (px)",
-            "Vertical offset (px)",
-            "Horizontal size (px)",
-            "Vertical size (px)",
-            "Output folder",
-        } <= capture_labels
+        assert "Output folder" in capture_labels
+        assert {"Horizontal offset (px)", "Vertical offset (px)", "Horizontal size (px)", "Vertical size (px)"}.isdisjoint(
+            capture_labels
+        )
+    finally:
+        window.close()
+
+
+def test_v3_prepare_imaging_group_reuses_the_same_widgets_and_actions(monkeypatch, tmp_path):
+    """Imaging / Focus embeds the exact widgets/actions Manual & Service used
+    to build for itself -- proving authority reuse: one instance of the ROI/
+    exposure widgets, parented under Prepare, and calling the same manual
+    camera actions Manual & Service's remainder never rebuilds.
+    """
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        prepare = window.findChild(QWidget, "v3PrepareWorkspace")
+        imaging_task = prepare.findChild(QGroupBox, "v3PrepareTask3")
+        assert imaging_task is not None
+        assert imaging_task.title() == "Imaging / Focus"
+        content = imaging_task.findChild(QWidget, "v3PrepareImagingContent")
+        assert content is not None
+        groups = {group.title() for group in content.findChildren(QGroupBox)}
+        assert groups == {"Capture and preview", "Shared applied ROI and manual exposure"}
+        assert window.roi_h_offset in content.findChildren(type(window.roi_h_offset))
+        assert window.exposure_ms in content.findChildren(type(window.exposure_ms))
+        button_texts = {button.text() for button in content.findChildren(QPushButton)}
+        assert {"Capture single image", "Apply camera settings"} <= button_texts
+
+        dialog = window._ensure_manual_panel("Camera")
+        assert prepare.isAncestorOf(window.roi_h_offset)
+        assert not dialog.isAncestorOf(window.roi_h_offset)
+
+        events: list[str] = []
+        monkeypatch.setattr(
+            window, "_start_configure_camera", lambda checked=False: events.append("configure-camera")
+        )
+        buttons = {button.text(): button for button in content.findChildren(QPushButton)}
+        buttons["Apply camera settings"].click()
+        assert events == ["configure-camera"]
     finally:
         window.close()
 
@@ -1934,10 +2138,16 @@ def test_v3_zscan_keeps_motion_warning_compact_and_groups_top_aligned(monkeypatc
         dialog.show()
         QApplication.processEvents()
         labels = [label.text() for label in dialog.findChildren(QLabel)]
-        workflow_note = next(label for label in labels if label.startswith("Manual calibration workflow only."))
+        workflow_note = next(
+            label for label in labels if label.startswith("Z-Scan calibration/service workflow only")
+        )
         assert "existing camera connection" in workflow_note
         assert "independent of the experiment-camera exposure" in workflow_note
         assert "Motion requires explicit confirmation" in workflow_note
+        # Routine focus (readback/target/jog/move) no longer lives in this
+        # dialog at all -- it was reassigned to Prepare -> Z / Positioning,
+        # never duplicated.
+        assert "Manual Focus (Z Stage)" not in {group.title() for group in dialog.findChildren(QGroupBox)}
         groups = {group.title(): group for group in dialog.findChildren(QGroupBox)}
         assert {"Z-Scan Calibration Parameters", "Z-Scan actions"} <= set(groups)
         assert groups["Z-Scan Calibration Parameters"].height() < dialog.height() - 80
@@ -1950,6 +2160,33 @@ def test_v3_zscan_keeps_motion_warning_compact_and_groups_top_aligned(monkeypatc
         assert "5 position(s) / image(s)" in summary.text()
         assert "0.000–10.000 µm" in summary.text()
         assert "live-read from device MaxTravel" in summary.text()
+    finally:
+        window.close()
+
+
+def test_v3_prepare_focus_group_reuses_the_same_widgets_and_actions(monkeypatch, tmp_path):
+    """Z / Positioning embeds the exact base ``_manual_focus_group()``
+    widgets/actions Z-Scan's Manual Service panel used to build for itself --
+    proving authority reuse: one instance of the Z-focus widgets, parented
+    under Prepare, never rebuilt by the ZScan panel.
+    """
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        prepare = window.findChild(QWidget, "v3PrepareWorkspace")
+        z_task = prepare.findChild(QGroupBox, "v3PrepareTask4")
+        assert z_task is not None
+        assert z_task.title() == "Z / Positioning"
+        content = z_task.findChild(QWidget, "v3PrepareFocusContent")
+        assert content is not None
+        focus_group = content.findChild(QGroupBox)
+        assert focus_group is not None
+        assert focus_group.title() == "Manual Focus (Z Stage)"
+        assert window.manual_z_target_um in content.findChildren(type(window.manual_z_target_um))
+        assert window.manual_z_move in content.findChildren(type(window.manual_z_move))
+
+        dialog = window._ensure_manual_panel("ZScan")
+        assert prepare.isAncestorOf(window.manual_z_target_um)
+        assert not dialog.isAncestorOf(window.manual_z_target_um)
     finally:
         window.close()
 
@@ -2097,11 +2334,13 @@ def test_v3_rebuilt_manual_panel_buttons_dispatch_without_hardware(monkeypatch, 
             "Start Z-Scan": "start-zscan",
             "Abort Z-Scan": "abort-zscan",
         }
-        all_buttons = [
-            button
-            for dialog in dialogs.values()
-            for button in dialog.findChildren(QPushButton)
-        ]
+        # V3_OPERATOR_WORKFLOW_PRODUCTIZATION P1: several of these buttons
+        # now live in Prepare (Guided Pump Preparation / Imaging / Focus)
+        # rather than only inside these Manual & Service dialogs, so search
+        # the whole window rather than only the dialogs -- exactly one
+        # instance of each button must exist regardless of which surface
+        # renders it.
+        all_buttons = window.findChildren(QPushButton)
         for button_text, expected_event in button_events.items():
             matches = [button for button in all_buttons if button.text() == button_text]
             assert len(matches) == 1, button_text

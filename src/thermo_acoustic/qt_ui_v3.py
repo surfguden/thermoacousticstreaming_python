@@ -49,7 +49,8 @@ from .experiment_planning import (
 from .ad2 import coerce_do_config
 from .instruments import SimulatedAD2Sdk
 from .piezo_zscan import ZScanCalibration
-from .qt_ui import bind_waveform_parameter_policy, install_focus_wheel_guard
+from .qt_ui import _spin, bind_waveform_parameter_policy, install_focus_wheel_guard
+from .tec import TEC_TARGET_MAX_C, TEC_TARGET_MIN_C
 from .qt_ui_v3_support import InitializationDialog, MainWindowV3Compatibility
 from .runtime_truth import RuntimeEvent, RuntimeEventSeverity
 
@@ -709,45 +710,79 @@ class MainWindowV3(MainWindowV3Compatibility):
         # Refresh Configure tab, not pump mounting -- pump mounting/
         # reference-move readiness is Guided Pump Preparation's job, and it
         # already precedes Sample / Fluidics either way.
+        #
+        # V3_OPERATOR_WORKFLOW_PRODUCTIZATION P1 (2026-09-06): four rows
+        # (Guided Pump Preparation, Imaging / Focus, Z / Positioning,
+        # Environment / Temperature) now embed their routine controls
+        # directly via `content_builder`, instead of only a launcher button
+        # to a separate Manual & Service dialog -- interaction productization,
+        # not information relocation (Section A). Each embedded control is
+        # the exact widget/action Manual & Service used to build for itself;
+        # this method reassigns which caller builds it, it never builds it
+        # twice. Rows with no `content_builder` (Equipment readiness, Sample
+        # / Fluidics, Laser / Optics, Acoustic Precheck) are unchanged.
         tasks = (
-            ("Equipment readiness", "Select/initialize devices when authorized; inspect cached software status.", None, None),
+            ("Equipment readiness", "Select/initialize devices when authorized; inspect cached software status.", None, None, None),
             (
                 "Guided Pump Preparation",
-                "Open the manual Pump & Valve panel only for its separately confirmed service actions.",
+                "Reference move, syringe specification, refill, and working fill level -- the same pump/valve "
+                "hardware as Manual & Service. Valve routing, manual flush, and fault recovery remain there.",
                 "PumpValve",
                 None,
+                self._v3_prepare_pump_group,
             ),
             (
                 "Imaging / Focus",
-                "Use the manual Camera panel for preview and exposure; ROI and exposure requests live in Configure.",
+                "Live preview, ROI, and routine exposure -- the same camera hardware as Manual & Service. "
+                "Saved-frame output, sequence/trigger defaults, and display conversion remain there.",
                 "Camera",
                 None,
+                self._v3_prepare_imaging_group,
             ),
             (
                 "Z / Positioning",
-                "Open the manual Z calibration scan panel for stage motion and camera-focus calibration.",
+                "Controller readback, target, jog, and move -- the same Z stage as Manual & Service. "
+                "Z-Scan calibration/program parameters remain there.",
                 "ZScan",
                 None,
+                self._v3_prepare_focus_group,
             ),
             (
                 "Environment / Temperature",
-                "Record bench conditions; an optional TEC scan is configured in Configure -> Conditions.",
+                "Apply one routine fixed TEC target and wait for controller stability -- the same TEC controller "
+                "action the automated temperature program uses. A multi-point temperature program/scan is "
+                "configured in Configure -> Conditions.",
                 None,
                 "v3ConditionsSetupScroll",
+                self._v3_prepare_temperature_group,
             ),
-            ("Sample / Fluidics", "Record sample readiness; automatic refresh remains a Configure request.", None, None),
-            ("Laser / Optics", "Inspect readiness without enabling W2: W2 remains blocked and no emission is inferred.", None, None),
-            ("Acoustic Precheck", "Review requested W1 settings; PC-triggered execution is shown in Review.", None, None),
+            ("Sample / Fluidics", "Record sample readiness; automatic refresh remains a Configure request.", None, None, None),
+            ("Laser / Optics", "Inspect readiness without enabling W2: W2 remains blocked and no emission is inferred.", None, None, None),
+            ("Acoustic Precheck", "Review requested W1 settings; PC-triggered execution is shown in Review.", None, None, None),
         )
-        for index, (title, detail, panel_name, configure_target) in enumerate(tasks):
+        for index, (title, detail, panel_name, configure_target, content_builder) in enumerate(tasks):
             group = QGroupBox(title)
             group.setObjectName(f"v3PrepareTask{index + 1}")
-            task_layout = QHBoxLayout(group)
+            group_layout = QVBoxLayout(group)
+            task_layout = QHBoxLayout()
             note = QLabel(detail)
             note.setWordWrap(True)
             task_layout.addWidget(note, 1)
             if panel_name is not None:
-                open_panel = QPushButton(f"Open {self._panel_display_name(panel_name)} panel")
+                # A row with an embedded routine content_builder keeps this
+                # button only as a secondary launcher to the remaining
+                # engineering/service functionality that stayed in Manual &
+                # Service (ACCEPTABLE_SECONDARY_LAUNCHER: valve/flush/
+                # recovery, camera sequence/trigger/output, Z-Scan
+                # calibration -- see the P1 report). A row with no
+                # content_builder still uses it as its only way to reach the
+                # panel.
+                label = (
+                    f"Open {self._panel_display_name(panel_name)} (engineering)"
+                    if content_builder is not None
+                    else f"Open {self._panel_display_name(panel_name)} panel"
+                )
+                open_panel = QPushButton(label)
                 open_panel.setObjectName(f"v3PrepareOpenPanel{index + 1}")
                 open_panel.setToolTip(
                     "Opens the existing Manual & Service panel. Presentation navigation only -- "
@@ -756,7 +791,7 @@ class MainWindowV3(MainWindowV3Compatibility):
                 open_panel.clicked.connect(lambda checked=False, name=panel_name: self._open_manual_panel(name))
                 task_layout.addWidget(open_panel)
             if configure_target is not None:
-                open_configure = QPushButton("Open in Configure")
+                open_configure = QPushButton("Open temperature program in Configure")
                 open_configure.setObjectName(f"v3PrepareOpenConfigure{index + 1}")
                 open_configure.setToolTip(
                     "Switches to the Configure phase and its matching tab. Presentation navigation "
@@ -770,6 +805,9 @@ class MainWindowV3(MainWindowV3Compatibility):
             confirmed.setObjectName(f"v3PrepareConfirmed{index + 1}")
             confirmed.setToolTip("Local presentation checklist only; not persisted run evidence or physical verification.")
             task_layout.addWidget(confirmed)
+            group_layout.addLayout(task_layout)
+            if content_builder is not None:
+                group_layout.addWidget(content_builder())
             layout.addWidget(group)
         configure_button = QPushButton("Continue to Configure")
         configure_button.setObjectName("v3PrepareContinueButton")
@@ -2997,6 +3035,7 @@ class MainWindowV3(MainWindowV3Compatibility):
                 color = "red"
             label.setStyleSheet(f"color: {color};")
         self._refresh_v3_tec_readback()
+        self._refresh_v3_prepare_tec_readback()
         self._refresh_v3_pump_local_status()
         if hasattr(self, "_v3_timing_labels"):
             self._refresh_v3_relationships()
@@ -3016,6 +3055,125 @@ class MainWindowV3(MainWindowV3Compatibility):
             output = "output on" if status.output_stage_static_on else "output off"
             error = f"; error: {status.error_state}" if status.error_state else ""
             label.setText(f"Measured {current}; target {target}; {readiness}; {output}{error}")
+
+    def _v3_prepare_temperature_group(self) -> QWidget:
+        """Environment / Temperature routine target, embedded directly in Prepare.
+
+        A routine FIXED temperature target is a distinct operator concept
+        from Configure -> Conditions' temperature PROGRAM/scan (Sections 4.C
+        and 7.4 of V3_OPERATOR_WORKFLOW_PRODUCTIZATION): entering one target
+        here and pressing Apply does not enable, or require reasoning about,
+        a multi-point scan. There is no second TEC authority -- Apply/Wait
+        call the exact same ``TecController.apply_static_setpoint()`` /
+        ``wait_until_stable()`` the automated temperature scan calls
+        (application.py's temperature-series runner), against the same
+        ``self.app.tec`` instance, and Wait reads its tolerance/settle/wait/
+        poll criteria from the SAME Configure -> Conditions stability-
+        criteria widgets the scan itself uses (read here, never duplicated
+        or moved). Configure's own multi-point "Channel 1 points" field is
+        unchanged -- entering one point there remains an equivalent way to
+        run a one-point scan at Start; this is a faster routine path for the
+        common single-fixed-target case that needs no trip to Configure.
+        """
+        content = QWidget()
+        content.setObjectName("v3PrepareTemperatureContent")
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        note = QLabel(
+            "Sets one fixed TEC target now, using the same controller action the automated temperature "
+            "program uses at Start -- separate from Configure -> Conditions' multi-point temperature scan. "
+            "Wait for stability reuses that tab's own tolerance/settle/wait criteria."
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        form = QFormLayout()
+        self._v3_prepare_tec_target = _spin(25.0, decimals=2, minimum=TEC_TARGET_MIN_C, maximum=TEC_TARGET_MAX_C)
+        form.addRow("Routine target (°C)", self._v3_prepare_tec_target)
+        layout.addLayout(form)
+        self._add_tooltip_icons(form)
+
+        buttons = QHBoxLayout()
+        apply_target = QPushButton("Apply target")
+        apply_target.setObjectName("v3PrepareTecApplyButton")
+        apply_target.setToolTip(
+            "Calls the same TecController.apply_static_setpoint() the automated temperature program calls. "
+            "Command-sent/software-effective only; the readback below is controller state, not imaging-"
+            "plane equilibrium."
+        )
+        apply_target.clicked.connect(self._v3_apply_prepare_tec_target)
+        wait_stable = QPushButton("Wait for stability")
+        wait_stable.setObjectName("v3PrepareTecWaitButton")
+        wait_stable.setToolTip(
+            "Calls the same TecController.wait_until_stable() the automated temperature program calls, "
+            "using Configure -> Conditions' own tolerance/settle/wait/poll criteria."
+        )
+        wait_stable.clicked.connect(self._v3_wait_prepare_tec_stable)
+        buttons.addWidget(apply_target)
+        buttons.addWidget(wait_stable)
+        buttons.addStretch(1)
+        layout.addLayout(buttons)
+
+        self._v3_prepare_tec_readback = QLabel("No cached readback")
+        self._v3_prepare_tec_readback.setObjectName("v3PrepareTecReadback")
+        self._v3_prepare_tec_readback.setWordWrap(True)
+        layout.addWidget(self._v3_prepare_tec_readback)
+
+        equilibrium = QCheckBox("Sample equilibrium confirmed (local checklist only)")
+        equilibrium.setObjectName("v3PrepareTecEquilibriumConfirmed")
+        equilibrium.setToolTip(
+            "Local operator confirmation only -- not persisted run evidence and not physical verification. "
+            "Controller 'stable'/'ready' above reports the controller's own criteria, not imaging-plane "
+            "fluid equilibrium (SCI-TEC-EQUIL-001)."
+        )
+        layout.addWidget(equilibrium)
+
+        self._refresh_v3_prepare_tec_readback()
+        return content
+
+    def _v3_apply_prepare_tec_target(self) -> None:
+        target = float(self._v3_prepare_tec_target.value())
+        self._run_action(
+            lambda progress: self.app.tec.apply_static_setpoint(target),
+            f"Setting TEC target to {target:.2f} °C",
+        )
+
+    def _v3_wait_prepare_tec_stable(self) -> None:
+        target = float(self._v3_prepare_tec_target.value())
+        tolerance_c = float(self.exp_tec_tolerance_c.value())
+        min_settle_s = float(self.exp_tec_min_settle_s.value())
+        max_wait_s = float(self.exp_tec_max_wait_s.value())
+        poll_interval_s = float(self.exp_tec_poll_interval_s.value())
+        self._run_action(
+            lambda progress: self.app.tec.wait_until_stable(
+                target,
+                tolerance_c=tolerance_c,
+                min_settle_s=min_settle_s,
+                max_wait_s=max_wait_s,
+                poll_interval_s=poll_interval_s,
+            ),
+            f"Waiting for TEC stability at {target:.2f} °C",
+        )
+
+    def _refresh_v3_prepare_tec_readback(self) -> None:
+        label = getattr(self, "_v3_prepare_tec_readback", None)
+        if label is None:
+            return
+        statuses = [status for status in (
+            self.app.tec.last_status.get(channel) for channel in self.app.tec.channels
+        ) if status is not None]
+        if not statuses:
+            label.setText("No cached readback")
+            return
+        parts = []
+        for status in statuses:
+            current = "—" if status.current_temperature_c is None else f"{status.current_temperature_c:.3f} °C"
+            target = "—" if status.target_temperature_c is None else f"{status.target_temperature_c:.3f} °C"
+            readiness = "ready" if status.ready else "not ready"
+            parts.append(f"ch{status.channel}: measured {current}, target {target}, {readiness}")
+        label.setText("; ".join(parts))
 
     # Manual WFG panel: retain v2's computed preview and v1's validated
     # controls, but stack the two long channel forms instead of putting them
@@ -3162,29 +3320,7 @@ class MainWindowV3(MainWindowV3Compatibility):
         base.deleteLater()
         return tab
 
-    def _pump_tab(self) -> QWidget:
-        tab = QWidget()
-        outer = QVBoxLayout(tab)
-        outer.setContentsMargins(0, 0, 0, 0)
-
-        scroll = QScrollArea()
-        scroll.setObjectName("v3PumpValveScroll")
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-
-        content = QWidget()
-        layout = QVBoxLayout(content)
-        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-
-        note = QLabel(
-            "Manual pump and valve controls. P01/P02 fluid routing requires bench confirmation. The syringe "
-            "selection is also used by experiment-flush capacity checks, but selecting it does not configure "
-            "the physical pump."
-        )
-        note.setWordWrap(True)
-        note.setMaximumWidth(700)
-        layout.addWidget(note)
-
+    def _v3_pump_local_status_group(self) -> QGroupBox:
         local_status = QGroupBox("Cached pump and valve state")
         local_status.setObjectName("v3PumpValveLocalStatus")
         local_form = QFormLayout(local_status)
@@ -3207,8 +3343,9 @@ class MainWindowV3(MainWindowV3Compatibility):
         local_note.setObjectName("v3PumpLocalStatusEvidenceNote")
         local_note.setWordWrap(True)
         local_form.addRow(local_note)
-        layout.addWidget(local_status)
+        return local_status
 
+    def _v3_pump_operations_group(self) -> QGroupBox:
         pump_group = QGroupBox("Immediate pump operations")
         pump_form = QFormLayout(pump_group)
         pump_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
@@ -3233,7 +3370,9 @@ class MainWindowV3(MainWindowV3Compatibility):
         pump_form.addRow(go)
         pump_form.addRow(stop)
         self._add_tooltip_icons(pump_form)
+        return pump_group
 
+    def _v3_valve_position_group(self) -> QGroupBox:
         valve_group = QGroupBox("Valve position")
         valve_form = QFormLayout(valve_group)
         valve_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
@@ -3253,7 +3392,9 @@ class MainWindowV3(MainWindowV3Compatibility):
         )
         valve_form.addRow(pos1)
         valve_form.addRow(pos2)
+        return valve_group
 
+    def _v3_manual_flush_group(self) -> QGroupBox:
         flush_group = QGroupBox("Manual flush")
         flush_form = QFormLayout(flush_group)
         flush_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
@@ -3272,7 +3413,9 @@ class MainWindowV3(MainWindowV3Compatibility):
         flush_form.addRow(flush_note)
         flush_form.addRow(flush)
         self._add_tooltip_icons(flush_form)
+        return flush_group
 
+    def _v3_pump_syringe_setup_group(self) -> QGroupBox:
         syringe_group = QGroupBox("Shared syringe setup and calibration")
         syringe_form = QFormLayout(syringe_group)
         syringe_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
@@ -3294,7 +3437,9 @@ class MainWindowV3(MainWindowV3Compatibility):
         syringe_form.addRow(syringe_note)
         syringe_form.addRow(configure)
         self._add_tooltip_icons(syringe_form)
+        return syringe_group
 
+    def _v3_pump_recovery_group(self) -> QGroupBox:
         recovery_group = QGroupBox("Connection recovery")
         recovery_group.setObjectName("v3PumpConnectionRecovery")
         recovery_layout = QVBoxLayout(recovery_group)
@@ -3315,49 +3460,54 @@ class MainWindowV3(MainWindowV3Compatibility):
         recovery_layout.addWidget(recovery_note)
         recovery_layout.addWidget(clear_fault, alignment=Qt.AlignmentFlag.AlignLeft)
         recovery_layout.addStretch(1)
+        return recovery_group
+
+    def _pump_tab(self) -> QWidget:
+        """Manual & Service -> Pump & Valve: the engineering/recovery remainder.
+
+        V3_OPERATOR_WORKFLOW_PRODUCTIZATION P1 moved routine preparation --
+        reference move, syringe specification, refill, and working fill level
+        -- into Prepare -> Guided Pump Preparation
+        (``_v3_prepare_pump_group()``), which now owns the one instance of
+        each of those widgets/actions. This panel keeps only what stays
+        engineering/recovery/fluid-routing: cached status, valve position,
+        manual flush, and fault recovery -- built from the same
+        ``_v3_pump_*_group()``/``_v3_valve_position_group()``/
+        ``_v3_manual_flush_group()``/``_v3_pump_recovery_group()`` methods,
+        called here exactly once.
+        """
+        tab = QWidget()
+        outer = QVBoxLayout(tab)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("v3PumpValveScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        note = QLabel(
+            "Manual pump and valve controls. P01/P02 fluid routing requires bench confirmation. Routine "
+            "reference move, syringe specification, refill, and working fill level now live in Prepare -> "
+            "Guided Pump Preparation, which drives this same pump/valve hardware; this panel keeps cached "
+            "status, valve routing, manual flush, and fault recovery."
+        )
+        note.setObjectName("v3PumpMovedToPrepareNote")
+        note.setWordWrap(True)
+        note.setMaximumWidth(700)
+        layout.addWidget(note)
+        layout.addWidget(self._v3_pump_local_status_group())
 
         tasks = QTabWidget()
         tasks.setObjectName("v3PumpValveTasks")
 
-        pump_page = QWidget()
-        pump_layout = QVBoxLayout(pump_page)
-        pump_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        pump_layout.addWidget(pump_group)
-        pump_layout.addStretch(1)
+        valve_page = self._v3_group_page(self._v3_valve_position_group())
+        flush_page = self._v3_group_page(self._v3_manual_flush_group())
+        recovery_page = self._v3_group_page(self._v3_pump_recovery_group())
 
-        valve_page = QWidget()
-        valve_layout = QVBoxLayout(valve_page)
-        valve_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        valve_layout.addWidget(valve_group)
-        valve_layout.addStretch(1)
-
-        flush_page = QWidget()
-        flush_layout = QVBoxLayout(flush_page)
-        flush_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        flush_layout.addWidget(flush_group)
-        flush_layout.addStretch(1)
-
-        setup_page = QWidget()
-        setup_layout = QVBoxLayout(setup_page)
-        setup_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        setup_layout.addWidget(syringe_group)
-        setup_layout.addStretch(1)
-
-        recovery_page = QWidget()
-        recovery_page_layout = QVBoxLayout(recovery_page)
-        recovery_page_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        recovery_page_layout.addWidget(recovery_group)
-        recovery_page_layout.addStretch(1)
-
-        # Syringe setup leads: reference move is the one-time-per-mount
-        # calibration that must happen BEFORE Refill/Empty in the real
-        # physical sequence -- the same chronology V1's own "Setup" group
-        # already establishes ahead of "Syringe" (see
-        # test_pump_tab_reference_move_is_promoted_to_a_leading_setup_group).
-        # Pump/Valve/Flush are the routine day-to-day actions an operator
-        # repeats every run; Recovery is as-needed and stays last.
-        tasks.addTab(setup_page, "Syringe setup")
-        tasks.addTab(pump_page, "Pump")
         tasks.addTab(valve_page, "Valve")
         tasks.addTab(flush_page, "Flush")
         tasks.addTab(recovery_page, "Recovery")
@@ -3368,11 +3518,41 @@ class MainWindowV3(MainWindowV3Compatibility):
         self._refresh_v3_pump_local_status()
         return tab
 
+    def _v3_prepare_pump_group(self) -> QWidget:
+        """Guided Pump Preparation, embedded directly in Prepare.
+
+        The pump is the controlled object; the syringe is its configuration
+        metadata, not a peer subsystem (Section 4.B of
+        V3_OPERATOR_WORKFLOW_PRODUCTIZATION). Reuses the exact
+        ``_v3_pump_syringe_setup_group()``/``_v3_pump_operations_group()``
+        widgets and actions Manual & Service used to build inline -- called
+        here instead, exactly once, so routine preparation needs no separate
+        dialog. Manual & Service -> Pump & Valve keeps valve routing, manual
+        flush, and fault recovery (``_pump_tab()`` above); this method never
+        calls those, and neither of these two callers double-builds a group.
+        """
+        content = QWidget()
+        content.setObjectName("v3PreparePumpContent")
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        columns = QHBoxLayout()
+        columns.addWidget(self._v3_pump_syringe_setup_group(), 1)
+        columns.addWidget(self._v3_pump_operations_group(), 1)
+        layout.addLayout(columns)
+        self._v3_prepare_pump_readiness = QLabel()
+        self._v3_prepare_pump_readiness.setObjectName("v3PreparePumpReadiness")
+        self._v3_prepare_pump_readiness.setWordWrap(True)
+        layout.addWidget(self._v3_prepare_pump_readiness)
+        self._refresh_v3_pump_local_status()
+        return content
+
     def _refresh_v3_pump_local_status(self) -> None:
         pump_label = getattr(self, "_v3_pump_local_state", None)
         valve_label = getattr(self, "_v3_valve_local_state", None)
         syringe_label = getattr(self, "_v3_syringe_local_state", None)
-        if pump_label is None or valve_label is None or syringe_label is None:
+        prepare_label = getattr(self, "_v3_prepare_pump_readiness", None)
+        if pump_label is None and prepare_label is None:
             return
         pump = self.app.pump
         pump_connection = (
@@ -3382,25 +3562,37 @@ class MainWindowV3(MainWindowV3Compatibility):
             if pump.initialized
             else "Not connected"
         )
-        pump_label.setText(
-            f"{pump_connection}; {'dosing' if pump.dosing else 'idle'}; tracked fill {pump.fill_level:.3f} ml; "
-            f"reference move {'confirmed' if pump.referenced else 'not confirmed'}"
-        )
-        valve = self.app.valve
-        valve_label.setText(
-            f"{self._valve_connection_text()}; cached protocol position {self._valve_position_text()}; "
-            f"status {valve.status_note or 'no protocol readback note'}"
-        )
+        if pump_label is not None:
+            pump_label.setText(
+                f"{pump_connection}; {'dosing' if pump.dosing else 'idle'}; tracked fill {pump.fill_level:.3f} ml; "
+                f"reference move {'confirmed' if pump.referenced else 'not confirmed'}"
+            )
+        if valve_label is not None:
+            valve = self.app.valve
+            valve_label.setText(
+                f"{self._valve_connection_text()}; cached protocol position {self._valve_position_text()}; "
+                f"status {valve.status_note or 'no protocol readback note'}"
+            )
         config = pump.syringe_config
-        if config is None:
-            syringe_label.setText("No syringe configuration has been applied by this process")
-        else:
-            details = [f"name {config.get('name', 'unnamed')}"]
-            if "inner_diameter_mm" in config:
-                details.append(f"inner diameter {config['inner_diameter_mm']} mm")
-            if "max_piston_stroke_mm" in config:
-                details.append(f"stroke {config['max_piston_stroke_mm']} mm")
-            syringe_label.setText("Last successfully applied by this process: " + "; ".join(details))
+        if syringe_label is not None:
+            if config is None:
+                syringe_label.setText("No syringe configuration has been applied by this process")
+            else:
+                details = [f"name {config.get('name', 'unnamed')}"]
+                if "inner_diameter_mm" in config:
+                    details.append(f"inner diameter {config['inner_diameter_mm']} mm")
+                if "max_piston_stroke_mm" in config:
+                    details.append(f"stroke {config['max_piston_stroke_mm']} mm")
+                syringe_label.setText("Last successfully applied by this process: " + "; ".join(details))
+
+        if prepare_label is not None:
+            prepare_label.setText(
+                f"Readiness: pump {pump_connection.lower()}, "
+                f"reference move {'confirmed' if pump.referenced else 'not confirmed'}, "
+                f"tracked fill {pump.fill_level:.3f} ml, "
+                f"syringe {'configured' if config is not None else 'not configured'}. "
+                "Application cache only; not independent physical verification."
+            )
 
     def _camera_tab(self) -> QWidget:
         tab = QWidget()
@@ -3417,9 +3609,11 @@ class MainWindowV3(MainWindowV3Compatibility):
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         note = QLabel(
-            "Camera setup and manual operation. Automated experiments inherit the applied ROI and selected "
-            "sequence defaults, then reapply experiment exposure/frame count and force External positive-edge "
-            "triggering from DIO0. Display conversion affects preview only, not saved image data."
+            "Camera engineering/service panel. Routine preview, ROI, and exposure now live in Prepare -> "
+            "Imaging / Focus, which drives this same camera hardware; this panel keeps saved-frame output, "
+            "sequence/trigger defaults, and display conversion. Automated experiments inherit the applied ROI "
+            "and selected sequence defaults, then reapply experiment exposure/frame count and force External "
+            "positive-edge triggering from DIO0. Display conversion affects preview only, not saved image data."
         )
         note.setObjectName("v3CameraSharedStateSummary")
         note.setWordWrap(True)
@@ -3431,8 +3625,6 @@ class MainWindowV3(MainWindowV3Compatibility):
         capture_page = QWidget()
         capture_layout = QVBoxLayout(capture_page)
         capture_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        capture_layout.addWidget(self._v3_camera_acquisition_group())
-        capture_layout.addWidget(self._v3_camera_roi_group())
         capture_layout.addWidget(self._v3_camera_saved_output_group())
         capture_layout.addStretch(1)
 
@@ -3457,7 +3649,7 @@ class MainWindowV3(MainWindowV3Compatibility):
         display_layout.addWidget(self._v3_conversion_group())
         display_layout.addStretch(1)
 
-        tasks.addTab(capture_page, "Capture")
+        tasks.addTab(capture_page, "Saved output")
         tasks.addTab(sequence_page, "Sequence")
         tasks.addTab(display_page, "Display")
         layout.addWidget(tasks)
@@ -3547,6 +3739,26 @@ class MainWindowV3(MainWindowV3Compatibility):
         form.addRow(configure)
         self._add_tooltip_icons(form)
         return group
+
+    def _v3_prepare_imaging_group(self) -> QWidget:
+        """Imaging / Focus, embedded directly in Prepare.
+
+        Reuses the exact ``_v3_camera_acquisition_group()``/
+        ``_v3_camera_roi_group()`` widgets and actions Manual & Service used
+        to build inline for its Camera panel's "Capture" tab -- called here
+        instead, exactly once, so routine preview/ROI/exposure preparation
+        needs no separate dialog. Manual & Service -> Camera keeps saved-
+        frame output, sequence/trigger defaults, and display conversion
+        (``_camera_tab()``); it never calls these two methods again.
+        """
+        content = QWidget()
+        content.setObjectName("v3PrepareImagingContent")
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        layout.addWidget(self._v3_camera_acquisition_group())
+        layout.addWidget(self._v3_camera_roi_group())
+        return content
 
     @staticmethod
     def _v3_group_page(group: QGroupBox) -> QWidget:
@@ -3666,6 +3878,25 @@ class MainWindowV3(MainWindowV3Compatibility):
         layout.addStretch(1)
         return group
 
+    def _v3_prepare_focus_group(self) -> QWidget:
+        """Z / Positioning, embedded directly in Prepare.
+
+        Reuses the exact base ``_manual_focus_group()`` (qt_ui.py) --
+        controller readback, requested target, jog step, move/jog/refresh
+        buttons -- built here instead of inside the Z-Scan Manual Service
+        panel, so routine focus needs no separate dialog. Z-Scan
+        calibration/program parameters (``_zscan_parameters_group()``/
+        ``_zscan_control_group()``) stay in Manual & Service -> Z-Scan
+        (``_zscan_tab()`` above), which no longer calls
+        ``_manual_focus_group()`` itself.
+        """
+        content = QWidget()
+        content.setObjectName("v3PrepareFocusContent")
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self._manual_focus_group())
+        return content
+
     def _apply_zscan_range(self, max_travel_um: float | None) -> None:
         super()._apply_zscan_range(max_travel_um)
         if hasattr(self, "_v3_zscan_derived_summary"):
@@ -3677,9 +3908,12 @@ class MainWindowV3(MainWindowV3Compatibility):
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         note = QLabel(
-            "Manual calibration workflow only. It reuses the existing camera connection; "
-            "the Z-scan exposure is independent of the experiment-camera exposure. Motion requires explicit confirmation."
+            "Z-Scan calibration/service workflow only -- routine focus (readback, target, jog/move) now lives "
+            "in Prepare -> Z / Positioning, which drives the same Z stage; this panel is the scan/calibration "
+            "program, not routine focus. It reuses the existing camera connection; the Z-scan exposure is "
+            "independent of the experiment-camera exposure. Motion requires explicit confirmation."
         )
+        note.setObjectName("v3ZScanMovedToPrepareNote")
         note.setWordWrap(True)
         note.setMaximumWidth(620)
         layout.addWidget(note)
@@ -3691,8 +3925,6 @@ class MainWindowV3(MainWindowV3Compatibility):
         for widget in (self.zscan_z_start_um, self.zscan_z_end_um, self.zscan_step_size_um):
             widget.valueChanged.connect(self._refresh_v3_zscan_summary)
         self._refresh_v3_zscan_summary()
-
-        layout.addWidget(self._manual_focus_group())
 
         body = QHBoxLayout()
         parameters = self._zscan_parameters_group()

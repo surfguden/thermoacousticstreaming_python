@@ -33,6 +33,52 @@ Owner-supplied physical routing is authoritative as owner workflow truth when
 identified as such; it remains distinct from protocol acknowledgement and
 independent physical observation.
 
+## V3 operator workflow productization phase transition
+
+**2026-09-06.** Broad V3 productization/layout work was historically deferred
+until operator validation (see `SW-V3-UX-001` in `known_open_items.md`). That
+deferral is now explicitly lifted for a bounded program,
+`V3_OPERATOR_WORKFLOW_PRODUCTIZATION`, because:
+
+- the canonical execution architecture (`ExperimentRequest` ->
+  `build_independent_run_plan()` -> `RunPlan`/`RunCondition` -> the legacy
+  adapter -> `Experiment2`/`Application` -> backends) has had repeated offline
+  and independent review and is closed for ordinary maintenance;
+- recent V3 software/observability changes (the commissioning-readiness
+  window) were independently reviewed and classified
+  `POST_HANDOVER_MAINLINE_VALIDATED_WITH_NONBLOCKING_FOLLOWUP`;
+- operator inspection of the actual V3 UI found a systematic
+  information-architecture issue: routine experimental preparation (pump
+  reference/refill/working position, camera preview/ROI/exposure, Z/focus,
+  and a routine fixed TEC target) still required opening a Manual & Service
+  ("Manual Test") dialog even though the intended workflow chronology was
+  already documented and correctly ordered by the prior chronology checkpoint
+  (`bc51000`);
+- ordering the Preparation checklist correctly does not, by itself, make
+  Prepare a true operator workspace capable of performing that preparation.
+
+This is a phase transition in maturity classification, not a claim of
+completed operator validation. As of Checkpoint P1 below, the honest
+classification is:
+
+- **DESIGN_PRINCIPLE_ESTABLISHED** — operator intent vs backend identity,
+  control object vs configuration metadata, routine preparation vs scan/
+  calibration (see `lessons_learned.md` Part 7).
+- **STRUCTURE_IMPLEMENTED** — Pump/Camera/Z/TEC routine controls are embedded
+  directly in Prepare, reusing the exact pre-existing widgets/actions Manual &
+  Service built for itself (see "V3 operator model" below and the P1 checkpoint
+  commit).
+- **OFFLINE_BEHAVIOR_VALIDATED** — focused and full offline suites green
+  (see the P1 commit message for exact counts), authority-reuse proven by
+  widget-identity/ancestor assertions, geometry proven at 1366x768/1440x900/
+  1920x1080.
+- **OPERATOR_VALIDATION_PENDING** — no operator has walked this journey on
+  real apparatus; `UI-V3-DEFAULT-001` remains open and owner-decided.
+
+This does not authorize hardware initialization, enumeration, communication,
+motion, output, capture, fault clearing, or persistence writes beyond what was
+already authorized software-maintenance work.
+
 ## Authorized software-maintenance state
 
 **AUTHORIZED_SOFTWARE_MAINTENANCE_ACTIVE** — the owner lifted the repository
@@ -256,11 +302,11 @@ retired after the approved, compatibility-preserving V3 decoupling checkpoint.
 | --- | --- |
 | Persistent instrument state | Compact Readiness, Run, Alerts, Acoustic/W1, Camera, and Output state needed across workspaces, plus a read-only **Execution** line. Software/backend state only unless explicitly labeled otherwise. The Readiness chip and the Run-control gate summary carry the actual blocking/warning issue message(s) as a tooltip, sourced from the same already-computed shared preflight, so an operator does not have to leave the panel to learn what a "BLOCKED — N issue(s)" count actually means. |
 | Persistent Execution line | Read-only run state, condition/repeat context, current software action, next known software action, and commissioning-trace state, visible from every workspace. It projects the canonical progress/event stream; it owns no timer and derives no phase from elapsed time. Wording is restricted to software facts ("PC trigger command sent", "Waiting for the software output-completion barrier"); it makes no electrical, optical, acoustic, or fluid claim. `IDLE / PREPARING / RUNNING / WAITING / SAVING / FLUSHING / CLEANUP / COMPLETE / ERROR`, with cleanup and error remaining visible after the run stops. |
-| Experiment — 1 Preparation checklist | Operator preparation prompts for equipment readiness, pump preparation, imaging/focus, Z/positioning, environment/temperature, sample/fluidics, laser/optics, and acoustic precheck — in that order, matching the owner-supplied operator chronology (initialization; pump reference/refill/working position; camera preview/ROI/acquisition setup; Z/focus/positioning; TEC temperature setup/scan; other experiment parameters). Guided Pump Preparation leads, right after Equipment readiness, ahead of camera/Z/TEC and ahead of Sample/Fluidics, which is grouped with the other "experiment parameter" rows because its own text is about the Configure → Repeat Sample Refresh tab. TEC now follows camera and Z, matching Configure's own Acquisition → Conditions tab order instead of contradicting it (closed 2026-09-06, `V3_WORKFLOW_CHRONOLOGY_RECONCILIATION`; previously Environment/Temperature sat second, ahead of pump/camera/Z, despite this same row's own long-standing rationale about mounting/calibrating the pump and setting up camera/Z first). **Local presentation state only:** its confirmations are not persisted run evidence and are never `PHYSICAL_VERIFIED`. Opening it performs no hardware I/O. The three rows whose own text points at a specific Manual & Service panel (Guided Pump Preparation → Pump & Valve; Imaging / Focus → Camera; Z / Positioning → Z-Scan) carry a button that opens that panel directly, using the same `_open_manual_panel()` the Manual & Service workspace itself uses. Environment / Temperature instead carries a button that switches Configure to its Conditions sub-tab (`_v3_open_configure_tab()`), since TEC setup lives there, not in a Manual & Service panel. Every one of these buttons is navigation only; the destination keeps its own established gates regardless of how it was opened. |
+| Experiment — 1 Preparation checklist | Operator preparation for equipment readiness, pump preparation, imaging/focus, Z/positioning, environment/temperature, sample/fluidics, laser/optics, and acoustic precheck — in that order, matching the owner-supplied operator chronology. **Since `V3_OPERATOR_WORKFLOW_PRODUCTIZATION` P1 (2026-09-06)**, four rows embed their routine controls directly instead of only a launcher to a separate dialog: Guided Pump Preparation (reference move, syringe specification, refill, working fill level — `_v3_prepare_pump_group()`), Imaging / Focus (live preview, ROI, routine exposure — `_v3_prepare_imaging_group()`), Z / Positioning (controller readback, target, jog, move — `_v3_prepare_focus_group()`), and Environment / Temperature (one routine fixed TEC target with Apply/Wait-for-stability — `_v3_prepare_temperature_group()`). Each embeds the exact pre-existing widget instances and action methods Manual & Service used to build for itself — reassigned, never duplicated — and a secondary "(engineering)" launcher button still opens the remaining Manual & Service functionality (valve routing/manual flush/fault recovery for pump; saved-frame output/sequence/trigger/display for camera; Z-Scan calibration for Z). Environment / Temperature also keeps a "Open temperature program in Configure" launcher for the actual multi-point scan, which is Configure's job, not Prepare's. **Local presentation state only:** checklist confirmations (including the new TEC "sample equilibrium confirmed" checkbox) are not persisted run evidence and are never `PHYSICAL_VERIFIED`; building or rendering Prepare performs no hardware I/O, proven by `tests/test_qt_ui_v3.py::test_v3_prepare_construction_issues_no_hardware_call`. |
 | Experiment — 2 Configure | Series identity plus Acquisition, Conditions, Acoustic/W1, Repeat Sample Refresh, and Advanced WFG configuration, in that tab order, with explicit units on high-frequency numeric inputs. Conditions (TEC scan setup) leads Acoustic/W1 and the other configuration tabs: the preparation chronology treats TEC setup as its own step, not one more entry among "other experiment parameters". Series identity also carries the passive commissioning-trace recording option, which changes no execution behavior. |
 | Experiment — 3 Review run | Full-width canonical-request-derived run scope, sequence, camera, Acoustic/W1, unavailable laser control, refresh, output, required devices, blockers, warnings, and requested/latest-applied evidence. Its DIO/completion timing rows are projected from the canonical plan, not recomputed from widgets. |
 | Monitor | Run progress and operator events plus requested run context. Its waveform is a requested/computed preview; measured camera rate remains distinct and no physical telemetry is inferred. |
-| Manual & Service | Existing immediate-action panels grouped as routine camera/fluidics tasks versus engineering/calibration AD2 and Z tasks, clearly outside the experiment plan. Opening a panel is inert; actions retain their established gates and use `MANUAL_SERVICE` logging context. |
+| Manual & Service | Existing immediate-action panels grouped as routine camera/fluidics tasks versus engineering/calibration AD2 and Z tasks, clearly outside the experiment plan. Opening a panel is inert; actions retain their established gates and use `MANUAL_SERVICE` logging context. **Since P1**, Pump & Valve keeps only valve position, manual flush, and fault recovery (routine reference-move/syringe/refill/flow moved to Prepare); Camera keeps only saved-frame output, sequence/trigger defaults, and display conversion (routine preview/ROI/exposure moved to Prepare); Z-Scan keeps only the scan/calibration program (routine focus moved to Prepare). Each dialog is still built lazily on first open and, because Prepare claims the routine widgets first, never rebuilds them — verified by ancestor-widget assertions in `tests/test_qt_ui_v3.py`. |
 | Diagnostics | Detailed cached/device state, action-evidence location, and diagnostic history. |
 | Persistent run controls | Open Review run, Start after the shared software gate passes, or request graceful stop. Graceful stop finishes the current unit; it is not an emergency hardware stop. |
 

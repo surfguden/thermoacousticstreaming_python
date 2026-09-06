@@ -2418,8 +2418,142 @@ class MainWindow(QMainWindow):
         layout.addStretch()
         return tab
 
+    def _pump_setup_group(self) -> QGroupBox:
+        # Continues the precedent Reference Move's own leading Setup section
+        # already established (UI layout audit Part 3, 2026-08-03): Reference
+        # move must happen BEFORE a syringe is loaded/refilled, so it belongs
+        # with the other one-time setup, not mixed into Flow Control's actual
+        # flow-rate controls.
+        group = QGroupBox("Setup")
+        form = QFormLayout(group)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        ref = QPushButton("Ref Move")
+        ref.clicked.connect(self._start_reference_move)
+        form.addRow("Reference move", ref)
+        self._add_tooltip_icons(form)
+        return group
+
+    def _pump_fault_recovery_group(self) -> QGroupBox:
+        # Keep this explicit action separate from normal Initialize: normal
+        # Qmix initialization already clears the vendor fault latch, while
+        # this action is for a fault observed later or an operator-requested
+        # fresh reconnect. It remains gated behind a warning dialog.
+        group = QGroupBox("Pump Fault Recovery (advanced)")
+        form = QFormLayout(group)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        clear_fault = QPushButton("Clear Fault && Retry Connection")
+        clear_fault.setStyleSheet("color: darkred; font-weight: bold;")
+        clear_fault.setToolTip(
+            "Use after a fault observed during a session, or to request a fresh operator-"
+            "approved reconnect. Normal Initialize already clears the vendor fault latch."
+        )
+        clear_fault.clicked.connect(self._start_clear_pump_fault)
+        form.addRow("Manual fault clear", clear_fault)
+        self._add_tooltip_icons(form)
+        return group
+
+    def _pump_valve_group(self) -> QGroupBox:
+        # P01/P02 are protocol-confirmed position tokens. Their physical
+        # fluidic routing remains a bench-confirmation item, so the controls
+        # deliberately avoid unsupported Open/Closed labels. Valve routing is
+        # related fluidics functionality, not syringe configuration metadata
+        # (V3_OPERATOR_WORKFLOW_PRODUCTIZATION P1), so it stays a Manual
+        # Service-only control rather than joining Guided Pump Preparation.
+        group = QGroupBox("Valve")
+        form = QFormLayout(group)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        pos1 = QPushButton("Pos1 (P01)")
+        pos1.setToolTip("Sends the protocol-confirmed valve position command P01. Physical fluidic routing remains unverified.")
+        pos1.clicked.connect(lambda: self._run_action(lambda progress: self.app.valve.set_position(1), "Valve Pos1 (P01)"))
+        pos2 = QPushButton("Pos2 (P02)")
+        pos2.setToolTip("Sends the protocol-confirmed valve position command P02. Physical fluidic routing remains unverified.")
+        pos2.clicked.connect(lambda: self._run_action(lambda progress: self.app.valve.set_position(2), "Valve Pos2 (P02)"))
+        form.addRow("Valve Pos1 (P01)", pos1)
+        form.addRow("Valve Pos2 (P02)", pos2)
+        self._add_tooltip_icons(form)
+        return group
+
+    def _pump_stop_button(self) -> QPushButton:
+        """A fresh Stop button wired to the one authoritative ``pump.stop()``.
+
+        Safe to instantiate more than once (Prepare and Manual Service each
+        get their own button): a plain action trigger with no bound value
+        carries no state to duplicate, unlike the syringe/flow widgets below.
+        """
+        stop = QPushButton("Stop pump")
+        stop.setMinimumSize(200, 70)
+        stop.clicked.connect(lambda: self._run_action(lambda progress: self.app.pump.stop(), "Pump stopped"))
+        return stop
+
+    def _pump_refill_group(self) -> QGroupBox:
+        # v3 design-idea adoption, Proposal 7 (2026-08-06): selectively
+        # clearer button text for the genuinely ambiguous terse
+        # "Refill"/"Empty" pair with no adjacent label spelling out the
+        # action.
+        group = QGroupBox("Pump")
+        form = QFormLayout(group)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        refill = QPushButton("Refill syringe")
+        refill.clicked.connect(lambda: self._run_action(lambda progress: self._refill(), "Refilling"))
+        empty = QPushButton("Empty syringe")
+        empty.clicked.connect(lambda: self._run_action(lambda progress: self._empty(), "Emptying"))
+        form.addRow("Refill", refill)
+        form.addRow("Empty", empty)
+        form.addRow("Refill/Empty Flow Rate (uL/min)", self.fill_flow_rate)
+        self._add_tooltip_icons(form)
+        return group
+
+    def _pump_syringe_group(self) -> QGroupBox:
+        group = QGroupBox("Syringe")
+        form = QFormLayout(group)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        configure = QPushButton("Configure")
+        configure.clicked.connect(self._start_configure_syringe)
+        form.addRow("Syringe", self.syringe)
+        form.addRow("Custom Volume (ml)", self.custom_syringe_volume_ml)
+        form.addRow("Custom Inner Diameter (mm)", self.custom_syringe_inner_diameter_mm)
+        form.addRow("Custom Max Piston Stroke (mm)", self.custom_syringe_stroke_mm)
+        form.addRow("ConfigureSyringe", configure)
+        self._add_tooltip_icons(form)
+        return group
+
+    def _pump_flow_group(self) -> QGroupBox:
+        group = QGroupBox("Flow Control")
+        form = QFormLayout(group)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        generate = QPushButton("Generate")
+        generate.clicked.connect(self._start_generate_flow)
+        go = QPushButton("Move to target fill level")
+        go.clicked.connect(self._start_go_level)
+        form.addRow("Flow Rate (-=aspirate, +=dispense)", self.flow_rate)
+        form.addRow("Generate Flow", generate)
+        form.addRow("Level(ml)", self.level_ml)
+        form.addRow("Go to Level", go)
+        self._add_tooltip_icons(form)
+        return group
+
+    def _pump_flush_count_group(self) -> QGroupBox:
+        group = QGroupBox("Flush")
+        form = QFormLayout(group)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        flush = QPushButton("Flush")
+        flush.clicked.connect(self._start_flush)
+        form.addRow("Number of flushes", self.flush_count)
+        form.addRow("Flush", flush)
+        self._add_tooltip_icons(form)
+        return group
+
     def _pump_tab(self) -> QWidget:
-        """Build the shared v1/v2 pump tab; v3 replaces it without calling this base."""
+        """Build the shared v1/v2 pump tab; v3 replaces it without calling this base.
+
+        Extracted into the composable ``_pump_*_group()`` methods above
+        (V3_OPERATOR_WORKFLOW_PRODUCTIZATION P1) so V3's Prepare -> Guided
+        Pump Preparation and its Manual Service Pump & Valve remainder can
+        each lay out a disjoint subset of the same groups -- built from the
+        same widget instances, never constructed twice -- instead of this
+        tab's builder being the only caller. This method's own composition
+        and resulting layout are unchanged from before the extraction.
+        """
         # Restructured from a sparse QGridLayout with individual widgets
         # scattered at hand-picked row/col coordinates (which left large,
         # uneven dead-space regions -- rows/columns with nothing in them --
@@ -2463,39 +2597,6 @@ class MainWindow(QMainWindow):
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(0, 0, 0, 0)
 
-        # P01/P02 are protocol-confirmed position tokens. Their physical
-        # fluidic routing remains a bench-confirmation item, so the controls
-        # deliberately avoid unsupported Open/Closed labels.
-        pos1 = QPushButton("Pos1 (P01)")
-        pos1.setToolTip("Sends the protocol-confirmed valve position command P01. Physical fluidic routing remains unverified.")
-        pos1.clicked.connect(lambda: self._run_action(lambda progress: self.app.valve.set_position(1), "Valve Pos1 (P01)"))
-        pos2 = QPushButton("Pos2 (P02)")
-        pos2.setToolTip("Sends the protocol-confirmed valve position command P02. Physical fluidic routing remains unverified.")
-        pos2.clicked.connect(lambda: self._run_action(lambda progress: self.app.valve.set_position(2), "Valve Pos2 (P02)"))
-        # v3 design-idea adoption, Proposal 7 (2026-08-06): selectively
-        # clearer button text -- picked the four genuinely ambiguous ones
-        # (bare "GO"/"STOP" and terse "Refill"/"Empty" with no adjacent
-        # label spelling out the action), left Configure/Generate/Ref
-        # Move/Flush alone (already reasonably self-explanatory or already
-        # paired with a clarifying row label).
-        refill = QPushButton("Refill syringe")
-        refill.clicked.connect(lambda: self._run_action(lambda progress: self._refill(), "Refilling"))
-        empty = QPushButton("Empty syringe")
-        empty.clicked.connect(lambda: self._run_action(lambda progress: self._empty(), "Emptying"))
-        configure = QPushButton("Configure")
-        configure.clicked.connect(self._start_configure_syringe)
-        generate = QPushButton("Generate")
-        generate.clicked.connect(self._start_generate_flow)
-        go = QPushButton("Move to target fill level")
-        go.clicked.connect(self._start_go_level)
-        ref = QPushButton("Ref Move")
-        ref.clicked.connect(self._start_reference_move)
-        flush = QPushButton("Flush")
-        flush.clicked.connect(self._start_flush)
-        stop = QPushButton("Stop pump")
-        stop.setMinimumSize(200, 70)
-        stop.clicked.connect(lambda: self._run_action(lambda progress: self.app.pump.stop(), "Pump stopped"))
-
         # WrapLongRows on every column's QFormLayout: an offscreen truncation
         # sweep (Session 38) found several row labels here clipped (e.g.
         # "Number of flushes" at 60px actual vs. 204px required) because each
@@ -2507,88 +2608,22 @@ class MainWindow(QMainWindow):
         # Flush/STOP -- genuinely touched every run) and "Static
         # configuration" (Setup/Syringe -- one-time-per-mount calibration
         # and geometry, not something an operator revisits mid-run).
-        # Continues the same precedent Reference Move's own leading Setup
-        # section already established (UI layout audit Part 3, 2026-08-03):
-        # Reference move must happen BEFORE a syringe is loaded/refilled,
-        # so it belongs with the other one-time setup, not mixed into
-        # Flow Control's actual flow-rate controls. No widgets rebuilt --
-        # this only changes which section each existing group is placed
-        # under.
-        setup_group = QGroupBox("Setup")
-        setup_form = QFormLayout(setup_group)
-        setup_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        setup_form.addRow("Reference move", ref)
-        self._add_tooltip_icons(setup_form)
-
-        # Keep this explicit action separate from normal Initialize: normal
-        # Qmix initialization already clears the vendor fault latch, while
-        # this action is for a fault observed later or an operator-requested
-        # fresh reconnect. It remains gated behind a warning dialog.
-        fault_group = QGroupBox("Pump Fault Recovery (advanced)")
-        fault_form = QFormLayout(fault_group)
-        fault_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        clear_fault = QPushButton("Clear Fault && Retry Connection")
-        clear_fault.setStyleSheet("color: darkred; font-weight: bold;")
-        clear_fault.setToolTip(
-            "Use after a fault observed during a session, or to request a fresh operator-"
-            "approved reconnect. Normal Initialize already clears the vendor fault latch."
-        )
-        clear_fault.clicked.connect(self._start_clear_pump_fault)
-        fault_form.addRow("Manual fault clear", clear_fault)
-        self._add_tooltip_icons(fault_form)
-
-        valve_group = QGroupBox("Valve")
-        valve_form = QFormLayout(valve_group)
-        valve_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        valve_form.addRow("Valve Pos1 (P01)", pos1)
-        valve_form.addRow("Valve Pos2 (P02)", pos2)
-        self._add_tooltip_icons(valve_form)
         column1 = QVBoxLayout()
-        column1.addWidget(valve_group)
+        column1.addWidget(self._pump_valve_group())
         column1.addWidget(QLabel("Stop Syringe"))
-        column1.addWidget(stop)
+        column1.addWidget(self._pump_stop_button())
         column1.addStretch()
 
-        pump_group = QGroupBox("Pump")
-        pump_form = QFormLayout(pump_group)
-        pump_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        pump_form.addRow("Refill", refill)
-        pump_form.addRow("Empty", empty)
-        pump_form.addRow("Refill/Empty Flow Rate (uL/min)", self.fill_flow_rate)
-        self._add_tooltip_icons(pump_form)
-        syringe_group = QGroupBox("Syringe")
-        syringe_form = QFormLayout(syringe_group)
-        syringe_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        syringe_form.addRow("Syringe", self.syringe)
-        syringe_form.addRow("Custom Volume (ml)", self.custom_syringe_volume_ml)
-        syringe_form.addRow("Custom Inner Diameter (mm)", self.custom_syringe_inner_diameter_mm)
-        syringe_form.addRow("Custom Max Piston Stroke (mm)", self.custom_syringe_stroke_mm)
-        syringe_form.addRow("ConfigureSyringe", configure)
-        self._add_tooltip_icons(syringe_form)
         column2 = QVBoxLayout()
-        column2.addWidget(pump_group)
+        column2.addWidget(self._pump_refill_group())
         column2.addStretch()
 
-        flow_group = QGroupBox("Flow Control")
-        flow_form = QFormLayout(flow_group)
-        flow_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        flow_form.addRow("Flow Rate (-=aspirate, +=dispense)", self.flow_rate)
-        flow_form.addRow("Generate Flow", generate)
-        flow_form.addRow("Level(ml)", self.level_ml)
-        flow_form.addRow("Go to Level", go)
-        self._add_tooltip_icons(flow_form)
         column3 = QVBoxLayout()
-        column3.addWidget(flow_group)
+        column3.addWidget(self._pump_flow_group())
         column3.addStretch()
 
-        flush_count_group = QGroupBox("Flush")
-        flush_count_form = QFormLayout(flush_count_group)
-        flush_count_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        flush_count_form.addRow("Number of flushes", self.flush_count)
-        flush_count_form.addRow("Flush", flush)
-        self._add_tooltip_icons(flush_count_form)
         column4 = QVBoxLayout()
-        column4.addWidget(flush_count_group)
+        column4.addWidget(self._pump_flush_count_group())
         column4.addWidget(self._flush_group())
         column4.addStretch()
 
@@ -2601,17 +2636,17 @@ class MainWindow(QMainWindow):
         operational_columns.addStretch()
 
         setup_column = QVBoxLayout()
-        setup_column.addWidget(setup_group)
+        setup_column.addWidget(self._pump_setup_group())
         setup_column.addStretch()
         syringe_column = QVBoxLayout()
-        syringe_column.addWidget(syringe_group)
+        syringe_column.addWidget(self._pump_syringe_group())
         syringe_column.addStretch()
         # Session 104: its own column, not folded into setup_column above --
         # keeps this rare/advanced recovery action visually separate from
         # routine one-time setup, matching the task's requirement that it be
         # "visually/operationally distinct" from normal controls.
         fault_column = QVBoxLayout()
-        fault_column.addWidget(fault_group)
+        fault_column.addWidget(self._pump_fault_recovery_group())
         fault_column.addStretch()
         static_columns = QHBoxLayout()
         static_columns.setAlignment(Qt.AlignmentFlag.AlignTop)

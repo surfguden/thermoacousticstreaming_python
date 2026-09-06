@@ -57,7 +57,11 @@ def test_pump_preparation_row_can_open_the_pump_and_valve_panel_directly(monkeyp
         # camera/Z/TEC/other parameters).
         button = window.findChild(QPushButton, "v3PrepareOpenPanel2")
         assert button is not None
-        assert button.text() == "Open Pump & Valve panel"
+        # V3_OPERATOR_WORKFLOW_PRODUCTIZATION P1: Guided Pump Preparation now
+        # embeds routine pump/syringe controls directly, so this button is a
+        # secondary launcher to the remaining engineering/recovery/valve
+        # functionality, not the only way to reach routine preparation.
+        assert button.text() == "Open Pump & Valve (engineering)"
         assert "PumpValve" not in window._manual_panels
 
         button.click()
@@ -76,7 +80,10 @@ def test_imaging_focus_row_can_open_the_camera_panel_directly(monkeypatch, tmp_p
         # Row 3: camera preparation follows pump, ahead of Z/TEC.
         button = window.findChild(QPushButton, "v3PrepareOpenPanel3")
         assert button is not None
-        assert button.text() == "Open Camera panel"
+        # V3_OPERATOR_WORKFLOW_PRODUCTIZATION P1: Imaging / Focus now embeds
+        # routine preview/ROI/exposure directly; this is the secondary
+        # engineering launcher.
+        assert button.text() == "Open Camera (engineering)"
 
         button.click()
 
@@ -99,7 +106,10 @@ def test_z_positioning_row_can_open_the_zscan_panel_directly(monkeypatch, tmp_pa
         # Row 4: Z/positioning follows camera, ahead of TEC.
         button = window.findChild(QPushButton, "v3PrepareOpenPanel4")
         assert button is not None
-        assert button.text() == "Open Z-Scan panel"
+        # V3_OPERATOR_WORKFLOW_PRODUCTIZATION P1: Z / Positioning now embeds
+        # routine focus (readback/target/jog/move) directly; this is the
+        # secondary launcher to Z-Scan calibration/service.
+        assert button.text() == "Open Z-Scan (engineering)"
 
         button.click()
 
@@ -126,7 +136,11 @@ def test_environment_temperature_row_can_jump_to_configure_conditions(monkeypatc
         assert window.findChild(QPushButton, "v3PrepareOpenPanel5") is None
         button = window.findChild(QPushButton, "v3PrepareOpenConfigure5")
         assert button is not None
-        assert button.text() == "Open in Configure"
+        # V3_OPERATOR_WORKFLOW_PRODUCTIZATION P1: Environment / Temperature
+        # now embeds a routine fixed-target control directly; this button is
+        # explicitly labelled as the multi-point temperature *program*
+        # launcher so it is not confused with the routine target above it.
+        assert button.text() == "Open temperature program in Configure"
 
         button.click()
 
