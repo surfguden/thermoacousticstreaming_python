@@ -404,6 +404,19 @@ change nothing and was reverted rather than kept as unexplained diff. Measure
 the actual driver before choosing a fix; a plausible-looking technique that
 does not move the measured number is not a fix.
 
+### 7.10 A quick-open button must reach everything its own row promises — `ENFORCED`
+
+**Project example.** The Preparation checklist's "Imaging / Focus" row named
+both in its title, but its one quick-open button only opened the Camera
+panel — Z-stage motion/focus calibration lives in a separate panel (Z-Scan)
+the row never linked. An operator following that row's own wording to "focus"
+had no path from it to the control that actually moves the stage. Fixed by
+splitting into two rows, "Imaging / Focus" (→ Camera) and "Z / Positioning"
+(→ Z-Scan), each linking only what it names. When a checklist or summary row's
+text names more than one destination, give it a button per destination (or
+split the row) rather than one button that silently only covers part of what
+the row promises.
+
 ---
 
 ## Part 8 — Test quality
