@@ -236,10 +236,35 @@ The installed WaveForms header documents `DwfParamOnClose` as
 `0 continue, 1 stop, 2 shutdown`, and the project never sets it. Explicit
 stop/reset before close is therefore required for both AnalogOut and DigitalOut.
 
+Generalizes beyond AD2. **Project example.** A real TEC remained actively
+regulating after the application closed: `TecController.cleanup()` closed
+serial communication but never commanded the controller out of Static ON, and
+a Meerstetter TEC autonomously maintains its last setpoint independent of
+whether anything is still talking to it. Closing a communication channel is
+not itself an output-disable command — for every output-capable subsystem, ask
+what its *own* device-specific "leave this inactive" command is, and issue it
+explicitly before close, the same way AD2's stop/reset-then-close already does.
+
 ### 3.4 API cleanup is commanded behavior, not pin voltage — `DOCUMENTED`
 
 Cleanup tests prove the calls were issued and their failures recorded. Physical
 post-close BNC/DIO state remains unverified.
+
+### 3.5 Application exit is its own lifecycle boundary, not an extension of run completion — `ENFORCED`
+
+**Project example.** Run completion, run failure, and graceful abort each
+already had their own established cleanup/finalization paths (TDMS
+primary/cleanup failure, `stop_commissioning_trace()` in the run's own
+`finally`). Application/GUI exit is a *different* boundary — the operator can
+close the application at a point no run-level path anticipates — and nothing
+had verified it independently. Two real gaps existed at exactly this boundary
+and nowhere else: TEC's output was never explicitly disabled (3.3 above), and
+`Application.cleanup()` never finalized a still-live commissioning trace (a
+run's own `finally` covers the run-ends-normally case; it cannot cover
+closing the application around that boundary). Do not assume a boundary is
+handled merely because its narrower siblings are; verify the outermost one
+explicitly, especially when it can be reached without passing through any of
+the narrower ones' own cleanup code.
 
 ---
 
