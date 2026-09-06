@@ -649,22 +649,39 @@ class MainWindowV3(MainWindowV3Compatibility):
         boundary.setWordWrap(True)
         boundary.setStyleSheet("font-weight: bold; color: darkorange;")
         layout.addWidget(boundary)
+        # Each row's optional fourth element names the Manual & Service panel
+        # its own detail text tells the operator to open. Previously that
+        # text was the only way to find the panel -- the operator had to
+        # leave Prepare, find Manual & Service, and locate it themselves.
+        # The button is pure navigation: it calls the same
+        # _open_manual_panel() the Manual & Service workspace itself uses,
+        # which is already established as inert (opening a panel issues no
+        # command; its actions keep their own established gates).
         tasks = (
-            ("Equipment readiness", "Select/initialize devices when authorized; inspect cached software status."),
-            ("Environment / Temperature", "Record bench conditions; configure an optional TEC scan in Conditions."),
-            ("Sample / Fluidics", "Record sample readiness; automatic refresh remains a Configure request."),
-            ("Guided Pump Preparation", "Open the manual Pump & Valve panel only for its separately confirmed service actions."),
-            ("Imaging / Focus", "Use the manual Camera panel for preview/focus; ROI and exposure requests live in Configure."),
-            ("Laser / Optics", "Inspect readiness without enabling W2: W2 remains blocked and no emission is inferred."),
-            ("Acoustic Precheck", "Review requested W1 settings; PC-triggered execution is shown in Review."),
+            ("Equipment readiness", "Select/initialize devices when authorized; inspect cached software status.", None),
+            ("Environment / Temperature", "Record bench conditions; configure an optional TEC scan in Conditions.", None),
+            ("Sample / Fluidics", "Record sample readiness; automatic refresh remains a Configure request.", None),
+            ("Guided Pump Preparation", "Open the manual Pump & Valve panel only for its separately confirmed service actions.", "PumpValve"),
+            ("Imaging / Focus", "Use the manual Camera panel for preview/focus; ROI and exposure requests live in Configure.", "Camera"),
+            ("Laser / Optics", "Inspect readiness without enabling W2: W2 remains blocked and no emission is inferred.", None),
+            ("Acoustic Precheck", "Review requested W1 settings; PC-triggered execution is shown in Review.", None),
         )
-        for index, (title, detail) in enumerate(tasks):
+        for index, (title, detail, panel_name) in enumerate(tasks):
             group = QGroupBox(title)
             group.setObjectName(f"v3PrepareTask{index + 1}")
             task_layout = QHBoxLayout(group)
             note = QLabel(detail)
             note.setWordWrap(True)
             task_layout.addWidget(note, 1)
+            if panel_name is not None:
+                open_panel = QPushButton(f"Open {self._panel_display_name(panel_name)} panel")
+                open_panel.setObjectName(f"v3PrepareOpenPanel{index + 1}")
+                open_panel.setToolTip(
+                    "Opens the existing Manual & Service panel. Presentation navigation only -- "
+                    "opening it issues no command; its actions keep their own established gates."
+                )
+                open_panel.clicked.connect(lambda checked=False, name=panel_name: self._open_manual_panel(name))
+                task_layout.addWidget(open_panel)
             confirmed = QCheckBox("Local checklist confirmation")
             confirmed.setObjectName(f"v3PrepareConfirmed{index + 1}")
             confirmed.setToolTip("Local presentation checklist only; not persisted run evidence or physical verification.")
@@ -1904,13 +1921,36 @@ class MainWindowV3(MainWindowV3Compatibility):
         self._v3_evidence_source.setText(source)
         self._v3_action_log_state.setText(f"Loaded {len(loaded)} most recent record(s); {source}")
 
+    @staticmethod
+    def _v3_readiness_tooltip(result: BuildResult) -> str:
+        """The actual blocker/warning text, for a chip that otherwise only shows a count.
+
+        Presentation only: reads the already-computed `PreflightResult` the
+        caller built (no new plan build, no evidence snapshot, no hardware
+        query). Distinguishes blocking issues from warnings explicitly so a
+        hardware-readiness blocker never reads as a merely advisory one.
+        """
+
+        blocking_issues = result.preflight.blocking_issues
+        warnings = result.preflight.warnings
+        if blocking_issues:
+            lines = [f"Blocking: {issue.message}" for issue in blocking_issues]
+            if warnings:
+                lines.append(f"({len(warnings)} additional warning(s); open Review run for detail)")
+            return "\n".join(lines)
+        if warnings:
+            return "\n".join(f"Warning: {issue.message}" for issue in warnings)
+        return "No shared preflight issues."
+
     def _refresh_v3_persistent_status(self, result: BuildResult | None = None) -> None:
         if not hasattr(self, "_v3_persistent_state"):
             return
         result = result or self._v3_shadow_build_result()
         blocking = len(result.preflight.blocking_issues)
         warnings = len(result.preflight.warnings)
+        readiness_tooltip = self._v3_readiness_tooltip(result)
         readiness = self._v3_persistent_state["Readiness"]
+        readiness.setToolTip(readiness_tooltip)
         if blocking:
             readiness.setText(f"BLOCKED — {blocking} issue(s)")
             readiness.setStyleSheet("color: darkred; font-weight: bold;")
@@ -1974,6 +2014,10 @@ class MainWindowV3(MainWindowV3Compatibility):
                 if warnings
                 else "color: green; font-weight: bold;"
             )
+            # Same source as the Readiness chip's tooltip: an operator reading
+            # "BLOCKED -- N issue(s)" right next to Start should not have to
+            # leave this panel to learn what the N issues actually are.
+            self._v3_run_gate.setToolTip(readiness_tooltip)
         if hasattr(self, "_v3_start_button"):
             self._v3_start_button.setEnabled(not blocking and not active and self._busy_count == 0)
         if hasattr(self, "_v3_stop_button"):
