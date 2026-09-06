@@ -1189,18 +1189,24 @@ class MainWindowV3(MainWindowV3Compatibility):
         camera_layout.addWidget(self._v2_acquisition_group())
         tabs.addTab(self._v3_scroll_page(camera_content, "v3CameraSetupScroll"), "Acquisition")
 
-        ad2_content = QWidget()
-        ad2_layout = QVBoxLayout(ad2_content)
-        ad2_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        ad2_layout.addWidget(self._v3_ad2_output_group())
-        tabs.addTab(self._v3_scroll_page(ad2_content, "v3Ad2SetupScroll"), "Acoustic / W1")
-
+        # Conditions (TEC) leads Acoustic/W1: the preparation chronology this
+        # tab strip follows puts camera setup, then TEC scan setup, ahead of
+        # the other experiment parameters (Acoustic/W1, Repeat Sample
+        # Refresh, Advanced WFG) -- TEC is not just "another" parameter
+        # group among those. Object names, and every reference to them
+        # (_v3_open_configure_tab(), tests), are unaffected by this reorder.
         conditions_content = QWidget()
         conditions_layout = QVBoxLayout(conditions_content)
         conditions_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         conditions_layout.addWidget(self._experiment_temperature_group())
         conditions_layout.addStretch(1)
         tabs.addTab(self._v3_scroll_page(conditions_content, "v3ConditionsSetupScroll"), "Conditions")
+
+        ad2_content = QWidget()
+        ad2_layout = QVBoxLayout(ad2_content)
+        ad2_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        ad2_layout.addWidget(self._v3_ad2_output_group())
+        tabs.addTab(self._v3_scroll_page(ad2_content, "v3Ad2SetupScroll"), "Acoustic / W1")
 
         fluidics_content = QWidget()
         fluidics_layout = QVBoxLayout(fluidics_content)

@@ -267,8 +267,11 @@ def test_v3_reuses_the_supplied_application_and_separates_operator_workspaces(mo
         assert window.findChild(QWidget, "v3MonitorWorkspace") is not None
         assert window.findChild(QWidget, "v3ManualServiceWorkspace") is not None
         assert window.findChild(QWidget, "v3DiagnosticsWorkspace") is not None
+        # Conditions (TEC) leads Acoustic/W1: preparation chronology puts
+        # camera setup, then TEC scan setup, ahead of the other experiment
+        # parameters (see _v3_setup_tabs()).
         assert [setup_tabs.tabText(index) for index in range(setup_tabs.count())] == [
-            "Acquisition", "Acoustic / W1", "Conditions", "Repeat Sample Refresh", "Advanced WFG",
+            "Acquisition", "Conditions", "Acoustic / W1", "Repeat Sample Refresh", "Advanced WFG",
         ]
         assert [
             experiment_phases.tabText(index) for index in range(experiment_phases.count())
@@ -589,8 +592,16 @@ def test_v3_main_ad2_settings_use_channel_tabs_without_horizontal_overflow(monke
         setup_tabs = window.findChild(QTabWidget, "v3SetupTabs")
         # Containment can only be measured on the page the operator is
         # actually looking at: an inactive phase page keeps stale geometry.
+        # Index 2, not 1 -- Conditions now leads Acoustic/W1 (see
+        # _v3_setup_tabs()); found by object name, not by re-deriving the
+        # index, so this stays correct if the order ever changes again.
         window.findChild(QTabWidget, "v3ExperimentPhaseTabs").setCurrentIndex(1)
-        setup_tabs.setCurrentIndex(1)
+        for index in range(setup_tabs.count()):
+            if setup_tabs.widget(index).objectName() == "v3Ad2SetupScroll":
+                setup_tabs.setCurrentIndex(index)
+                break
+        else:
+            raise AssertionError("v3SetupTabs has no v3Ad2SetupScroll page.")
         QApplication.processEvents()
         assert_page_fits_horizontally(scroll, "v3Ad2SetupScroll")
     finally:
