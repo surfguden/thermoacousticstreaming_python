@@ -390,6 +390,20 @@ second computation, no new plan build, no hardware query. A count is not a
 reason; do not make an operator navigate away to learn one that was already
 computed.
 
+### 7.9 Measure which column, not just how much, before touching layout — `DOCUMENTED`
+
+**Project example.** Review/Timing's grid needed 1104 px total, which reads
+like a broad reflow problem. Measuring per-column found two non-wrapping
+labels (a row-title column, a header) responsible for the whole shortfall;
+the four numeric columns were 60-108 px each and were never the issue.
+Word-wrapping just those two dropped the requirement to 552 px with no
+geometry, policy, or value change. The same measurement on a neighbouring
+page found the opposite: its shortfall came from a dense spinbox sub-panel
+that word-wrap cannot touch, and a caption-wrap attempt there was measured to
+change nothing and was reverted rather than kept as unexplained diff. Measure
+the actual driver before choosing a fix; a plausible-looking technique that
+does not move the measured number is not a fix.
+
 ---
 
 ## Part 8 — Test quality
