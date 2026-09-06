@@ -18,6 +18,24 @@ evidence belongs in `docs/known_open_items.md` and the hardware truth records.
   conflict among task intent, evidence, safety, and these rules, stop and report
   it.
 
+## Session Orientation
+
+Read in layers, not as a checklist to complete before acting:
+
+1. Always: this file, `docs/project_control.md`, and recent `git log`.
+2. When the task touches a known issue: `docs/known_open_items.md` and
+   `docs/audit_index.md`.
+3. When the task modifies source: `docs/lessons_learned.md` and the existing
+   tests for the modules being changed.
+
+This reading is for orientation, not a work list — it tells an agent what is
+already true and why, not what to do next. Task scope comes from the current
+instruction, not from anything that looks fixable while orienting.
+
+Where an instruction and the repository disagree about a fact — a line
+number, a file name, a prior decision, a convention — the repository wins.
+Report the discrepancy; do not silently follow either one.
+
 ## Scope And Change-Surface Discipline
 
 - Inspect fresh state and verify in proportion to risk. Local documentation,

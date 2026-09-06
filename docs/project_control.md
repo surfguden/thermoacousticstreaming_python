@@ -750,6 +750,61 @@ Do not reopen these without new contradictory evidence:
 - Qmix startup/no-motion recovery is closed by H2B; pump motion readiness is a
   different, still-open boundary.
 
+## Commissioning software readiness
+
+`COMMISSIONING_SOFTWARE_READY` is a software-side state, reached at the close
+of the commissioning-readiness window (`2920559` … `d749b45`). It has been
+used in planning without ever being written into the repository — the
+recurring failure this project has already recorded: a conclusion established
+in conversation and never committed. This section is that commitment.
+
+**It asserts:**
+
+- One canonical execution authority — `ExperimentRequest` →
+  `build_independent_run_plan()` → immutable `RunPlan`/`RunCondition` →
+  `legacy_series_from_run_plan()` → `Experiment2`/`Application` → instrument
+  backends — unchanged through the window and independently re-verified twice
+  (below).
+- A passive commissioning trace, proven to add no hardware call and no control
+  barrier: it observes `log_action()`, the single canonical software event
+  stream, and issues no device read or write, no sleep, and no thread
+  rendezvous. Recording states are `OFF` / `RECORDING` / `DEGRADED`; a write
+  failure degrades recording without touching control flow, and the software
+  never synthesizes a `PHYSICAL_VERIFIED` event.
+- A live, read-only V3 execution indicator projecting that same canonical
+  stream, with wording restricted to what the software actually observed (a
+  scanned, tested constraint — see `tests/test_v3_execution_indicator.py`).
+- Review/preflight consistent with runtime fail-closed behaviour on the
+  canonical External-trigger path: a disabled AD2 is a blocking preflight
+  issue, matching the runtime's own `ValueError` before camera arming, not a
+  skippable-subsystem advisory.
+- The offline suite green at a documented flake baseline
+  (`TEST-QT-LIFETIME-001`: ~2 failures in 10 full-suite runs, three known
+  full-window Qt construction/teardown node ids, none reproducing in
+  isolation) — a claim of "suite green" from here on should cite that
+  baseline, not a single run.
+- Two independent read-only reviews completed over the implementation range:
+  a cross-validation pass (`d19f6d8`) and a gap audit against the broader
+  operator-feedback instruction, both landed in `known_open_items.md` and
+  `audit_index.md`.
+
+**It does NOT assert:**
+
+- Any physical timing, electrical emission, motion, or delivered fluid
+  volume. Software evidence stages stop at `OBSERVED`/`COMMAND_SENT`; nothing
+  in this window promotes a value to `PHYSICAL_VERIFIED`.
+- That the software has been operated by anyone other than its authors.
+- That the operator journey has been walked end to end on real apparatus.
+- Readiness of any hardware chain. `HW-ACOUSTIC-CHAIN-001` and
+  `HW-AD2-BNC-001` remain `BLOCKING_BEFORE_HARDWARE` — no W1 output is
+  authorized by this state.
+
+**The next gate is physical, not software.** No further software
+implementation window is expected to open against this state until a physical
+shakedown produces real hardware evidence; see
+[`known_open_items.md`](known_open_items.md) for what that shakedown would
+need to resolve.
+
 ## Current readiness and next step
 
 Camera-only Gate 2 is accepted. The FM total-width and sweep-shape software
