@@ -804,6 +804,19 @@ class MainWindowV3(MainWindowV3Compatibility):
             confirmed = QCheckBox("Local checklist confirmation")
             confirmed.setObjectName(f"v3PrepareConfirmed{index + 1}")
             confirmed.setToolTip("Local presentation checklist only; not persisted run evidence or physical verification.")
+            # Real-shakedown finding (2026-09-06): traced every consumer of
+            # this checkbox's checked state before changing the default --
+            # confirmed via source search that nothing reads .isChecked() on
+            # it anywhere (not Continue-to-Configure, Review, Start,
+            # action_log, commissioning trace, ExperimentRequest/RunPlan, or
+            # _settings_dict()'s persisted fields). Defaulting to checked
+            # removes the reported per-card re-click friction without
+            # changing what this control means or does -- it is still local
+            # presentation state only, per its own tooltip, and this default
+            # does not become durable evidence, a hardware query, or a
+            # hardware command. If a future change makes anything material
+            # depend on this checkbox, this default must be revisited then.
+            confirmed.setChecked(True)
             task_layout.addWidget(confirmed)
             group_layout.addLayout(task_layout)
             if content_builder is not None:
@@ -3142,7 +3155,19 @@ class MainWindowV3(MainWindowV3Compatibility):
         self._add_tooltip_icons(form)
 
         buttons = QHBoxLayout()
-        apply_target = QPushButton("Apply target")
+        # Real-shakedown finding (2026-09-06): re-confirmed from current
+        # source (qt_ui_v3.py's own click wiring, tec.py's TecController)
+        # that this button calls TecController.apply_static_setpoint() only
+        # -- no Z/piezo call, no objectName or signal-connection collision
+        # with _manual_focus_group()'s Z "Move" button (a wholly separate
+        # widget/method pair operating on self.app.z_motor). Classified
+        # visual/semantic adjacency, not a runtime defect -- the group box
+        # title ("Environment / Temperature"), the field label ("Routine
+        # target (°C)"), and the unit already disambiguate it from Z's
+        # "Requested target (um)" -> "Move". Renamed "Apply target" ->
+        # "Apply TEC target" as a narrow, low-risk clarity improvement on
+        # top of that, not because wiring needed fixing.
+        apply_target = QPushButton("Apply TEC target")
         apply_target.setObjectName("v3PrepareTecApplyButton")
         apply_target.setToolTip(
             "Calls the same TecController.apply_static_setpoint() the automated temperature program calls. "
@@ -3181,10 +3206,28 @@ class MainWindowV3(MainWindowV3Compatibility):
 
     def _v3_apply_prepare_tec_target(self) -> None:
         target = float(self._v3_prepare_tec_target.value())
+        # Real-shakedown finding (2026-09-06): a second real data point showed
+        # TEC genuinely reaching the requested target (output_stage_static_on
+        # =True, ready=True, measured within tolerance) while
+        # TecStatus.target_temperature_c still read None -- traced to
+        # MeerstetterTecBackend.read_status() (tec.py) faithfully passing
+        # through whatever the vendor client's own status dict returns for
+        # "target_temperature_c", which this protocol's status query may
+        # simply not report (matches this project's existing
+        # INSUFFICIENT_EVIDENCE treatment of similar vendor-silence
+        # questions elsewhere). None here must not be read as "Apply target
+        # failed". Requested/effective separation (2.1): record what THIS
+        # software actually asked for, immediately, the same way
+        # set_fill_level() records its own requested target optimistically --
+        # the controller's own target_temperature_c readback (when the
+        # protocol supplies it) is a separate, distinct field, never
+        # conflated with this one.
+        self._v3_prepare_tec_last_requested_target_c = target
         self._run_action(
             lambda progress: self.app.tec.apply_static_setpoint(target),
             f"Setting TEC target to {target:.2f} °C",
         )
+        self._refresh_v3_prepare_tec_readback()
 
     def _v3_wait_prepare_tec_stable(self) -> None:
         target = float(self._v3_prepare_tec_target.value())
@@ -3207,19 +3250,36 @@ class MainWindowV3(MainWindowV3Compatibility):
         label = getattr(self, "_v3_prepare_tec_readback", None)
         if label is None:
             return
+        # Real-shakedown finding (2026-09-06): shown ahead of the per-channel
+        # controller readback, not merged with it -- REQUESTED is this
+        # software's own record of what Apply asked for (2.1's requested/
+        # effective split); the controller's own target_temperature_c below
+        # is a separate, protocol-dependent readback that may legitimately
+        # be unavailable even when the controller is genuinely at that
+        # target (see _v3_apply_prepare_tec_target()'s comment).
+        requested = getattr(self, "_v3_prepare_tec_last_requested_target_c", None)
+        requested_text = (
+            "Requested: no Apply issued yet this session"
+            if requested is None
+            else f"Requested: {requested:.3f} °C (software request)"
+        )
         statuses = [status for status in (
             self.app.tec.last_status.get(channel) for channel in self.app.tec.channels
         ) if status is not None]
         if not statuses:
-            label.setText("No cached readback")
+            label.setText(f"{requested_text}; no cached controller readback")
             return
         parts = []
         for status in statuses:
             current = "—" if status.current_temperature_c is None else f"{status.current_temperature_c:.3f} °C"
-            target = "—" if status.target_temperature_c is None else f"{status.target_temperature_c:.3f} °C"
+            target = (
+                "not reported by controller protocol"
+                if status.target_temperature_c is None
+                else f"{status.target_temperature_c:.3f} °C"
+            )
             readiness = "ready" if status.ready else "not ready"
-            parts.append(f"ch{status.channel}: measured {current}, target {target}, {readiness}")
-        label.setText("; ".join(parts))
+            parts.append(f"ch{status.channel}: measured {current}, controller-reported target {target}, {readiness}")
+        label.setText(f"{requested_text}; " + "; ".join(parts))
 
     # Manual WFG panel: retain v2's computed preview and v1's validated
     # controls, but stack the two long channel forms instead of putting them

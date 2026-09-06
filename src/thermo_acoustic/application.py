@@ -1100,6 +1100,42 @@ class Application:
                     f"Flush volume {settings.flush_volume_ml} ml exceeds the syringe's current fill level "
                     f"{self.pump.fill_level} ml; refusing to flush -- refill the syringe first."
                 )
+            # Real-shakedown finding (2026-09-06, "D:\Raw Data\Test", -513 SDK
+            # rejection "Value 6.7619 - range [0...5]"): CetoniPump.
+            # configure_syringe() did not re-sync fill_level when the
+            # syringe geometry changed, and a real Qmix read_fill_level()
+            # was observed to return a value (6.7719 ml) already outside the
+            # just-configured syringe's own valid range (a BD 5 ml syringe
+            # configured minutes earlier via configure_syringe(), backend
+            # max_volume_ml 5.0) after a real pump move under the new
+            # geometry -- a device/SDK-side inconsistency this software
+            # cannot correct, tracked as HW-PUMP-FILL-GEOMETRY-001. Without
+            # this guard, flush() silently subtracted flush_volume_ml from
+            # that already-invalid fill_level and pushed an absolute target
+            # (6.7619 ml) that the SDK correctly rejected -- but only after
+            # already logging a confusing "syringe fill level out of range"
+            # error with no earlier warning that the tracked value itself
+            # was already implausible. Detect the KNOWN cross-check the
+            # software already has both numbers for (fill_level vs. the
+            # capacity configure_syringe() itself established -- deliberately
+            # `known_capacity_ml`, UNKNOWN/None until a real
+            # configure_syringe() sets it, not the simulate-mode
+            # `max_volume_ml` bookkeeping default many callers set directly)
+            # and fail closed with a diagnosable message, rather than a
+            # universal 0<=fill<=capacity Start-time gate (deliberately not
+            # added -- see docs/known_open_items.md HW-PUMP-FILL-GEOMETRY-001).
+            # getattr, not direct attribute access: some tests substitute a
+            # minimal pump double (e.g. FakePump) that predates this field
+            # and has no reason to carry it -- an absent attribute must mean
+            # the same UNKNOWN as an explicit None, not raise.
+            known_capacity_ml = getattr(self.pump, "known_capacity_ml", None)
+            if known_capacity_ml is not None and self.pump.fill_level > known_capacity_ml + 1e-9:
+                raise ValueError(
+                    f"Tracked pump fill {self.pump.fill_level} ml exceeds the currently configured "
+                    f"syringe capacity {known_capacity_ml} ml; refusing to flush. The tracked fill "
+                    "level is stale or was read under a different syringe configuration -- refill or "
+                    "re-sync the pump (and consider a fresh reference move) before continuing."
+                )
             self.fire_status_event("Flushing")
             self.valve.set_position(1)
             if not self.valve.wait_until_ready(timeout_s=1.0):

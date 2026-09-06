@@ -2981,6 +2981,111 @@ def test_abort_does_not_touch_hardware_even_while_another_action_is_blocked(monk
         window.close()
 
 
+def test_status_refresh_progress_does_not_double_fire_an_already_recorded_status(monkeypatch, tmp_path):
+    # Real-shakedown finding (2026-09-06, "D:\Raw Data\Test"): a real
+    # InitialFlushFailed appeared twice in the operator-visible status
+    # history for one single underlying Application.fire_status_event() call.
+    # Traced to _run_experiment_series_body()'s own status echo
+    # (`progress("status", self.app.status)`, now "status_refresh") reaching
+    # _handle_worker_progress()'s generic "status" branch, which called
+    # _set_status() -- re-firing fire_status_event() on a value that had
+    # already been fired moments earlier inside application.py. This proves
+    # the fix directly against Application's own durable status_events list,
+    # not merely that a label's text looks right.
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        before = len(window.app.status_events)
+
+        # The event as application.py itself fires it (e.g.
+        # _run_initial_flush_if_required()'s self.fire_status_event(
+        # "InitialFlushFailed")) -- happens once, upstream of any progress
+        # relay.
+        window.app.fire_status_event("InitialFlushFailed")
+        assert window.app.status_events[-1] == "InitialFlushFailed"
+        assert len(window.app.status_events) == before + 1
+
+        # The old, buggy relay: a literal "status" progress echo of the
+        # value application.py already fired.
+        window._handle_worker_progress("status", window.app.status)
+        assert len(window.app.status_events) == before + 2, (
+            "sanity check: kind='status' is still fire+display for a "
+            "genuinely NEW status -- this call site's own bug was passing "
+            "an ALREADY-fired value through it, not this branch itself"
+        )
+
+        # The fix: the same echo, through the new display-only kind.
+        window._handle_worker_progress("status_refresh", window.app.status)
+        assert len(window.app.status_events) == before + 2, (
+            "status_refresh must not append a further status_events entry"
+        )
+        assert window.status.count() >= 1  # the display itself still updated
+    finally:
+        window.close()
+
+
+def test_stop_pump_reaches_the_backend_while_a_refill_style_motion_is_still_in_progress(monkeypatch, tmp_path):
+    # Real-shakedown finding (2026-09-06): "Stop pump" is a Manual-Service
+    # immediate-action button, distinct from graceful series Abort. Before
+    # this fix it shared _run_action()'s single-worker busy queue with
+    # Refill/Empty/GO-to-level with no `force=True`, so clicking Stop while
+    # one of those was still moving hit the busy guard (`_set_status("Busy")`)
+    # and never reached `self.app.pump.stop()` at all -- proven here by
+    # actually starting a still-in-progress fake motion and confirming the
+    # backend receives the stop call before that motion is released, not
+    # merely that the button remains clickable.
+    window = make_window(monkeypatch, tmp_path)
+    motion_started = threading.Event()
+    release_motion = threading.Event()
+    backend_calls: list[str] = []
+
+    class BlockingRefillPump:
+        def refill(self, flow_rate=None):
+            backend_calls.append("refill_started")
+            motion_started.set()
+            release_motion.wait(2.0)
+            backend_calls.append("refill_released")
+
+        def stop(self):
+            backend_calls.append("stop")
+
+        def cleanup(self):
+            pass
+
+    try:
+        window.app.pump = BlockingRefillPump()
+
+        # The long-running motion, dispatched exactly like the real "Refill
+        # syringe" button (_run_action without force -- occupies the queue).
+        window._run_action(lambda progress: window.app.pump.refill(), "Refilling")
+        assert motion_started.wait(1.0), "fake refill never started"
+        assert window._busy_count == 1
+
+        # The real Stop button's own dispatch (qt_ui.py's _pump_stop_button()).
+        stop_button = window._pump_stop_button()
+        stop_button.click()
+
+        # The stop call must reach the backend BEFORE the blocked motion is
+        # released -- not queued behind it. Poll while the motion is still
+        # deliberately held open.
+        assert process_events_until(lambda: "stop" in backend_calls, 1.0), (
+            f"Stop never reached the backend while Refill was still in progress; "
+            f"backend_calls={backend_calls!r}"
+        )
+        assert backend_calls == ["refill_started", "stop"], (
+            "stop must be observed strictly before the motion is released -- "
+            f"got {backend_calls!r}"
+        )
+
+        release_motion.set()
+        assert process_events_until(lambda: window._busy_count == 0 and not window._threads, 2.0)
+        assert backend_calls == ["refill_started", "stop", "refill_released"]
+    finally:
+        release_motion.set()
+        process_events_until(lambda: not window._threads, 2.0)
+        window._cleanup_complete_for_close = True
+        window.close()
+
+
 def test_abort_sets_stop_flag_synchronously_without_a_background_thread(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
     try:

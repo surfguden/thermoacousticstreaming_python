@@ -660,6 +660,64 @@ def test_flush_accepts_volume_exactly_at_current_fill_level():
     assert app.pump.fill_level == pytest.approx(0.0)
 
 
+def test_flush_rejects_a_tracked_fill_level_stale_relative_to_the_known_syringe_capacity():
+    # Real-shakedown finding (2026-09-06, "D:\Raw Data\Test"): a real Qmix
+    # read_fill_level() returned 6.7719 ml immediately after a BD 5 ml
+    # syringe was configured (configure_syringe() -> known_capacity_ml=5.0)
+    # -- a device/SDK-side inconsistency (HW-PUMP-FILL-GEOMETRY-001), not
+    # something this software can prevent at the source. What it CAN do is
+    # refuse to silently compute an absolute set_fill_level() target from a
+    # fill_level the software already knows exceeds the syringe it just
+    # configured, rather than letting the SDK reject a confusing derived
+    # value (6.7619 = 6.7719 - flush_volume_ml) two calls later.
+    app = Application()
+    app.pump.known_capacity_ml = 5.0
+    app.pump.fill_level = 6.7719  # exceeds known_capacity_ml -- stale/invalid
+
+    with pytest.raises(ValueError, match="exceeds the currently configured syringe capacity"):
+        app.flush(FlushSettings(flush_flowrate=1000.0, flush_volume_ml=0.01, wait_after_flush_s=0.0))
+
+    assert app.pump.fill_level == 6.7719, "must be rejected before any pump/valve call, not after"
+    assert app.valve.position == 1, "must not even move the valve once the tracked fill is rejected"
+
+
+def test_flush_is_not_second_guessed_when_the_syringe_capacity_is_unestablished():
+    # A test (or a simulated pump) that never called configure_syringe()
+    # leaves known_capacity_ml at its UNKNOWN default (None) -- the guard
+    # above must not fire against CetoniPump.max_volume_ml's unrelated
+    # simulate-mode bookkeeping default (1.0), which many existing
+    # tests/callers set fill_level well past without ever configuring a
+    # real syringe.
+    app = Application()
+    assert app.pump.known_capacity_ml is None
+    app.pump.fill_level = 60.0
+
+    ok = app.flush(FlushSettings(flush_flowrate=10.0, flush_volume_ml=6.0, wait_after_flush_s=0.0))
+
+    assert ok
+
+
+def test_configure_syringe_establishes_known_capacity_from_a_real_backend(monkeypatch):
+    # instruments.py CetoniPump.configure_syringe() must copy the backend's
+    # own fresh get_volume_max() readback into the canonical
+    # known_capacity_ml field -- the "single canonical place" pattern
+    # sync_fill_level() already established, extended to capacity.
+    app = Application()
+
+    class _FakeBackendWithCapacity:
+        max_volume_ml = 5.0
+
+        def configure_syringe(self, config):
+            pass
+
+    app.pump.backend = _FakeBackendWithCapacity()
+    assert app.pump.known_capacity_ml is None
+
+    app.pump.configure_syringe({"name": "BD 5ml"})
+
+    assert app.pump.known_capacity_ml == 5.0
+
+
 class _FakePumpBackendWithRealFillLevel:
     """A real backend is attached but wait_for_pump() will report the move
     never completed -- read_fill_level() stands in for what the real device

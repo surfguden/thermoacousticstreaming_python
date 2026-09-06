@@ -316,6 +316,61 @@ def test_execution_indicator_keeps_a_fault_visible_after_the_series_stops(monkey
         window.close()
 
 
+def test_initial_flush_failed_shows_error_not_idle(monkeypatch, tmp_path):
+    """Real-shakedown finding (2026-09-06, "D:\\Raw Data\\Test").
+
+    A real run's Initial Flush timed out waiting for the pump
+    (Application.flush()'s wait_for_pump() branch): no exception anywhere in
+    the STEP_FLUSH bracket, so _report_step() reported step_completed by its
+    own documented design, and Application._run_initial_flush_if_required()
+    fired fire_status_event("InitialFlushFailed") and returned False --
+    never step_failed. Before this fix, _step_states[STEP_FLUSH] stayed
+    "completed" forever, and the Execution indicator ended at IDLE even
+    though Diagnostics separately reported the series stopped. Reproduces
+    the exact real event order: step_completed(STEP_FLUSH), then the status
+    echo, then the series-active-false that always follows a raised
+    RuntimeError out of qt_ui.py's _run_experiment_series()'s own finally.
+    """
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        enter_running_repeat(window)
+        window._handle_worker_progress("step_started", STEP_INITIALIZE_EXPERIMENT)
+        window._handle_worker_progress("step_completed", STEP_INITIALIZE_EXPERIMENT)
+        window._handle_worker_progress("step_started", STEP_FLUSH)
+        # _report_step()'s own documented behavior: no exception -> completed,
+        # even though flush() returned False.
+        window._handle_worker_progress("step_completed", STEP_FLUSH)
+        assert indicator(window)["state"].startswith("RUNNING") or indicator(window)["state"].startswith("WAITING")
+
+        window._handle_worker_progress("status_refresh", "InitialFlushFailed")
+        window._handle_worker_progress("experiment_series_active", False)
+
+        shown = indicator(window)
+        assert shown["state"].startswith("ERROR |"), (
+            f"must show ERROR, not IDLE, once InitialFlushFailed is known -- got {shown['state']!r}"
+        )
+        assert "Faulted during" in shown["current"]
+    finally:
+        window.close()
+
+
+def test_a_flush_completing_normally_is_not_marked_failed_by_an_unrelated_status(monkeypatch, tmp_path):
+    """The new mapping is narrow: only Application's own known flush-failure
+    statuses may retroactively mark STEP_FLUSH failed, and only while that
+    step is active/completed -- an ordinary status elsewhere in the same run
+    must not touch it."""
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        enter_running_repeat(window)
+        window._handle_worker_progress("step_started", STEP_FLUSH)
+        window._handle_worker_progress("step_completed", STEP_FLUSH)
+        window._handle_worker_progress("status_refresh", "FlushComplete")
+
+        assert indicator(window)["state"].startswith("ERROR") is False
+    finally:
+        window.close()
+
+
 def test_execution_indicator_reports_complete_when_every_step_finished(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
     try:

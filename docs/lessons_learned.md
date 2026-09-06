@@ -63,6 +63,17 @@ a common-timebase measurement, and no trace event establishes an electrical
 edge, optical emission, acoustic pressure, delivered fluid, or cross-instrument
 simultaneity.
 
+**A display-only echo of an already-fired event must not re-fire it — `ENFORCED`.**
+**Project example.** A real run's operator-visible status history recorded
+`InitialFlushFailed` twice for one underlying `Application.fire_status_event()`
+call. `qt_ui.py`'s worker-progress relay echoed `self.app.status` back to the
+UI purely to refresh a label, but the generic handler it reached always both
+fires and displays — correct for a call site announcing a genuinely new status,
+wrong for one only echoing a value the canonical stream already emitted. Fixed
+with a separate display-only progress kind for echo call sites. A projection
+that cannot tell "new event" from "redisplay of an old one" will eventually
+duplicate the canonical stream it is supposed to only observe.
+
 ### 1.3 Evidence classes are not interchangeable — `ENFORCED`
 
 ```text
@@ -172,6 +183,24 @@ now uses the software-effective achieved DIO0 spacing whenever a real
 inventing a cadence. This is 2.3 applied to validation instead of to
 programming: whatever the device is actually configured to do is the thing a
 safety gate must be checked against.
+
+### 2.6 A raw device readback is only meaningful relative to the configuration it was measured under — `ENFORCED`
+
+**Project example.** A real Qmix pump's `read_fill_level()` returned 6.7719 ml
+immediately after `configure_syringe()` had itself just established a 5 ml
+syringe (`known_capacity_ml=5.0`) on the same live device — a value the
+syringe's own just-confirmed capacity already rules out. The device/SDK-level
+cause (does a geometry change need a fresh reference move before fill-level
+readback is trustworthy?) is a hardware question this software cannot answer
+from logs alone (`HW-PUMP-FILL-GEOMETRY-001`). What software *can* do: it
+already held both numbers (the tracked reading and the capacity its own prior
+call established) and had no cross-check between them, so a stale/invalid
+reading fed silently into the next absolute-target computation and surfaced
+two calls later as a confusing SDK rejection instead of an immediate,
+diagnosable one. When two already-known values describe the same physical
+quantity under two different bases, check them against each other at the
+point they are about to be combined — do not wait for the device to reject
+the combined result.
 
 ---
 
@@ -601,6 +630,24 @@ OPERATOR_PREFERENCE / PHYSICAL_VALIDATION / SCIENCE_VALIDATION / LOW_ROI_DEBT)
 and batched into one bounded correction checkpoint only if warranted, not
 chased one at a time back into a redesign.
 
+### 7.24 A documented non-exceptional-failure tradeoff needs its named consumer implemented, not just named — `ENFORCED`
+
+**Project example.** `application.py`'s `_report_step()` docstring already
+explained, before this was found, that a step returning normally with a
+"did not succeed" result (e.g. `flush()`'s own `return False` on a pump-wait
+timeout) is reported `step_completed`, and that "a live UI can tell the two
+apart by also watching the existing status-event stream." That second half
+was never actually built: nothing consumed the status-event stream for this
+purpose, so a real `InitialFlushFailed` run left the V3 Execution indicator
+at `IDLE` — a step marked `"completed"`, no `step_failed` anywhere, and no
+other signal driving the indicator's `state` to `ERROR` — while Diagnostics
+separately, correctly reported the failure. A documented tradeoff that names
+its own required second half is only closed once that second half exists;
+naming it is not implementing it. Fixed narrowly, by mapping `Application`'s
+own known non-exceptional failure statuses onto the same `_step_states` dict
+`step_failed` already writes, rather than changing `_report_step()`'s
+long-standing exception-only contract.
+
 ### Design-thinking provenance boundary
 
 Some of the principles above (7.14–7.23, and the extension to 1.4) consolidate
@@ -892,6 +939,21 @@ while `fault=True` persisted; the contemporaneous vendor log later proved real
 node emergencies. Correlate passive status with independently timestamped logs
 before classifying a fault as active or merely latched. A clear-command
 acknowledgement is not recovery.
+
+### 13.6 Real evidence sharing one output directory can hold multiple distinct attempts — `DOCUMENTED`
+
+**Project example.** A single real-shakedown session's `action_log.jsonl`
+(one series path, one `run_id`) turned out to contain three separate
+`sequence_started`/`sequence_completed` brackets from three separate Start
+clicks roughly a minute and fourteen minutes apart — an instant `-513` SDK
+rejection sandwiched between two longer runs that both failed the same way
+five-plus seconds in. The owner's own narrative named two attempts; the
+retained file held three. Do not assume one output path or one narrated
+report corresponds to exactly one attempt: split evidence into ranges by its
+own internal `sequence_started`/`sequence_completed` (or equivalent) markers
+first, reconstruct each range independently, and only then compare across
+them. Merging evidence across attempts before separating them risks
+attributing one attempt's cause to another's symptom.
 
 ---
 

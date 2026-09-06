@@ -144,6 +144,48 @@ cross-validation protocol are recorded in
 [`lessons_learned.md`](lessons_learned.md) 7.23, static UI productization work
 on this program stops here absent new operator or physical evidence.
 
+## Real shakedown Round 1 (2026-09-06)
+
+The first real-operator shakedown session produced two distinct real Start
+attempts, retained at `D:\Raw Data\Test` (`action_log.jsonl`,
+`commissioning_trace.jsonl`) and cross-checked against
+`logs/hardware_transactions.log`. Both failed before any camera capture, at
+the sequence-level Initial Flush, for two different reasons — see
+`known_open_items.md`'s closed-provenance table for the full source-traced
+account of each:
+
+- **Attempt 1** (`-513` SDK rejection, "Value 6.7619 - range [0...5]"): a
+  stale tracked pump fill level (read immediately after a real syringe
+  reconfiguration, already outside that syringe's own just-established
+  capacity) fed an absolute `set_fill_level()` target computation. Closed
+  in software (`SW-PUMP-STALE-FILL-LEVEL-001`); the device/SDK-level "why"
+  stays open as `HW-PUMP-FILL-GEOMETRY-001`.
+- **Attempt 2** (`InitialFlushFailed`, Execution indicator wrongly ending at
+  `IDLE`): a real pump-wait timeout inside `flush()`, returned as `False`
+  without raising — `_report_step()`'s own documented, pre-existing
+  contract — with nothing consuming the status-event stream that same
+  docstring says a live UI must also watch. Closed
+  (`UI-V3-INITIALFLUSH-ERROR-STATE-001`).
+
+Also fixed from this session's real operator feedback: "Stop pump" silently
+no-opping while a Refill/Empty motion was in progress
+(`UI-PUMP-STOP-BUSY-QUEUE-001`, thread-safety of the concurrent Qmix call
+tracked as `UI-PUMP-STOP-THREAD-SAFETY-001`); a duplicated visible
+`InitialFlushFailed` status line traced to a progress-echo re-firing an
+already-fired event (`SW-STATUS-ECHO-DUPLICATE-001`); Prepare's per-row
+"Local checklist confirmation" checkboxes now default to checked (nothing
+depended on their state; the TEC sample-equilibrium checkbox deliberately
+did not follow, per `lessons_learned.md` 1.4/7.11); and Prepare's TEC
+readback now shows the software's own requested target alongside a
+`target_temperature_c=None` controller readback, worded as a protocol
+characteristic rather than an ambiguous blank (a real second data point
+showed the controller genuinely `ready`/`output_stage_static_on` with that
+field still `None`).
+
+None of this changes the trigger architecture, canonical execution
+authority, or any fail-closed hardware gate. `HW-ACOUSTIC-CHAIN-001` and
+`HW-AD2-BNC-001` remain the hard blockers before any energized W1 output.
+
 ## Authorized software-maintenance state
 
 **AUTHORIZED_SOFTWARE_MAINTENANCE_ACTIVE** — the owner lifted the repository

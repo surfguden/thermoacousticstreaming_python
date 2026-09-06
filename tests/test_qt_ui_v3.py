@@ -839,6 +839,109 @@ def test_v3_prepare_temperature_group_is_routine_fixed_target_not_a_scan(monkeyp
         window.close()
 
 
+def test_v3_prepare_tec_readback_shows_requested_target_separately_from_none_controller_readback(
+    monkeypatch, tmp_path
+):
+    """Real-shakedown finding (2026-09-06): a real TEC run reached the
+    requested target (output_stage_static_on=True, ready=True, measured
+    within tolerance) while TecStatus.target_temperature_c stayed None --
+    the Meerstetter status protocol simply may not report it back
+    (tec.py's MeerstetterTecBackend.read_status() faithfully passes that
+    through). target_temperature_c=None must not read as "Apply failed".
+    The readback must show what THIS software actually requested,
+    independent of whether the controller's own protocol echoes it back.
+    """
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        readback = window.findChild(QLabel, "v3PrepareTecReadback")
+        assert readback is not None
+        assert "no Apply issued yet this session" in readback.text()
+
+        monkeypatch.setattr(
+            window, "_run_action", lambda action, starting_status, **kwargs: action(None)
+        )
+        target_spin = window._v3_prepare_tec_target
+        target_spin.setValue(25.0)
+        apply_button = window.findChild(QPushButton, "v3PrepareTecApplyButton")
+        monkeypatch.setattr(type(window.app.tec), "apply_static_setpoint", lambda self, *a, **k: None)
+        apply_button.click()
+
+        text_after_requesting = readback.text()
+        assert "Requested: 25.000" in text_after_requesting
+
+        # The real observed state: controller genuinely stable/ready, but
+        # its own protocol status never reports target_temperature_c.
+        window.app.tec.last_status = {
+            1: TecStatus(
+                channel=1,
+                current_temperature_c=25.0,
+                target_temperature_c=None,
+                output_stage_static_on=True,
+                ready=True,
+            ),
+        }
+        window._refresh_v3_prepare_tec_readback()
+
+        text = readback.text()
+        assert "Requested: 25.000" in text, "the software's own request must stay visible"
+        assert "not reported by controller protocol" in text, (
+            "None must read as a protocol characteristic, not a blank/failure"
+        )
+        assert "ready" in text
+        assert "controller-reported target not reported by controller protocol" in text
+    finally:
+        window.close()
+
+
+def test_apply_tec_target_and_move_z_target_touch_only_their_own_authority(monkeypatch, tmp_path):
+    """Real-shakedown finding (2026-09-06): the operator reported momentary
+    uncertainty about whether TEC's "Apply target" might somehow actuate the
+    Z stage. Re-confirmed from CURRENT source, not just the prior review:
+    Apply TEC target calls TecController.apply_static_setpoint() only,
+    _manual_z_move_to_target() calls stage.set_position() only, and neither
+    code path references the other's authority object.
+    """
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        tec_calls: list[float] = []
+        z_calls: list[float] = []
+        monkeypatch.setattr(
+            type(window.app.tec),
+            "apply_static_setpoint",
+            lambda self, temperature_c, channels=None: tec_calls.append(temperature_c),
+        )
+        monkeypatch.setattr(
+            window, "_run_action", lambda action, starting_status, **kwargs: action(None)
+        )
+
+        class _RecordingStage:
+            connected = True
+            position_control_mode = "CloseLoop"
+            max_travel_um = 450.0
+
+            def set_position(self, target):
+                z_calls.append(target)
+
+            def get_position(self):
+                return z_calls[-1] if z_calls else 0.0
+
+        window.app.z_motor.enabled = True
+        window.app.z_motor.stage = _RecordingStage()
+        window._update_manual_focus_controls()
+
+        window._v3_prepare_tec_target.setValue(31.0)
+        window.findChild(QPushButton, "v3PrepareTecApplyButton").click()
+        assert tec_calls == [31.0]
+        assert z_calls == [], "Apply TEC target must not touch the Z stage"
+
+        window.manual_z_target_um.setValue(100.0)
+        window.manual_z_move.click()
+        assert z_calls == [100.0]
+        assert tec_calls == [31.0], "Move Z target must not touch the TEC controller"
+    finally:
+        window.close()
+
+
 def test_v3_prepare_construction_issues_no_hardware_call(monkeypatch, tmp_path):
     """Building Prepare's embedded routine Pump/Camera/Z/TEC groups is inert:
     it queries or commands no hardware, matching the pre-existing manual-
@@ -852,6 +955,50 @@ def test_v3_prepare_construction_issues_no_hardware_call(monkeypatch, tmp_path):
         assert window.app.valve.initialized is False
         assert window.app.tec.initialized is False
         assert window.app.tec.last_status == {}
+    finally:
+        window.close()
+
+
+def test_v3_prepare_local_checklist_confirmations_default_checked(monkeypatch, tmp_path):
+    """Real-shakedown finding (2026-09-06): the per-row "Local checklist
+    confirmation" boxes forced a re-click on every card every session with
+    nothing depending on their checked state -- confirmed by source search
+    (no .isChecked() consumer anywhere: not Continue-to-Configure, Review,
+    Start, action_log, commissioning trace, ExperimentRequest/RunPlan, or
+    _settings_dict()'s persisted fields) before changing the default.
+    Defaulting to checked must not create any evidence or hardware call --
+    reuses the same no-hardware-call guarantee the neighboring test proves.
+    """
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        prepare = window.findChild(QWidget, "v3PrepareWorkspace")
+        found = 0
+        for index in range(1, 9):
+            checkbox = prepare.findChild(QCheckBox, f"v3PrepareConfirmed{index}")
+            if checkbox is None:
+                continue
+            found += 1
+            assert checkbox.isChecked(), f"v3PrepareConfirmed{index} must default to checked"
+            assert "not persisted run evidence" in checkbox.toolTip()
+            assert "physical verification" in checkbox.toolTip()
+        assert found >= 6, "sanity check: most Preparation checklist rows carry this confirmation"
+
+        assert window.app.camera.handle is None
+        assert window.app.ad2.device_handle is None
+        assert window.app.pump.initialized is False
+        assert window.app.valve.initialized is False
+        assert window.app.tec.initialized is False
+
+        # The TEC sample-equilibrium checkbox makes a specific scientific
+        # claim distinct from a generic per-row acknowledgement (1.4/7.11:
+        # never default-manufacture a confirmation that did not happen) --
+        # it must NOT follow the same default-checked change.
+        equilibrium = prepare.findChild(QCheckBox, "v3PrepareTecEquilibriumConfirmed")
+        assert equilibrium is not None
+        assert not equilibrium.isChecked(), (
+            "sample-equilibrium confirmation is a physical claim, not a generic "
+            "checklist acknowledgement, and must stay operator-initiated"
+        )
     finally:
         window.close()
 

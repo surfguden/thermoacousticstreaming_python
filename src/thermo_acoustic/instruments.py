@@ -833,6 +833,16 @@ class CetoniPump:
     # existing simulated-mode callers that never set this explicitly --
     # not a claim that 1.0 mL is a realistic syringe capacity.
     max_volume_ml: float = 1.0
+    # UNKNOWN (None) until a real configure_syringe() call establishes it --
+    # deliberately separate from max_volume_ml above, which many existing
+    # callers/tests set directly as an arbitrary simulated-mode bookkeeping
+    # value with no real capacity meaning. Real-shakedown finding
+    # (2026-09-06): this is the field Application.flush()'s stale-fill-level
+    # guard checks, so a test or a simulated pump that never configured a
+    # real syringe is never second-guessed by it -- only an ACTUAL
+    # QmixPumpBackend.configure_syringe() success sets this, from the
+    # backend's own fresh get_volume_max() readback.
+    known_capacity_ml: float | None = None
 
     def sync_fill_level(self) -> None:
         # Re-read the real fill level from hardware and update self.fill_level
@@ -958,6 +968,17 @@ class CetoniPump:
     def configure_syringe(self, config: dict | None) -> None:
         if self.backend is not None:
             self.backend.configure_syringe(config)
+            # Real-shakedown finding (2026-09-06): QmixPumpBackend.
+            # configure_syringe() already re-queries get_volume_max() into
+            # ITS OWN self.max_volume_ml after a successful geometry change;
+            # nothing previously copied that fresh ceiling up to this
+            # canonical (UNKNOWN-until-established) field, so
+            # Application.flush()'s stale-fill-level guard had no capacity
+            # to check fill_level against. Same "single canonical place"
+            # reasoning as sync_fill_level() above.
+            backend_max_volume_ml = getattr(self.backend, "max_volume_ml", None)
+            if backend_max_volume_ml is not None:
+                self.known_capacity_ml = float(backend_max_volume_ml)
         self.syringe_config = config
 
     def configure_syringe_bd(self, config: dict | None) -> None:

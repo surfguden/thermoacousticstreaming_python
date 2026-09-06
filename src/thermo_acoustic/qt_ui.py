@@ -61,7 +61,7 @@ from .ad2 import (
     coerce_do_config,
     coerce_wfg_config,
 )
-from .application import STEP_ORDER, STEP_SAVE_RESULTS, Application
+from .application import STEP_FLUSH, STEP_ORDER, STEP_SAVE_RESULTS, Application
 from .camera import SubRegion
 from .experiment_planning import (
     ExperimentCameraDefaults, ExperimentRequest, build_independent_run_plan,
@@ -84,6 +84,26 @@ LEGACY_AUTHORITY = "LEGACY_AUTHORITY"
 SHARED_PLAN_VIA_ADAPTER = "SHARED_PLAN_VIA_ADAPTER"
 # Internal migration seam; deliberately not an operator-facing setting.
 EXPERIMENT_PLANNING_AUTHORITY = SHARED_PLAN_VIA_ADAPTER
+
+# Real-shakedown finding (2026-09-06, "D:\Raw Data\Test"): _report_step()
+# (application.py) deliberately reports step_completed for ANY step that
+# returns normally, including flush()'s own documented `return False` on a
+# pump-wait timeout or an unconfirmed valve position -- its docstring names
+# this exact tradeoff and says a live UI must also watch the status-event
+# stream to tell the two apart. Before this fix, nothing did: STEP_FLUSH
+# stayed "completed" in _step_states, so a real InitialFlushFailed run
+# (source-traced: Application._run_initial_flush_if_required() -> flush()'s
+# wait_for_pump() timeout -> fire_status_event("InitialFlushFailed"), no
+# exception anywhere in the bracket) ended the V3 Execution indicator at
+# IDLE instead of ERROR, even though Diagnostics separately reported
+# "run_experiment2 did not complete". This is exactly Application's own
+# known non-exceptional flush-failure vocabulary (flush()/
+# _run_initial_flush_if_required()'s three fire_status_event() calls that
+# are never followed by a raise) -- not a generic "any failing status"
+# catch-all.
+FLUSH_NON_EXCEPTIONAL_FAILURE_STATUSES = frozenset(
+    {"InitialFlushFailed", "FlushValvePosition1NotReady", "FlushValvePosition2NotReady"}
+)
 
 
 def _format_duration_s(seconds: float, *, round_up: bool = False) -> str:
@@ -2479,10 +2499,31 @@ class MainWindow(QMainWindow):
         Safe to instantiate more than once (Prepare and Manual Service each
         get their own button): a plain action trigger with no bound value
         carries no state to duplicate, unlike the syringe/flow widgets below.
+
+        Real-shakedown finding (2026-09-06): every other pump action (Refill,
+        Empty, Start flow, GO to level) is dispatched through the same
+        single-worker `_run_action()` queue, which refuses a new action while
+        one is already busy. Before this fix, Stop used that same
+        undifferentiated dispatch -- so clicking Stop while a real Refill/
+        Empty motion was in progress hit the busy guard and silently did
+        nothing (`_set_status("Busy")`), never reaching `self.app.pump.stop()`
+        at all. `force=True` is `_run_action()`'s existing, previously-unused
+        escape hatch for exactly this: it skips the busy check and starts a
+        genuinely separate `QThread`/`ActionWorker`, so the stop command
+        reaches the backend immediately rather than waiting behind the
+        in-flight motion. This assumes the Qmix SDK's `stop_pumping()` may be
+        called from a second thread while a `set_fill_level()`
+        move/`is_pumping()` poll is in flight on the first -- not
+        independently bench-verified, and the narrowest available
+        interruption path given the existing single pump-backend instance
+        (no second backend was introduced). Uses the existing backend/
+        lifecycle only; Refill/Empty/other pump actions are unchanged.
         """
         stop = QPushButton("Stop pump")
         stop.setMinimumSize(200, 70)
-        stop.clicked.connect(lambda: self._run_action(lambda progress: self.app.pump.stop(), "Pump stopped"))
+        stop.clicked.connect(
+            lambda: self._run_action(lambda progress: self.app.pump.stop(), "Pump stopped", force=True)
+        )
         return stop
 
     def _pump_refill_group(self) -> QGroupBox:
@@ -4871,7 +4912,13 @@ class MainWindow(QMainWindow):
             elapsed = max(time.monotonic() - started_at, 0.001)
             if progress:
                 progress("queue_count", 0)
-                progress("status", self.app.status)
+                # "status_refresh", not "status": self.app.status was already
+                # fired via Application.fire_status_event() inside the
+                # sequence body above -- this only asks the UI to redisplay
+                # the current value (see _handle_worker_progress()'s two
+                # branches and the real-shakedown finding on the other one
+                # below for why re-firing it here would double-record it).
+                progress("status_refresh", self.app.status)
                 progress("average_fps", f"{total_frames / elapsed:.2f}")
             return "TemperatureSeriesComplete"
         except Exception:
@@ -4940,7 +4987,21 @@ class MainWindow(QMainWindow):
             repeat_index += 1
             if progress:
                 progress("queue_count", self.app.experiment_series.see_elements_left())
-                progress("status", self.app.status)
+                # Real-shakedown finding (2026-09-06, "D:\Raw Data\Test"):
+                # self.app.status here already reflects an event
+                # run_experiment2() fired via Application.fire_status_event()
+                # (e.g. "InitialFlushFailed", from _run_initial_flush_if_
+                # required() -- source-confirmed via the real run's
+                # action_log.jsonl and logs/hardware_transactions.log). The
+                # generic "status" progress kind means "fire and display" for
+                # every OTHER call site in this file, which pass a brand-new
+                # literal string never recorded before (e.g. "Opening selected
+                # hardware") -- correct there. Here it would re-fire an
+                # ALREADY-fired event, silently double-appending it to
+                # Application.status_events/runtime_events (and duplicating
+                # its visible operator-event-log row): "status_refresh" asks
+                # only for a redisplay of the current value.
+                progress("status_refresh", self.app.status)
             if not completed:
                 lifecycle_manifest.repeat_failed()
                 message = (
@@ -5237,6 +5298,20 @@ class MainWindow(QMainWindow):
     def _handle_worker_progress(self, kind: str, value: object) -> None:
         if kind == "status":
             self._set_status(str(value))
+            self._note_flush_non_exceptional_failure(str(value))
+        elif kind == "status_refresh":
+            # Real-shakedown finding (2026-09-06): display-only counterpart to
+            # "status" above. _set_status() both fires a NEW status event and
+            # displays it -- correct for a call site announcing a status for
+            # the first time (e.g. "Opening selected hardware"), but wrong for
+            # a call site that is only echoing a status Application already
+            # fired via fire_status_event() (self.app.status): calling
+            # _set_status() on that echo re-fires the identical event,
+            # duplicating it in Application.status_events/runtime_events and
+            # the visible operator-event log. This branch only re-renders the
+            # current value.
+            self._refresh_status()
+            self._note_flush_non_exceptional_failure(str(value))
         elif kind == "series_timing_started" and isinstance(value, dict):
             started_at = float(value["started_at"])
             self._series_started_at_monotonic = started_at
@@ -5317,6 +5392,23 @@ class MainWindow(QMainWindow):
         elif kind == "step_failed":
             step_name, _message = value
             self._step_states[str(step_name)] = "failed"
+            self._refresh_step_breadcrumb()
+
+    def _note_flush_non_exceptional_failure(self, status: str) -> None:
+        """Mark STEP_FLUSH failed for one of flush()'s own return-False paths.
+
+        See FLUSH_NON_EXCEPTIONAL_FAILURE_STATUSES above for the exact
+        source-traced statuses and why step_failed never fires for them on
+        its own. Reuses the same _step_states dict step_failed itself
+        writes, so _refresh_v3_execution_indicator() (qt_ui_v3.py) needs no
+        second fault signal to read -- one dict, one consumer. A no-op if
+        STEP_FLUSH is not currently "active"/"completed" (e.g. a manual
+        Pump & Valve flush outside a sequence, which has no step to mark).
+        """
+        if status not in FLUSH_NON_EXCEPTIONAL_FAILURE_STATUSES:
+            return
+        if self._step_states.get(STEP_FLUSH) in ("active", "completed"):
+            self._step_states[STEP_FLUSH] = "failed"
             self._refresh_step_breadcrumb()
 
     def _refresh_series_timing(self) -> None:
