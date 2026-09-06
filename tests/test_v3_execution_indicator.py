@@ -244,6 +244,54 @@ def test_execution_indicator_never_uses_physical_claim_wording(monkeypatch, tmp_
         window.close()
 
 
+# 980 stands in for the minimumWidth() floor rather than a literal size: Qt
+# clamps any smaller request to it, and pinning the number here would go
+# stale the day that floor moves. The floor is included because it is the
+# narrowest string an elided prefix can ever be judged at.
+@pytest.mark.parametrize("size", [(1366, 768), (1440, 900), (1920, 1080), (600, 700)])
+def test_displayed_execution_text_never_uses_physical_claim_wording(monkeypatch, tmp_path, size):
+    """The PAINTED text must be as evidence-accurate as the full string.
+
+    `full_text()` is scanned above (`test_execution_indicator_never_uses_
+    physical_claim_wording`); an elision could in principle cut a full string
+    that reads correctly into a PREFIX that reads as a physical claim the full
+    string does not make. This sweeps the same forbidden-token list and the
+    same canonical states at `displayed_text()` -- the string actually
+    painted -- rather than narrowing either to make the scan cheaper.
+    """
+
+    window = make_window(monkeypatch, tmp_path)
+    window.resize(*size)
+    window.show()
+    QApplication.processEvents()
+    try:
+        collected: list[str] = []
+        enter_running_repeat(window)
+        for step in (
+            STEP_INITIALIZE_EXPERIMENT,
+            STEP_CONFIGURE_WFG,
+            STEP_CONFIGURE_CAMERA,
+            STEP_CAPTURE_FRAMES,
+            STEP_WAIT_FOR_AD2_COMPLETION,
+            STEP_FLUSH,
+            STEP_SAVE_RESULTS,
+        ):
+            window._handle_worker_progress("step_started", step)
+            collected.extend(field.displayed_text() for field in execution_fields(window).values())
+            window._handle_worker_progress("step_completed", step)
+            collected.extend(field.displayed_text() for field in execution_fields(window).values())
+        window._handle_worker_progress("step_failed", (STEP_CAPTURE_FRAMES, "boom"))
+        collected.extend(field.displayed_text() for field in execution_fields(window).values())
+
+        haystack = " || ".join(collected).lower()
+        for phrase in FORBIDDEN_PHRASES:
+            assert phrase not in haystack, (
+                f"elided display must not claim {phrase!r} at window size {size}"
+            )
+    finally:
+        window.close()
+
+
 def test_execution_indicator_keeps_a_fault_visible_after_the_series_stops(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
     try:
