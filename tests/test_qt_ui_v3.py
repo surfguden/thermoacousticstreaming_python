@@ -276,7 +276,30 @@ def test_v3_reuses_the_supplied_application_and_separates_operator_workspaces(mo
         assert [
             experiment_phases.tabText(index) for index in range(experiment_phases.count())
         ] == ["1  Preparation checklist", "2  Configure", "3  Review run"]
-        assert window.findChild(QWidget, "v3PrepareWorkspace") is not None
+        prepare_workspace = window.findChild(QWidget, "v3PrepareWorkspace")
+        assert prepare_workspace is not None
+        # Row order matches the owner chronology: initialization -> pump
+        # (reference/refill/working position) -> camera -> Z -> TEC -> other
+        # experiment parameters. Previously TEC (Environment / Temperature)
+        # sat second, ahead of pump/camera/Z, contradicting this same
+        # chronology and Configure's own Acquisition -> Conditions order
+        # asserted above. Object-name lookup (v3PrepareTaskN, 1-based), not
+        # findChildren() insertion order, so this fails loudly if a future
+        # edit reorders the tuple without updating this assertion.
+        prepare_row_titles = [
+            prepare_workspace.findChild(QGroupBox, f"v3PrepareTask{index}").title()
+            for index in range(1, 9)
+        ]
+        assert prepare_row_titles == [
+            "Equipment readiness",
+            "Guided Pump Preparation",
+            "Imaging / Focus",
+            "Z / Positioning",
+            "Environment / Temperature",
+            "Sample / Fluidics",
+            "Laser / Optics",
+            "Acoustic Precheck",
+        ]
         assert "local presentation confirmations" in window.findChild(
             QLabel, "v3PreparationEvidenceBoundary"
         ).text()

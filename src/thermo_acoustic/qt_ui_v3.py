@@ -689,15 +689,28 @@ class MainWindowV3(MainWindowV3Compatibility):
         # real preparation chronology treats camera setup and Z/focus as
         # distinct steps. A single "Imaging / Focus" row could only carry a
         # button to one of the two panels it named.
+        #
+        # Row order (V3_WORKFLOW_CHRONOLOGY_RECONCILIATION, 2026-09-06):
+        # matches the owner-supplied operator chronology --
+        # initialization -> pump (reference/refill/working position) ->
+        # camera (preview/ROI/acquisition) -> Z (focus/positioning) -> TEC
+        # (temperature setup/scan) -> other experiment parameters (sample
+        # refresh, laser, acoustic precheck). Previously Environment /
+        # Temperature sat second, ahead of Guided Pump Preparation and both
+        # camera/Z rows -- contradicting both this chronology and this
+        # module's own prior rationale ("mount/calibrate the pump before
+        # routine fluidics, set up camera and Z/focus before the
+        # temperature/acoustic parameters that build on them", still true,
+        # but not what the row order actually did). TEC now follows camera
+        # and Z, matching Configure's own Acquisition -> Conditions order
+        # (see _v3_setup_tabs()) instead of contradicting it. Sample /
+        # Fluidics moves into the "other experiment parameters" group
+        # (after TEC) because its own text is about the Repeat Sample
+        # Refresh Configure tab, not pump mounting -- pump mounting/
+        # reference-move readiness is Guided Pump Preparation's job, and it
+        # already precedes Sample / Fluidics either way.
         tasks = (
             ("Equipment readiness", "Select/initialize devices when authorized; inspect cached software status.", None, None),
-            (
-                "Environment / Temperature",
-                "Record bench conditions; an optional TEC scan is configured in Configure -> Conditions.",
-                None,
-                "v3ConditionsSetupScroll",
-            ),
-            ("Sample / Fluidics", "Record sample readiness; automatic refresh remains a Configure request.", None, None),
             (
                 "Guided Pump Preparation",
                 "Open the manual Pump & Valve panel only for its separately confirmed service actions.",
@@ -716,6 +729,13 @@ class MainWindowV3(MainWindowV3Compatibility):
                 "ZScan",
                 None,
             ),
+            (
+                "Environment / Temperature",
+                "Record bench conditions; an optional TEC scan is configured in Configure -> Conditions.",
+                None,
+                "v3ConditionsSetupScroll",
+            ),
+            ("Sample / Fluidics", "Record sample readiness; automatic refresh remains a Configure request.", None, None),
             ("Laser / Optics", "Inspect readiness without enabling W2: W2 remains blocked and no emission is inferred.", None, None),
             ("Acoustic Precheck", "Review requested W1 settings; PC-triggered execution is shown in Review.", None, None),
         )

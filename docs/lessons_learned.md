@@ -417,6 +417,25 @@ text names more than one destination, give it a button per destination (or
 split the row) rather than one button that silently only covers part of what
 the row promises.
 
+### 7.11 A checklist's row ORDER is itself a chronology claim — `ENFORCED`
+
+**Project example.** The Preparation checklist's own text explained a
+chronology ("mount/calibrate the pump before routine fluidics, set up camera
+and Z/focus before the temperature/acoustic parameters that build on them"),
+and every individual row was internally correct against that sentence — but
+the row order contradicted its own stated rationale: Environment/Temperature
+(TEC) sat second, ahead of Guided Pump Preparation, Imaging/Focus, and
+Z/Positioning. A prior review checked each row's own content and destination
+button but never checked the SEQUENCE the rows render in against the
+chronology the surrounding prose claimed. Fixed by reordering to pump →
+camera → Z → TEC → other experiment parameters, matching both the owner
+chronology and Configure's own Acquisition → Conditions tab order (`37088bd`),
+which the old Prepare order silently disagreed with. When a checklist or tab
+strip claims to follow a chronology, verify the actual render order against
+that chronology explicitly — a row-by-row content review does not catch an
+ordering defect, and two surfaces claiming to follow the same chronology must
+agree with each other, not just each with its own prose.
+
 ---
 
 ## Part 8 — Test quality

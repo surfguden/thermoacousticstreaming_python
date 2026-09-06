@@ -52,7 +52,10 @@ def test_pump_preparation_row_can_open_the_pump_and_valve_panel_directly(monkeyp
     try:
         pump_row = window.findChild(QLabel, None)  # sanity: window built
         assert pump_row is not None
-        button = window.findChild(QPushButton, "v3PrepareOpenPanel4")
+        # Row 2: Guided Pump Preparation leads the checklist right after
+        # Equipment readiness, matching the owner chronology (pump before
+        # camera/Z/TEC/other parameters).
+        button = window.findChild(QPushButton, "v3PrepareOpenPanel2")
         assert button is not None
         assert button.text() == "Open Pump & Valve panel"
         assert "PumpValve" not in window._manual_panels
@@ -70,7 +73,8 @@ def test_pump_preparation_row_can_open_the_pump_and_valve_panel_directly(monkeyp
 def test_imaging_focus_row_can_open_the_camera_panel_directly(monkeypatch, tmp_path):
     window = make_window(monkeypatch, tmp_path)
     try:
-        button = window.findChild(QPushButton, "v3PrepareOpenPanel5")
+        # Row 3: camera preparation follows pump, ahead of Z/TEC.
+        button = window.findChild(QPushButton, "v3PrepareOpenPanel3")
         assert button is not None
         assert button.text() == "Open Camera panel"
 
@@ -92,7 +96,8 @@ def test_z_positioning_row_can_open_the_zscan_panel_directly(monkeypatch, tmp_pa
 
     window = make_window(monkeypatch, tmp_path)
     try:
-        button = window.findChild(QPushButton, "v3PrepareOpenPanel6")
+        # Row 4: Z/positioning follows camera, ahead of TEC.
+        button = window.findChild(QPushButton, "v3PrepareOpenPanel4")
         assert button is not None
         assert button.text() == "Open Z-Scan panel"
 
@@ -111,12 +116,15 @@ def test_environment_temperature_row_can_jump_to_configure_conditions(monkeypatc
     previously took an extra, unsignposted click past "Configure" itself.
     This button is Configure-tab navigation, not a Manual & Service panel,
     so it is a distinct object name/mechanism from v3PrepareOpenPanel*.
+
+    Row 5: TEC follows pump/camera/Z, matching the owner chronology and
+    Configure's own Acquisition -> Conditions tab order.
     """
 
     window = make_window(monkeypatch, tmp_path)
     try:
-        assert window.findChild(QPushButton, "v3PrepareOpenPanel2") is None
-        button = window.findChild(QPushButton, "v3PrepareOpenConfigure2")
+        assert window.findChild(QPushButton, "v3PrepareOpenPanel5") is None
+        button = window.findChild(QPushButton, "v3PrepareOpenConfigure5")
         assert button is not None
         assert button.text() == "Open in Configure"
 
@@ -130,14 +138,14 @@ def test_environment_temperature_row_can_jump_to_configure_conditions(monkeypatc
         window.close()
 
 
-@pytest.mark.parametrize("index", [1, 2, 3, 7, 8])
+@pytest.mark.parametrize("index", [1, 5, 6, 7, 8])
 def test_checklist_rows_without_a_named_panel_have_no_quick_open_button(monkeypatch, tmp_path, index):
     """Only the three rows that actually say "open the manual X panel" get one.
 
     Equipment readiness, Sample/Fluidics, Laser/Optics, and Acoustic Precheck
     point at Initialize or Configure/Review, which are already one click
     away without a shortcut. Environment/Temperature gets a different kind
-    of button (Configure-tab navigation, `v3PrepareOpenConfigure2`), checked
+    of button (Configure-tab navigation, `v3PrepareOpenConfigure5`), checked
     separately -- it never gets a `v3PrepareOpenPanel*` one.
     """
 
@@ -189,10 +197,10 @@ def test_opening_a_prepare_checklist_panel_issues_no_hardware_call(monkeypatch, 
     window = make_window(monkeypatch, tmp_path, app=app)
     try:
         calls.clear()
+        window.findChild(QPushButton, "v3PrepareOpenPanel2").click()
+        window.findChild(QPushButton, "v3PrepareOpenPanel3").click()
         window.findChild(QPushButton, "v3PrepareOpenPanel4").click()
-        window.findChild(QPushButton, "v3PrepareOpenPanel5").click()
-        window.findChild(QPushButton, "v3PrepareOpenPanel6").click()
-        window.findChild(QPushButton, "v3PrepareOpenConfigure2").click()
+        window.findChild(QPushButton, "v3PrepareOpenConfigure5").click()
         QApplication.processEvents()
         hardware_calls = [c for c in calls if c.endswith("()")]
         assert hardware_calls == [], f"opening a panel issued hardware call(s): {hardware_calls}"
