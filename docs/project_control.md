@@ -129,6 +129,21 @@ authority to accept the program as validated; a fresh session performs the
 independent review over `e433965..55b5cf1` (P1/P2) plus this P3 landing
 commit.
 
+**That independent review has now happened (2026-09-06)**, over
+`e433965..5624c2e`, with verdict
+`V3_PRODUCTIZATION_ACCEPTED_WITH_NONBLOCKING_FOLLOWUP` and shakedown
+recommendation `READY_FOR_OPERATOR_SHAKEDOWN_WITH_NONBLOCKING_FOLLOWUP`; see
+`audit_index.md` for the review's provenance and durable conclusions. The
+remaining `OPERATOR_VALIDATION_PENDING` questions it left for project-level
+adjudication are now recorded as `UI-V3-PREPARE-SCROLL-001` and
+`UI-V3-MANUAL-SERVICE-COMPLETENESS-001` in `known_open_items.md`, alongside
+the pre-existing `UI-V3-DEFAULT-001`. None of them changes the classification
+above. The real-operator shakedown journey and its commissioning-trace
+cross-validation protocol are recorded in
+[`operator_shakedown_protocol.md`](operator_shakedown_protocol.md); per
+[`lessons_learned.md`](lessons_learned.md) 7.23, static UI productization work
+on this program stops here absent new operator or physical evidence.
+
 ## Authorized software-maintenance state
 
 **AUTHORIZED_SOFTWARE_MAINTENANCE_ACTIVE** — the owner lifted the repository
@@ -899,7 +914,10 @@ in conversation and never committed. This section is that commitment.
 implementation window is expected to open against this state until a physical
 shakedown produces real hardware evidence; see
 [`known_open_items.md`](known_open_items.md) for what that shakedown would
-need to resolve.
+need to resolve and
+[`operator_shakedown_protocol.md`](operator_shakedown_protocol.md) for the
+operator journey and commissioning-trace cross-validation protocol that
+shakedown follows.
 
 ## Current readiness and next step
 

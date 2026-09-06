@@ -93,6 +93,19 @@ is named "Preparation checklist" and the banner says the confirmations are not
 persisted run evidence and not physical verification. Renaming a control is
 cheaper than implying an evidence class that does not exist.
 
+Three things must not be silently conflated with one another: **(A)** a local
+operator confirmation such as a Prepare checkbox — presentation state only,
+never persisted as run evidence; **(B)** operator-recorded experimental
+metadata such as a manually entered controller setting — persisted, but still
+an operator claim, not an instrument reading; and **(C)** a physical
+measurement with instrument/provenance, such as a measured optical power. Do
+not upgrade (A) into (B) or (C) merely to make a UI state feel more durable,
+and do not invent a new evidence stage to paper over the gap between what an
+operator confirmed and what was actually measured. **Project example.** The
+TEC "sample equilibrium confirmed" checkbox is (A): it stays local, labelled
+"(local checklist only)", and is never inferred from controller stability,
+which is a different (B)-class claim about the controller, not the sample.
+
 ### 1.5 Document classes must not be conflated — `DOCUMENTED`
 
 Current authority, current guidance, historical evidence, raw handover
@@ -335,13 +348,20 @@ fluid actually moving; that remains HW-PUMP-MOTION-001 and HW-VALVE-001.
 ### 7.1 Follow experimental chronology, not subsystem ownership — `DOCUMENTED`
 
 The operator workflow is Prepare → Configure → Review → Start → Monitor, not a
-tab per software module.
+tab per software module. The first-level mental model is "prepare the
+experiment, configure the science, review what will happen, run, understand
+what is happening" — hardware subsystems (Pump, Camera, TEC, Z, AD2, ...) are
+secondary implementation concepts underneath that, not the organizing axis.
 
 ### 7.2 Routine preparation belongs in the routine path — `DOCUMENTED`
 
 Environment/temperature, sample/fluidics, imaging/focus, manual optics, and
 acoustic readiness are routine. Engineering and recovery controls belong in
-Manual & Service; passive detail belongs in Diagnostics.
+Manual & Service; passive detail belongs in Diagnostics. Do not organize this
+split around backend method identity (which class implements a control) —
+organize it around whether the *action* is routine experimental preparation or
+scan/calibration/recovery/engineering work, which is a product judgment, not
+an implementation fact.
 
 ### 7.3 Shared UI inheritance makes small changes cross-surface changes — `ENFORCED`
 
@@ -468,6 +488,140 @@ assertion after opening the second surface (`prepare.isAncestorOf(widget)`
 stays true, `dialog.isAncestorOf(widget)` stays false), not merely that both
 builder methods exist or that construction did not raise.
 
+### 7.14 Operator intent is not backend identity — `DOCUMENTED`
+
+Shared hardware/backend does not imply shared product workflow. **Project
+examples:** routine Z/focus (`_manual_focus_group()`) is not Z-scan
+(`_zscan_parameters_group()`/`_zscan_control_group()`); a fixed routine TEC
+target is not a temperature program; camera preview/ROI preparation is not
+acquisition definition is not camera engineering diagnostics; initial sample
+loading is not repeat-to-repeat automatic refresh. Two controls calling the
+same backend method are not automatically the same operator action.
+
+### 7.15 A control object is not its configuration metadata — `DOCUMENTED`
+
+**Project example.** Pump is the controlled object; syringe is pump
+configuration metadata — geometry, capacity, stroke, fill interpretation, and
+related calculations, nested under Guided Pump Preparation rather than
+presented as a peer device. A separate widget or a separate API call is not
+by itself evidence that something deserves peer status; ask what it actually
+*is* to the operator's model of the apparatus first.
+
+### 7.16 Authority reuse is not presentation reuse — `DOCUMENTED`
+
+Reuse canonical state, backend, action, validation, and evidence/logging —
+see 7.13 for the mechanical proof that reuse is real. But an existing
+engineering/manual-test dialog is not automatically the correct routine
+presentation of that same authority. A new lightweight presentation is
+legitimate when it stays a projection/controller over the *same* authority
+and creates no second hardware lifecycle or scientific state — the P1 Prepare
+groups are exactly this: new placement, same widgets, same actions, same
+gates.
+
+### 7.17 Progressive disclosure classifies by operator meaning, not a simple/complex axis — `DOCUMENTED`
+
+This is a methodological rule, not merely a field-classification result.
+Whether a control is technically simple or complex is an insufficient basis
+for deciding Standard versus Advanced placement. Classify by what the control
+*means* to the operator instead — routine scientific, advanced scientific,
+engineering/API, calibration/service, or diagnostic/evidence. A scientifically
+meaningful parameter may be complex and still belong in the normal scientific
+workflow; an implementation/API control may be simple and still belong in
+Advanced. **Project example.** FM sweep-shape semantics remain discoverable in
+Configure/Acoustic despite looking technically advanced, because they are
+scientifically meaningful, not because they are simple.
+
+### 7.18 A review surface must preserve UNKNOWN, not collapse it into failure — `DOCUMENTED`
+
+Extends 1.3's evidence-stage discipline to what a pre-run review screen is
+*for*: answering "if I press Start now, what will the canonical software
+attempt, and what do we actually know about the requested/applied/readback
+state?" `UNKNOWN`, `NOT AVAILABLE`, `NOT REQUIRED`, `WARNING`, `BLOCKED`, and
+`FAILED` are not interchangeable, and in particular a lack of readback/evidence
+is not the same claim as failed hardware. **Project example.** Review's
+"Pump / fluidics readiness" row reports `NOT REQUIRED` when refresh is off and
+`NOT AVAILABLE` when pump/valve are disabled, rather than folding either into
+a generic warning that reads like a problem.
+
+### 7.19 Routine UI answers the operator's immediate question; detail moves elsewhere — `DOCUMENTED`
+
+An information-density rule, not a request to hide science. Routine screens
+should prioritize what the operator needs for the decision or action in front
+of them — concise labels, the primary action, current/readback/readiness
+context, and blocker/warning state — over permanent README-like prose.
+Detailed engineering rationale belongs in a tooltip, an expandable detail
+section, Manual & Service, Diagnostics, or project documentation, per 7.17's
+classification.
+
+### 7.20 Structural maturity is not operator validation — `DOCUMENTED`
+
+A structurally correct, offline-tested UI is not thereby an operator-validated
+one. Use evidence-grounded maturity language rather than an arbitrary
+percentage-complete claim: `DESIGN_PRINCIPLE_ESTABLISHED` →
+`STRUCTURE_IMPLEMENTED` → `OFFLINE_BEHAVIOR_VALIDATED` →
+`OPERATOR_VALIDATION_PENDING` / `PHYSICAL_VALIDATION_PENDING` →
+`ROUTINE_USE_VALIDATED`. `project_control.md` already tracks
+`V3_OPERATOR_WORKFLOW_PRODUCTIZATION` through the first four of these stages;
+this entry exists so the vocabulary itself, not just one program's use of it,
+is durable project authority.
+
+### 7.21 Productization is evaluated by interaction cost, not click count alone — `DOCUMENTED`
+
+Relevant costs include workspace transitions, dialogs, context switching,
+search/decision burden, vertical and horizontal travel, hidden routine
+controls, and recovery-path discoverability. Fewer clicks bought with worse
+state/evidence clarity is not necessarily an improvement — do not optimize one
+metric (7.5/7.12's launcher-relocation trap is the narrow case of this: a
+click-count win with no interaction-cost win at all).
+
+### 7.22 Geometry must be judged on both the horizontal and the vertical axis — `DOCUMENTED`
+
+7.9's per-column measurement discipline is necessary but not sufficient:
+horizontal containment alone does not establish that a page is comfortable to
+use. Also evaluate vertical scroll depth, viewport traversals, control
+reachability, whether additional content stays discoverable, and whether
+context is lost during a long scroll. Scrolling is not inherently a defect —
+the question is whether it supports or impedes the operator's workflow, which
+is an operator-observation judgment (7.23), not a static measurement verdict.
+**Project example.** Prepare needs roughly 3.75 viewport-heights of vertical
+travel at 1366x768, dropping to roughly 2.0 at 1920x1080; this is recorded as
+`OPERATOR_VALIDATION_PENDING`, not pre-judged as a defect, in
+`known_open_items.md`.
+
+### 7.23 Static UI productization has an exit condition — `DOCUMENTED`
+
+Extends 9.4 (stop broad audits once architecture is validated) to product/UI
+work specifically. Once architecture is sound, product structure is
+implemented, offline behavior is validated, and an independent review has
+accepted the implementation, the remaining open questions are genuinely
+operator-dependent — stop static UI polishing and move to real operator
+shakedown. Do not reopen broad audit/redesign cycles without new operator or
+physical evidence; a shakedown finding gets triaged (MUST_FIX / HIGH_ROI /
+OPERATOR_PREFERENCE / PHYSICAL_VALIDATION / SCIENCE_VALIDATION / LOW_ROI_DEBT)
+and batched into one bounded correction checkpoint only if warranted, not
+chased one at a time back into a redesign.
+
+### Design-thinking provenance boundary
+
+Some of the principles above (7.14–7.23, and the extension to 1.4) consolidate
+reasoning that originated across two sources: this project's own implemented
+and independently reviewed V3 work, and earlier ChatGPT-side V3
+design-thinking that preceded the current productization implementation. That
+original design-thinking material contained more extensive reasoning,
+examples, alternatives, and rejected possibilities than belongs in this
+handbook — this section is an intentional **distillation**, not a verbatim
+preservation of the complete original argument. If the original ChatGPT-line
+conversation is not reliably retrievable in a future session: the principles
+above are the authoritative distilled lessons; they do not represent every
+alternative, example, rejected design, or line of reasoning the original
+process considered, and their absence from this list must not be read as "this
+was never considered." Current source, current authority, operator evidence,
+and new experimental evidence outrank inaccessible historical discussion. Do
+not create a dependency on retrieving historical ChatGPT conversations, and do
+not copy that discussion into this repository for archival completeness —
+the goal is durable reasoning without turning project authority into a
+conversation archive.
+
 ---
 
 ## Part 8 — Test quality
@@ -525,6 +679,21 @@ this was checked directly against the vendored `dcamapi4.py`.
 The simulated camera returns N frames regardless of trigger source. Offline
 tests therefore provide **zero** evidence that physical DIO0 edges produce the
 intended number or timing of real exposures.
+
+### 8.10 A future stall must be captured, not just reclassified — `DOCUMENTED`
+
+**Project example.** `TEST-QT-LIFETIME-001`'s historical full-suite stall was
+not independently reproduced in a fresh review (132/132 isolated, 836/1/0
+full-suite, deterministic Qt-responsiveness test green), so the family entry
+stands on its existing evidence rather than a new one. If a future
+stall/hang occurs: capture the exact pytest node id; capture where execution
+stopped if possible; record whether it was timeout/no-exception versus a
+raised `SystemError`/`RuntimeError`; explicitly distinguish a hang from an
+exception; do not silently classify a new hang as an existing family member
+without evidence; and do not retry until green and discard the first-run
+evidence. A single green re-run is not a rebuttal of a nondeterministic
+failure — see `TEST-QT-LIFETIME-001`'s own measured failure-rate baseline in
+`known_open_items.md`.
 
 ---
 
