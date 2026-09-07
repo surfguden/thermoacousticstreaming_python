@@ -532,8 +532,44 @@ class MainWindowV3(MainWindowV3Compatibility):
         self.connection_button = QPushButton("Initialize hardware")
         self.connection_button.setObjectName("v3InitializeHardwareButton")
         self.connection_button.clicked.connect(self._open_initialization_dialog)
-        self.connection_button.setMinimumHeight(34)
-        layout.addWidget(self.connection_button, 0, 0, 2, 1)
+        # Reduced from the original 34 px now that this cell hosts two
+        # stacked buttons instead of one -- see the height-budget comment
+        # below.
+        self.connection_button.setMinimumHeight(26)
+
+        # Hardware-session lifecycle counterpart to Initialize hardware
+        # (CHECKPOINT_S_CLOSURE_DEBUG_AND_HARDWARE_SESSION_LIFECYCLE_V2).
+        # "Shutdown hardware", not "Disconnect": the operation is broader than
+        # closing communication -- it reuses the exact same canonical
+        # Application.cleanup() authority Application Exit already uses (via
+        # the inherited _start_shutdown(close_after=False)), which stops Pump
+        # motion, disables TEC static output, stops/resets AD2 AnalogOut and
+        # DigitalOut, and stops/releases the camera and Z-stage -- so it is
+        # not called "Power off hardware" (software does not control device
+        # mains power) and never claims physical verification. Deliberately
+        # NOT styled with the "critical_stop" uiRole Stop pump uses (Checkpoint
+        # A, bad95db): this is a lifecycle action, not an immediate
+        # motion-interruption control, and must not look identical to it.
+        self.shutdown_hardware_button = QPushButton("Shutdown hardware")
+        self.shutdown_hardware_button.setObjectName("v3ShutdownHardwareButton")
+        self.shutdown_hardware_button.clicked.connect(self._v3_shutdown_hardware)
+        self.shutdown_hardware_button.setMinimumHeight(26)
+
+        # Stacked, not side-by-side: measured, a side-by-side placement widens
+        # column 0, which steals from the execution strip's own already
+        # fully-consumed width budget (SW-V3-EXECUTION-STRIP-WIDTH-001's
+        # `current`/`trace` fields render with effectively zero horizontal
+        # margin at 1440x900 in the ordinary case) and reopens that closed
+        # residual-clipping question. Column 0's width is governed by
+        # whichever button text is wider ("Initialize hardware"), so stacking
+        # adds no width at all -- only height, which is accounted for below.
+        hardware_lifecycle_host = QWidget()
+        hardware_lifecycle_layout = QVBoxLayout(hardware_lifecycle_host)
+        hardware_lifecycle_layout.setContentsMargins(0, 0, 0, 0)
+        hardware_lifecycle_layout.setSpacing(3)
+        hardware_lifecycle_layout.addWidget(self.connection_button)
+        hardware_lifecycle_layout.addWidget(self.shutdown_hardware_button)
+        layout.addWidget(hardware_lifecycle_host, 0, 0, 2, 1)
 
         self._v3_persistent_state: dict[str, QLabel] = {}
         captions = (
@@ -3063,6 +3099,7 @@ class MainWindowV3(MainWindowV3Compatibility):
             self.connection_button.setText("Initialize hardware")
             self.connection_button.setStyleSheet("")
             self.connection_button.setToolTip("Open device selection, simulation options, and initialization progress.")
+        self._refresh_v3_shutdown_hardware_button()
         values = getattr(self, "_v3_connection_values", None)
         if not values or not hasattr(self, "ad2_connection_status"):
             return
@@ -3098,6 +3135,74 @@ class MainWindowV3(MainWindowV3Compatibility):
         self._refresh_v3_pump_local_status()
         if hasattr(self, "_v3_timing_labels"):
             self._refresh_v3_relationships()
+
+    # -- Hardware-session lifecycle: Shutdown hardware -------------------
+    #
+    # Counterpart to Initialize hardware (CHECKPOINT_S_CLOSURE_DEBUG_AND_
+    # HARDWARE_SESSION_LIFECYCLE_V2). Deliberately reuses the inherited
+    # _start_shutdown() coordinator unchanged -- the same one Application
+    # Exit already uses (_exit_app()/closeEvent() -> _start_shutdown(close_
+    # after=True)) -- passing close_after=False instead of adding a second
+    # cleanup/shutdown implementation. That coordinator already runs
+    # Application.cleanup() on a background thread, disables the window's
+    # controls for the duration (self._set_controls_enabled(False), which
+    # covers this button and Initialize hardware too, so a second concurrent
+    # click cannot race in), and is itself already idempotent against a
+    # second call while one is in flight (_shutdown_in_progress guard).
+    #
+    # "Active experiment / manual action" policy (Option A): the button is
+    # disabled, not merely re-checked on click, whenever the same busy/active
+    # flags this window already uses to gate manual Z motion
+    # (_update_manual_focus_controls()) are set -- _busy_count covers any
+    # in-flight _run_action() worker, which is how every Manual & Service
+    # action AND Initialize hardware itself dispatch, so a hardware-owning
+    # worker is never running concurrently with Application.cleanup(). This
+    # does not touch Exit's own pre-existing behavior (which does not gate on
+    # these flags) -- that remains a recorded, separate, non-blocking
+    # follow-up (see docs/known_open_items.md), not something this narrower,
+    # additive button needed to inherit.
+    _V3_SHUTDOWN_HARDWARE_TOOLTIP_READY = (
+        "Stop hardware motion/output and release device connections without "
+        "closing the application (software/API release, not physical "
+        "power-off). Initialize hardware again afterward to reconnect."
+    )
+    _V3_SHUTDOWN_HARDWARE_TOOLTIP_BLOCKED = (
+        "Unavailable while an operation is active (an experiment run, "
+        "Z-Scan calibration, manual Z motion, or a Manual & Service action). "
+        "Request graceful stop (Abort) or wait for it to finish first."
+    )
+
+    def _v3_hardware_lifecycle_blocked(self) -> bool:
+        return bool(
+            self._busy_count
+            or self._experiment_series_active
+            or self._zscan_active
+            or self._manual_z_operation_active
+        )
+
+    def _refresh_v3_shutdown_hardware_button(self) -> None:
+        if not hasattr(self, "shutdown_hardware_button"):
+            return
+        blocked = self._v3_hardware_lifecycle_blocked()
+        self.shutdown_hardware_button.setEnabled(not blocked)
+        self.shutdown_hardware_button.setToolTip(
+            self._V3_SHUTDOWN_HARDWARE_TOOLTIP_BLOCKED
+            if blocked
+            else self._V3_SHUTDOWN_HARDWARE_TOOLTIP_READY
+        )
+
+    def _v3_shutdown_hardware(self) -> None:
+        # Defense in depth: the button is already disabled while blocked
+        # (_refresh_v3_shutdown_hardware_button()), but re-check here too --
+        # a click can already be queued on the Qt event loop from just before
+        # the disable took effect.
+        if self._v3_hardware_lifecycle_blocked():
+            self._set_status(
+                "Shutdown hardware unavailable while an operation is active; "
+                "request graceful stop (Abort) or wait for it to finish first."
+            )
+            return
+        self._start_shutdown(close_after=False)
 
     def _refresh_v3_tec_readback(self) -> None:
         labels = getattr(self, "_v3_tec_readback_labels", None)
