@@ -33,6 +33,58 @@ Owner-supplied physical routing is authoritative as owner workflow truth when
 identified as such; it remains distinct from protocol acknowledgement and
 independent physical observation.
 
+## Review weight must match consequence, not checkpoint size
+
+Recorded `OPERATOR_CONTROL_UNLOCK_AND_PROJECT_COMPLEXITY_REDUCTION_V2`,
+2026-09-07. A checkpoint does not automatically require a fresh independent
+review merely because it is large, touches many files, or because similar
+historical checkpoints received one. Mandatory fresh independent review is
+reserved for changes that alter:
+
+1. hardware gate/blocker/permission behavior;
+2. deterministic cleanup/shutdown semantics;
+3. evidence/trace/log integrity or completeness semantics;
+4. state-vs-outcome semantics where software could report success while the
+   enclosing action actually failed;
+5. changes where an incorrect result could plausibly remain unnoticed until
+   real hardware use exposes it.
+
+Changes limited to UI wording, button styling, layout, documentation
+structure, deletion of confirmed-zero-consumer UI elements, or other
+low-consequence presentation work do not default to a mandatory fresh
+independent-review checkpoint; they may be spot-checked at owner discretion.
+When a checkpoint mixes consequential and low-consequence changes, scope
+mandatory review to the consequential surface only — do not review an entire
+diff with equal weight merely because it exists.
+
+## Operator control gate audit (2026-09-07)
+
+`OPERATOR_CONTROL_UNLOCK_AND_PROJECT_COMPLEXITY_REDUCTION_V2` audited every
+`blocking=True` `PreflightIssue` in `experiment_planning.py` (the sole source
+of a disabled Start button) and every manual/service action gate in
+`qt_ui.py`/`qt_ui_v3.py`. Finding: the inventory already contained zero
+`PHYSICAL_EVIDENCE_ONLY`-style blockers before this checkpoint. Every
+`blocking=True` issue (`fm_sweep_frequency_scan_conflict`,
+`frequency_repeat_mismatch`, `camera_fps`, `camera_start_slots`,
+`ad2_disabled`, `fm_requires_channel0`, the continuous-output-with-no-
+completion-time check added in Real Shakedown Round 2, and the `build_error`
+catch-all) is a genuine software-correctness or resource-precondition check
+on the request itself, not a stand-in for unverified physical evidence.
+`flush_capacity` (exceeds selected syringe) is already `blocking=False`, a
+warning. The only remaining consequential resource-scoped serialization —
+Pump vs. Valve action busy-gating — was already narrowed in Real Shakedown
+Round 2 (`_resource_action_blocked()`/`resource=` tagging on `_run_action()`);
+this checkpoint found no further legitimate-action gate to narrow. No source
+change resulted from this audit. The `HW-ACOUSTIC-CHAIN-001`/`HW-AD2-BNC-001`
+W1 boundary and the `HW-LASER-PATH-001` W2 boundary are documentation/owner-
+authorization boundaries only — grep-confirmed to have zero references
+anywhere in `src/`; there is no source-level W1/W2 gate to unlock or narrow,
+and none was added, removed, or altered here. The full permission matrix and
+Category-A/B preservation proof produced during this audit are recorded in
+this checkpoint's PR/session record rather than as a new standing document,
+consistent with the documentation-reduction work performed in the same
+checkpoint (see [`audit_index.md`](audit_index.md)).
+
 ## V3 operator workflow productization phase transition
 
 **2026-09-06.** Broad V3 productization/layout work was historically deferred

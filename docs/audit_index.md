@@ -143,6 +143,26 @@ the way it does:
 These are point-in-time or reference records. They are **not** current
 authority and their current-tense sentences may be superseded.
 
+**Documentation reduction (`OPERATOR_CONTROL_UNLOCK_AND_PROJECT_COMPLEXITY_
+REDUCTION_V2`, 2026-09-07):** nine pure audit/review artifacts previously
+listed here (`scientific_parameter_semantics_audit_20260903.md`,
+`project_knowledge_consolidation_audit_20260903.md`,
+`experiment_architecture_assessment.md`, `autonomous_sweep_round2_20260901.md`,
+`v3_parameter_grouping_review.md`, `v3_information_architecture_closure_20260901.md`,
+`buildresult_independent_plan_design_20260901.md`,
+`experiment_record_completeness_closure_20260901.md`,
+`engineering_retrospective_fact_check.md`) were deleted after confirming, by
+repository-wide search, that each was referenced from nowhere else in the
+tree (no source comment, no other doc, no tool) except this table's own now-
+removed row. Every current-tense conclusion any of them might have
+established already lives in `project_control.md`/`known_open_items.md` with
+its own commit-hash provenance, independent of these files. See commit
+`56386f1..` (this checkpoint) for the deletion; git history retains their
+full content. `current_workflow_audit.md` and the migration-history group
+below were investigated the same way and deliberately **not** deleted --
+each has live cross-references from source comments or other current
+documents (see their own rows).
+
 | Document | Class |
 | --- | --- |
 | [`experiment_sequence_timeline.txt`](experiment_sequence_timeline.txt) | Raw handover evidence (colleague's intended sequence). Never rewritten. |
@@ -151,7 +171,7 @@ authority and their current-tense sentences may be superseded.
 | [`p0_hardware_truth_20260828.md`](p0_hardware_truth_20260828.md) | Dated bench/hardware evidence with explicit limits. |
 | [`qt_lifetime_investigation.md`](qt_lifetime_investigation.md) | Bounded Qt failure-family evidence for `TEST-QT-LIFETIME-001`. |
 | [`hardware_repair_plan.md`](hardware_repair_plan.md), [`hardware_safety_patterns.md`](hardware_safety_patterns.md), [`tec_verification_matrix.md`](tec_verification_matrix.md), [`runtime_truth_and_bench_preparation.md`](runtime_truth_and_bench_preparation.md) | Historical procedure/design records. Re-derive against current source before use. |
-| [`scientific_parameter_semantics_audit_20260903.md`](scientific_parameter_semantics_audit_20260903.md), [`project_knowledge_consolidation_audit_20260903.md`](project_knowledge_consolidation_audit_20260903.md), [`current_workflow_audit.md`](current_workflow_audit.md), [`experiment_architecture_assessment.md`](experiment_architecture_assessment.md), [`autonomous_sweep_round2_20260901.md`](autonomous_sweep_round2_20260901.md), [`v3_parameter_grouping_review.md`](v3_parameter_grouping_review.md), [`v3_information_architecture_closure_20260901.md`](v3_information_architecture_closure_20260901.md), [`buildresult_independent_plan_design_20260901.md`](buildresult_independent_plan_design_20260901.md), [`experiment_record_completeness_closure_20260901.md`](experiment_record_completeness_closure_20260901.md), [`engineering_retrospective_fact_check.md`](engineering_retrospective_fact_check.md) | Audit/review evidence. Superseded where they conflict with current authority. |
+| [`current_workflow_audit.md`](current_workflow_audit.md) | Audit/review evidence, actively cross-referenced from `hardware_tests/README.md` and `legacy_unresolved_items.md` as a retained point-in-time safety audit. Superseded where it conflicts with current authority; not deleted because of those live references. |
 | [`labview_migration_completeness_audit.md`](labview_migration_completeness_audit.md), [`labview_ui_field_reference.md`](labview_ui_field_reference.md), [`PORTING_TBD.md`](PORTING_TBD.md), [`legacy_asset_index.md`](legacy_asset_index.md), [`legacy_unresolved_items.md`](legacy_unresolved_items.md), [`v1_downgrade_assessment.md`](v1_downgrade_assessment.md) | Migration history. Not current backlog. |
 | [`pending_feedback.md`](pending_feedback.md), [`claude_code_change_log.md`](claude_code_change_log.md), [`HANDOVER.md`](HANDOVER.md) | Raw session/issue history. Resolved entries are historical. |
 | MASTER recovery packages (supplied outside the repository) | Recovery package. Historical snapshot; never current operational authority. |
