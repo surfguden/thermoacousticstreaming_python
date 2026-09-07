@@ -1157,6 +1157,302 @@ def test_v3_manual_service_pump_panel_reaches_stop_pump_without_navigating_to_pr
         window.close()
 
 
+def test_v3_worker_failure_status_carries_the_known_reason_not_a_bare_error(monkeypatch, tmp_path):
+    """Real Shakedown Round 2 finding (2026-09-07): a real experiment-series
+    failure (the automated series runs through _run_action()'s generic
+    ActionWorker path -- confirmed from source, not assumed) fired the bare
+    literal status "Error" here, discarding the same known reason already
+    captured into error_log one line above. The automated series itself is
+    not re-run here (test_execution_indicator_reproduces_the_real_ad2_
+    continuous_output_fault already reproduces that path's own reason-
+    surfacing fix); this isolates _handle_worker_finished()'s own status
+    text directly, with the real recorded message."""
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        reason = (
+            "AD2 channel 0 is configured for continuous output (sec_run=0), which has no "
+            "defined completion time -- flush/save cannot safely proceed. Set a finite Run "
+            "Duration before starting this experiment."
+        )
+        window._handle_worker_finished(False, "Error", reason)
+        assert window.app.status == f"Error: {reason}"
+        assert reason in window.error_log.latest_text()
+    finally:
+        window.close()
+
+
+def test_v3_valve_action_dispatches_while_pump_motion_is_still_in_progress(monkeypatch, tmp_path):
+    """Real Shakedown Round 2 finding (2026-09-07): the operator observed
+    Valve control unavailable while Pump motion was active. Reconstructed:
+    _run_action()'s single global _busy_count serialized EVERY manual/
+    service action regardless of resource, even though Pump (CetoniPump,
+    Qmix CAN) and Valve (Valve, SerialTextCommandBackend on COM5) are
+    independent backend objects on independent transports with no shared
+    state -- confirmed from source, not assumed. Proves the actual backend
+    receives the Valve command while Pump is still moving, not merely that
+    a button stays clickable."""
+    window = make_window(monkeypatch, tmp_path)
+    motion_started = threading.Event()
+    release_motion = threading.Event()
+    backend_calls: list[str] = []
+
+    class BlockingPumpBackend:
+        def refill(self, flow_rate=None):
+            backend_calls.append("pump_refill_started")
+            motion_started.set()
+            release_motion.wait(2.0)
+            backend_calls.append("pump_refill_released")
+
+        def read_fill_level(self):
+            return 0.0
+
+        def stop(self):
+            backend_calls.append("pump_stop")
+
+        def close(self):
+            pass
+
+    class FakeValveBackend:
+        def write(self, command):
+            backend_calls.append(f"valve_write:{command}")
+
+        def query(self, command):
+            return "01\r"
+
+        def close(self):
+            pass
+
+    try:
+        window.app.pump.backend = BlockingPumpBackend()
+        window.app.pump.initialized = True
+        window.app.valve.backend = FakeValveBackend()
+        window.app.valve.initialized = True
+
+        window._run_action(
+            lambda progress: window.app.pump.refill(), "Refilling", resource="pump"
+        )
+        assert motion_started.wait(1.0), "fake pump motion never started"
+        assert window._busy_count == 1
+        assert window._resource_busy_count.get("pump") == 1
+
+        # A second Valve action, dispatched while Pump is still moving, must
+        # actually reach the backend now -- not queue behind the pump motion.
+        window._run_action(
+            lambda progress: window.app.valve.set_position(1),
+            "Setting valve to position 1 (P01)",
+            resource="valve",
+        )
+        assert process_events_until(lambda: "valve_write:P01" in backend_calls, 2.0), (
+            f"Valve command never reached the backend while Pump was still moving; "
+            f"backend_calls={backend_calls!r}"
+        )
+        assert backend_calls == ["pump_refill_started", "valve_write:P01"], (
+            "Valve command must be observed strictly before the pump motion is "
+            f"released -- got {backend_calls!r}"
+        )
+
+        release_motion.set()
+        assert process_events_until(lambda: window._busy_count == 0 and not window._threads, 2.0)
+        assert window._resource_busy_count.get("pump", 0) == 0
+        assert window._resource_busy_count.get("valve", 0) == 0
+    finally:
+        release_motion.set()
+        assert process_events_until(lambda: not window._threads, 2.0)
+        window.close()
+
+
+def test_v3_second_conflicting_pump_action_still_queues_behind_the_first(monkeypatch, tmp_path):
+    """Same-resource actions must still serialize against each other -- the
+    fix is scoped to DIFFERENT resources, not a general free-for-all."""
+    window = make_window(monkeypatch, tmp_path)
+    motion_started = threading.Event()
+    release_motion = threading.Event()
+    backend_calls: list[str] = []
+
+    class BlockingPumpBackend:
+        def refill(self, flow_rate=None):
+            backend_calls.append("refill_started")
+            motion_started.set()
+            release_motion.wait(2.0)
+            backend_calls.append("refill_released")
+
+        def read_fill_level(self):
+            return 0.0
+
+        def empty(self, flow_rate=None):
+            backend_calls.append("empty_started")
+
+        def close(self):
+            pass
+
+    try:
+        window.app.pump.backend = BlockingPumpBackend()
+        window.app.pump.initialized = True
+
+        window._run_action(
+            lambda progress: window.app.pump.refill(), "Refilling", resource="pump"
+        )
+        assert motion_started.wait(1.0)
+
+        window._run_action(
+            lambda progress: window.app.pump.empty(), "Emptying", resource="pump"
+        )
+        QApplication.processEvents()
+        assert "empty_started" not in backend_calls, (
+            "a second pump-resource action must still queue behind an in-flight one"
+        )
+        assert "Busy" in window.app.status
+
+        release_motion.set()
+        assert process_events_until(lambda: window._busy_count == 0 and not window._threads, 2.0)
+    finally:
+        release_motion.set()
+        assert process_events_until(lambda: not window._threads, 2.0)
+        window.close()
+
+
+def test_v3_untagged_flush_still_waits_for_an_in_flight_pump_action(monkeypatch, tmp_path):
+    """A legacy/untagged action (e.g. Flush, which touches Pump and Valve
+    internally and deliberately stays untagged) must still refuse to start
+    next to a resource-tagged Pump action of unknown-to-it scope -- the
+    resource split must not let two genuinely conflicting pump commands
+    overlap just because one of them predates the tagging."""
+    window = make_window(monkeypatch, tmp_path)
+    motion_started = threading.Event()
+    release_motion = threading.Event()
+
+    class BlockingPumpBackend:
+        def refill(self, flow_rate=None):
+            motion_started.set()
+            release_motion.wait(2.0)
+
+        def read_fill_level(self):
+            return 0.0
+
+        def close(self):
+            pass
+
+    legacy_calls = []
+    try:
+        window.app.pump.backend = BlockingPumpBackend()
+        window.app.pump.initialized = True
+
+        window._run_action(
+            lambda progress: window.app.pump.refill(), "Refilling", resource="pump"
+        )
+        assert motion_started.wait(1.0)
+
+        # An untagged (resource=None) action -- e.g. what _start_flush()
+        # dispatches -- must be blocked by the resource-tagged pump action
+        # in flight, exactly like the pre-fix global counter would have.
+        window._run_action(lambda progress: legacy_calls.append("ran"), "Legacy action")
+        QApplication.processEvents()
+        assert legacy_calls == [], "an untagged action must not start next to a resource-tagged pump action"
+        assert "Busy" in window.app.status
+
+        release_motion.set()
+        assert process_events_until(lambda: window._busy_count == 0 and not window._threads, 2.0)
+    finally:
+        release_motion.set()
+        assert process_events_until(lambda: not window._threads, 2.0)
+        window.close()
+
+
+def test_v3_pump_stop_reaches_backend_via_resource_tag_while_pump_busy(monkeypatch, tmp_path):
+    """Stop pump (force=True, resource="pump") must still reach the backend
+    immediately while a pump-resource action is in flight -- the resource
+    tagging must not weaken the existing force=True bypass."""
+    window = make_window(monkeypatch, tmp_path)
+    motion_started = threading.Event()
+    release_motion = threading.Event()
+    backend_calls: list[str] = []
+
+    class BlockingPumpBackend:
+        def refill(self, flow_rate=None):
+            backend_calls.append("refill_started")
+            motion_started.set()
+            release_motion.wait(2.0)
+            backend_calls.append("refill_released")
+
+        def read_fill_level(self):
+            return 0.0
+
+        def stop(self):
+            backend_calls.append("stop")
+
+        def close(self):
+            pass
+
+    try:
+        window.app.pump.backend = BlockingPumpBackend()
+        window.app.pump.initialized = True
+
+        window._run_action(
+            lambda progress: window.app.pump.refill(), "Refilling", resource="pump"
+        )
+        assert motion_started.wait(1.0)
+
+        stop_button = window.findChild(QPushButton, "v3StopPumpButton")
+        stop_button.click()
+        assert process_events_until(lambda: "stop" in backend_calls, 2.0)
+        assert backend_calls == ["refill_started", "stop"]
+
+        release_motion.set()
+        assert process_events_until(lambda: window._busy_count == 0 and not window._threads, 2.0)
+    finally:
+        release_motion.set()
+        assert process_events_until(lambda: not window._threads, 2.0)
+        window.close()
+
+
+def test_v3_camera_z_tec_remain_gated_by_pump_activity_scope_not_expanded(monkeypatch, tmp_path):
+    """Deliberate scope boundary (Round 2 report Section 11): only Pump+Valve
+    independence was investigated and evidenced this checkpoint. Camera/Z/TEC
+    dispatch through _run_action() untagged (resource=None) and so remain
+    blocked by ANY busy action including a resource-tagged Pump one -- this
+    is the SAME conservative behavior as before the fix, not a regression,
+    and this test exists to make the boundary explicit rather than silently
+    assumed."""
+    window = make_window(monkeypatch, tmp_path)
+    motion_started = threading.Event()
+    release_motion = threading.Event()
+
+    class BlockingPumpBackend:
+        def refill(self, flow_rate=None):
+            motion_started.set()
+            release_motion.wait(2.0)
+
+        def read_fill_level(self):
+            return 0.0
+
+        def close(self):
+            pass
+
+    camera_calls = []
+    try:
+        window.app.pump.backend = BlockingPumpBackend()
+        window.app.pump.initialized = True
+
+        window._run_action(
+            lambda progress: window.app.pump.refill(), "Refilling", resource="pump"
+        )
+        assert motion_started.wait(1.0)
+
+        window._run_action(lambda progress: camera_calls.append("captured"), "Capturing")
+        QApplication.processEvents()
+        assert camera_calls == [], (
+            "Camera/Z/TEC dispatch remains untagged and conservative -- deliberately "
+            "unchanged by this checkpoint's Pump/Valve-only correction"
+        )
+
+        release_motion.set()
+        assert process_events_until(lambda: window._busy_count == 0 and not window._threads, 2.0)
+    finally:
+        release_motion.set()
+        assert process_events_until(lambda: not window._threads, 2.0)
+        window.close()
+
+
 def test_v3_stop_pump_carries_a_critical_stop_role_distinct_from_ordinary_actuators(monkeypatch, tmp_path):
     """Checkpoint-B closure (2026-09-07): V3's own Stop pump button
     (v3StopPumpButton, _v3_pump_operations_group()) was a separate hand-built
@@ -2009,6 +2305,12 @@ def test_v3_persistent_status_disables_start_for_shared_preflight_blockers(monke
         window.exp_camera_fps.setValue(20.0)
         window.exp_ch1_function.setCurrentText("Sine")
         window.exp_ad2_channels[0]["enable"].setChecked(True)
+        # Checkpoint-B-closure-adjacent (Real Shakedown Round 2, 2026-09-07):
+        # a finite Run Duration is now required before Start (see
+        # test_production_channel0_continuous_output_is_rejected_before_start) --
+        # this test's own enabled Channel 0 previously relied on the widget's
+        # 0.0 default, which is now itself a blocking preflight issue.
+        window.exp_ad2_channels[0]["sec_run"].setValue(1.0)
         window.exp_sweep_enable.setChecked(True)
         window.exp_freq_scan_enable.setChecked(True)
         window._refresh_v3_relationships()
@@ -2109,6 +2411,31 @@ def test_v3_shadow_preflight_rejects_scan_and_fm_even_for_dc(monkeypatch, tmp_pa
         assert shadow.preflight.frequency_repeat_compatible is True
         assert "FM Sweep and Frequency Scan cannot be enabled together" in shadow.preflight.blocking_issues[0].message
         assert "inactive for DC" in window._v3_axis_summary.text()
+    finally:
+        window.close()
+
+
+def test_v3_shadow_preflight_rejects_channel0_continuous_output_before_start(monkeypatch, tmp_path):
+    """Real Shakedown Round 2 finding (2026-09-07, D:\\Raw Data\\Test): a real
+    run with Channel 0 enabled and Run Duration left at 0 (continuous) was
+    previously accepted by Review and only failed deep into Start, inside
+    "Initialize experiment record" (Application._ad2_completion_wait_seconds()).
+    This proves the same misconfiguration is now a blocking Review issue --
+    reached through _v3_shadow_build_result(), the same shared preflight
+    _v3_start_experiment_with_shared_preflight() already refuses to Start on
+    -- not a new validation surface."""
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        window.series_path.setText(str(tmp_path / "continuous"))
+        window.exp_repeats.setValue(2)
+        window.exp_camera_fps.setValue(10.0)
+        window.exp_ad2_channels[0]["enable"].setChecked(True)
+        window.exp_ad2_channels[0]["sec_run"].setValue(0.0)
+
+        shadow = window._v3_shadow_build_result()
+
+        assert shadow.plan is None
+        assert "continuous output" in shadow.preflight.blocking_issues[0].message
     finally:
         window.close()
 

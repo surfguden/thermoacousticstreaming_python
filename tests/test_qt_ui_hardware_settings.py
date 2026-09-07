@@ -558,7 +558,9 @@ def test_configure_syringe_sends_real_geometry_for_custom_not_presets(monkeypatc
         window.app.pump = FakePump()
 
         run_action_calls = []
-        monkeypatch.setattr(window, "_run_action", lambda action, status: run_action_calls.append(action))
+        monkeypatch.setattr(
+            window, "_run_action", lambda action, status, **kwargs: run_action_calls.append(action)
+        )
 
         window.syringe.setCurrentText("BD 5ml")
         window._start_configure_syringe()
@@ -2611,7 +2613,9 @@ def test_zscan_uses_the_initialized_application_stage_and_never_constructs_a_def
         staticmethod(lambda *args, **kwargs: qt_ui.QMessageBox.StandardButton.Yes),
     )
     captured = []
-    monkeypatch.setattr(window, "_run_action", lambda action, status: captured.append((action, status)))
+    monkeypatch.setattr(
+        window, "_run_action", lambda action, status, **kwargs: captured.append((action, status))
+    )
     window._start_zscan()
     assert captured and captured[0][1] == "Running Z-scan"
     assert window._zscan_active is True

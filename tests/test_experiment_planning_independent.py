@@ -180,6 +180,23 @@ def test_production_channel0_repeat_must_be_exactly_one():
     assert plan.conditions
 
 
+def test_production_channel0_continuous_output_is_rejected_before_start():
+    """Real Shakedown Round 2 finding (2026-09-07, D:\\Raw Data\\Test): this
+    was previously only checked at actual Start time, deep inside
+    Application._ad2_completion_wait_seconds() -- by then a real run had
+    already entered "Initialize experiment record" before failing. Mirrors
+    the Repeat==1 check immediately above it in source: same raise, caught
+    by _v3_shadow_build_result() as a blocking preflight issue Review shows
+    before Start, not a new validation layer."""
+    config = _wfg()
+    config["channels"][0]["trigger"]["sec_run"] = 0.0
+    with pytest.raises(ValueError, match="continuous output"):
+        build_independent_run_plan(_request(wfg_templates=(config,)))
+
+    plan = build_independent_run_plan(_request(wfg_templates=(_wfg(),)))
+    assert plan.conditions
+
+
 def test_production_rejects_laser_w2_output_until_input_semantics_are_confirmed():
     config = _wfg()
     config["channels"][1]["carrier"]["enable"] = True

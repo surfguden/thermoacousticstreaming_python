@@ -347,6 +347,26 @@ def build_independent_run_plan(request: ExperimentRequest) -> RunPlan:
             "Normal production Channel 0 Repeat must be exactly 1; Repeat=0 is infinite and "
             "finite Repeat values above 1 are not supported by the completion budget."
         )
+    # Real Shakedown Round 2 finding (2026-09-07, D:\Raw Data\Test): this was
+    # previously checked only at actual Start time, deep inside
+    # Application._ad2_completion_wait_seconds() -- by then the repeat record
+    # was already being created, so a real run reached "Initialize experiment
+    # record" before failing on a misconfiguration Review could have caught.
+    # Mirrors the Repeat==1 check immediately above: same guard (running,
+    # channel present, carrier enabled), same raise-caught-by-
+    # _v3_shadow_build_result()-as-a-blocking-preflight-issue mechanism, no
+    # new validation layer.
+    if (
+        wfg_template.running
+        and channel0 is not None
+        and channel0.carrier.enable
+        and channel0.trigger.sec_run == 0
+    ):
+        raise ValueError(
+            "Channel 0 is configured for continuous output (Run Duration = 0 s), which has no "
+            "defined completion time -- flush/save cannot safely proceed. Set a finite Run "
+            "Duration before starting this experiment."
+        )
     scan_effective = _frequency_scan_is_effective(request)
     if scan_effective and len(request.frequency_values_hz) != request.repeats_per_group:
         raise ValueError("Frequency-list count must match repeats.")

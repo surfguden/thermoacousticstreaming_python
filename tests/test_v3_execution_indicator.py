@@ -302,8 +302,13 @@ def test_execution_indicator_keeps_a_fault_visible_after_the_series_stops(monkey
         )
         shown = indicator(window)
         assert shown["state"].startswith("ERROR |")
+        # Real Shakedown Round 2 finding (2026-09-07): the reason
+        # step_failed()'s own message carries (previously discarded, see
+        # _step_failure_messages) is now appended -- WHAT (the step) and WHY
+        # (the known reason), not a bare step name.
         assert shown["current"] == (
-            "Current: Faulted during: PC trigger command sent; waiting for requested camera frames"
+            "Current: Faulted during: PC trigger command sent; waiting for requested camera frames "
+            "— Reason: simulated capture failure"
         )
         assert shown["next"] == "Next: No next software action — current phase faulted"
 
@@ -312,6 +317,38 @@ def test_execution_indicator_keeps_a_fault_visible_after_the_series_stops(monkey
         after = indicator(window)
         assert after["state"].startswith("ERROR |")
         assert after["current"] == shown["current"]
+    finally:
+        window.close()
+
+
+def test_execution_indicator_reproduces_the_real_ad2_continuous_output_fault(monkeypatch, tmp_path):
+    """Real Shakedown Round 2 finding (2026-09-07, D:\\Raw Data\\Test): a real
+    run failed inside STEP_INITIALIZE_EXPERIMENT (Application.
+    _ad2_completion_wait_seconds() -> _ad2_trigger_completion_seconds()
+    raising because Channel 0 was enabled with Run Duration left at 0/
+    continuous) -- reconstructed here from action_log.jsonl's actual
+    recorded chronology and exception text, not a generic fake. Before this
+    fix, the operator-facing Execution line named only the step ("Faulted
+    during: Creating the repeat record and settings snapshot"), giving no
+    hint that Channel 0's Run Duration was the actual problem."""
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        enter_running_repeat(window)
+        window._handle_worker_progress("step_started", STEP_INITIALIZE_EXPERIMENT)
+        window._handle_worker_progress(
+            "step_failed",
+            (
+                STEP_INITIALIZE_EXPERIMENT,
+                "AD2 channel 0 is configured for continuous output (sec_run=0), which has no "
+                "defined completion time -- flush/save cannot safely proceed. Set a finite Run "
+                "Duration before starting this experiment.",
+            ),
+        )
+        shown = indicator(window)
+        assert shown["state"].startswith("ERROR |")
+        assert "Faulted during: Creating the repeat record and settings snapshot" in shown["current"]
+        assert "Reason: AD2 channel 0 is configured for continuous output" in shown["current"]
+        assert "Set a finite Run Duration before starting this experiment" in shown["current"]
     finally:
         window.close()
 
@@ -350,6 +387,11 @@ def test_initial_flush_failed_shows_error_not_idle(monkeypatch, tmp_path):
             f"must show ERROR, not IDLE, once InitialFlushFailed is known -- got {shown['state']!r}"
         )
         assert "Faulted during" in shown["current"]
+        # Real Shakedown Round 2 finding (2026-09-07): the known reason
+        # (here the status string itself, since this non-exceptional path
+        # has no exception text -- see _note_flush_non_exceptional_failure())
+        # is surfaced too, not only the step name.
+        assert "Reason: InitialFlushFailed" in shown["current"]
     finally:
         window.close()
 

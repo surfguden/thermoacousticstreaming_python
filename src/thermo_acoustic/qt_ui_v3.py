@@ -2472,7 +2472,20 @@ class MainWindowV3(MainWindowV3Compatibility):
             # An error stays on the line instead of snapping back to IDLE, so
             # the operator can still see which phase stopped the run.
             state = "ERROR"
-            current = f"Faulted during: {self._v3_execution_action_text(failed_step)}"
+            # Real Shakedown Round 2 finding (2026-09-07): this used to name
+            # only the step ("Faulted during: Creating the repeat record and
+            # settings snapshot"), collapsing a specific, already-known reason
+            # (_report_step()'s own str(exc), captured in
+            # self._step_failure_messages -- see its __init__ comment) down to
+            # a bare step name on the one live surface an operator watches
+            # during a run. Detailed traceback still stays out of this line;
+            # this is the same one-sentence reason already written to
+            # action_log.jsonl/commissioning_trace.jsonl, not new text.
+            reason = self._step_failure_messages.get(failed_step)
+            current = (
+                f"Faulted during: {self._v3_execution_action_text(failed_step)} — "
+                f"Reason: {reason if reason else 'cause unknown'}"
+            )
             following = "No next software action — current phase faulted"
         elif active_steps:
             state = self._EXECUTION_STEP_STATES.get(active_steps[0], "RUNNING")
@@ -3576,9 +3589,13 @@ class MainWindowV3(MainWindowV3Compatibility):
         pump_form = QFormLayout(pump_group)
         pump_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         refill = QPushButton("Refill syringe")
-        refill.clicked.connect(lambda: self._run_action(lambda progress: self._refill(), "Refilling"))
+        refill.clicked.connect(
+            lambda: self._run_action(lambda progress: self._refill(), "Refilling", resource="pump")
+        )
         empty = QPushButton("Empty syringe")
-        empty.clicked.connect(lambda: self._run_action(lambda progress: self._empty(), "Emptying"))
+        empty.clicked.connect(
+            lambda: self._run_action(lambda progress: self._empty(), "Emptying", resource="pump")
+        )
         generate = QPushButton("Start flow at selected rate")
         generate.clicked.connect(self._start_generate_flow)
         go = QPushButton("Move to target fill level")
@@ -3616,14 +3633,18 @@ class MainWindowV3(MainWindowV3Compatibility):
         pos1.setToolTip("Sends P01. Physical fluidic routing remains unverified.")
         pos1.clicked.connect(
             lambda: self._run_action(
-                lambda progress: self.app.valve.set_position(1), "Setting valve to position 1 (P01)"
+                lambda progress: self.app.valve.set_position(1),
+                "Setting valve to position 1 (P01)",
+                resource="valve",
             )
         )
         pos2 = QPushButton("Set valve to position 2 (P02)")
         pos2.setToolTip("Sends P02. Physical fluidic routing remains unverified.")
         pos2.clicked.connect(
             lambda: self._run_action(
-                lambda progress: self.app.valve.set_position(2), "Setting valve to position 2 (P02)"
+                lambda progress: self.app.valve.set_position(2),
+                "Setting valve to position 2 (P02)",
+                resource="valve",
             )
         )
         valve_form.addRow(pos1)

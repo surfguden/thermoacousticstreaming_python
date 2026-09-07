@@ -789,6 +789,27 @@ class MainWindow(QMainWindow):
         self._threads: list[QThread] = []
         self._workers: list[ActionWorker] = []
         self._busy_count = 0
+        # Real Shakedown Round 2 finding (2026-09-07): _run_action() used to
+        # serialize EVERY manual/service action behind one global counter,
+        # regardless of which hardware resource it touched -- so a Pump
+        # motion in flight also blocked an unrelated Valve command, even
+        # though Pump (CetoniPump, Qmix CAN) and Valve (Valve,
+        # SerialTextCommandBackend on COM5) are independent backend objects
+        # on independent transports with no shared state. `_busy_count`
+        # above is kept as the TOTAL count across every dispatched action
+        # (tagged or not) -- every existing consumer that gates on "is
+        # anything happening at all" (Shutdown hardware, manual Z-motion,
+        # window close) stays exactly as conservative as before, unchanged.
+        # This dict tracks the SUBSET of that total which is tagged to a
+        # specific resource, so _run_action()'s own dispatch-blocking check
+        # can allow two DIFFERENT resources' actions to run at once while
+        # still serializing same-resource actions against each other (a
+        # second Refill still queues behind an in-flight Refill) and still
+        # refusing to start next to any untagged/legacy action of unknown
+        # scope (e.g. Flush, which touches both Pump and Valve internally
+        # and deliberately stays untagged/global). See
+        # _resource_action_blocked().
+        self._resource_busy_count: dict[str, int] = {}
         # Tracks whether _run_experiment_series()'s while loop is currently
         # executing (set/cleared via the "experiment_series_active" progress
         # kind below, not read directly from a worker thread -- see
@@ -851,6 +872,18 @@ class MainWindow(QMainWindow):
         # temperature point -- see application.py) puts every step back to
         # "pending" ahead of the next unit's first step_started.
         self._step_states: dict[str, str] = dict.fromkeys(STEP_ORDER, "pending")
+        # Real-shakedown Round 2 finding (2026-09-07): _report_step()
+        # (application.py) already fires progress("step_failed", (name,
+        # str(exc))) with the real exception text -- str(exc), not just the
+        # step name -- but this window discarded the message half of that
+        # tuple (bound to `_message`) and never stored it anywhere. The
+        # operator-facing surface then had no way to show WHY a step
+        # faulted, only WHICH step, collapsing a known, specific error (e.g.
+        # "AD2 channel 0 is configured for continuous output...") down to a
+        # bare "Faulted during: <step>" / "Error". Tracked here, in the base
+        # class, next to _step_states, so it exists regardless of whether a
+        # widget reads it -- matches that dict's own established pattern.
+        self._step_failure_messages: dict[str, str] = {}
         self._shutdown_in_progress = False
         self._close_after_shutdown = False
         self._shutdown_thread: threading.Thread | None = None
@@ -2484,10 +2517,18 @@ class MainWindow(QMainWindow):
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         pos1 = QPushButton("Pos1 (P01)")
         pos1.setToolTip("Sends the protocol-confirmed valve position command P01. Physical fluidic routing remains unverified.")
-        pos1.clicked.connect(lambda: self._run_action(lambda progress: self.app.valve.set_position(1), "Valve Pos1 (P01)"))
+        pos1.clicked.connect(
+            lambda: self._run_action(
+                lambda progress: self.app.valve.set_position(1), "Valve Pos1 (P01)", resource="valve"
+            )
+        )
         pos2 = QPushButton("Pos2 (P02)")
         pos2.setToolTip("Sends the protocol-confirmed valve position command P02. Physical fluidic routing remains unverified.")
-        pos2.clicked.connect(lambda: self._run_action(lambda progress: self.app.valve.set_position(2), "Valve Pos2 (P02)"))
+        pos2.clicked.connect(
+            lambda: self._run_action(
+                lambda progress: self.app.valve.set_position(2), "Valve Pos2 (P02)", resource="valve"
+            )
+        )
         form.addRow("Valve Pos1 (P01)", pos1)
         form.addRow("Valve Pos2 (P02)", pos2)
         self._add_tooltip_icons(form)
@@ -2522,7 +2563,9 @@ class MainWindow(QMainWindow):
         stop = QPushButton("Stop pump")
         stop.setMinimumSize(200, 70)
         stop.clicked.connect(
-            lambda: self._run_action(lambda progress: self.app.pump.stop(), "Pump stopped", force=True)
+            lambda: self._run_action(
+                lambda progress: self.app.pump.stop(), "Pump stopped", force=True, resource="pump"
+            )
         )
         # Minimum CRITICAL_STOP presentation (real-shakedown Section 13):
         # functional correctness above is necessary but not sufficient --
@@ -2549,9 +2592,13 @@ class MainWindow(QMainWindow):
         form = QFormLayout(group)
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         refill = QPushButton("Refill syringe")
-        refill.clicked.connect(lambda: self._run_action(lambda progress: self._refill(), "Refilling"))
+        refill.clicked.connect(
+            lambda: self._run_action(lambda progress: self._refill(), "Refilling", resource="pump")
+        )
         empty = QPushButton("Empty syringe")
-        empty.clicked.connect(lambda: self._run_action(lambda progress: self._empty(), "Emptying"))
+        empty.clicked.connect(
+            lambda: self._run_action(lambda progress: self._empty(), "Emptying", resource="pump")
+        )
         form.addRow("Refill", refill)
         form.addRow("Empty", empty)
         form.addRow("Refill/Empty Flow Rate (uL/min)", self.fill_flow_rate)
@@ -4088,7 +4135,9 @@ class MainWindow(QMainWindow):
         # config must be read on the main/UI thread first (see
         # _selected_syringe_config()'s own note).
         config = self._selected_syringe_config()
-        self._run_action(lambda progress: self._configure_syringe(config), "Configuring syringe")
+        self._run_action(
+            lambda progress: self._configure_syringe(config), "Configuring syringe", resource="pump"
+        )
 
     def _configure_syringe(self, config: dict[str, object]) -> str:
         self.app.pump.configure_syringe(config)
@@ -4123,12 +4172,16 @@ class MainWindow(QMainWindow):
 
     def _start_generate_flow(self) -> None:
         flow_rate = self.flow_rate.value()
-        self._run_action(lambda progress: self.app.pump.generate_flow(flow_rate), "Generating flow")
+        self._run_action(
+            lambda progress: self.app.pump.generate_flow(flow_rate), "Generating flow", resource="pump"
+        )
 
     def _start_go_level(self) -> None:
         level = self.level_ml.value()
         flow_rate = self.flow_rate.value()
-        self._run_action(lambda progress: self._go_to_level(level, flow_rate), "Setting pump level")
+        self._run_action(
+            lambda progress: self._go_to_level(level, flow_rate), "Setting pump level", resource="pump"
+        )
 
     # Finding 1 (targeted UI audit): this button used to
     # call self.app.pump.set_fill_level() directly, the same fire-and-forget
@@ -4148,7 +4201,9 @@ class MainWindow(QMainWindow):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        self._run_action(lambda progress: self.app.pump.reference_move(), "Reference move")
+        self._run_action(
+            lambda progress: self.app.pump.reference_move(), "Reference move", resource="pump"
+        )
 
     def _start_clear_pump_fault(self) -> None:
         # This QMessageBox is the non-skippable warning for the remaining
@@ -4173,7 +4228,7 @@ class MainWindow(QMainWindow):
             self._set_status("Pump fault clear cancelled.")
             return
         self._run_action(
-            lambda progress: self.app.clear_pump_fault_and_retry(), "Clearing Pump Fault"
+            lambda progress: self.app.clear_pump_fault_and_retry(), "Clearing Pump Fault", resource="pump"
         )
 
     def _start_flush(self) -> None:
@@ -5266,6 +5321,22 @@ class MainWindow(QMainWindow):
         self._shutdown_poll_timer.stop()
         self._handle_shutdown_finished(False, "Error", message, force_close=True)
 
+    def _resource_action_blocked(self, resource: str | None) -> bool:
+        """Would a new action tagged `resource` have to wait right now?
+
+        Real Shakedown Round 2 finding (2026-09-07): see `_resource_busy_count`'s
+        own comment (`__init__`). `resource=None` (every pre-existing call
+        site, unless explicitly retagged) keeps the exact original global
+        semantics: blocked by anything at all. A tagged resource is blocked
+        by same-resource activity, or by any untagged/legacy action (unknown
+        scope -- must not risk overlap), but NOT merely because a DIFFERENT
+        tagged resource happens to be busy.
+        """
+        if resource is None:
+            return self._busy_count > 0
+        untagged_busy = self._busy_count - sum(self._resource_busy_count.values())
+        return untagged_busy > 0 or self._resource_busy_count.get(resource, 0) > 0
+
     def _run_action(
         self,
         action,
@@ -5275,11 +5346,14 @@ class MainWindow(QMainWindow):
         timeout_s: float | None = None,
         disable_controls: bool = False,
         shutdown: bool = False,
+        resource: str | None = None,
     ) -> None:
-        if self._busy_count and not force:
+        if self._resource_action_blocked(resource) and not force:
             self._set_status("Busy")
             return
         self._busy_count += 1
+        if resource is not None:
+            self._resource_busy_count[resource] = self._resource_busy_count.get(resource, 0) + 1
         self._set_status(starting_status)
         if disable_controls:
             self._set_controls_enabled(False)
@@ -5289,12 +5363,13 @@ class MainWindow(QMainWindow):
         thread.started.connect(worker.run)
         worker.progress.connect(self._handle_worker_progress)
         worker.finished.connect(
-            lambda ok, status, error, thread=thread, shutdown=shutdown: self._handle_worker_finished_for_thread(
+            lambda ok, status, error, thread=thread, shutdown=shutdown, resource=resource: self._handle_worker_finished_for_thread(
                 thread,
                 ok,
                 status,
                 error,
                 shutdown=shutdown,
+                resource=resource,
             )
         )
         worker.finished.connect(thread.quit)
@@ -5336,6 +5411,7 @@ class MainWindow(QMainWindow):
         error: str,
         *,
         shutdown: bool,
+        resource: str | None = None,
     ) -> None:
         timeout_error = self._timed_out_threads.pop(thread, None)
         effective_ok = ok and timeout_error is None
@@ -5344,7 +5420,7 @@ class MainWindow(QMainWindow):
         if timeout_error is not None:
             effective_status = "Error"
             effective_error = timeout_error if ok else f"{timeout_error}; worker later failed: {error}"
-        self._handle_worker_finished(effective_ok, effective_status, effective_error)
+        self._handle_worker_finished(effective_ok, effective_status, effective_error, resource=resource)
         if shutdown:
             self._handle_shutdown_finished(effective_ok, effective_status, effective_error)
 
@@ -5451,6 +5527,7 @@ class MainWindow(QMainWindow):
             self._show_camera_capture_failed()
         elif kind == "step_reset":
             self._step_states = dict.fromkeys(STEP_ORDER, "pending")
+            self._step_failure_messages = {}
             self._refresh_step_breadcrumb()
         elif kind == "step_started":
             self._step_states[str(value)] = "active"
@@ -5459,8 +5536,12 @@ class MainWindow(QMainWindow):
             self._step_states[str(value)] = "completed"
             self._refresh_step_breadcrumb()
         elif kind == "step_failed":
-            step_name, _message = value
+            step_name, message = value
             self._step_states[str(step_name)] = "failed"
+            # See _step_failure_messages' own comment (__init__): this is the
+            # real exception text _report_step() already captured, previously
+            # discarded here.
+            self._step_failure_messages[str(step_name)] = str(message)
             self._refresh_step_breadcrumb()
 
     def _note_flush_non_exceptional_failure(self, status: str) -> None:
@@ -5478,6 +5559,12 @@ class MainWindow(QMainWindow):
             return
         if self._step_states.get(STEP_FLUSH) in ("active", "completed"):
             self._step_states[STEP_FLUSH] = "failed"
+            # Same reason-surfacing fix as step_failed above: this non-
+            # exceptional path has no exception text to capture, but the
+            # status string itself (e.g. "InitialFlushFailed") is the known
+            # reason -- record it so the operator-facing surface is not left
+            # with a reason for every OTHER fault type except this one.
+            self._step_failure_messages[STEP_FLUSH] = status
             self._refresh_step_breadcrumb()
 
     def _refresh_series_timing(self) -> None:
@@ -5505,8 +5592,10 @@ class MainWindow(QMainWindow):
         # _experiment_series_active already use elsewhere in this class.
         pass
 
-    def _handle_worker_finished(self, ok: bool, status: str, error: str) -> None:
+    def _handle_worker_finished(self, ok: bool, status: str, error: str, *, resource: str | None = None) -> None:
         self._busy_count = max(self._busy_count - 1, 0)
+        if resource is not None:
+            self._resource_busy_count[resource] = max(self._resource_busy_count.get(resource, 0) - 1, 0)
         if ok:
             self._append_error_entry("OK", "0", "")
             if status and status != "Ready":
@@ -5516,7 +5605,19 @@ class MainWindow(QMainWindow):
         else:
             self.app.check_loop_error(error)
             self._append_error_entry("ERROR", "1", error)
-            self._set_status("Error")
+            # Real Shakedown Round 2 finding (2026-09-07): this fired the bare
+            # literal "Error" as the live status -- the same known reason
+            # already captured one line above into error_log (and, for the
+            # automated experiment series specifically, already recorded in
+            # action_log.jsonl/commissioning_trace.jsonl) was discarded on
+            # this surface, leaving the operator's live status line reading
+            # only "Error" for a failure software could name precisely (e.g.
+            # "AD2 channel 0 is configured for continuous output..."). This is
+            # the general worker-failure path (_run_action()'s ActionWorker),
+            # which the automated experiment series itself runs through --
+            # _handle_shutdown_finished()'s own separate "Error" status is
+            # intentionally left unchanged, not evidenced by this finding.
+            self._set_status(f"Error: {error}" if error else "Error")
         if self._busy_count == 0 and self._controls_disabled_for_action and not self._shutdown_in_progress:
             self._set_controls_enabled(True)
 
