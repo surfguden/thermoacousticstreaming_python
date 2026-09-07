@@ -2489,6 +2489,51 @@ def test_cetoni_pump_cleanup_resets_initialized():
     assert pump.initialized is False
 
 
+def test_cetoni_pump_cleanup_still_closes_backend_when_stop_fails():
+    # Checkpoint-S-closure review finding (2026-09-07): cleanup() previously
+    # called self.stop() unguarded, so a raising stop() (a real Qmix fault,
+    # or the concurrent-Stop race tracked as UI-PUMP-STOP-THREAD-SAFETY-001)
+    # skipped backend.close() entirely, leaking the serial/CAN connection.
+    # Matches the established best-effort pattern already proven for TEC/AD2:
+    # a failed step must not prevent the remaining cleanup steps.
+    backend = FakePumpBackend()
+    backend.stop = lambda: (_ for _ in ()).throw(RuntimeError("stop failed"))
+    pump = CetoniPump(simulate=False, backend=backend)
+    pump.initialize()
+
+    with pytest.raises(RuntimeError, match="stop failed"):
+        pump.cleanup()
+
+    assert ("close",) in backend.calls
+
+
+def test_cetoni_pump_cleanup_leaves_initialized_unchanged_when_stop_fails():
+    # Same invariant TecController.cleanup() already documents: a
+    # stuck/failed stop-or-close leaves the connection state genuinely
+    # unknown, so cleanup() must not claim "uninitialized" for a pump that
+    # may still be live.
+    backend = FakePumpBackend()
+    backend.stop = lambda: (_ for _ in ()).throw(RuntimeError("stop failed"))
+    pump = CetoniPump(simulate=False, backend=backend)
+    pump.initialize()
+
+    with pytest.raises(RuntimeError):
+        pump.cleanup()
+
+    assert pump.initialized is True
+
+
+def test_cetoni_pump_cleanup_aggregates_stop_and_close_failures():
+    backend = FakePumpBackend()
+    backend.stop = lambda: (_ for _ in ()).throw(RuntimeError("stop failed"))
+    backend.close = lambda: (_ for _ in ()).throw(RuntimeError("close failed"))
+    pump = CetoniPump(simulate=False, backend=backend)
+    pump.initialize()
+
+    with pytest.raises(RuntimeError, match="stop failed.*close failed"):
+        pump.cleanup()
+
+
 def test_cetoni_pump_refill_syncs_fill_level_from_real_backend_not_hardcoded_1ml():
     # Code-health audit finding 5a: refill() used to hardcode
     # self.fill_level = 1.0 regardless of the real syringe's true

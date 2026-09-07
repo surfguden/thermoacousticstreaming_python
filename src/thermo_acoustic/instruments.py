@@ -1000,9 +1000,35 @@ class CetoniPump:
         return self.dosing
 
     def cleanup(self) -> None:
-        self.stop()
+        # Checkpoint-S-closure review finding (2026-09-07): previously
+        # `self.stop()` was not guarded, so a raising stop() (e.g. a real
+        # Qmix fault surfacing on close, or the concurrent-Stop race tracked
+        # as UI-PUMP-STOP-THREAD-SAFETY-001) skipped `self.backend.close()`
+        # entirely -- the serial/CAN connection was never released -- and
+        # also skipped `self.initialized = False` below it, leaving the pump
+        # falsely presented as still connected. Matches the established
+        # best-effort multi-step cleanup pattern this project already uses
+        # for TEC (`TecController.cleanup()`) and AD2 (`AD2Sdk.cleanup()`):
+        # each step is attempted independently, a failure in one does not
+        # skip the next, and both errors are collected and reported
+        # together rather than one silently winning. `initialized` is left
+        # unchanged (not forced to False) when cleanup could not be fully
+        # confirmed clean -- same invariant TecController.cleanup() already
+        # documents: a stuck/failed stop-or-close leaves the connection
+        # state genuinely unknown, so this must not claim "uninitialized"
+        # for a pump that may still be live.
+        errors: list[str] = []
+        try:
+            self.stop()
+        except Exception as exc:
+            errors.append(f"Pump stop before cleanup failed: {exc}")
         if self.backend is not None:
-            self.backend.close()
+            try:
+                self.backend.close()
+            except Exception as exc:
+                errors.append(f"Pump backend close failed: {exc}")
+        if errors:
+            raise RuntimeError("; ".join(errors))
         # H2 (instruments.py line-by-line review): previously never reset,
         # so the pump connection-status UI (wired to this flag) would keep
         # showing "Connected" after a real cleanup/disconnect -- matches the
