@@ -2839,7 +2839,20 @@ class MainWindow(QMainWindow):
         configure.clicked.connect(self._start_configure_camera)
         grid.addLayout(form, 0, 0, 3, 1)
         self._add_tooltip_icons(form)
-        grid.addWidget(QLabel("ExposureTime(ms)"), 0, 1)
+        # Checkpoint-B closure (2026-09-07): renamed from "ExposureTime(ms)"
+        # -- real operator feedback read this as duplicate entry of the
+        # Experiment tab's own "Exposure time (ms)" field. It is not: this
+        # field is deliberately independent (same distinction as the manual
+        # Pump tab's flow rate vs. the Experiment tab's flush recipe --
+        # operator intent, not backend identity, per lessons_learned.md
+        # 7.14/7.15). Automated runs always reapply the Experiment tab's own
+        # exposure request (Application.run_experiment2() ->
+        # configure_exposure_time(requested_exposure_ms)), confirmed from
+        # source, not merely from this field's own tooltip. Renaming the
+        # always-visible label, not just the existing hover tooltip, is the
+        # minimal fix for a confusion that survives a glance but not a
+        # hover -- this field/widget/tooltip are otherwise unchanged.
+        grid.addWidget(QLabel("Preview exposure (ms)"), 0, 1)
         grid.addWidget(self._wrap_with_tooltip_icon(self.exposure_ms), 1, 1)
         grid.addWidget(QLabel("Configure Camera"), 0, 2)
         grid.addWidget(configure, 1, 2)
@@ -4049,10 +4062,18 @@ class MainWindow(QMainWindow):
         channels = ", ".join(f"CH{index + 1}" for index in sorted(captures))
         return f"MSO captured {sample_count} samples on {channels}"
 
-    def _start_configure_syringe(self) -> None:
-        # Widget values must be read here, on the main/UI thread, before
-        # handing off to _run_action()'s background QThread -- Session 44:
-        # "Custom" now also sends real geometry (inner_diameter_mm/
+    def _selected_syringe_config(self) -> dict[str, object]:
+        """The syringe config the currently selected widget values describe.
+
+        Checkpoint-B closure (2026-09-07): extracted out of
+        `_start_configure_syringe()` unchanged, so the exact same
+        selection-to-config logic can also be used to compare "what is
+        selected" against `self.app.pump.syringe_config` ("what was last
+        successfully applied") -- one authority, two readers, not two
+        divergent config-building implementations.
+        """
+        # Widget values must be read here, on the main/UI thread -- Session
+        # 44: "Custom" also sends real geometry (inner_diameter_mm/
         # max_piston_stroke_mm), not just {"name": syringe}, since
         # configure_syringe() has no preset to fall back on for it.
         syringe = self.syringe.currentText()
@@ -4060,11 +4081,45 @@ class MainWindow(QMainWindow):
         if syringe == "Custom":
             config["inner_diameter_mm"] = float(self.custom_syringe_inner_diameter_mm.value())
             config["max_piston_stroke_mm"] = float(self.custom_syringe_stroke_mm.value())
+        return config
+
+    def _start_configure_syringe(self) -> None:
+        # Handed off to _run_action()'s background QThread; the selected
+        # config must be read on the main/UI thread first (see
+        # _selected_syringe_config()'s own note).
+        config = self._selected_syringe_config()
         self._run_action(lambda progress: self._configure_syringe(config), "Configuring syringe")
 
     def _configure_syringe(self, config: dict[str, object]) -> str:
         self.app.pump.configure_syringe(config)
         return "Syringe configured"
+
+    def _syringe_selection_matches_applied(self) -> bool | None:
+        """Does the currently selected syringe match what was last applied?
+
+        Checkpoint-B closure (2026-09-07): real operator friction was
+        repeatedly pressing Configure syringe out of uncertainty, because
+        nothing told them whether it was actually necessary. There is no live
+        device readback for syringe geometry (qmix_backend.py's own
+        `configure_syringe()` comment: "there is no live device readback for
+        [it] -- the actual syringe actually mounted"), so this deliberately
+        does not invent one (Option 1, rejected by that existing evidence).
+        Instead this compares the SELECTED recipe (widget values) against
+        `self.app.pump.syringe_config`, which `CetoniPump.configure_syringe()`
+        already only sets after a real backend call succeeds (Option 3: the
+        minimum session-local "selected vs successfully applied" distinction
+        -- see docs/project_control.md). Returns `None` (UNKNOWN, not
+        CURRENT) when nothing has been successfully applied yet in this
+        hardware session -- a fresh `CetoniPump` instance built by
+        Initialize/Reinitialize starts `syringe_config=None`, so this
+        correctly reads UNKNOWN again after Shutdown hardware -> Initialize,
+        never carrying a stale "current" claim across a hardware-session
+        reset.
+        """
+        applied = self.app.pump.syringe_config
+        if applied is None:
+            return None
+        return applied == self._selected_syringe_config()
 
     def _start_generate_flow(self) -> None:
         flow_rate = self.flow_rate.value()

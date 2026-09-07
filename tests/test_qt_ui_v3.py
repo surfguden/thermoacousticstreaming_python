@@ -4,6 +4,8 @@ import json
 import os
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -61,6 +63,17 @@ def make_window(monkeypatch, tmp_path, app: Application | None = None) -> qt_ui_
     monkeypatch.setattr(qt_ui, "SETTINGS_PATH", settings_path)
     QApplication.instance() or QApplication([])
     return build_with_retry(lambda: qt_ui_v3.MainWindowV3(app=app))
+
+
+def process_events_until(condition, timeout_s: float = 2.0) -> bool:
+    deadline = time.perf_counter() + timeout_s
+    while time.perf_counter() < deadline:
+        QApplication.processEvents()
+        if condition():
+            return True
+        time.sleep(0.01)
+    QApplication.processEvents()
+    return condition()
 
 
 def test_v3_main_constructs_its_offline_application_without_entering_qt_loop(monkeypatch):
@@ -300,7 +313,11 @@ def test_v3_reuses_the_supplied_application_and_separates_operator_workspaces(mo
             "Laser / Optics",
             "Acoustic Precheck",
         ]
-        assert "local presentation confirmations" in window.findChild(
+        # Checkpoint-B closure (2026-09-07): the per-card confirmation
+        # checkboxes this boundary label used to describe were removed
+        # (zero downstream consumer); the label itself was reworded to match
+        # (see test_v3_prepare_has_no_zero_consumer_checklist_checkboxes).
+        assert "persisted run evidence" in window.findChild(
             QLabel, "v3PreparationEvidenceBoundary"
         ).text()
         imaging_request = window.findChild(QGroupBox, "v3ConfigureImagingRequest")
@@ -959,29 +976,32 @@ def test_v3_prepare_construction_issues_no_hardware_call(monkeypatch, tmp_path):
         window.close()
 
 
-def test_v3_prepare_local_checklist_confirmations_default_checked(monkeypatch, tmp_path):
-    """Real-shakedown finding (2026-09-06): the per-row "Local checklist
-    confirmation" boxes forced a re-click on every card every session with
-    nothing depending on their checked state -- confirmed by source search
-    (no .isChecked() consumer anywhere: not Continue-to-Configure, Review,
-    Start, action_log, commissioning trace, ExperimentRequest/RunPlan, or
-    _settings_dict()'s persisted fields) before changing the default.
-    Defaulting to checked must not create any evidence or hardware call --
-    reuses the same no-hardware-call guarantee the neighboring test proves.
+def test_v3_prepare_has_no_zero_consumer_checklist_checkboxes(monkeypatch, tmp_path):
+    """Checkpoint-B closure (2026-09-07): the per-row "Local checklist
+    confirmation" checkbox previously here (`v3PrepareConfirmed{N}`) was
+    removed, not merely defaulted, after a fresh consumer audit (source
+    search, repeated rather than trusted from the 2026-09-06 real-shakedown
+    report that first found this) confirmed it still has zero consumers
+    anywhere in the tree: not Continue-to-Configure, Review, Start,
+    readiness, ExperimentRequest/RunPlan, action_log, commissioning trace, or
+    _settings_dict()'s persisted fields. Non-vacuous against the pre-removal
+    source: this test fails there because the checkbox exists.
     """
     window = make_window(monkeypatch, tmp_path)
     try:
         prepare = window.findChild(QWidget, "v3PrepareWorkspace")
-        found = 0
         for index in range(1, 9):
-            checkbox = prepare.findChild(QCheckBox, f"v3PrepareConfirmed{index}")
-            if checkbox is None:
-                continue
-            found += 1
-            assert checkbox.isChecked(), f"v3PrepareConfirmed{index} must default to checked"
-            assert "not persisted run evidence" in checkbox.toolTip()
-            assert "physical verification" in checkbox.toolTip()
-        assert found >= 6, "sanity check: most Preparation checklist rows carry this confirmation"
+            assert prepare.findChild(QCheckBox, f"v3PrepareConfirmed{index}") is None, (
+                f"v3PrepareConfirmed{index} must be removed, not merely defaulted"
+            )
+
+        # The workspace-level boundary label still states the same
+        # "not persisted evidence" truth once, non-interactively, for the
+        # whole page instead of eight per-card confirmations.
+        boundary = prepare.findChild(QLabel, "v3PreparationEvidenceBoundary")
+        assert boundary is not None
+        assert "persisted run evidence" in boundary.text()
+        assert "physical verification" in boundary.text()
 
         assert window.app.camera.handle is None
         assert window.app.ad2.device_handle is None
@@ -998,6 +1018,254 @@ def test_v3_prepare_local_checklist_confirmations_default_checked(monkeypatch, t
         assert not equilibrium.isChecked(), (
             "sample-equilibrium confirmation is a physical claim, not a generic "
             "checklist acknowledgement, and must stay operator-initiated"
+        )
+    finally:
+        window.close()
+
+
+def test_v3_prepare_syringe_state_starts_unknown_not_current(monkeypatch, tmp_path):
+    """Checkpoint-B closure (2026-09-07): UNKNOWN != CURRENT. Before any
+    successful configure_syringe() this hardware session, Prepare must not
+    claim the selected recipe is already applied."""
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        assert window.app.pump.syringe_config is None
+        label = window.findChild(QLabel, "v3PrepareSyringeState")
+        assert label is not None
+        assert "UNKNOWN" in label.text()
+        assert "already applied" not in label.text()
+    finally:
+        window.close()
+
+
+def test_v3_prepare_syringe_state_reflects_match_after_successful_configure(monkeypatch, tmp_path):
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        label = window.findChild(QLabel, "v3PrepareSyringeState")
+        window.syringe.setCurrentText("BD 5ml")
+        window._configure_syringe(window._selected_syringe_config())
+        window._refresh_v3_pump_local_status()
+        assert "already applied" in label.text()
+    finally:
+        window.close()
+
+
+def test_v3_prepare_syringe_state_flags_selection_changed_since_last_apply(monkeypatch, tmp_path):
+    """Non-vacuous proof this is a real selection-vs-applied comparison, not
+    merely "has anything ever been configured": change the selection after a
+    successful apply and confirm the label stops claiming a match."""
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        label = window.findChild(QLabel, "v3PrepareSyringeState")
+        window.syringe.setCurrentText("BD 1ml")
+        window._configure_syringe(window._selected_syringe_config())
+        window._refresh_v3_pump_local_status()
+        assert "already applied" in label.text()
+
+        window.syringe.setCurrentText("BD 5ml")
+        assert "differs from what was last applied" in label.text()
+        assert "already applied" not in label.text()
+    finally:
+        window.close()
+
+
+def test_v3_prepare_syringe_state_updates_live_on_selection_change_without_unrelated_refresh(monkeypatch, tmp_path):
+    """The comparison must stay live as the operator changes the combo, not
+    only after some unrelated _refresh_status() call fires later."""
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        label = window.findChild(QLabel, "v3PrepareSyringeState")
+        window.syringe.setCurrentText("BD 1ml")
+        window._configure_syringe(window._selected_syringe_config())
+        window._refresh_v3_pump_local_status()
+        assert "already applied" in label.text()
+
+        # Changing the combo alone (no _run_action, no _refresh_status())
+        # must already update the label via the signal connection.
+        window.syringe.setCurrentText("BD 10ml")
+        assert "already applied" not in label.text()
+    finally:
+        window.close()
+
+
+def test_v3_syringe_selection_matches_applied_is_not_faked_by_a_failed_configure(monkeypatch, tmp_path):
+    """A failed configure_syringe() must never be treated as successful --
+    self.app.pump.syringe_config must stay whatever it was before."""
+    window = make_window(monkeypatch, tmp_path)
+
+    class FailingBackend:
+        def configure_syringe(self, config):
+            raise RuntimeError("SDK rejected geometry")
+
+    try:
+        window.app.pump.backend = FailingBackend()
+        window.syringe.setCurrentText("BD 5ml")
+        with pytest.raises(RuntimeError):
+            window._configure_syringe(window._selected_syringe_config())
+        assert window.app.pump.syringe_config is None
+        assert window._syringe_selection_matches_applied() is None
+    finally:
+        window.app.pump.backend = None
+        window.close()
+
+
+def test_v3_manual_service_pump_panel_reaches_stop_pump_without_navigating_to_prepare(monkeypatch, tmp_path):
+    """Checkpoint-B closure (2026-09-07): UI-V3-MANUAL-SERVICE-COMPLETENESS-001.
+    Manual & Service's Pump & Valve panel previously had no Stop control at
+    all -- an abnormal-recovery scenario (Section 17/22-24) needs immediate
+    Stop reachable from Manual Service itself, not only from Prepare. Reaches
+    the same canonical self.app.pump.stop() authority via the same
+    _pump_stop_button() factory, not a second implementation, and also gets
+    a quick-open button back to Prepare for the bounded-motion controls that
+    legitimately stay Prepare-only (shared spinbox state, Section 9)."""
+    window = make_window(monkeypatch, tmp_path)
+
+    class FakeBackend:
+        def __init__(self):
+            self.calls = []
+
+        def stop(self):
+            self.calls.append("stop")
+
+        def close(self):
+            pass
+
+    backend = FakeBackend()
+    try:
+        panel = build_with_retry(lambda: window._ensure_manual_panel("PumpValve"))
+        stop_button = panel.findChild(QPushButton, "v3PumpValveStopPumpButton")
+        assert stop_button is not None
+        assert stop_button.property("uiRole") == "critical_stop"
+        assert panel.isAncestorOf(stop_button)
+
+        open_prepare = panel.findChild(QPushButton, "v3PumpValveOpenPreparePump")
+        assert open_prepare is not None
+
+        window.app.pump.backend = backend
+        window.app.pump.initialized = True
+        stop_button.click()
+        assert process_events_until(lambda: "stop" in backend.calls, 2.0)
+        # Drain the QThread's own finished/deleteLater chain before closing
+        # the window -- _run_action()'s cleanup (thread.deleteLater(),
+        # worker.deleteLater(), self._threads.remove(thread)) is queued, not
+        # synchronous with the worker function returning; closing the window
+        # (and destroying self.app/backend) while that chain is still
+        # in-flight is a real use-after-free hazard for the next test's
+        # window construction, not merely a slow teardown here.
+        assert process_events_until(lambda: not window._threads, 2.0)
+    finally:
+        window.close()
+
+
+def test_v3_stop_pump_carries_a_critical_stop_role_distinct_from_ordinary_actuators(monkeypatch, tmp_path):
+    """Checkpoint-B closure (2026-09-07): V3's own Stop pump button
+    (v3StopPumpButton, _v3_pump_operations_group()) was a separate hand-built
+    button that never called the shared _pump_stop_button() factory, so it
+    never got Checkpoint A's critical_stop uiRole -- confirmed here the same
+    way the pre-existing V1 test already confirms it for V1."""
+    window = make_window(monkeypatch, tmp_path)
+    try:
+        stop_button = window.findChild(QPushButton, "v3StopPumpButton")
+        assert stop_button is not None
+        assert stop_button.property("uiRole") == "critical_stop"
+
+        # Inspect the already-built group in place -- _v3_pump_operations_group()
+        # embeds shared widgets (fill_flow_rate/level_ml) that are not safe to
+        # reparent by calling the builder a second time (lessons_learned.md
+        # 7.13): find its real, already-parented QGroupBox instead of rebuilding.
+        pump_ops_group = stop_button.parentWidget()
+        while pump_ops_group is not None and not isinstance(pump_ops_group, QGroupBox):
+            pump_ops_group = pump_ops_group.parentWidget()
+        assert pump_ops_group is not None and pump_ops_group.title() == "Immediate pump operations"
+        for button in pump_ops_group.findChildren(QPushButton):
+            if button.objectName() == "v3StopPumpButton":
+                continue
+            assert button.property("uiRole") != "critical_stop", (
+                f"ordinary actuator {button.text()!r} must not carry the critical_stop role"
+            )
+    finally:
+        window.close()
+
+
+def test_v3_stop_pump_reaches_the_backend_while_a_refill_style_motion_is_still_in_progress(monkeypatch, tmp_path):
+    """Checkpoint-B closure (2026-09-07): V3's own Stop pump button dispatched
+    _run_action() WITHOUT force=True (a second, incomplete reimplementation of
+    _pump_stop_button(), not a second presentation of the same authority) --
+    reproducing the exact real-shakedown defect UI-PUMP-STOP-BUSY-QUEUE-001
+    already fixed for V1. Proven the same way V1's own regression test proves
+    it: starting a still-in-progress fake motion and confirming the backend
+    receives the stop call before that motion is released."""
+    window = make_window(monkeypatch, tmp_path)
+    motion_started = threading.Event()
+    release_motion = threading.Event()
+    backend_calls: list[str] = []
+
+    class BlockingRefillBackend:
+        def refill(self, flow_rate=None):
+            backend_calls.append("refill_started")
+            motion_started.set()
+            release_motion.wait(2.0)
+            backend_calls.append("refill_released")
+
+        def read_fill_level(self):
+            return 0.0
+
+        def stop(self):
+            backend_calls.append("stop")
+
+        def close(self):
+            pass
+
+    try:
+        window.app.pump.backend = BlockingRefillBackend()
+        window.app.pump.initialized = True
+
+        stop_button = window.findChild(QPushButton, "v3StopPumpButton")
+        assert stop_button is not None
+
+        window._run_action(lambda progress: window.app.pump.refill(), "Refilling")
+        assert motion_started.wait(1.0), "fake refill never started"
+        assert window._busy_count == 1
+
+        stop_button.click()
+
+        assert process_events_until(lambda: "stop" in backend_calls, 2.0), (
+            f"Stop never reached the backend while Refill was still in progress; backend_calls={backend_calls!r}"
+        )
+        assert backend_calls == ["refill_started", "stop"], (
+            f"stop must be observed strictly before the motion is released -- got {backend_calls!r}"
+        )
+        release_motion.set()
+        # Drain both threads' own finished/deleteLater chains before closing
+        # the window -- see the sibling Manual-Service test's identical
+        # comment for why this is required, not merely tidy.
+        assert process_events_until(lambda: window._busy_count == 0 and not window._threads, 2.0)
+    finally:
+        release_motion.set()
+        window.close()
+
+
+@pytest.mark.parametrize("size", [(1366, 768), (1440, 900), (1920, 1080)])
+def test_v3_prepare_vertical_scroll_depth_is_reduced_from_the_pre_checkpoint_b_baseline(monkeypatch, tmp_path, size):
+    """Checkpoint-B closure (2026-09-07), Section 26/28: semantic reduction
+    (removing the eight zero-consumer checklist checkboxes) measurably
+    shrinks Prepare's scroll burden -- proof the "reduce before reflow"
+    policy was actually followed, not merely asserted. Locks in the fresh
+    measurement recorded in known_open_items.md's UI-V3-PREPARE-SCROLL-001
+    entry against the pre-Checkpoint-B baseline it also records
+    (content height 1757/1729/1572 px at the three sizes)."""
+    pre_checkpoint_b_content_height = {(1366, 768): 1757, (1440, 900): 1729, (1920, 1080): 1572}[size]
+    window = make_window(monkeypatch, tmp_path)
+    window.resize(*size)
+    window.show()
+    QApplication.processEvents()
+    try:
+        scroll = window.findChild(QScrollArea, "v3PrepareScroll")
+        assert scroll is not None
+        content_height = scroll.widget().height()
+        assert content_height < pre_checkpoint_b_content_height, (
+            f"Prepare content height {content_height} px at {size} did not shrink from the "
+            f"pre-Checkpoint-B baseline of {pre_checkpoint_b_content_height} px"
         )
     finally:
         window.close()
@@ -1932,7 +2200,6 @@ def test_v3_pump_panel_separates_actions_from_static_configuration(monkeypatch, 
             "Empty syringe",
             "Start flow at selected rate",
             "Move to target fill level",
-            "Stop pump",
             "Configure syringe",
             "Run reference move",
             "Refill",
@@ -1946,6 +2213,15 @@ def test_v3_pump_panel_separates_actions_from_static_configuration(monkeypatch, 
             "Configure",
             "Reference move",
         }.isdisjoint(button_texts)
+        # Checkpoint-B closure (2026-09-07): "Stop pump" is the one
+        # deliberate exception -- present here too (UI-V3-MANUAL-SERVICE-
+        # COMPLETENESS-001), reaching the same canonical authority as
+        # Prepare's own instance via the shared _pump_stop_button() factory,
+        # plus a quick-open button back to Prepare for the bounded-motion
+        # controls that legitimately stay Prepare-only.
+        assert "Stop pump" in button_texts
+        assert dialog.findChild(QPushButton, "v3PumpValveStopPumpButton") is not None
+        assert dialog.findChild(QPushButton, "v3PumpValveOpenPreparePump") is not None
         assert window.flow_rate not in dialog.findChildren(type(window.flow_rate))
         recovery = dialog.findChild(QGroupBox, "v3PumpConnectionRecovery")
         clear_fault = dialog.findChild(QPushButton, "v3ClearPumpFaultButton")
@@ -2543,13 +2819,21 @@ def test_v3_rebuilt_manual_panel_buttons_dispatch_without_hardware(monkeypatch, 
         # rather than only inside these Manual & Service dialogs, so search
         # the whole window rather than only the dialogs -- exactly one
         # instance of each button must exist regardless of which surface
-        # renders it.
+        # renders it. "Stop pump" is the one deliberate exception
+        # (Checkpoint-B closure, 2026-09-07): a stateless action trigger
+        # safe to instantiate more than once (_pump_stop_button()'s own
+        # docstring), now present in both Prepare and Manual Service so an
+        # abnormal-recovery scenario can reach it without navigating away
+        # (UI-V3-MANUAL-SERVICE-COMPLETENESS-001) -- both instances must
+        # reach the SAME canonical authority, not merely exist.
         all_buttons = window.findChildren(QPushButton)
         for button_text, expected_event in button_events.items():
             matches = [button for button in all_buttons if button.text() == button_text]
-            assert len(matches) == 1, button_text
-            matches[0].click()
-            assert events[-1] == expected_event
+            expected_count = 2 if button_text == "Stop pump" else 1
+            assert len(matches) == expected_count, button_text
+            for match in matches:
+                match.click()
+                assert events[-1] == expected_event
 
         window.image_continuous.setChecked(True)
         assert events[-1] == "continuous:True"

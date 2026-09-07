@@ -702,8 +702,8 @@ class MainWindowV3(MainWindowV3Compatibility):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
         boundary = QLabel(
-            "Operator preparation checklist only. Checkboxes are local presentation confirmations: they are not "
-            "persisted run evidence and do not query, command, or physically verify equipment."
+            "Operator preparation guidance only. Nothing on this page is persisted run evidence or physical "
+            "verification; viewing it issues no command."
         )
         boundary.setObjectName("v3PreparationEvidenceBoundary")
         boundary.setWordWrap(True)
@@ -837,23 +837,25 @@ class MainWindowV3(MainWindowV3Compatibility):
                     lambda checked=False, name=configure_target: self._v3_open_configure_tab(name)
                 )
                 task_layout.addWidget(open_configure)
-            confirmed = QCheckBox("Local checklist confirmation")
-            confirmed.setObjectName(f"v3PrepareConfirmed{index + 1}")
-            confirmed.setToolTip("Local presentation checklist only; not persisted run evidence or physical verification.")
-            # Real-shakedown finding (2026-09-06): traced every consumer of
-            # this checkbox's checked state before changing the default --
-            # confirmed via source search that nothing reads .isChecked() on
-            # it anywhere (not Continue-to-Configure, Review, Start,
-            # action_log, commissioning trace, ExperimentRequest/RunPlan, or
-            # _settings_dict()'s persisted fields). Defaulting to checked
-            # removes the reported per-card re-click friction without
-            # changing what this control means or does -- it is still local
-            # presentation state only, per its own tooltip, and this default
-            # does not become durable evidence, a hardware query, or a
-            # hardware command. If a future change makes anything material
-            # depend on this checkbox, this default must be revisited then.
-            confirmed.setChecked(True)
-            task_layout.addWidget(confirmed)
+            # Checkpoint-B closure (2026-09-07): the per-card "Local checklist
+            # confirmation" checkbox previously here was removed, not merely
+            # defaulted, after a fresh consumer audit (repeated from the
+            # 2026-09-06 real-shakedown finding, not trusted from that prior
+            # report) found it still has zero consumers anywhere in the tree
+            # -- not Continue-to-Configure, Review, Start, readiness,
+            # ExperimentRequest/RunPlan, action_log, commissioning trace, or
+            # _settings_dict()'s persisted fields (tests/test_qt_ui_v3.py::
+            # test_v3_prepare_construction_issues_no_hardware_call and the new
+            # test_v3_prepare_has_no_zero_consumer_checklist_checkboxes cover
+            # this). A per-card interactive control that changes nothing is
+            # pure re-click friction, not evidence; the workspace-level
+            # boundary label above already states the same "not persisted
+            # evidence" truth once, non-interactively, for the whole page.
+            # The separate v3PrepareTecEquilibriumConfirmed checkbox
+            # (_v3_prepare_temperature_group()) is untouched: it makes a
+            # specific physical-equilibrium claim, not a generic
+            # acknowledgement (lessons_learned.md 1.4/7.11), and stays
+            # operator-initiated.
             group_layout.addLayout(task_layout)
             if content_builder is not None:
                 group_layout.addWidget(content_builder())
@@ -1923,6 +1925,19 @@ class MainWindowV3(MainWindowV3Compatibility):
         )
         imaging_note.setWordWrap(True)
         imaging_form.addRow(imaging_note)
+        # Checkpoint-B closure (2026-09-07): ROI is edited in Prepare ->
+        # Imaging / Focus (the same self.roi_h_offset etc. widgets this label
+        # projects), not here -- this button reaches that editable location
+        # directly instead of leaving the operator to find it themselves
+        # (lessons_learned.md 7.10). Exposure remains directly editable in
+        # this same tab (self.exp_exposure_ms, above).
+        edit_roi_in_prepare = QPushButton("Edit ROI in Prepare")
+        edit_roi_in_prepare.setObjectName("v3ConfigureEditRoiInPrepare")
+        edit_roi_in_prepare.setToolTip(
+            "Switches to Prepare -> Imaging / Focus. Presentation navigation only -- no field is changed."
+        )
+        edit_roi_in_prepare.clicked.connect(lambda: self._v3_experiment_phase_tabs.setCurrentIndex(0))
+        imaging_form.addRow(edit_roi_in_prepare)
         acquisition_grid.addWidget(imaging_request, 7, 0, 1, 3)
         self._v3_sync_uncertainty = QLabel(
             "Canonical plan: DIO0 is the camera frame trigger and DIO1 is LED timing control, both from "
@@ -3568,11 +3583,21 @@ class MainWindowV3(MainWindowV3Compatibility):
         generate.clicked.connect(self._start_generate_flow)
         go = QPushButton("Move to target fill level")
         go.clicked.connect(self._start_go_level)
-        stop = QPushButton("Stop pump")
+        # Checkpoint-B closure (2026-09-07): was a separate hand-built button
+        # that dispatched _run_action() WITHOUT force=True and without the
+        # critical_stop uiRole -- a second, incomplete reimplementation of
+        # _pump_stop_button() (qt_ui.py), not a second presentation of the
+        # same authority. Concretely: this button would have silently
+        # no-opped (_set_status("Busy")) while a Refill/Empty motion was in
+        # flight, reproducing the exact real-shakedown defect
+        # UI-PUMP-STOP-BUSY-QUEUE-001 already fixed for V1's own Stop button,
+        # and never got Checkpoint A's critical_stop visual treatment either
+        # -- both fixes live inside _pump_stop_button() itself, which this
+        # group never called. _pump_stop_button()'s own docstring already
+        # documents it as "safe to instantiate more than once (Prepare and
+        # Manual Service each get their own button)" -- exactly this case.
+        stop = self._pump_stop_button()
         stop.setObjectName("v3StopPumpButton")
-        stop.setMinimumHeight(50)
-        stop.setStyleSheet("color: darkred; font-weight: bold;")
-        stop.clicked.connect(lambda: self._run_action(lambda progress: self.app.pump.stop(), "Pump stopped"))
         pump_form.addRow("Refill / empty flow rate (uL/min)", self.fill_flow_rate)
         pump_form.addRow(refill, empty)
         pump_form.addRow("Flow rate (- = aspirate, + = dispense)", self.flow_rate)
@@ -3648,6 +3673,14 @@ class MainWindowV3(MainWindowV3Compatibility):
         syringe_form.addRow(syringe_note)
         syringe_form.addRow(configure)
         self._add_tooltip_icons(syringe_form)
+        # Checkpoint-B closure (2026-09-07): keep the selected-vs-applied
+        # projection (_refresh_v3_pump_local_status()) live as the operator
+        # changes the selection, rather than only after the next unrelated
+        # status refresh -- a stale "already applied" claim right after
+        # changing the selection would be worse than not showing it at all.
+        self.syringe.currentTextChanged.connect(lambda _text: self._refresh_v3_pump_local_status())
+        self.custom_syringe_inner_diameter_mm.valueChanged.connect(lambda _value: self._refresh_v3_pump_local_status())
+        self.custom_syringe_stroke_mm.valueChanged.connect(lambda _value: self._refresh_v3_pump_local_status())
         return syringe_group
 
     def _v3_pump_recovery_group(self) -> QGroupBox:
@@ -3700,6 +3733,7 @@ class MainWindowV3(MainWindowV3Compatibility):
         layout = QVBoxLayout(content)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
+        note_row = QHBoxLayout()
         note = QLabel(
             "Manual pump and valve controls. P01/P02 fluid routing requires bench confirmation. Routine "
             "reference move, syringe specification, refill, and working fill level now live in Prepare -> "
@@ -3709,7 +3743,34 @@ class MainWindowV3(MainWindowV3Compatibility):
         note.setObjectName("v3PumpMovedToPrepareNote")
         note.setWordWrap(True)
         note.setMaximumWidth(700)
-        layout.addWidget(note)
+        note_row.addWidget(note, 1)
+        # Checkpoint-B closure (2026-09-07): the note above already says
+        # bounded motion moved to Prepare, but named it without a way to
+        # reach it (lessons_learned.md 7.10: a quick-open button must reach
+        # everything its own row promises). Stop pump itself stays directly
+        # available here (below, via _pump_stop_button()) since it is
+        # safety-relevant and stateless; Refill/Empty/Generate flow/Go-to-
+        # level read from shared spinboxes already owned by Prepare
+        # (self.fill_flow_rate/self.flow_rate/self.level_ml) and cannot be
+        # duplicated here without a second, unsynchronized copy of that
+        # state (Section 7/9) -- navigation is the correct fix, not a
+        # second set of fields.
+        open_prepare = QPushButton("Open Guided Pump Preparation")
+        open_prepare.setObjectName("v3PumpValveOpenPreparePump")
+        open_prepare.setToolTip(
+            "Switches to Prepare -> Guided Pump Preparation for Refill/Empty/Generate flow/Go-to-level. "
+            "Presentation navigation only -- no command is issued."
+        )
+        open_prepare.clicked.connect(lambda: self._v3_experiment_phase_tabs.setCurrentIndex(0))
+        note_row.addWidget(open_prepare)
+        layout.addLayout(note_row)
+        stop_row = QHBoxLayout()
+        stop_row.addWidget(QLabel("Immediate stop:"))
+        stop_here = self._pump_stop_button()
+        stop_here.setObjectName("v3PumpValveStopPumpButton")
+        stop_row.addWidget(stop_here)
+        stop_row.addStretch(1)
+        layout.addLayout(stop_row)
         layout.addWidget(self._v3_pump_local_status_group())
 
         tasks = QTabWidget()
@@ -3751,6 +3812,19 @@ class MainWindowV3(MainWindowV3Compatibility):
         columns.addWidget(self._v3_pump_syringe_setup_group(), 1)
         columns.addWidget(self._v3_pump_operations_group(), 1)
         layout.addLayout(columns)
+        # Checkpoint-B closure (2026-09-07): real operator friction was
+        # pressing Configure syringe repeatedly out of uncertainty, because
+        # Prepare (unlike Manual & Service's "Cached pump and valve state"
+        # group) never showed whether the selected recipe was already
+        # applied. This is a new presentation of the same
+        # self.app.pump.syringe_config authority _v3_syringe_local_state
+        # already reads in Manual & Service -- not a second syringe-state
+        # authority (lessons_learned.md 7.16) -- refreshed by the same
+        # _refresh_v3_pump_local_status() call both surfaces already share.
+        self._v3_prepare_syringe_state = QLabel()
+        self._v3_prepare_syringe_state.setObjectName("v3PrepareSyringeState")
+        self._v3_prepare_syringe_state.setWordWrap(True)
+        layout.addWidget(self._v3_prepare_syringe_state)
         self._v3_prepare_pump_readiness = QLabel()
         self._v3_prepare_pump_readiness.setObjectName("v3PreparePumpReadiness")
         self._v3_prepare_pump_readiness.setWordWrap(True)
@@ -3763,6 +3837,7 @@ class MainWindowV3(MainWindowV3Compatibility):
         valve_label = getattr(self, "_v3_valve_local_state", None)
         syringe_label = getattr(self, "_v3_syringe_local_state", None)
         prepare_label = getattr(self, "_v3_prepare_pump_readiness", None)
+        prepare_syringe_label = getattr(self, "_v3_prepare_syringe_state", None)
         if pump_label is None and prepare_label is None:
             return
         pump = self.app.pump
@@ -3796,12 +3871,39 @@ class MainWindowV3(MainWindowV3Compatibility):
                     details.append(f"stroke {config['max_piston_stroke_mm']} mm")
                 syringe_label.setText("Last successfully applied by this process: " + "; ".join(details))
 
+        # UNKNOWN != CURRENT (Checkpoint-B closure, 2026-09-07): no live
+        # device readback exists for syringe geometry, so this never claims
+        # the selection is CURRENT without a real prior successful apply --
+        # see _syringe_selection_matches_applied()'s own docstring.
+        matches_applied = self._syringe_selection_matches_applied()
+        if prepare_syringe_label is not None:
+            if matches_applied is None:
+                prepare_syringe_label.setText(
+                    "Syringe: UNKNOWN -- no configuration applied yet this hardware session. "
+                    "Press Configure syringe before pump operations."
+                )
+            elif matches_applied:
+                prepare_syringe_label.setText(
+                    "Syringe: selected recipe already applied to the connected pump; "
+                    "Configure syringe is not required again unless the selection changes."
+                )
+            else:
+                prepare_syringe_label.setText(
+                    "Syringe: selected recipe differs from what was last applied -- press Configure syringe."
+                )
+
         if prepare_label is not None:
+            if matches_applied is None:
+                syringe_readiness = "not configured"
+            elif matches_applied:
+                syringe_readiness = "configured, matches selection"
+            else:
+                syringe_readiness = "configured, but selection has changed"
             prepare_label.setText(
                 f"Readiness: pump {pump_connection.lower()}, "
                 f"reference move {'confirmed' if pump.referenced else 'not confirmed'}, "
                 f"tracked fill {pump.fill_level:.3f} ml, "
-                f"syringe {'configured' if config is not None else 'not configured'}. "
+                f"syringe {syringe_readiness}. "
                 "Application cache only; not independent physical verification."
             )
 
@@ -3939,7 +4041,22 @@ class MainWindowV3(MainWindowV3Compatibility):
         form.addRow("Vertical offset (px)", self.roi_v_offset)
         form.addRow("Horizontal size (px)", self.roi_h_size)
         form.addRow("Vertical size (px)", self.roi_v_size)
-        form.addRow("Exposure time (ms)", self.exposure_ms)
+        # Checkpoint-B closure (2026-09-07): renamed from "Exposure time
+        # (ms)" -- real operator feedback read this as duplicate entry of
+        # Configure -> Acquisition's own "Exposure time (ms)" field
+        # (self.exp_exposure_ms). It is deliberately independent (manual
+        # preview/focus exposure vs. the scientific run request -- the same
+        # operator-intent distinction as Guided Pump Preparation's manual
+        # flow rate vs. the automated flush recipe, lessons_learned.md
+        # 7.14/7.15): confirmed from source that Application.run_experiment2()
+        # always reapplies self.exp_exposure_ms at Start, never this field.
+        # ROI above is genuinely the single canonical authority (Application.
+        # run_experiment2() reads self.roi_h_offset etc. via
+        # _experiment_camera_defaults(), the exact same widgets this group
+        # already shares with Configure's own read-only "Authoritative
+        # imaging request" projection) -- only exposure needed this
+        # clarification, not a re-architecture.
+        form.addRow("Preview exposure (ms)", self.exposure_ms)
         form.addRow("Center ROI", self.center_roi)
         configure = QPushButton("Apply camera settings")
         configure.setToolTip(

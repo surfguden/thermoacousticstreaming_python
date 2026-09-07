@@ -432,6 +432,72 @@ camera-start metadata, trigger details, TEC engineering controls, raw channel
 indices, and other uncommon options remain available without dominating normal
 operation.
 
+**Real-operator-workflow simplification (`CHECKPOINT_B_REAL_OPERATOR_WORKFLOW_SIMPLIFICATION_AND_PRODUCTIZATION_CLOSURE_V3`, 2026-09-07).**
+
+- **Product model.** Prepare = simplified routine preparation; Configure =
+  complete run-parameter center. For a parameter genuinely shared between them
+  (Camera ROI), there is ONE canonical request/widget authority, edited in
+  Prepare and projected read-only (with an explicit "not a separate setting"
+  note and a quick-open button back to Prepare) in Configure -- not two
+  independent copies with synchronization glue. Camera exposure is the
+  documented exception: `self.exposure_ms` (Prepare/Manual "Apply camera
+  settings", an immediate preview/focus action) and `self.exp_exposure_ms`
+  (the scientific run request `ExperimentRequest.exposure_ms` actually uses)
+  are deliberately independent, the same operator-intent distinction as the
+  manual Pump tab's flow rate versus the automated flush recipe
+  (`lessons_learned.md` 7.14/7.15) -- confirmed from source that
+  `Application.run_experiment2()` always reapplies `exp_exposure_ms` at Start,
+  never the manual field. Both fields were renamed from the colliding
+  "Exposure time (ms)"/"ExposureTime(ms)" to "Preview exposure (ms)" (the
+  manual/Prepare field) so the always-visible label, not only a hover
+  tooltip, states the distinction real operator feedback found confusing.
+- **Local checklist confirmations removed.** The per-row "Local checklist
+  confirmation" checkbox (`v3PrepareConfirmed{N}`) was removed from all eight
+  Preparation-checklist rows after a fresh consumer audit (repeated, not
+  trusted from the prior session's report) confirmed zero downstream
+  consumers. The workspace-level `v3PreparationEvidenceBoundary` label still
+  states the same "not persisted run evidence" truth once, non-interactively.
+  The separate `v3PrepareTecEquilibriumConfirmed` checkbox is untouched: it
+  makes a specific physical-equilibrium claim, not a generic acknowledgement.
+- **Syringe configuration UX.** No live device readback exists for syringe
+  geometry (`qmix_backend.py`'s own `configure_syringe()` comment confirms
+  this), so the fix does not invent one. `CetoniPump.syringe_config` already
+  tracked "last successfully applied by this process" (set only after a real
+  backend call succeeds, and reset to `None` by a fresh hardware session);
+  Prepare now also shows, live, whether the *currently selected* recipe
+  matches that applied state (`_syringe_selection_matches_applied()`,
+  `v3PrepareSyringeState`) -- `UNKNOWN` before any successful apply this
+  session, never falsely `CURRENT`. No new persistent state, no automatic
+  hardware write.
+- **Manual & Service Pump/Valve completeness.** V3's own "Stop pump" button
+  (`_v3_pump_operations_group()`, embedded in Prepare) was found to be a
+  separate hand-built `QPushButton` that never called the shared
+  `_pump_stop_button()` factory -- it dispatched `_run_action()` **without**
+  `force=True` and carried no `critical_stop` `uiRole`, reproducing the exact
+  real-shakedown defect (`UI-PUMP-STOP-BUSY-QUEUE-001`) and missing
+  Checkpoint A's visual treatment, neither of which V3's own operator
+  shakedown had actually exercised through this code path. Fixed by routing
+  through `_pump_stop_button()` (its own docstring already documents it as
+  safe to instantiate more than once). Manual & Service's Pump & Valve panel,
+  which previously had **no** Stop control at all, now also gets its own
+  instance of the same button plus a quick-open button back to Prepare's
+  Guided Pump Preparation for the bounded-motion controls
+  (Refill/Empty/Generate flow/Go-to-level) that stay Prepare-only because
+  they read shared spinbox state that cannot be safely duplicated.
+- **Prepare geometry.** Removing the eight checklist checkboxes measurably
+  reduced Prepare's vertical scroll burden at every supported window size
+  (content height 1757/1729/1572 px -> 1682/1682/1562 px at
+  1366x768/1440x900/1920x1080; viewport-height traversals 3.75/2.88/2.01 ->
+  2.59/1.80/1.00) with no structural reflow -- see `known_open_items.md`'s
+  `UI-V3-PREPARE-SCROLL-001` entry. Semantic reduction was tried first, per
+  its own stated policy, and was sufficient; structural reflow was not
+  attempted.
+- **Not touched.** Review's `PreflightResult` blocker/warning/unknown
+  distinction, Configure's scientific-parameter completeness (FM shape
+  controls unchanged), and the hardware-session lifecycle from Checkpoint S
+  were independently reviewed and found already correct -- no narrow
+  correction was needed in any of them this checkpoint.
+
 ## Authoritative parameter semantics
 
 This compact registry is the current semantic authority. Compatibility field
