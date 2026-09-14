@@ -70,8 +70,6 @@ evidence; `--include-ad2-laser` is now rejected before hardware setup pending
   `dwf.dll`.
 - `src/thermo_acoustic/hamamatsu_dcam.py`: Hamamatsu DCAM backend.
 - `src/thermo_acoustic/qmix_backend.py`: Cetoni/Qmix pump backend.
-- `src/thermo_acoustic/serial_config.py`: LabVIEW-style serial/VISA config
-  data structure.
 - `src/thermo_acoustic/application.py`: orchestration of initialize, cleanup,
   flush, Z-stack, and experiment sequence.
 - `src/thermo_acoustic/qt_ui.py`: UI defaults, simulate toggles, COM resource
@@ -80,8 +78,6 @@ evidence; `--include-ad2-laser` is now rejected before hardware setup pending
 - `src/thermo_acoustic/ad2.py`: AD2 configuration data classes for WFG, DO,
   trigger, carrier, and MSO settings.
 - `src/thermo_acoustic/camera.py`: camera ROI data structures.
-- `src/thermo_acoustic/imaq.py`: retained LabVIEW-parity image helper reference;
-  it is not the production DCAM/PIL camera path.
 - `tools/release_ad2.py`: WaveForms device enumeration and close-all utility.
 - `tools/capture_ad2_wavegen_scope.py` and
   `tools/capture_ad2_wavegen_scope_matplotlib.py`: existing AD2 output/capture

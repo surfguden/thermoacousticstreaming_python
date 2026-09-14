@@ -26,21 +26,6 @@ from thermo_acoustic.ad2 import (
     coerce_wfg_config,
 )
 from thermo_acoustic.camera import MinMaxInc, SubRegion, SubRegionLimits
-from thermo_acoustic.filetypes import FT_FILE_TYPES, LVFileType, get_exported_file_list, get_file_type, is_file_an_llb
-from thermo_acoustic.imaq import (
-    ImageType,
-    hamamatsu_show_sequence,
-    imaq_array_to_image,
-    imaq_copy,
-    imaq_create,
-    imaq_dispose,
-    imaq_wind_close,
-    imaq_wind_display_mapping,
-    imaq_wind_draw,
-    imaq_wind_zoom_2,
-    imaq_write_bmp_file_2,
-    imaq_write_png_file_2,
-)
 from thermo_acoustic.instruments import (
     AD2Sdk,
     AD2SdkError,
@@ -63,11 +48,6 @@ from thermo_acoustic.qmix_backend import (
     QmixPumpError,
     SYRINGE_PRESETS,
 )
-from thermo_acoustic.serial_config import (
-    visa_configure_serial_port,
-    visa_configure_serial_port_instr,
-    visa_configure_serial_port_serial_instr,
-)
 from thermo_acoustic.runtime_truth import (
     EvidenceBasis,
     EvidenceFreshness,
@@ -77,48 +57,6 @@ from thermo_acoustic.runtime_truth import (
 from thermo_acoustic.commissioning_trace import TraceState
 from thermo_acoustic.tec import TecController, TecStatus
 from thermo_acoustic.thorlabs_piezo import PiezoStage
-from thermo_acoustic.utilities import (
-    DialogType,
-    DialogTypeEnum,
-    EventVKey,
-    LVBounds,
-    LVMinMaxInc,
-    LVRect,
-    TagReturnType,
-    WHITESPACE,
-    application_directory,
-    check_if_file_or_folder_exists,
-    build_help_path,
-    check_special_tags,
-    clear_errors,
-    convert_property_node_font_to_graphics_font,
-    correct_error_chain,
-    details_display_dialog,
-    error_converter,
-    error_cluster_from_error_code,
-    error_code_database,
-    find_tag,
-    format_message_string,
-    format_time_string,
-    general_error_handler,
-    general_error_handler_core,
-    get_help_dir,
-    get_rt_host_connected_prop,
-    get_string_text_bounds,
-    get_text_rect,
-    longest_line_length_in_pixels,
-    not_found_dialog,
-    search_and_replace_pattern,
-    set_bold_text,
-    set_string_value,
-    simple_error_handler,
-    sub_elapsed_time,
-    sub_file_dialog,
-    three_button_dialog,
-    three_button_dialog_core,
-    trim_whitespace,
-    trim_whitespace_one_sided,
-)
 from thermo_acoustic.waveforms import WaveFormsBackend, WaveFormsError
 from thermo_acoustic.workflows import Experiment2, ExperimentSeries2, FlushSettings, TemperatureSeries
 
@@ -316,118 +254,8 @@ def test_priority_message_is_dequeued_first():
     assert result.message.name == "priority"
 
 
-def test_top_level_utility_ports(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    file_path = tmp_path / "sample.txt"
-    file_path.write_text("hello", encoding="utf-8")
-
-    assert application_directory() == tmp_path
-    assert check_if_file_or_folder_exists(file_path)
-    assert not check_if_file_or_folder_exists(tmp_path / "missing.txt")
-    assert sub_elapsed_time(10.0, now_s=12.5) == 2.5
-    assert format_time_string(3661.25) == "01:01:01.25"
-    assert trim_whitespace("  abc\t") == "abc"
-    assert trim_whitespace_one_sided("  abc  ", left=True, right=False) == "abc  "
-    assert trim_whitespace_one_sided("  abc  ", left=False, right=True) == "  abc"
-    assert search_and_replace_pattern("a-b-a", "a", "x") == "x-b-x"
-    assert search_and_replace_pattern("a11b22", r"\d+", "#", regex=True) == "a#b#"
-    assert find_tag("prefix <tag> suffix", "<tag>") == 7
-    assert format_message_string("{name}: {value}", name="pump", value=4) == "pump: 4"
-
-    error = error_cluster_from_error_code(7, "source")
-    assert error.status
-    assert error.code == 7
-    assert error_converter(0, status=True, source="forced").status
-    assert clear_errors(error).status is False
-
-
-def test_ni_filetype_ports(tmp_path):
-    vi = tmp_path / "main.vi"
-    vi.write_text("", encoding="utf-8")
-    llb = tmp_path / "bundle.llb"
-    llb.write_text("", encoding="utf-8")
-    packed = tmp_path / "runtime.lvlibp"
-    packed.write_text("", encoding="utf-8")
-    nested = tmp_path / "folder"
-    nested.mkdir()
-    exported = nested / "export.vi"
-    exported.write_text("", encoding="utf-8")
-
-    assert LVFileType.VI.value in FT_FILE_TYPES
-    assert get_file_type(vi) == LVFileType.VI
-    assert get_file_type(tmp_path / "control.ctl") == LVFileType.CONTROL
-    assert get_file_type(packed) == LVFileType.PACKED_LIBRARY
-    assert is_file_an_llb(llb)
-    assert not is_file_an_llb(vi)
-    assert get_exported_file_list(vi) == [vi]
-    assert get_exported_file_list(nested) == [exported]
-
-
-def test_dialog_error_and_text_utility_ports(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    primary = error_cluster_from_error_code(0, "primary")
-    secondary = error_cluster_from_error_code(9, "secondary")
-
-    assert correct_error_chain(primary, secondary) is secondary
-    assert simple_error_handler(secondary) == "9: secondary"
-    assert general_error_handler(RuntimeError("boom")) == "boom"
-    assert general_error_handler_core(secondary) == (True, "9: secondary")
-    assert not_found_dialog("camera") == "Not found: camera"
-    assert three_button_dialog("question", default=1) == "No"
-    assert three_button_dialog_core("question", default=2) == "Cancel"
-    assert details_display_dialog("message", "details") == {"message": "message", "details": "details"}
-    assert sub_file_dialog(default="file.txt") == Path("file.txt")
-
-    assert get_help_dir() == tmp_path / "help"
-    assert build_help_path("topic.html") == tmp_path / "help" / "topic.html"
-    assert longest_line_length_in_pixels("abc\nabcdef", font_size=10) == 36
-    assert get_text_rect("abc", font_size=10).height == 10
-    assert get_string_text_bounds("abc", font_size=10).width == 18
-    assert convert_property_node_font_to_graphics_font({"name": "Arial"}) == {"name": "Arial"}
-    assert set_bold_text("hello") == {"text": "hello", "bold": True}
-    assert set_string_value({"old": True}, "new") == {"old": True, "value": "new"}
-    assert check_special_tags("a <b> c <d>") == ["<b>", "<d>"]
-    assert error_code_database(0) == "No error"
-    assert error_code_database(5) == "Error 5"
-    assert get_rt_host_connected_prop()
-
-
-def test_serial_imaq_and_typedef_ports(tmp_path):
-    serial = visa_configure_serial_port("COM4", baud_rate=115200, timeout_ms=500)
-    assert serial.resource_name == "COM4"
-    assert serial.baud_rate == 115200
-    assert serial.timeout_ms == 500
-    assert visa_configure_serial_port_instr("COM5").resource_name == "COM5"
-    assert visa_configure_serial_port_serial_instr("COM6").resource_name == "COM6"
-
-    assert LVRect(1, 2, 3, 4).right == 3
-    assert LVBounds(10, 20).height == 20
-    assert LVMinMaxInc(0, 10, 2).increment == 2
-    assert DialogType.ERROR.value == "error"
-    assert DialogTypeEnum.OK.value == "ok"
-    assert EventVKey.ENTER.value == "enter"
-    assert TagReturnType.FOUND.value == "found"
-    assert "\n" in WHITESPACE
+def test_reglo_pump_control_running_state():
     assert RegloPumpControl(running=True, speed=2.5).running
-
-    image = imaq_create("test", ImageType.U8)
-    image = imaq_array_to_image([[0, 64], [128, 255]], image)
-    assert image.image is not None
-    copied = imaq_copy(image)
-    assert copied.image is not image.image
-    assert imaq_wind_display_mapping(copied, {"min": 0, "max": 255}) == {"min": 0, "max": 255}
-    assert imaq_wind_zoom_2(copied, 2.0) == 2.0
-    imaq_wind_draw(copied, {"line": [0, 0, 1, 1]})
-    assert copied.drawings == [{"line": [0, 0, 1, 1]}]
-    png = imaq_write_png_file_2(copied, tmp_path / "image.png")
-    bmp = imaq_write_bmp_file_2(copied, tmp_path / "image.bmp")
-    assert png.exists()
-    assert bmp.exists()
-    assert hamamatsu_show_sequence([image, copied])["count"] == 2
-    imaq_wind_close(copied)
-    assert not copied.window_open
-    imaq_dispose(copied)
-    assert copied.disposed
 
 
 def test_fm_sweep_settings_match_martens_et_al_reference_case():
