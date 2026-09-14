@@ -44,7 +44,7 @@ TRACE_SCHEMA_VERSION = 1
 TRACE_FILENAME = "commissioning_trace.jsonl"
 TRACE_SUMMARY_FILENAME = "commissioning_trace_summary.json"
 
-# The evidence vocabulary is shared with the action log and project_control.md.
+# The evidence vocabulary is shared with the action log.
 # Listed here only so the summary can report which stages a run actually
 # reached without re-deriving the ordering somewhere else.
 EVIDENCE_STAGE_ORDER = (

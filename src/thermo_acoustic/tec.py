@@ -468,7 +468,7 @@ class TecController:
         # ON. A Meerstetter TEC autonomously maintains its last commanded
         # setpoint once Static ON has been set; closing the serial link does
         # not command the controller into any different output state
-        # (docs/known_open_items.md SW-DETERMINISTIC-SHUTDOWN-001). Best-
+        # on its own. Best-
         # effort, matching this project's established multi-step cleanup
         # pattern (e.g. AD2's stop-then-reset-then-close): an output-disable
         # failure must not prevent the communication-close attempt, and both

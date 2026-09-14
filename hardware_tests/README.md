@@ -5,9 +5,8 @@ experiment program. They are manual tools, not normal pytest coverage:
 `pyproject.toml` collects only `tests/`.
 
 > **CURRENT SAFETY CONTEXT — HISTORICAL PROCEDURES BELOW ARE NOT CURRENT
-> AUTHORITY.** Read [`docs/project_control.md`](../docs/project_control.md) and
-> [`docs/known_open_items.md`](../docs/known_open_items.md) before using any
-> script. As of the accepted pre-acoustic baseline, camera-only Gate 2 is
+> AUTHORITY.** Follow `AGENTS.md` and obtain explicit authorization before
+> accessing hardware. In the retained pre-acoustic baseline, camera-only Gate 2 is
 > accepted, W1/acoustic output is blocked pending JP4/cable/amplifier/
 > transducer/starting-amplitude closure, and Gate 3/Gate 4 must not resume.
 > This README describes script capabilities and retained preparation evidence;
@@ -49,7 +48,7 @@ ports, wiring, and routing before an action-capable probe.
   It uses the Kinesis USB API, not a generic serial-device backend. The old
   Prior COM7 implementation is retained only as migration history and is not
   the current hardware path.
-- A Reglo pump control data class and LabVIEW port references exist, but there
+- A Reglo pump control data class exists, but there
   is no real Reglo backend comparable to the Qmix backend in the current Python
   source.
 
@@ -92,8 +91,8 @@ evidence; `--include-ad2-laser` is now rejected before hardware setup pending
   snapshot diagnostic; it captures and writes a TIFF without an operator
   confirmation gate.
 - `tools/legacy_qmix_pump_probe.py`: legacy manual Qmix diagnostic; initialization can
-  enable the pump and its optional flow argument can move it. It has no
-  confirmation gate.
+  enable the pump and its optional flow argument can move it. It requires the
+  exact `--confirm CONFIRM_REAL_CETONI_QMIX` acknowledgement.
 
 - `hardware_tests/manual_qmix_read_only_readiness.py`: retained one-shot,
   explicit-confirmation passive readiness snapshot. It opens/starts the reviewed
@@ -106,12 +105,9 @@ evidence; `--include-ad2-laser` is now rejected before hardware setup pending
 The four legacy `tools/` diagnostics above are marked `__test__ = False` and
 live outside `testpaths = ["tests"]`; prefer the gated scripts in
 `hardware_tests/` instead.
-- `README.md`, `docs/current_workflow_audit.md`, and
-  `docs/known_open_items.md`: current operator-facing status and safety notes.
-  `docs/HANDOVER.md` and `docs/PORTING_TBD.md` are historical/reference
-  material, not current validation status.
-- `labview_manifest.json`, `port_status.json`, and `main_html/`: LabVIEW export
-  registry and hardware-related VI references.
+- `README.md`: setup, launch, and offline-check commands. Historical audits,
+  LabVIEW exports, and migration registries are available in Git history;
+  they do not establish current hardware readiness.
 - `.thermo_acoustic_ui.json`: local persisted UI state. This may contain useful
   clues but should be treated as stale or bench-specific.
 
@@ -204,7 +200,7 @@ operator setup and observation:
 2. Valve routing: the current application valve resource is **COM5**. Use one
    `P01\r` or `P02\r` action at a time through a
    `test_valve_command_probe*.py` script with `--confirm SEND`, only after the
-   current open-item gate and separate operator authorization are satisfied.
+   current bench readiness and separate operator authorization are confirmed.
    Do not recover COM6-as-valve from this historical checklist; COM6 is the
    current TEC resource. A recognized status response confirms the numeric
    position, not its fluidic meaning.
@@ -223,8 +219,8 @@ operator setup and observation:
 ## Z-Stage Discovery Result
 
 The following is retained discovery evidence and is not current commissioning
-status or motion authorization. Current Z truth is summarized in
-`docs/project_control.md` and `docs/known_open_items.md`.
+status or motion authorization. Confirm the current setup independently before
+any authorized hardware access.
 
 - The old Z-stage path in the converted Python code assumes a Prior serial
   stage on `COM7`.

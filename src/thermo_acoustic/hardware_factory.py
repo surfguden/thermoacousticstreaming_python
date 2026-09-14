@@ -27,7 +27,7 @@ class HardwareRuntimeConfig:
     # Real Thorlabs piezo device serial (thorlabs_piezo.PiezoStage connects
     # by serial number, not a COM port) -- replaces the legacy prior_resource
     # ('COM7', a port that never existed on this lab's hardware and was
-    # never actually the real piezo; see pending_feedback.md item 4/5).
+    # never actually the real piezo).
     thorlabs_apt_serial: str
     valve_resource: str
     cetoni_config_path: str | Path

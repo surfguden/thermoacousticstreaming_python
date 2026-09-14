@@ -54,7 +54,7 @@ class PiezoStage:
     polling_interval_ms: int = 250
     settings_timeout_ms: int = 10000
     # Matches QmixPumpBackend.close_timeout_s's default -- the documented
-    # standard-hardware-cleanup-shape template (docs/hardware_safety_patterns.md).
+    # timeout-guarded hardware-cleanup pattern.
     disconnect_timeout_s: float = 5.0
 
     # Injectable for tests -- see module docstring. Left None in normal use;
@@ -166,8 +166,7 @@ class PiezoStage:
 
     def disconnect(self) -> None:
         # Timeout-guarded per step, collect-then-raise-once -- matches
-        # QmixPumpBackend.close()'s shape, the documented standard
-        # hardware-cleanup template (docs/hardware_safety_patterns.md).
+        # QmixPumpBackend.close()'s hardware-cleanup pattern.
         # Previously plain try/except with no timeout guard: a hung Kinesis
         # .NET call here could block indefinitely instead of being reported.
         # Drop-in behavioral superset of the old shape -- the success path

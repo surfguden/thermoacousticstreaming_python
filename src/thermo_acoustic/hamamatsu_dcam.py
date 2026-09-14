@@ -336,8 +336,7 @@ class HamamatsuDcamBackend:
         # (the previous code used DELAYED) risked being systematically wrong
         # for every future experiment's exposure timing; not touching the
         # property when disabled is the safer choice until this can be
-        # confirmed against the real LabVIEW application directly. See
-        # docs/known_open_items.md.
+        # confirmed against the real LabVIEW application directly.
         if not enabled:
             with log_call("camera", "configure_trigger_global_exposure", command="skip (disabled)") as result:
                 result["response"] = "not applied -- disabled, property left untouched"

@@ -748,8 +748,7 @@ def test_initialize_lets_every_device_attempt_independently_when_one_fails(tmp_p
     # attempt, and devices that succeed must not be torn back down just
     # because a later, unrelated device failed. Replaces the old
     # "stop at the first failure and roll back everything already-
-    # succeeded" behavior this same test used to assert -- see
-    # docs/hardware_repair_plan.md's "Initialization And Failure Recovery".
+    # succeeded" behavior this same test used to assert.
     calls = []
 
     class FailingValve(FakeValve):

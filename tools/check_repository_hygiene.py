@@ -1,11 +1,10 @@
-"""Validate tracked disposable-file hygiene and LabVIEW export consistency."""
+"""Validate tracked disposable files and repository-root pytest scratch."""
 
 from __future__ import annotations
 
 import argparse
 import json
 from pathlib import Path
-import runpy
 import subprocess
 
 
@@ -55,40 +54,6 @@ def repository_root_pytest_scratch_directories(root: Path) -> list[str]:
     )
 
 
-def check_labview_export(root: Path) -> list[str]:
-    issues: list[str] = []
-    export = root / "main_html" / "main.html"
-    manifest_path = root / "labview_manifest.json"
-    parser_path = root / "tools" / "parse_labview_export.py"
-    for path in (export, manifest_path, parser_path):
-        if not path.is_file():
-            issues.append(f"missing canonical LabVIEW artifact: {path.relative_to(root).as_posix()}")
-    if issues:
-        return issues
-
-    parser = runpy.run_path(str(parser_path))
-    documented = parser["parse_export"]()
-    document = export.read_text(encoding="utf-8", errors="replace")
-    referenced = parser["_referenced_items"](document)
-    expected = {
-        "export_html": "main_html/main.html",
-        "documented_vis": [
-            {"name": item.name, "images": item.images, "source_path": item.source_path}
-            for item in documented
-        ],
-        "referenced_items": [
-            {"name": item.name, "source_path": item.source_path} for item in referenced
-        ],
-    }
-    actual = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if actual != expected:
-        issues.append("labview_manifest.json does not match main_html/main.html parser output")
-    # Exported screenshots were retired by the owner on 2026-09-14.
-    # Image names remain historical metadata in the HTML and manifest;
-    # their binaries are recoverable from Git checkpoint 2528c1c.
-    return issues
-
-
 def validate_repository(root: Path) -> dict[str, object]:
     root = root.resolve()
     tracked = sorted(_git(root, "ls-files"))
@@ -99,13 +64,11 @@ def validate_repository(root: Path) -> dict[str, object]:
         f"repository-root pytest scratch directory: {path}"
         for path in root_pytest_scratch
     )
-    issues.extend(check_labview_export(root))
     return {
         "repository_root": str(root),
         "tracked_file_count": len(tracked),
         "tracked_disposable_paths": disposable,
         "repository_root_pytest_scratch_directories": root_pytest_scratch,
-        "labview_export_consistent": not any("LabVIEW" in issue or "labview_" in issue for issue in issues),
         "issues": issues,
         "ok": not issues,
     }

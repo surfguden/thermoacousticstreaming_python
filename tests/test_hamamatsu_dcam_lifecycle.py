@@ -351,7 +351,7 @@ def test_configure_trigger_global_exposure_disabled_does_not_set_property():
     # TRIGGER_GLOBALEXPOSURE enum member and the property-ID constant
     # visible at that block-diagram call site does not match this
     # property's real value in the vendored DCAM-API v4 header, an
-    # unresolved discrepancy (docs/known_open_items.md). Actively setting
+    # unresolved discrepancy. Actively setting
     # a specific guessed "off" value risked being systematically wrong for
     # every future experiment's exposure timing; leaving the property
     # untouched is the conservative choice until this is confirmed against

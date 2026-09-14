@@ -854,7 +854,7 @@ class MainWindowV3(MainWindowV3Compatibility):
             # The separate v3PrepareTecEquilibriumConfirmed checkbox
             # (_v3_prepare_temperature_group()) is untouched: it makes a
             # specific physical-equilibrium claim, not a generic
-            # acknowledgement (lessons_learned.md 1.4/7.11), and stays
+            # acknowledgement, and stays
             # operator-initiated.
             group_layout.addLayout(task_layout)
             if content_builder is not None:
@@ -1929,7 +1929,7 @@ class MainWindowV3(MainWindowV3Compatibility):
         # Imaging / Focus (the same self.roi_h_offset etc. widgets this label
         # projects), not here -- this button reaches that editable location
         # directly instead of leaving the operator to find it themselves
-        # (lessons_learned.md 7.10). Exposure remains directly editable in
+        # here. Exposure remains directly editable in
         # this same tab (self.exp_exposure_ms, above).
         edit_roi_in_prepare = QPushButton("Edit ROI in Prepare")
         edit_roi_in_prepare.setObjectName("v3ConfigureEditRoiInPrepare")
@@ -3187,7 +3187,7 @@ class MainWindowV3(MainWindowV3Compatibility):
     # worker is never running concurrently with Application.cleanup(). This
     # does not touch Exit's own pre-existing behavior (which does not gate on
     # these flags) -- that remains a recorded, separate, non-blocking
-    # follow-up (see docs/known_open_items.md), not something this narrower,
+    # follow-up, not something this narrower,
     # additive button needed to inherit.
     _V3_SHUTDOWN_HARDWARE_TOOLTIP_READY = (
         "Stop hardware motion/output and release device connections without "
@@ -3767,7 +3767,7 @@ class MainWindowV3(MainWindowV3Compatibility):
         note_row.addWidget(note, 1)
         # Checkpoint-B closure (2026-09-07): the note above already says
         # bounded motion moved to Prepare, but named it without a way to
-        # reach it (lessons_learned.md 7.10: a quick-open button must reach
+        # reach it (a quick-open button must reach
         # everything its own row promises). Stop pump itself stays directly
         # available here (below, via _pump_stop_button()) since it is
         # safety-relevant and stateless; Refill/Empty/Generate flow/Go-to-
@@ -3840,7 +3840,7 @@ class MainWindowV3(MainWindowV3Compatibility):
         # applied. This is a new presentation of the same
         # self.app.pump.syringe_config authority _v3_syringe_local_state
         # already reads in Manual & Service -- not a second syringe-state
-        # authority (lessons_learned.md 7.16) -- refreshed by the same
+        # authority -- refreshed by the same
         # _refresh_v3_pump_local_status() call both surfaces already share.
         self._v3_prepare_syringe_state = QLabel()
         self._v3_prepare_syringe_state.setObjectName("v3PrepareSyringeState")
@@ -4068,8 +4068,7 @@ class MainWindowV3(MainWindowV3Compatibility):
         # (self.exp_exposure_ms). It is deliberately independent (manual
         # preview/focus exposure vs. the scientific run request -- the same
         # operator-intent distinction as Guided Pump Preparation's manual
-        # flow rate vs. the automated flush recipe, lessons_learned.md
-        # 7.14/7.15): confirmed from source that Application.run_experiment2()
+        # flow rate vs. the automated flush recipe): Application.run_experiment2()
         # always reapplies self.exp_exposure_ms at Start, never this field.
         # ROI above is genuinely the single canonical authority (Application.
         # run_experiment2() reads self.roi_h_offset etc. via

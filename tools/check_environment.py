@@ -1,11 +1,8 @@
 """Sanity-check that the current Python environment has every real,
 third-party package the production app (launch_gui.bat -> qt_ui.py) needs.
 
-Run this after (re)creating the `exp_ctrl` conda environment, instead of
-only discovering a gap the first time a real experiment tries to use it --
-this is exactly how the original npTDMS gap went undetected until a real-
-hardware verification run tried to write data.tdms (2026-07-31, see
-docs/known_open_items.md).
+Run this after creating or updating the `exp_ctrl` conda environment to
+catch missing packages before an experiment needs them.
 
 Usage:
     python tools/check_environment.py

@@ -2162,7 +2162,7 @@ def test_valve_set_position_lazily_reconnects_when_never_initialized():
     # cross-device-abort design, or the operator simply never ran
     # Initialize Hardware this session. Matches the lazy-reconnect pattern
     # AD2Sdk.open_and_use_first_device()/HamamatsuDcamBackend.open_camera()
-    # already had -- see docs/hardware_repair_plan.md.
+    # already had.
     valve_backend = FakeTextBackend({"S": "1\r"})
     valve = Valve(backend=valve_backend, command_position_1="P01", command_position_2="P02")
     assert valve.initialized is False
@@ -2956,8 +2956,7 @@ def test_clear_fault_and_reinitialize_clears_fault_and_a_subsequent_initialize_t
 
 def test_clear_fault_and_reinitialize_still_fails_closed_if_fault_relatches(tmp_path):
     # Even the explicit fault-clear action must not silently succeed if the
-    # fault immediately relatches, matching the real hardware behavior
-    # documented in docs/hardware_repair_plan.md -- _enable_pump() is reused
+    # fault immediately relatches -- _enable_pump() is reused
     # completely unchanged as the final gate.
     FakeQmixPumpModule.Pump.instances = []
     original_pump = FakeQmixPumpModule.Pump

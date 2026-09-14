@@ -1048,9 +1048,7 @@ class Valve:
     # re-confirmed by a prior session too, not a one-off): the valve responds
     # correctly to the documented "S" status-query protocol on COM5, not the
     # previously-documented COM6 -- COM6 was a standing documentation error,
-    # not a transient port reassignment. LabVIEW screenshot evidence
-    # (docs/labview_migration_completeness_audit.md) already hinted COM5 was
-    # the real candidate; this was never independently verified until now.
+    # not a transient port reassignment.
     visa_resource: str = "COM5"
     backend: TextCommandBackend | None = None
     # Protocol-confirmed numeric positions. The physical fluidic routing of
@@ -1124,7 +1122,7 @@ class Valve:
         # must not require a prior, successful, whole-system
         # Application.initialize() -- e.g. this Valve was skipped because an
         # earlier device in the reporting order failed under the old
-        # cross-device-abort design (see docs/hardware_repair_plan.md), or
+        # cross-device-abort design, or
         # was simply never initialized this session for any other reason.
         # Deliberately calls initialize() itself rather than a shortcut
         # "just open the port" duplicate: unlike AD2/Camera's lazy-open,
@@ -1196,7 +1194,7 @@ class ZStage:
     connect()/disconnect() untouched; does not create a second, divergent
     connection path.
 
-    Replaces the legacy PriorZMotor/COM7 path (pending_feedback.md item 4):
+    Replaces the legacy PriorZMotor/COM7 path:
     PriorZMotor pointed the Initialize dialog's "Z-stage" checkbox at a
     serial port ('COM7') that never existed on this lab's hardware and was
     never actually the real piezo -- confirmed via real-hardware

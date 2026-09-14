@@ -1467,8 +1467,8 @@ def test_v3_stop_pump_carries_a_critical_stop_role_distinct_from_ordinary_actuat
 
         # Inspect the already-built group in place -- _v3_pump_operations_group()
         # embeds shared widgets (fill_flow_rate/level_ml) that are not safe to
-        # reparent by calling the builder a second time (lessons_learned.md
-        # 7.13): find its real, already-parented QGroupBox instead of rebuilding.
+        # reparent by calling the builder a second time: find its real,
+        # already-parented QGroupBox instead of rebuilding.
         pump_ops_group = stop_button.parentWidget()
         while pump_ops_group is not None and not isinstance(pump_ops_group, QGroupBox):
             pump_ops_group = pump_ops_group.parentWidget()
@@ -1546,9 +1546,8 @@ def test_v3_prepare_vertical_scroll_depth_is_reduced_from_the_pre_checkpoint_b_b
     """Checkpoint-B closure (2026-09-07), Section 26/28: semantic reduction
     (removing the eight zero-consumer checklist checkboxes) measurably
     shrinks Prepare's scroll burden -- proof the "reduce before reflow"
-    policy was actually followed, not merely asserted. Locks in the fresh
-    measurement recorded in known_open_items.md's UI-V3-PREPARE-SCROLL-001
-    entry against the pre-Checkpoint-B baseline it also records
+    policy was actually followed, not merely asserted. Compares the current
+    measurement against the pre-Checkpoint-B baseline
     (content height 1757/1729/1572 px at the three sizes)."""
     pre_checkpoint_b_content_height = {(1366, 768): 1757, (1440, 900): 1729, (1920, 1080): 1572}[size]
     window = make_window(monkeypatch, tmp_path)

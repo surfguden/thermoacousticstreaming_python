@@ -216,7 +216,7 @@ def test_disconnect_stops_polling_and_shuts_down():
 
 
 def test_disconnect_times_out_and_reports_instead_of_hanging_on_a_stuck_kinesis_call():
-    # Task 2 (pending_feedback.md item 6): disconnect() previously used
+    # disconnect() previously used
     # plain try/except with no timeout guard -- a hung Kinesis .NET call
     # (StopPolling/ShutDown) would have blocked disconnect() forever.
     # Retrofitted to match QmixPumpBackend.close()'s timeout-guarded-thread

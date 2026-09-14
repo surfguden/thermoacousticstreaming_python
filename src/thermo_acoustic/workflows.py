@@ -327,7 +327,7 @@ class Experiment2:
     # data.tdms, so a run where e.g. AD2 was genuinely disabled (its
     # per-step hardware calls skipped entirely by run_experiment2(), not
     # attempted) looked structurally identical to a run where AD2 was fully
-    # active. See known_open_items.md.
+    # active.
     ad2_enabled: bool = True
     camera_enabled: bool = True
     pump_enabled: bool = True
@@ -337,7 +337,7 @@ class Experiment2:
     # manual, operator-initiated pump fault-clear escape hatch -- had been
     # used at any point in the session by the time this repeat ran. Set by
     # Application.run_experiment2() from live Application state, same
-    # pattern as sim_*/*_enabled above. See docs/hardware_repair_plan.md.
+    # pattern as sim_*/*_enabled above.
     pump_fault_manually_cleared: bool = False
     # Set only after Application successfully configures the canonical
     # DigitalOut program. It is API configuration evidence, never an

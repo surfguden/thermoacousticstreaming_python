@@ -805,8 +805,8 @@ def test_two_row_split_lets_the_widest_fields_fit_where_one_row_never_could(
 def test_two_row_split_stays_within_the_strips_existing_height_budget(monkeypatch, tmp_path):
     """The known tradeoff of a two-row line is height; confirm it was paid, not exceeded.
 
-    known_open_items.md anticipated a two-row split would cost the strip's
-    105 px height budget. Measured after implementing it: 119 px -- more
+    A two-row split exceeds the strip's former 105 px height budget.
+    Measured after implementing it: 119 px -- more
     than before, but still inside the persistent instrument bar's own
     existing `<= 120 px` contract (see test_qt_ui_v3.py's horizontal-
     containment test), not a silently expanding strip.

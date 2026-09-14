@@ -952,9 +952,8 @@ class MainWindow(QMainWindow):
             "matching Simulate checkbox for Z stage (only AD2/Camera/Pump/Valve have one); when On, "
             "hardware_factory.build_hardware_bundle() connects to the real Thorlabs piezo "
             "(thorlabs_apt_serial, below) via the same thorlabs_piezo.PiezoStage connection the "
-            "Z-Scan tab uses -- not the legacy Prior-serial/COM7 path this used to build (that path "
-            "pointed at a port that never existed on this lab's hardware; see "
-            "docs/pending_feedback.md item 4). Initialize only connects and reads device state; it does "
+            "Z-Scan tab uses. The legacy Prior-serial/COM7 path is retired. "
+            "Initialize only connects and reads device state; it does "
             "not authorize or perform piezo motion. Motion remains limited to the separately confirmed "
             "Z-Scan workflow. Z stage backend selection still has no real effect (there is only one real "
             "backend now)."
@@ -1002,9 +1001,7 @@ class MainWindow(QMainWindow):
         self.prior_resource = QLineEdit(hardware_defaults.z_stage.prior_resource)
         self.prior_resource.setToolTip(
             "Not wired to a real backend: the legacy Prior Z-motor/COM7 connection path this used "
-            "to feed was retired (it pointed at a port that never existed on this lab's hardware "
-            "and was never actually the real piezo -- confirmed via real-hardware investigation, "
-            "docs/pending_feedback.md item 4). 'Z stage' now always connects to the real Thorlabs "
+            "to feed was retired. 'Z stage' now always connects to the real Thorlabs "
             "piezo via thorlabs_apt_serial below, not this field."
         )
         self.thorlabs_apt_serial = QLineEdit(hardware_defaults.z_stage.thorlabs_apt_serial)
@@ -2891,8 +2888,8 @@ class MainWindow(QMainWindow):
         # Experiment tab's own "Exposure time (ms)" field. It is not: this
         # field is deliberately independent (same distinction as the manual
         # Pump tab's flow rate vs. the Experiment tab's flush recipe --
-        # operator intent, not backend identity, per lessons_learned.md
-        # 7.14/7.15). Automated runs always reapply the Experiment tab's own
+        # operator intent, not backend identity). Automated runs always
+        # reapply the Experiment tab's own
         # exposure request (Application.run_experiment2() ->
         # configure_exposure_time(requested_exposure_ms)), confirmed from
         # source, not merely from this field's own tooltip. Renaming the
@@ -4156,8 +4153,8 @@ class MainWindow(QMainWindow):
         Instead this compares the SELECTED recipe (widget values) against
         `self.app.pump.syringe_config`, which `CetoniPump.configure_syringe()`
         already only sets after a real backend call succeeds (Option 3: the
-        minimum session-local "selected vs successfully applied" distinction
-        -- see docs/project_control.md). Returns `None` (UNKNOWN, not
+        minimum session-local "selected vs successfully applied" distinction).
+        Returns `None` (UNKNOWN, not
         CURRENT) when nothing has been successfully applied yet in this
         hardware session -- a fresh `CetoniPump` instance built by
         Initialize/Reinitialize starts `syringe_config=None`, so this
@@ -4216,8 +4213,7 @@ class MainWindow(QMainWindow):
             "Normal initialization clears the vendor fault latch. Use this separate "
             "manual recovery only for a fault observed later in the session, or when you "
             "want an explicit fresh reconnect. A fault that remains or relatches still "
-            "blocks drive enable. This does NOT fix the underlying cause; see "
-            "docs/hardware_repair_plan.md.\n\n"
+            "blocks drive enable. This does NOT fix the underlying cause.\n\n"
             "This action is recorded in the status/error history below, and in data.tdms "
             "if an experiment run follows this session.\n\n"
             "Clear the fault and retry the pump connection now?",

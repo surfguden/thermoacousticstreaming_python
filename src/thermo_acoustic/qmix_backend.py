@@ -504,7 +504,7 @@ class QmixPumpBackend:
         # Deliberately not wrapped in log_call() -- close() already collects
         # errors from each step (via _run_close_step's own timeout-wrapped
         # thread) and raises once at the end, the standard hardware-cleanup
-        # shape documented in docs/hardware_safety_patterns.md; log the
+        # shape; log the
         # overall outcome without altering that collect-then-raise control flow.
         errors: list[str] = []
         if self.bus_started and self.pump is not None:

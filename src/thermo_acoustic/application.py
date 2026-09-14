@@ -617,13 +617,8 @@ class Application:
         # attempt, and a device that DID succeed must not be torn back down
         # just because a later, unrelated device failed. This replaces the
         # previous "stop at the first failure and roll back everything
-        # already-succeeded" loop -- see docs/hardware_repair_plan.md's
-        # "Initialization And Failure Recovery" section and
-        # docs/claude_code_change_log.md's dated entry for the investigation
-        # that found the old cross-device rollback had no documented
-        # dependency rationale anywhere in this project's history; every
-        # actual per-device rollback gap this project fixed (Sessions 96-99)
-        # was about a device cleaning up its OWN partial-init state, never
+        # already-succeeded" loop. The per-device rollback gaps fixed here
+        # were about a device cleaning up its OWN partial-init state, never
         # about one device's failure requiring another's teardown. Per-device
         # rollback-on-partial-failure inside a single instrument's own
         # initialize() (Valve/CetoniPump/PiezoStage/TEC's own local cleanup
@@ -1104,9 +1099,8 @@ class Application:
             # would silently succeed with a normal-looking "ExperimentComplete"/
             # data.tdms and a physically impossible negative pump.fill_level
             # pushed straight to set_fill_level() -- and, on real hardware,
-            # straight to the Qmix SDK. docs/hardware_safety_patterns.md's
-            # decision tree: this is neither a live device query nor a fixed
-            # vendor-manual ceiling -- it's already-known in-memory application
+            # straight to the Qmix SDK. This is neither a live device query
+            # nor a fixed vendor-manual ceiling -- it's in-memory application
             # state (self.pump.fill_level, no vendor research or device round
             # trip needed) -- but the "reject, don't clamp" choice still
             # applies, for the same reason Patterns (c)/(d) reject rather than
@@ -1141,7 +1135,7 @@ class Application:
             # `max_volume_ml` bookkeeping default many callers set directly)
             # and fail closed with a diagnosable message, rather than a
             # universal 0<=fill<=capacity Start-time gate (deliberately not
-            # added -- see docs/known_open_items.md HW-PUMP-FILL-GEOMETRY-001).
+            # added; broader fill-geometry validation remains unresolved).
             # getattr, not direct attribute access: some tests substitute a
             # minimal pump double (e.g. FakePump) that predates this field
             # and has no reason to carry it -- an absent attribute must mean

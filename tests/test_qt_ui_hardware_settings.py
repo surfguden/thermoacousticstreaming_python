@@ -1345,7 +1345,7 @@ def test_qt_ui_save_and_restore_camera_manual_tab_fields(monkeypatch, tmp_path):
     # together by connected signals (conversion_method -> conversion_shifts
     # via _update_conversion_controls()) -- closing both here avoids adding
     # to the cumulative live-widget count that the documented PySide6/
-    # shiboken offscreen flakiness (known_open_items.md) is triggered by.
+    # shiboken offscreen flakiness is triggered by.
     first_window.close()
     second_window.close()
 
@@ -3699,7 +3699,7 @@ def test_clear_pump_fault_button_shows_warning_and_is_not_skippable(monkeypatch,
 
         assert len(question_calls) == 1, "declining must not be reachable without the warning dialog having been shown"
         warning_text = question_calls[0][0][2]
-        assert "hardware_repair_plan.md" in warning_text
+        assert "A fault that remains or relatches still blocks drive enable" in warning_text
         assert "does NOT fix the underlying cause" in warning_text
         assert run_action_calls == [], "declining the warning must not clear the fault or reconnect"
     finally:

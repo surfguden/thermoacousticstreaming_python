@@ -121,14 +121,14 @@ def test_hygiene_detects_repository_root_pytest_bases(tmp_path):
     ]
 
 
-def test_current_labview_export_matches_manifest_and_has_no_tracked_caches():
+def test_current_repository_has_no_tracked_caches_or_root_pytest_scratch():
     tool = _load_tool("check_repository_hygiene")
 
     report = tool.validate_repository(ROOT)
 
     assert report["ok"], report["issues"]
     assert report["tracked_disposable_paths"] == []
-    assert report["labview_export_consistent"] is True
+    assert report["repository_root_pytest_scratch_directories"] == []
 
 
 def test_pytest_and_ci_keep_real_hardware_outside_collection():
