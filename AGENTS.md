@@ -14,6 +14,9 @@
   Never discard work or rewrite history without explicit authorization.
 - Read only the context needed for the task. Verify facts against current code
   and evidence; label assumptions.
+- Treat the old application at Git tag `reference/old-ui` and its separate
+  reference checkout as reference only. Read it only when explicitly requested;
+  do not use it as the architecture for new code.
 - Only access hardware when explicitly authorized. Passive UI rendering,
   automated tests, and CI must not access hardware. Keep hardware probes
   manual-only and explicitly gated under `hardware_tests/`. Do not treat
