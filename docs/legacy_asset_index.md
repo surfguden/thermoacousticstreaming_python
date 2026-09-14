@@ -51,6 +51,12 @@ These images are not runtime UI assets and should not be rewritten into Python.
 Treat all vendor material as read-only support evidence unless a vendor SDK
 upgrade is separately authorized.
 
+## Vendor manuals — VENDOR SUPPORT MATERIAL
+
+| Asset | Contents | Boundary |
+| --- | --- | --- |
+| `docs/vendor_manuals/M-042_iBEAM_smart_manual_v09.pdf` | TOPTICA Photonics SE *iBEAM smart Manual*, M-042 Version 09, dated December 2025 | Reference documentation for the laser; it is not an operator authorization, a hardware-validation record, or a substitute for current site safety procedures |
+
 ## Other retained material
 
 | Classification | Assets | Reason |
