@@ -5,7 +5,7 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
-from ..infrastructure import build_simulated_application
+from ..infrastructure import build_real_application, build_simulated_application
 from .main_window import MainWindow, configure_palette
 
 
@@ -13,14 +13,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Thermo-acoustic control UI")
     parser.add_argument(
         "--mode",
-        choices=("simulation",),
+        choices=("simulation", "real"),
         default="simulation",
-        help="Only offline simulation is available until real adapters are commissioned.",
+        help="Real mode constructs adapters but connects only after explicit UI actions.",
     )
-    parser.parse_args(argv)
+    args = parser.parse_args(argv)
     qt_app = QApplication(sys.argv[:1])
     configure_palette(qt_app)
-    window = MainWindow(build_simulated_application())
+    lab = build_real_application() if args.mode == "real" else build_simulated_application()
+    window = MainWindow(lab)
     window.show()
     return qt_app.exec()
 

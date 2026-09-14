@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import partial
+from dataclasses import asdict, is_dataclass
 from typing import Any
 
 from PySide6.QtCore import Qt, QTimer
@@ -8,7 +9,6 @@ from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
-    QComboBox,
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
@@ -28,22 +28,40 @@ from PySide6.QtWidgets import (
 
 from ..application import LabApplication
 from ..domain import (
+    CameraConfig,
+    CaptureSnapshot,
+    ConfigureCamera,
+    ConfigureWaveform,
     ConnectionState,
     DEVICE_LABELS,
     DeviceId,
+    DisableTecOutputs,
     ExperimentPlan,
     ExperimentState,
-    ExperimentStep,
     LabSnapshot,
+    MoveZStage,
+    OperatingMode,
+    SetPumpFlow,
+    SetTemperature,
+    SetValvePosition,
+    StartWaveform,
+    StopPump,
+    StopWaveform,
+    TemperatureSetpoints,
+    ValvePosition,
+    WaveformConfig,
+    EnableZStageClosedLoop,
+    command_device,
 )
+from ..application.plans import simulation_demo_plan
 
 
 NAV_ITEMS = (
     ("Overview", "System status and explicit device connections"),
     ("Waveform", "AD2 signal configuration and output"),
-    ("Pump & valve", "Flow and fluid-path controls"),
+    ("Pump && valve", "Flow and fluid-path controls"),
     ("Camera", "Acquisition settings and snapshots"),
-    ("Temperature & Z", "Thermal setpoint and focus position"),
+    ("Temperature && Z", "Thermal setpoint and focus position"),
     ("Experiment", "Review and run application-owned sequences"),
 )
 
@@ -88,11 +106,25 @@ class DeviceCard(QFrame):
         buttons = QHBoxLayout()
         self.connect_button = QPushButton("Connect")
         self.disconnect_button = QPushButton("Disconnect")
-        self.connect_button.clicked.connect(lambda: self._call(app.connect))
-        self.disconnect_button.clicked.connect(lambda: self._call(app.disconnect))
+        self.connect_button.clicked.connect(self._connect)
+        self.disconnect_button.clicked.connect(self._disconnect)
         buttons.addWidget(self.connect_button)
         buttons.addWidget(self.disconnect_button)
         layout.addLayout(buttons)
+
+    def _connect(self) -> None:
+        if self.app.mode is OperatingMode.REAL:
+            answer = QMessageBox.question(
+                self,
+                "Connect real hardware",
+                f"Connect to the real {DEVICE_LABELS[self.device]}?",
+            )
+            if answer != QMessageBox.Yes:
+                return
+        self._call(self.app.connect_async)
+
+    def _disconnect(self) -> None:
+        self._call(self.app.disconnect_async)
 
     def _call(self, action: Any) -> None:
         try:
@@ -106,8 +138,8 @@ class DeviceCard(QFrame):
         self.badge.setText(state.connection.value.title())
         self.badge.setStyleSheet(f"color: {'#7ee2b8' if connected else '#93a2b5'}")
         self.detail.setText(state.summary)
-        self.connect_button.setEnabled(not connected)
-        self.disconnect_button.setEnabled(connected)
+        self.connect_button.setEnabled(not connected and not state.busy)
+        self.disconnect_button.setEnabled(connected and not state.busy)
 
 
 class ActionPage(QWidget):
@@ -126,9 +158,7 @@ class ActionPage(QWidget):
     def action_button(
         self,
         text: str,
-        device: DeviceId,
-        command: str,
-        parameters: Any = None,
+        command: Any,
         *,
         confirmation: str | None = None,
     ) -> QPushButton:
@@ -138,8 +168,8 @@ class ActionPage(QWidget):
             if confirmation and QMessageBox.question(self, "Confirm action", confirmation) != QMessageBox.Yes:
                 return
             try:
-                values = parameters() if callable(parameters) else (parameters or {})
-                self.app.execute(device, command, values)
+                request = command() if callable(command) else command
+                self.app.execute_async(request)
             except Exception as exc:
                 QMessageBox.warning(self, "Action not completed", str(exc))
 
@@ -163,24 +193,23 @@ class WaveformPage(ActionPage):
         form.addRow("Frequency (Hz)", self.frequency)
         form.addRow("Amplitude (V)", self.amplitude)
         row = QHBoxLayout()
-        row.addWidget(self.action_button("Apply configuration", DeviceId.AD2, "configure_waveform", self.values))
+        row.addWidget(self.action_button("Apply configuration", self.configure_command))
         start = self.action_button(
             "Start output",
-            DeviceId.AD2,
-            "start",
+            StartWaveform(),
             confirmation="Enable waveform output with the current applied configuration?",
         )
         start.setObjectName("primary")
         row.addWidget(start)
-        stop = self.action_button("Stop output", DeviceId.AD2, "stop")
+        stop = self.action_button("Stop output", StopWaveform())
         stop.setObjectName("danger")
         row.addWidget(stop)
         form.addRow(row)
         self.layout.addWidget(card)
         self.layout.addStretch()
 
-    def values(self) -> dict[str, float]:
-        return {"frequency_hz": self.frequency.value(), "amplitude_v": self.amplitude.value()}
+    def configure_command(self) -> ConfigureWaveform:
+        return ConfigureWaveform(WaveformConfig(frequency_hz=self.frequency.value(), amplitude_v=self.amplitude.value()))
 
 
 class PumpValvePage(ActionPage):
@@ -193,8 +222,8 @@ class PumpValvePage(ActionPage):
         self.flow.setValue(100)
         pump_form.addRow("Flow (µL/min)", self.flow)
         row = QHBoxLayout()
-        row.addWidget(self.action_button("Set flow", DeviceId.PUMP, "set_flow", lambda: {"flow_ul_min": self.flow.value()}, confirmation="Start pump flow at the entered rate?"))
-        stop = self.action_button("Stop pump", DeviceId.PUMP, "stop")
+        row.addWidget(self.action_button("Set flow", lambda: SetPumpFlow(self.flow.value()), confirmation="Start pump flow at the entered rate?"))
+        stop = self.action_button("Stop pump", StopPump())
         stop.setObjectName("danger")
         row.addWidget(stop)
         pump_form.addRow(row)
@@ -203,7 +232,7 @@ class PumpValvePage(ActionPage):
         valve_layout = QHBoxLayout(valve)
         valve_layout.addWidget(QLabel("Valve position"))
         for position in (1, 2):
-            valve_layout.addWidget(self.action_button(f"Move to {position}", DeviceId.VALVE, "set_position", {"position": position}, confirmation=f"Move the valve to numeric position {position}? Fluid routing must be verified at the bench."))
+            valve_layout.addWidget(self.action_button(f"Move to {position}", SetValvePosition(ValvePosition(position)), confirmation=f"Move the valve to numeric position {position}? Fluid routing must be verified at the bench."))
         self.layout.addWidget(valve)
         self.layout.addStretch()
 
@@ -222,8 +251,8 @@ class CameraPage(ActionPage):
         form.addRow("Exposure (ms)", self.exposure)
         form.addRow("Frame count", self.frames)
         row = QHBoxLayout()
-        row.addWidget(self.action_button("Apply settings", DeviceId.CAMERA, "configure", lambda: {"exposure_ms": self.exposure.value(), "frame_count": self.frames.value()}))
-        row.addWidget(self.action_button("Take snapshot", DeviceId.CAMERA, "snapshot"))
+        row.addWidget(self.action_button("Apply settings", lambda: ConfigureCamera(CameraConfig(exposure_ms=self.exposure.value(), frame_count=self.frames.value()))))
+        row.addWidget(self.action_button("Take snapshot", CaptureSnapshot()))
         form.addRow(row)
         self.layout.addWidget(card)
         preview = QLabel("Image preview will appear here after a capture adapter is commissioned.")
@@ -242,7 +271,7 @@ class TemperaturePage(ActionPage):
         self.temperature.setRange(-20, 120)
         self.temperature.setValue(25)
         temp_form.addRow("Target (°C)", self.temperature)
-        temp_form.addRow(self.action_button("Apply setpoint", DeviceId.TEC, "set_temperature", lambda: {"temperature_c": self.temperature.value()}, confirmation="Apply this temperature to the configured TEC channels?"), self.action_button("Outputs off", DeviceId.TEC, "outputs_off"))
+        temp_form.addRow(self.action_button("Apply setpoint", lambda: SetTemperature(TemperatureSetpoints({1: self.temperature.value(), 2: self.temperature.value()})), confirmation="Apply this temperature to the configured TEC channels?"), self.action_button("Outputs off", DisableTecOutputs()))
         self.layout.addWidget(temp)
         stage = QFrame(objectName="card")
         stage_form = QFormLayout(stage)
@@ -250,7 +279,10 @@ class TemperaturePage(ActionPage):
         self.position.setRange(0, 450)
         self.position.setDecimals(2)
         stage_form.addRow("Position (µm)", self.position)
-        stage_form.addRow(self.action_button("Move Z-stage", DeviceId.Z_STAGE, "move_um", lambda: {"position_um": self.position.value()}, confirmation="Move the piezo Z-stage to this absolute position?"))
+        stage_buttons = QHBoxLayout()
+        stage_buttons.addWidget(self.action_button("Enable closed loop", EnableZStageClosedLoop(), confirmation="Switch the Z-stage to closed-loop control?"))
+        stage_buttons.addWidget(self.action_button("Move Z-stage", lambda: MoveZStage(self.position.value()), confirmation="Move the piezo Z-stage to this absolute position?"))
+        stage_form.addRow(stage_buttons)
         self.layout.addWidget(stage)
         self.layout.addStretch()
 
@@ -274,23 +306,21 @@ class ExperimentPage(ActionPage):
         buttons.addWidget(run)
         cancel = QPushButton("Cancel")
         cancel.setObjectName("danger")
-        cancel.clicked.connect(app.cancel_experiment)
+        cancel.clicked.connect(lambda: app.cancel_experiment_async())
         buttons.addWidget(cancel)
         self.layout.addLayout(buttons)
         self.plan: ExperimentPlan | None = None
 
     def load_demo(self) -> None:
-        self.plan = ExperimentPlan(
-            "Simulation demonstration",
-            (
-                ExperimentStep(DeviceId.AD2, "configure_waveform", {"frequency_hz": 1_000_000, "amplitude_v": 1.0}, 0.2, "Configure waveform"),
-                ExperimentStep(DeviceId.CAMERA, "configure", {"exposure_ms": 1.0, "frame_count": 1}, 0.2, "Configure camera"),
-                ExperimentStep(DeviceId.CAMERA, "snapshot", {}, 0, "Take snapshot"),
-            ),
-        )
+        if self.app.mode is OperatingMode.REAL:
+            QMessageBox.information(self, "Simulation plan", "The demonstration plan is available only in simulation mode.")
+            return
+        self.plan = simulation_demo_plan()
         self.table.setRowCount(len(self.plan.steps))
         for row, step in enumerate(self.plan.steps):
-            values = (DEVICE_LABELS[step.device], step.label or step.command, str(step.parameters), f"{step.delay_after_s:g} s")
+            command = step.command
+            parameters = asdict(command) if is_dataclass(command) else {}
+            values = (DEVICE_LABELS[command_device(command)], step.label or type(command).__name__, str(parameters), f"{step.delay_after_s:g} s")
             for column, value in enumerate(values):
                 self.table.setItem(row, column, QTableWidgetItem(value))
 
@@ -344,10 +374,10 @@ class MainWindow(QMainWindow):
         self.cards: dict[DeviceId, DeviceCard] = {}
         self._build_pages()
         self.show_page(0)
-        self.unsubscribe = app.subscribe(self.render)
         self.timer = QTimer(self)
-        self.timer.timeout.connect(app.tick)
-        self.timer.start(50)
+        self.timer.timeout.connect(self.refresh)
+        self.timer.start(100)
+        self.refresh()
 
     def _build_pages(self) -> None:
         overview = ActionPage(self.app, "Overview", "Device connections are explicit and independent.")
@@ -380,11 +410,13 @@ class MainWindow(QMainWindow):
         for card in self.cards.values():
             card.update_state(snapshot)
 
+    def refresh(self) -> None:
+        self.render(self.app.snapshot())
+
     def closeEvent(self, event: Any) -> None:
         errors = self.app.shutdown()
         if errors:
             QMessageBox.warning(self, "Shutdown warning", "\n".join(errors))
-        self.unsubscribe()
         event.accept()
 
 

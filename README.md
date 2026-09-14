@@ -1,31 +1,42 @@
 # Thermo-acoustic control
 
-The retained instrument drivers now sit behind a new simulation-first
-application boundary and desktop UI. Real-hardware adapters are deliberately
-not enabled yet; launching or passively rendering the UI does not probe,
-import, or initialize hardware.
+The retained instrument drivers sit behind a typed, simulation-first application
+boundary and a PySide6 desktop UI. Simulation is the default. Real adapters are
+available only through an explicit `--mode real` launch and every real device
+still requires a separate, confirmed Connect action. Launching or passively
+rendering either mode does not probe or initialize hardware.
 
 ## Architecture
 
 Dependencies point inward and the UI knows nothing about driver classes:
 
 ```text
-PySide6 UI -> application actions/state -> device ports -> adapters -> drivers
-                         ^
-                 experiment runner
+PySide6 UI -> typed commands -> application services -> typed device ports
+                                     |                    |
+                              experiment runner      adapters -> drivers
+                                     |
+                              safety coordinator
 ```
 
 | Layer | Location | Responsibility |
 | --- | --- | --- |
-| Domain | `src/thermo_acoustic/domain/` | Immutable device, experiment, and status models |
-| Application | `src/thermo_acoustic/application/` | Lifecycle, validation, and non-blocking sequence execution |
-| Infrastructure | `src/thermo_acoustic/infrastructure/` | Explicit simulated/real adapter selection |
-| Presentation | `src/thermo_acoustic/ui/` | Render state, collect input, and invoke application actions |
+| Domain | `src/thermo_acoustic/domain/` | Immutable commands, configurations, results, status flags, and experiment plans |
+| Application | `src/thermo_acoustic/application/` | Command routing, per-device serialization, background execution, sequences, and safe shutdown |
+| Infrastructure | `src/thermo_acoustic/infrastructure/` | Typed simulated and real adapters around retained drivers |
+| Presentation | `src/thermo_acoustic/ui/` | Render passive snapshots, collect input, and invoke typed application actions |
 
-The initial infrastructure implementation is simulation-only. Connecting to
-real devices will require a separately reviewed adapter implementation and an
-explicit real-mode choice. Safety limits and connection preconditions are
-enforced in the application layer even though the UI also uses confirmations.
+This is a pragmatic Hexagonal (Ports-and-Adapters) architecture. The ports are
+Python protocols rather than factories or inheritance-heavy base classes.
+Commands are typed per operation, and each adapter exposes simple status flags
+(`connected`, `busy`, `configured`, `active`, `fault`) instead of embedding a
+state-machine class. Safety limits and connection preconditions are enforced in
+the application layer even though the UI also uses confirmations. Experiment
+plans and their worker are application-owned; Qt never advances a sequence.
+
+All potentially blocking device calls run outside the Qt event thread. UI
+refreshes consume cached adapter state only; they never poll real hardware.
+Experiment cancellation, failure, and application shutdown use the centralized
+best-effort safety coordinator to stop active outputs before disconnecting.
 
 ## Run the offline UI
 
@@ -37,9 +48,20 @@ pip install -e ".[ui]"
 python tools\run_ui.py
 ```
 
-The only accepted mode is currently `simulation`. The Overview page provides
-explicit simulated connections. Device pages exercise validated application
-actions, and the Experiment page demonstrates an application-owned sequence.
+The default mode is `simulation`. The Overview page provides explicit device
+connections. Device pages submit typed actions, and the Experiment page
+demonstrates an application-owned simulation sequence.
+
+Real mode must be chosen explicitly:
+
+```powershell
+python tools\run_ui.py --mode real
+```
+
+This constructs real adapters but performs no device I/O until the operator
+confirms a Connect action. Real execution still requires workstation-specific
+vendor runtimes and bench commissioning; offline success is not proof of
+physical behavior.
 
 Offline tests use simulation/fakes only:
 

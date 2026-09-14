@@ -1,53 +1,81 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-import time
+import threading
 
-from ..domain import ExperimentPlan, ExperimentState
-from .validation import validate_plan
+from ..domain import ExperimentPlan, ExperimentState, ExperimentStatus, LabCommand
 
 
 class ExperimentRunner:
-    """Non-blocking sequence state machine; presentation code only ticks it."""
+    """Application-owned sequence runner using flags and an interruptible worker."""
 
-    def __init__(self, execute: Callable[..., None]) -> None:
+    def __init__(
+        self,
+        execute: Callable[[LabCommand], object],
+        on_finish: Callable[[ExperimentState, str | None], None] | None = None,
+    ) -> None:
         self._execute = execute
-        self.plan: ExperimentPlan | None = None
-        self.state = ExperimentState.IDLE
-        self.step_index = 0
-        self.next_step_at = 0.0
-        self.error: str | None = None
+        self._on_finish = on_finish
+        self._lock = threading.RLock()
+        self._cancel = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._state = ExperimentState.IDLE
+        self._completed_steps = 0
+        self._total_steps = 0
+        self._fault: str | None = None
 
-    def start(self, plan: ExperimentPlan, *, now: float | None = None) -> None:
-        if self.state is ExperimentState.RUNNING:
-            raise RuntimeError("An experiment is already running")
-        validate_plan(plan)
-        self.plan = plan
-        self.state = ExperimentState.RUNNING
-        self.step_index = 0
-        self.next_step_at = time.monotonic() if now is None else now
-        self.error = None
+    def status(self) -> ExperimentStatus:
+        with self._lock:
+            return ExperimentStatus(
+                state=self._state,
+                completed_steps=self._completed_steps,
+                total_steps=self._total_steps,
+                fault=self._fault,
+            )
 
-    def cancel(self) -> None:
-        if self.state is ExperimentState.RUNNING:
-            self.state = ExperimentState.CANCELLED
+    def start(self, plan: ExperimentPlan) -> None:
+        with self._lock:
+            if self._state is ExperimentState.RUNNING:
+                raise RuntimeError("An experiment is already running")
+            self._cancel.clear()
+            self._state = ExperimentState.RUNNING
+            self._completed_steps = 0
+            self._total_steps = len(plan.steps)
+            self._fault = None
+            self._thread = threading.Thread(
+                target=self._run,
+                args=(plan,),
+                name="experiment-runner",
+                daemon=True,
+            )
+            self._thread.start()
 
-    def tick(self, *, now: float | None = None) -> bool:
-        if self.state is not ExperimentState.RUNNING or self.plan is None:
-            return False
-        current_time = time.monotonic() if now is None else now
-        if current_time < self.next_step_at:
-            return False
-        step = self.plan.steps[self.step_index]
+    def cancel(self, *, wait: bool = False, timeout_s: float = 5.0) -> None:
+        self._cancel.set()
+        thread = self._thread
+        if wait and thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=max(timeout_s, 0.0))
+
+    def _run(self, plan: ExperimentPlan) -> None:
         try:
-            self._execute(step.device, step.command, step.parameters)
+            for step in plan.steps:
+                if self._cancel.is_set():
+                    self._finish(ExperimentState.CANCELLED)
+                    return
+                self._execute(step.command)
+                with self._lock:
+                    self._completed_steps += 1
+                if step.delay_after_s and self._cancel.wait(step.delay_after_s):
+                    self._finish(ExperimentState.CANCELLED)
+                    return
         except Exception as exc:
-            self.error = str(exc)
-            self.state = ExperimentState.FAILED
-            return True
-        self.step_index += 1
-        if self.step_index >= len(self.plan.steps):
-            self.state = ExperimentState.COMPLETED
-        else:
-            self.next_step_at = current_time + step.delay_after_s
-        return True
+            self._finish(ExperimentState.FAILED, str(exc))
+            return
+        self._finish(ExperimentState.COMPLETED)
+
+    def _finish(self, state: ExperimentState, fault: str | None = None) -> None:
+        with self._lock:
+            self._state = state
+            self._fault = fault
+        if self._on_finish is not None:
+            self._on_finish(state, fault)
