@@ -17,6 +17,10 @@ pythonnet==3.1.0
 clr_loader==0.3.1
 mecom @ git+https://github.com/meerstetter/pyMeCom.git@v1.1
 
+# New desktop presentation layer. Startup is simulation-only and does not
+# import or initialize any retained hardware driver.
+PySide6>=6.8,<7
+
 # Optional APT discovery and retained Windows environment support.
 pylablib==1.4.5
 pywin32==312

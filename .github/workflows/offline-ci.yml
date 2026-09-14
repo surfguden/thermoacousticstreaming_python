@@ -15,5 +15,9 @@ jobs:
           python-version: "3.11"
       - name: Check Python syntax without importing hardware code
         run: python -m compileall -q src tools hardware_tests
+      - name: Run offline application tests
+        env:
+          PYTHONPATH: src
+        run: python -m unittest discover -s tests -v
       - name: Check repository hygiene
         run: python tools/check_repository_hygiene.py

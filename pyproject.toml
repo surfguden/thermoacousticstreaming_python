@@ -14,6 +14,11 @@ dependencies = [
 [project.optional-dependencies]
 thorlabs-apt-discovery = ["pylablib>=0.5"]
 capture-plot = ["matplotlib"]
+ui = ["PySide6>=6.8,<7"]
+test = ["pytest>=8,<10"]
+
+[project.scripts]
+thermo-acoustic-ui = "thermo_acoustic.ui.main:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
