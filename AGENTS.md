@@ -2,6 +2,9 @@
 
 - First priority: before creating, modifying, or deleting any file, tell the user
   what you intend to change.
+- Do not modify, replace, or delete `AGENTS.md` without explicit user approval.
+  When merging branches, flag any incoming changes to this file before accepting
+  them.
 - Stay within the requested scope. Preserve existing behavior unless a change is
   requested. Ask when requirements are unclear.
 - Check Git status before editing and preserve unrelated work. Commit non-minor
