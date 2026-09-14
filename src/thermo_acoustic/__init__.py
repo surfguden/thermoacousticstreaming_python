@@ -1,2 +1,1 @@
-"""Python conversion of the LabVIEW thermo-acoustic streaming application."""
-
+"""Hardware drivers and supporting device types for the lab instruments."""

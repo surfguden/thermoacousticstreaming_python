@@ -1,8 +1,8 @@
-"""Sanity-check that the current Python environment has every real,
-third-party package the production app (launch_gui.bat -> qt_ui.py) needs.
+"""Check Python dependencies for the retained hardware drivers.
 
 Run this after creating or updating the `exp_ctrl` conda environment to
-catch missing packages before an experiment needs them.
+catch missing packages before authorized hardware use. This does not validate
+vendor SDK installations or physical device behavior.
 
 Usage:
     python tools/check_environment.py
@@ -17,19 +17,18 @@ import sys
 
 # name -> (module to import, why it's needed, which real file imports it)
 CORE_DEPENDENCIES: dict[str, tuple[str, str]] = {
-    "PySide6": ("PySide6.QtWidgets", "qt_ui.py / qt_ui_v3.py -- the whole GUI"),
     "Pillow": ("PIL", "used for image handling"),
     "pyserial": ("serial", "instruments.py -- valve serial backend"),
-    "npTDMS": ("nptdms", "workflows.py -- writing data.tdms; missing until 2026-07-31"),
-    "numpy": ("numpy", "workflows.py / qt_ui.py -- top-level imports, always needed"),
+    "numpy": ("numpy", "DCAM vendor wrapper -- camera frame arrays"),
     "pythonnet": ("clr", "thorlabs_piezo.py -- real Z-stage/piezo motion via Kinesis .NET"),
     "mecom": ("mecom", "tec.py -- real Meerstetter TEC controller via pyMeCom (MeComSerial)"),
 }
 
-# Only needed for a standalone diagnostic script, not the real production
+# Only needed for standalone diagnostic scripts, not the core driver
 # path -- reported separately, does not affect the pass/fail exit code.
 OPTIONAL_DEPENDENCIES: dict[str, tuple[str, str]] = {
     "pylablib": ("pylablib", "hardware_tests/test_thorlabs_apt_discovery.py only"),
+    "matplotlib": ("matplotlib", "hardware_tests/manual_capture_ad2_wavegen_scope_matplotlib.py only"),
 }
 
 
@@ -48,7 +47,7 @@ def main() -> int:
     print(f"Checking environment: {sys.executable}")
     print(f"Python version: {sys.version}\n")
 
-    print("Core dependencies (required for launch_gui.bat / the real production app):")
+    print("Core hardware-driver dependencies:")
     core_ok = all(
         check_one(package_name, import_name, reason)
         for package_name, (import_name, reason) in CORE_DEPENDENCIES.items()

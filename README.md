@@ -1,59 +1,53 @@
-# Thermoacoustic Streaming Instrument Control
+# Laboratory hardware drivers
 
-Python control software for the laboratory thermoacoustic-streaming instrument.
+Hardware-only baseline for the thermoacoustic-streaming instruments.
+There is no UI, experiment planner, or automatic experiment runner.
+
+## Retained code
+
+| Module | Purpose |
+| --- | --- |
+| `waveforms.py` | Digilent WaveForms DLL wrapper |
+| `hamamatsu_dcam.py` | Hamamatsu DCAM camera driver |
+| `qmix_backend.py` | CETONI Qmix pump driver |
+| `nemesys_pump.py` | Standalone neMESYS pump interface |
+| `thorlabs_piezo.py` | Thorlabs PPC001/Kinesis piezo driver |
+| `tec.py` | Meerstetter communication and temperature-controller operations |
+| `instruments.py` | Device interfaces, serial/valve control, and simulations |
+| `ad2.py`, `camera.py` | Device configuration and ROI types |
+| `hw_logging.py` | Shared driver logging and timeout/cleanup support |
+| `thorlabs_apt.py` | Optional APT device-discovery support |
+| `ad2_capture_tooling.py` | Confirmation and cleanup helpers for manual AD2 diagnostics |
+
+These are retained implementations, not newly commissioned or redesigned drivers.
+The AD2 interface and DLL wrapper remain separate; consolidation is future work.
 
 ## Setup
 
-Use Python 3.11 and the lab environment dependencies:
+Use Python 3.11 or newer. The existing lab package pins are retained for the
+remaining dependencies in `requirements-exp_ctrl.txt`:
 
 ```powershell
-conda create -n exp_ctrl python=3.11
-conda activate exp_ctrl
 pip install -r requirements-exp_ctrl.txt
 python tools\check_environment.py
 ```
 
-`requirements-exp_ctrl.txt` pins the lab environment; `pyproject.toml` declares
-minimum package dependencies. Vendor SDK installation and configuration are
-separate; see the comments in the requirements file. The camera and pump
-backends use wrappers in `dcamsdk4/` and `qmix_sdk_for_codex/`.
+Vendor SDKs remain separate: DCAM and Qmix wrappers are in `dcamsdk4/` and
+`qmix_sdk_for_codex/`; WaveForms, DCAM, CETONI runtime DLLs and Kinesis must
+be installed/configured on the hardware workstation. No local environment
+was changed as part of this cleanup.
 
-## Launch
+## Verification and hardware use
 
-| UI | Python command | Windows launcher |
-| --- | --- | --- |
-| V1, default operator UI | `python tools\run_ui.py` | `launch_gui.bat` |
-| V3, opt-in UI | `python tools\run_ui_v3.py` | `launch_gui_v3.bat` |
+CI compiles Python and checks repository hygiene. The retired application's
+test suite is removed; these checks do not prove driver or hardware behavior.
+Manual diagnostics remain in `hardware_tests/` and are never run by CI.
+Some discovery scripts access real devices: read the selected script and
+obtain explicit authorization before running it. See `hardware_tests/README.md`.
 
-The batch files set machine-specific Python and Qmix SDK paths; check those
-paths before use. The Python commands use the active environment.
-Local settings are stored in ignored `.thermo_acoustic_ui.json`.
+Follow `AGENTS.md`. Keep future UI presentation and experiment sequencing
+outside the drivers. Preserve measurement files, logs, vendor manuals, and
+SDKs during cleanup.
 
-Both UIs share `Application` and the hardware backends. Experiment planning,
-execution, and hardware control belong outside UI presentation. V3 is not
-independently hardware-verified.
-
-## Offline checks
-
-```powershell
-python tools\check_repository_hygiene.py
-python -m pytest -q
-```
-
-Pytest collects only `tests/`. The offline CI workflow checks repository
-hygiene and selected software contracts using fakes and offscreen UI tests.
-Software checks do not establish physical hardware behavior.
-
-## Hardware and working rules
-
-Follow `AGENTS.md`. Hardware access requires explicit authorization.
-Manual hardware probes belong under `hardware_tests/` with explicit gates;
-read that folder's README and the selected script before any authorized use.
-The `manual_*.py` diagnostics there include action-capable commands.
-
-Treat persisted settings and historical bench notes as context, not proof of
-current readiness. Preserve measurement files and hardware logs when cleaning
-generated caches.
-
-Historical LabVIEW exports, migration registries, and removed documentation
-remain available in Git history.
+The old application is preserved at Git tag `reference/old-ui` and in the
+separate reference checkout. Consult it only when explicitly requested.
