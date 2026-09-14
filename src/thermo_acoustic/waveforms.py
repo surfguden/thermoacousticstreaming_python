@@ -246,7 +246,7 @@ class WaveFormsBackend:
             result["response"] = "closed"
 
     def close_all(self) -> None:
-        # Real reachable call site: tools/release_ad2.py (a standalone
+        # Real reachable call site: hardware_tests/manual_release_ad2.py (a standalone
         # "release stuck AD2 handles" utility).
         with log_call("ad2", "close_all") as result:
             self._check(self._dwf.FDwfDeviceCloseAll(), "FDwfDeviceCloseAll")
@@ -276,7 +276,7 @@ class WaveFormsBackend:
         return self._last_error()
 
     def enum_devices(self, filter_id: int = 0) -> int:
-        # Real reachable call sites: tools/release_ad2.py and
+        # Real reachable call sites: hardware_tests/manual_release_ad2.py and
         # hardware_tests/test_real_workflow_smoke.py's read_ad2_identity()
         # (real device-identity probes, not just dead SDK surface).
         with log_call("ad2", "enum_devices", command=filter_id) as result:

@@ -12,8 +12,8 @@ from thermo_acoustic.ad2_capture_tooling import Ad2CapturePrimaryAndCleanupError
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL_PATHS = (
-    ROOT / "tools" / "capture_ad2_wavegen_scope.py",
-    ROOT / "tools" / "capture_ad2_wavegen_scope_matplotlib.py",
+    ROOT / "hardware_tests" / "manual_capture_ad2_wavegen_scope.py",
+    ROOT / "hardware_tests" / "manual_capture_ad2_wavegen_scope_matplotlib.py",
 )
 
 

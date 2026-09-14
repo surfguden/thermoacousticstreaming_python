@@ -78,17 +78,21 @@ evidence; `--include-ad2-laser` is now rejected before hardware setup pending
 - `src/thermo_acoustic/ad2.py`: AD2 configuration data classes for WFG, DO,
   trigger, carrier, and MSO settings.
 - `src/thermo_acoustic/camera.py`: camera ROI data structures.
-- `tools/release_ad2.py`: WaveForms device enumeration and close-all utility.
-- `tools/capture_ad2_wavegen_scope.py` and
-  `tools/capture_ad2_wavegen_scope_matplotlib.py`: existing AD2 output/capture
+- `manual_release_ad2.py`: WaveForms device enumeration and close-all utility;
+  requires `--confirm CONFIRM_REAL_AD2_RELEASE` before device access.
+- `manual_capture_ad2_wavegen_scope.py` and
+  `manual_capture_ad2_wavegen_scope_matplotlib.py`: existing AD2 output/capture
   diagnostics. These actively enable wavegen and should not be used as
   first-contact tests.
-- `tools/legacy_hamamatsu_camera_probe.py`: legacy manual camera open/configure/
-  snapshot diagnostic; it captures and writes a TIFF without an operator
-  confirmation gate.
-- `tools/legacy_qmix_pump_probe.py`: legacy manual Qmix diagnostic; initialization can
+- `manual_hamamatsu_camera_probe.py`: camera open/configure/snapshot diagnostic;
+  requires `--confirm CONFIRM_REAL_CAMERA_CAPTURE` before opening the camera.
+  It retains the repository-root `hamamatsu_snapshot.tiff` output path.
+- `manual_qmix_pump_probe.py`: retained Qmix diagnostic; initialization can
   enable the pump and its optional flow argument can move it. It requires the
   exact `--confirm CONFIRM_REAL_CETONI_QMIX` acknowledgement.
+- `manual_nemesys_reference.py` and `manual_qmix_backend_refill.py`: pump
+  reference-move and reference/refill diagnostics. Both require the same exact
+  Qmix confirmation; the refill tool uses the pump's reported maximum flow.
 
 - `hardware_tests/manual_qmix_read_only_readiness.py`: retained one-shot,
   explicit-confirmation passive readiness snapshot. It opens/starts the reviewed
@@ -98,9 +102,10 @@ evidence; `--include-ad2-laser` is now rejected before hardware setup pending
   unexpected active motion. It is manual-only and was not executed during the
   pre-experiment software hardening round.
 
-The four legacy `tools/` diagnostics above are marked `__test__ = False` and
-live outside `testpaths = ["tests"]`; prefer the gated scripts in
-`hardware_tests/` instead.
+These relocated diagnostics are marked `__test__ = False` and live outside
+`testpaths = ["tests"]`. Their former `tools/` paths are retired. Existing
+capture output paths and confirmed command behavior are retained; moving a
+script does not establish physical readiness or authorize its use.
 - `README.md`: setup, launch, and offline-check commands. Historical audits,
   LabVIEW exports, and migration registries are available in Git history;
   they do not establish current hardware readiness.

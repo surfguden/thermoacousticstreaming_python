@@ -1,9 +1,11 @@
 """Reference and refill a CETONI pump through QmixPumpBackend.
 
-This is an operator-run hardware test. It performs real pump movement.
+This is a manual, operator-run hardware test. It performs real pump movement.
 """
 
 from __future__ import annotations
+
+__test__ = False
 
 import argparse
 import os

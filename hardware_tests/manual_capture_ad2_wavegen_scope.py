@@ -1,4 +1,4 @@
-"""Manual real-AD2/W1 output/capture engineering diagnostic.
+"""Manual real-AD2/W1 output/capture engineering diagnostic (SVG output).
 
 This diagnostic does not commission the acoustic chain. No bundled amplitude
 is a trusted safe default for the unresolved physical W1 path.

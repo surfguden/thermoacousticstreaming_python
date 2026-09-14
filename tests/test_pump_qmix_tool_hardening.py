@@ -11,9 +11,9 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS = {
-    "refill": ROOT / "tools" / "test_qmix_backend_refill.py",
-    "nemesys": ROOT / "tools" / "test_nemesys_reference.py",
-    "legacy": ROOT / "tools" / "legacy_qmix_pump_probe.py",
+    "refill": ROOT / "hardware_tests" / "manual_qmix_backend_refill.py",
+    "nemesys": ROOT / "hardware_tests" / "manual_nemesys_reference.py",
+    "legacy": ROOT / "hardware_tests" / "manual_qmix_pump_probe.py",
 }
 CONFIRM = "CONFIRM_REAL_CETONI_QMIX"
 

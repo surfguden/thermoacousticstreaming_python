@@ -1,4 +1,4 @@
-"""Legacy manual Qmix diagnostic, not automated pytest coverage.
+"""Manual Qmix diagnostic, not automated pytest coverage.
 
 Initialization can open the real bus and enable the pump; ``--flow-ul-min``
 can additionally command motion. It requires an explicit confirmation gate;

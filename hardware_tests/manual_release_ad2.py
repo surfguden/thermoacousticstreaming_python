@@ -1,5 +1,10 @@
+"""Manual WaveForms enumeration and device-handle release utility."""
+
 from __future__ import annotations
 
+__test__ = False
+
+import argparse
 import sys
 from pathlib import Path
 
@@ -12,7 +17,17 @@ if str(SRC) not in sys.path:
 from thermo_acoustic.waveforms import WaveFormsBackend
 
 
-def main() -> None:
+CONFIRM_TEXT = "CONFIRM_REAL_AD2_RELEASE"
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--confirm", help=f"Required exact acknowledgement: {CONFIRM_TEXT}")
+    args = parser.parse_args(argv)
+    if args.confirm != CONFIRM_TEXT:
+        print(f"REFUSING real device access. Pass --confirm {CONFIRM_TEXT} after checking active device use.", file=sys.stderr)
+        return 2
+
     backend = WaveFormsBackend()
     try:
         count = backend.enum_devices()
@@ -33,7 +48,8 @@ def main() -> None:
             print(f"  [{index}] opened={opened}")
     except Exception as exc:
         print(f"Device enumeration failed after release: {exc}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

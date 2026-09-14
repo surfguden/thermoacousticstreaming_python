@@ -56,7 +56,7 @@ python tools\audit_change_surface.py --symbol _build_experiment_series
 Follow `AGENTS.md`. Hardware access requires explicit authorization.
 Manual hardware probes belong under `hardware_tests/` with explicit gates;
 read that folder's README and the selected script before any authorized use.
-Retained legacy diagnostics in `tools/` include action-capable commands.
+The `manual_*.py` diagnostics there include action-capable commands.
 
 Treat persisted settings and historical bench notes as context, not proof of
 current readiness. Preserve measurement files and hardware logs when cleaning

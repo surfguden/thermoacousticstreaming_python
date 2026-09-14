@@ -100,7 +100,7 @@ def test_ad2_open_device_is_logged(tmp_path):
 
 
 # Task 1 follow-up: the 9 methods confirmed reachable from real-hardware-
-# touching code outside AD2Sdk's own 8 entry points (tools/release_ad2.py,
+# touching code outside AD2Sdk's own 8 entry points (hardware_tests/manual_release_ad2.py,
 # hardware_tests/test_real_workflow_smoke.py) -- one spot-check test each,
 # same pattern as every other device's spot-check above.
 

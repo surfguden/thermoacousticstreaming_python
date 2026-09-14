@@ -1,6 +1,8 @@
-"""Connect to a CETONI neMESYS pump and perform a reference move."""
+"""Manual CETONI neMESYS connection and reference-move diagnostic."""
 
 from __future__ import annotations
+
+__test__ = False
 
 import argparse
 from pathlib import Path

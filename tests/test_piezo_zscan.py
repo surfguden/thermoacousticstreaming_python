@@ -354,13 +354,16 @@ def test_manual_ppc001_probe_is_quarantined_and_not_a_pytest_test():
     assert "--confirm SEND" in source
 
 
-def test_legacy_action_capable_tools_are_explicitly_manual_only():
+def test_relocated_action_capable_tools_are_explicitly_manual_only():
     repo_root = Path(__file__).resolve().parents[1]
     for relative_path in (
-        "tools/legacy_hamamatsu_camera_probe.py",
-        "tools/legacy_qmix_pump_probe.py",
-        "tools/capture_ad2_wavegen_scope.py",
-        "tools/capture_ad2_wavegen_scope_matplotlib.py",
+        "hardware_tests/manual_hamamatsu_camera_probe.py",
+        "hardware_tests/manual_qmix_pump_probe.py",
+        "hardware_tests/manual_nemesys_reference.py",
+        "hardware_tests/manual_qmix_backend_refill.py",
+        "hardware_tests/manual_capture_ad2_wavegen_scope.py",
+        "hardware_tests/manual_capture_ad2_wavegen_scope_matplotlib.py",
+        "hardware_tests/manual_release_ad2.py",
     ):
         source = (repo_root / relative_path).read_text(encoding="utf-8")
         assert "manual" in source.lower()

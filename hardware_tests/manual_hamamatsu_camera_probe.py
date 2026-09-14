@@ -1,14 +1,14 @@
-"""Legacy manual camera diagnostic, not automated pytest coverage.
+"""Manual camera diagnostic, not automated pytest coverage.
 
 Running this file opens/configures the real camera, captures a frame, and
-writes an ignored TIFF artifact. It has no operator-confirmation gate; use the
-gated discovery/smoke tools in ``hardware_tests/`` for new hardware work.
+writes an ignored TIFF artifact. Requires explicit operator confirmation.
 """
 
 from __future__ import annotations
 
 __test__ = False
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -21,7 +21,17 @@ if str(SRC) not in sys.path:
 from thermo_acoustic.hamamatsu_dcam import HamamatsuDcamBackend
 
 
-def main() -> None:
+CONFIRM_TEXT = "CONFIRM_REAL_CAMERA_CAPTURE"
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--confirm", help=f"Required exact acknowledgement: {CONFIRM_TEXT}")
+    args = parser.parse_args(argv)
+    if args.confirm != CONFIRM_TEXT:
+        print(f"REFUSING real camera capture. Pass --confirm {CONFIRM_TEXT} after verifying bench readiness.", file=sys.stderr)
+        return 2
+
     backend = HamamatsuDcamBackend()
     try:
         camera = backend.open_camera()
@@ -41,7 +51,8 @@ def main() -> None:
             print(f"Could not save snapshot: {exc}")
     finally:
         backend.close()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
