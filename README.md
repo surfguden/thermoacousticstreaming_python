@@ -44,13 +44,6 @@ Pytest collects only `tests/`. The offline CI workflow checks repository
 hygiene and selected software contracts using fakes and offscreen UI tests.
 Software checks do not establish physical hardware behavior.
 
-Optional inspection tools:
-
-```powershell
-python tools\project_state_report.py
-python tools\audit_change_surface.py --symbol _build_experiment_series
-```
-
 ## Hardware and working rules
 
 Follow `AGENTS.md`. Hardware access requires explicit authorization.
