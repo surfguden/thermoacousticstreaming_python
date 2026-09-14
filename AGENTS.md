@@ -1,7 +1,8 @@
 # Working rules
 
-- First priority: before creating, modifying, or deleting any file, tell the user
-  what you intend to change.
+- First priority: before making file changes for a task, summarize the planned
+  changes and wait for explicit user approval. That approval covers only the
+  described scope; request approval again if the scope materially changes.
 - Do not modify, replace, or delete `AGENTS.md` without explicit user approval.
   When merging branches, flag any incoming changes to this file before accepting
   them.
