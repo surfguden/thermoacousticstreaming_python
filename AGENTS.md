@@ -1,101 +1,21 @@
-# Repository Working Contract
+# Working rules
 
-This file contains durable working boundaries. Current milestone, UI-role, CI,
-and hardware state belongs in `docs/project_control.md`; detailed unresolved
-evidence belongs in `docs/known_open_items.md` and the hardware truth records.
-
-## Authority And Conflict Resolution
-
-- Hardware and operator safety outrank parity, convenience, and presentation.
-- Act only within explicit authorization, and preserve user work and retained
-  evidence.
-- Current repository state, tests, CI, and runtime evidence establish factual
-  claims. The current user request establishes the desired outcome and action
-  authorization.
-- Preserve established LabVIEW/source parity unless it conflicts with safety,
-  current evidence, or an explicit owner decision; label inference. Usability
-  follows correctness and safety. If no clearly safe interpretation resolves a
-  conflict among task intent, evidence, safety, and these rules, stop and report
-  it.
-
-## Session Orientation
-
-Read in layers, not as a checklist to complete before acting:
-
-1. Always: this file, `docs/project_control.md`, and recent `git log`.
-2. When the task touches a known issue: `docs/known_open_items.md` and
-   `docs/audit_index.md`.
-3. When the task modifies source: `docs/lessons_learned.md` and the existing
-   tests for the modules being changed.
-
-This reading is for orientation, not a work list — it tells an agent what is
-already true and why, not what to do next. Task scope comes from the current
-instruction, not from anything that looks fixable while orienting.
-
-Where an instruction and the repository disagree about a fact — a line
-number, a file name, a prior decision, a convention — the repository wins.
-Report the discrepancy; do not silently follow either one.
-
-## Scope And Change-Surface Discipline
-
-- Inspect fresh state and verify in proportion to risk. Local documentation,
-  isolated tests, and narrow helpers need local evidence; shared runtime and
-  safety behavior need relevant consumers and tests; architecture cutovers need
-  a clean checkpoint, broad equivalence/regression evidence, and a rollback
-  boundary. Use the repository state, hygiene, and CI mechanisms instead of
-  duplicating their inventories here.
-- For shared runtime, safety capability, or shared UI-builder changes, run
-  `tools/audit_change_surface.py` and interpret its scoped consumers, overrides,
-  and tests. Do not require a repository-wide audit for an unrelated local edit.
-
-## Hardware And Evidence Integrity
-
-- Do not issue unrequested motion, output, valve, fault-clear, target, or
-  persistence writes. Stop at an unsafe or physically ambiguous live boundary.
-- Action-capable probes are manual-only, explicitly gated, located under
-  `hardware_tests/`, and excluded from automated tests and CI.
-- Use the repository's current runtime-truth/evidence model. Do not represent
-  cached, software, or protocol evidence as fresh or physical evidence; keep
-  unresolved semantics explicit, and preserve retained evidence rather than
-  replacing it with test output.
-- Passive UI rendering must not cause hardware I/O. Explicit operator refresh
-  or action may use established shared hardware paths within its authorization.
-
-## Validation And Reporting
-
-- Automated tests and CI must not access real hardware. When claiming
-  validation, report exact commands, selection scope, and results. For hardware
-  work, report every device accessed and action issued, including none.
-
-## Git And Workspace Integrity
-
-- Do not stage, commit, push, discard, or rewrite work without explicit
-  authorization. Preserve unrelated dirty-tree changes and do not delete
-  ambiguous historical or hardware evidence merely because it looks generated.
-- For genuinely concurrent overlapping coding work, follow
-  `docs/concurrent_worktree_workflow.md`; it is not required for read-only or
-  sequential local work.
-- **Only one modifying agent is authorized per worktree at a time.** A second
-  concurrent coding task needs its own worktree, per the workflow above; a
-  read-only check does not.
-
-## UI Surface Ownership
-
-Recorded because the earlier per-surface split no longer matches the tree: V2
-is retired and removed, so there is no v2/v3 division of labour to assign.
-
-- `src/thermo_acoustic/qt_ui.py` — V1, the retained fallback and the current
-  default launcher (`launch_gui.bat`).
-- `src/thermo_acoustic/qt_ui_v3.py` — V3, the sole modern development target
-  and candidate primary (`launch_gui_v3.bat`). Promotion to default remains an
-  owner decision.
-- `qt_ui.py` is a **shared layer, not V1-private**: `MainWindowV3` extends
-  `MainWindowV3Compatibility`, which extends `qt_ui.MainWindow`, and
-  `qt_ui_v3_support.py` imports its widgets and builders directly. An edit
-  there is cross-surface by construction and needs both surfaces considered —
-  run `tools/audit_change_surface.py` for shared UI/runtime changes.
-- `src/thermo_acoustic/ui.py` (legacy Tkinter) is a quarantined migration
-  reference outside the V1/V3 lifecycle; do not modernize it as mainline work.
-
-Current UI-role and promotion status stays in `docs/project_control.md`; this
-section records only the ownership boundary.
+- First priority: before creating, modifying, or deleting any file, tell the user
+  what you intend to change.
+- Stay within the requested scope. Preserve existing behavior unless a change is
+  requested. Ask when requirements are unclear.
+- Check Git status before editing and preserve unrelated work. Commit non-minor
+  changes without asking, including only work from the current task. Leave minor
+  edits uncommitted until grouped into a meaningful change. After a large commit
+  or several minor changes accumulate, suggest pushing and ask permission first.
+  Never discard work or rewrite history without explicit authorization.
+- Read only the context needed for the task. Verify facts against current code
+  and evidence; label assumptions.
+- Only access hardware when explicitly authorized. Passive UI rendering,
+  automated tests, and CI must not access hardware. Keep hardware probes
+  manual-only and explicitly gated under `hardware_tests/`. Do not treat
+  software success as proof of physical behavior.
+- Keep experiment sequences, hardware control, and application behavior outside
+  UI code. The UI displays state, collects input, and invokes application actions.
+  Use clear controls and confirmations to prevent mistakes, but enforce safety
+  and validity checks in application code too.

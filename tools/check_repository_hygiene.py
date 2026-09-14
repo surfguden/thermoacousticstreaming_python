@@ -83,16 +83,9 @@ def check_labview_export(root: Path) -> list[str]:
     actual = json.loads(manifest_path.read_text(encoding="utf-8"))
     if actual != expected:
         issues.append("labview_manifest.json does not match main_html/main.html parser output")
-    missing_images = sorted(
-        image
-        for item in documented
-        for image in item.images
-        if not (root / "main_html" / image).is_file()
-    )
-    if missing_images:
-        preview = ", ".join(missing_images[:5])
-        suffix = " ..." if len(missing_images) > 5 else ""
-        issues.append(f"LabVIEW export references {len(missing_images)} missing image(s): {preview}{suffix}")
+    # Exported screenshots were retired by the owner on 2026-09-14.
+    # Image names remain historical metadata in the HTML and manifest;
+    # their binaries are recoverable from Git checkpoint 2528c1c.
     return issues
 
 
