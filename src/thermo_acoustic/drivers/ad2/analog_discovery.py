@@ -196,11 +196,6 @@ class AnalogDiscovery2:
         self.configure_do(self._require_handle("start_stop_do()"), new_config)
         self.do_config = new_config
 
-    def mso_init(self, phdwf: object | int | None = None) -> None:
-        if phdwf is None:
-            phdwf = self._open_first_device()
-        self.mso_config = MsoConfig(device_handle=phdwf)
-
     def capture_scope(
         self,
         *,
@@ -255,12 +250,6 @@ class AnalogDiscovery2:
             offset_v=offset_v,
             trigger_source=trigger_source,
         )
-
-    def get_mso_config(self) -> MsoConfig:
-        if self.mso_config is None:
-            self.mso_init()
-        assert self.mso_config is not None
-        return self.mso_config
 
     @classmethod
     def is_available(cls) -> bool:
