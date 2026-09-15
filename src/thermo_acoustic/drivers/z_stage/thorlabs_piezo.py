@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..common.logging import log_call, run_with_timeout
+from .models import ZStageLimits
 
 
 class PiezoStageError(RuntimeError):
@@ -75,6 +76,7 @@ class PiezoStage:
     max_output_voltage_v: float | None = None
     min_output_voltage_v: float | None = None
     position_control_mode: str | None = None
+    travel_limits: ZStageLimits | None = None
 
     def _load_kinesis(self) -> None:
         if (
@@ -140,6 +142,7 @@ class PiezoStage:
                 self.connected = True
 
                 self.max_travel_um = _decimal_to_float(channel.GetMaxTravel())
+                self.travel_limits = ZStageLimits(maximum_um=self.max_travel_um)
                 self.max_output_voltage_v = _decimal_to_float(channel.GetMaxOutputVoltage())
                 self.min_output_voltage_v = _decimal_to_float(channel.GetMinOutputVoltage())
                 self.position_control_mode = str(channel.GetPositionControlMode())
@@ -248,7 +251,8 @@ class PiezoStage:
             )
         if self.max_travel_um is None:
             raise PiezoStageError("MaxTravel was never read from the device -- cannot soft-limit a move.")
-        clamped_um = max(0.0, min(float(target_um), self.max_travel_um))
+        limits = self.travel_limits or ZStageLimits(maximum_um=self.max_travel_um)
+        clamped_um = limits.clamp(target_um)
         with log_call(
             "piezo", "set_position", command=target_um, response_stage="EFFECTIVE"
         ) as result:

@@ -21,7 +21,7 @@ from thermo_acoustic.drivers.camera import (
 from thermo_acoustic.drivers.pump import CetoniPump, SimulatedPump
 from thermo_acoustic.drivers.tec import MeerstetterTecDriver, SimulatedTec, TecController
 from thermo_acoustic.drivers.valve import SerialTextCommandTransport, SimulatedValve, Valve
-from thermo_acoustic.drivers.z_stage import PiezoStage, SimulatedZStage
+from thermo_acoustic.drivers.z_stage import PiezoStage, SimulatedZStage, ZStageLimits
 from thermo_acoustic.hal import DeviceRegistry, DeviceWorker
 
 
@@ -79,7 +79,11 @@ def test_simulated_devices_are_reusable_without_the_hal() -> None:
     z_stage.connect()
     z_stage.switch_to_closed_loop()
     assert z_stage.set_position(50.0) == 50.0
+    assert z_stage.get_position() == 50.0
+    assert z_stage.set_position(999.0) == z_stage.travel_limits.maximum_um
     z_stage.disconnect()
+
+    assert ZStageLimits(maximum_um=100.0).clamp(-5.0) == 0.0
 
     valve = SimulatedValve()
     valve.initialize()

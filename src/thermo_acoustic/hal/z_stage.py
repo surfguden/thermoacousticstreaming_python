@@ -24,8 +24,6 @@ class ZStageWorker(DeviceWorker):
         self.state.readings["closed_loop"] = True
 
     def move(self, position_um: float) -> None:
-        if not 0 <= position_um <= 450:
-            raise ValueError("position_um must be between 0 and 450")
         if not self.state.readings.get("closed_loop"):
             raise RuntimeError("Enable closed-loop before moving")
         confirmed_position_um = self.device.set_position(position_um)
