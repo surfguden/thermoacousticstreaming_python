@@ -413,7 +413,7 @@ class DoSingleChannelConfig:
     clock_divider: int = 0
     clock_frequency_hz: float | None = None
     # Finding E (silent-failure/data-integrity sweep): the real achieved
-    # frequency after AnalogDiscovery2.configure_do() rounds clock_frequency_hz
+    # frequency after AnalogDiscovery2._configure_do() rounds clock_frequency_hz
     # down to an integer divider -- None until a real configure_do() call sets
     # it (mirrors WfgChannelConfig.out_of_range's "never assigned until the
     # real hardware call runs" pattern). Requested and achieved can differ by

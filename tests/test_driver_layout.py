@@ -101,7 +101,7 @@ def test_analog_discovery_do_config_keeps_custom_pattern_and_clock_settings() ->
     configured: list[tuple[int, object]] = []
     device.enabled = True
     device._open_device = lambda _index: 11
-    device.configure_do = lambda handle, config: configured.append((handle, config))
+    device._configure_do = lambda handle, config: configured.append((handle, config))
 
     device.do_configure(
         {
@@ -128,10 +128,8 @@ def test_analog_discovery_cleanup_stops_resets_and_closes_directly() -> None:
     device._reset_analog_output = lambda handle, channel: operations.append(
         ("reset", handle, channel)
     )
-    device.digital_out_configure = lambda handle, running: operations.append(
-        ("stop-do", handle, running)
-    )
-    device.reset_do = lambda handle: operations.append(("reset-do", handle))
+    device._stop_digital_output = lambda handle: operations.append(("stop-do", handle))
+    device._reset_digital_output = lambda handle: operations.append(("reset-do", handle))
     device._close = lambda handle: operations.append(("close", handle))
 
     device.cleanup()
@@ -141,7 +139,7 @@ def test_analog_discovery_cleanup_stops_resets_and_closes_directly() -> None:
         ("reset", 13, 0),
         ("stop", 13, 1),
         ("reset", 13, 1),
-        ("stop-do", 13, False),
+        ("stop-do", 13),
         ("reset-do", 13),
         ("close", 13),
     ]

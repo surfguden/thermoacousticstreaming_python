@@ -120,8 +120,8 @@ class AnalogDiscovery2:
                     except Exception as exc:
                         errors.append(f"AnalogOut channel {channel_index} {operation} failed: {exc}")
             for operation, action in (
-                ("stop", lambda: self.digital_out_configure(handle, False)),
-                ("reset", lambda: self.reset_do(handle)),
+                ("stop", lambda: self._stop_digital_output(handle)),
+                ("reset", lambda: self._reset_digital_output(handle)),
             ):
                 try:
                     action()
@@ -183,17 +183,17 @@ class AnalogDiscovery2:
 
     def do_configure(self, config: DoConfig | dict | None) -> None:
         new_config = coerce_do_config(config)
-        self.configure_do(self._require_handle("do_configure()"), new_config)
+        self._configure_do(self._require_handle("do_configure()"), new_config)
         self.do_config = new_config
 
     def do_reset(self) -> None:
-        self.reset_do(self._require_handle("do_reset()"))
+        self._reset_digital_output(self._require_handle("do_reset()"))
         self.do_config = DoConfig()
 
     def start_stop_do(self, running: bool) -> None:
         new_config = deepcopy(self._get_do_config())
         new_config.running = running
-        self.configure_do(self._require_handle("start_stop_do()"), new_config)
+        self._configure_do(self._require_handle("start_stop_do()"), new_config)
         self.do_config = new_config
 
     def capture_scope(
@@ -619,7 +619,7 @@ class AnalogDiscovery2:
             self._check(self._dwf.FDwfAnalogOutNodePhaseSet(handle, channel_index, node_id, c_double(settings.phase_deg)), "FDwfAnalogOutNodePhaseSet")
         return out_of_range, effective
 
-    def configure_do(self, handle: int, config: DoConfig) -> None:
+    def _configure_do(self, handle: int, config: DoConfig) -> None:
         with log_call("ad2", "configure_do", command=f"{len(config.channels)} channel(s), running={config.running}") as result:
             h = c_int(handle)
             trigger = None
@@ -657,11 +657,11 @@ class AnalogDiscovery2:
                 if channel.clock_frequency_hz is not None:
                     if channel.clock_frequency_hz <= 0:
                         raise AnalogDiscoveryError("Digital output clock frequency must be greater than 0 Hz.")
-                    internal_clock_hz = self.digital_out_internal_clock_info(handle)
+                    internal_clock_hz = self._digital_out_internal_clock_info(handle)
                     if internal_clock_hz <= 0:
                         raise AnalogDiscoveryError("Digital output internal clock frequency is not available.")
                     clock_divider = int((internal_clock_hz / channel.clock_frequency_hz) / 2.0)
-                    minimum_divider, maximum_divider = self.digital_out_divider_info(handle, channel.channel_index)
+                    minimum_divider, maximum_divider = self._digital_out_divider_info(handle, channel.channel_index)
                     if not minimum_divider <= clock_divider <= maximum_divider:
                         raise AnalogDiscoveryError(
                             f"DigitalOut divider {clock_divider} for channel {channel.channel_index} is outside "
@@ -765,34 +765,25 @@ class AnalogDiscovery2:
             self._check(self._dwf.FDwfDigitalOutConfigure(h, c_int(int(config.running))), "FDwfDigitalOutConfigure")
             result["response"] = f"applied, achieved_clock_hz={[c.achieved_clock_frequency_hz for c in config.channels]}"
 
-    def reset_do(self, handle: int) -> None:
-        with log_call("ad2", "reset_do", command=handle) as result:
+    def _reset_digital_output(self, handle: int) -> None:
+        with log_call("ad2", "reset_digital_output", command=handle) as result:
             self._check(self._dwf.FDwfDigitalOutReset(c_int(handle)), "FDwfDigitalOutReset")
             result["response"] = "reset"
 
-    def digital_out_count(self, handle: int) -> int:
-        count = c_int()
-        self._check(self._dwf.FDwfDigitalOutCount(c_int(handle), byref(count)), "FDwfDigitalOutCount")
-        return count.value
+    def _stop_digital_output(self, handle: int) -> None:
+        with log_call("ad2", "stop_digital_output", command=handle) as result:
+            self._check(
+                self._dwf.FDwfDigitalOutConfigure(c_int(handle), c_int(0)),
+                "FDwfDigitalOutConfigure",
+            )
+            result["response"] = "stopped"
 
-    def digital_out_internal_clock_info(self, handle: int) -> float:
+    def _digital_out_internal_clock_info(self, handle: int) -> float:
         clock_hz = c_double()
         self._check(self._dwf.FDwfDigitalOutInternalClockInfo(c_int(handle), byref(clock_hz)), "FDwfDigitalOutInternalClockInfo")
         return clock_hz.value
 
-    def digital_out_enable_set(self, handle: int, channel_index: int, enabled: bool) -> None:
-        self._check(
-            self._dwf.FDwfDigitalOutEnableSet(c_int(handle), c_int(channel_index), c_int(int(enabled))),
-            "FDwfDigitalOutEnableSet",
-        )
-
-    def digital_out_divider_set(self, handle: int, channel_index: int, divider: int) -> None:
-        self._check(
-            self._dwf.FDwfDigitalOutDividerSet(c_int(handle), c_int(channel_index), c_uint(max(divider, 0))),
-            "FDwfDigitalOutDividerSet",
-        )
-
-    def digital_out_divider_info(self, handle: int, channel_index: int) -> tuple[int, int]:
+    def _digital_out_divider_info(self, handle: int, channel_index: int) -> tuple[int, int]:
         minimum = c_uint()
         maximum = c_uint()
         self._check(
@@ -800,77 +791,6 @@ class AnalogDiscovery2:
             "FDwfDigitalOutDividerInfo",
         )
         return minimum.value, maximum.value
-
-    def digital_out_counter_init_set(self, handle: int, channel_index: int, start_high: bool, initial_bits: int) -> None:
-        self._check(
-            self._dwf.FDwfDigitalOutCounterInitSet(
-                c_int(handle),
-                c_int(channel_index),
-                c_int(int(start_high)),
-                c_uint(max(initial_bits, 0)),
-            ),
-            "FDwfDigitalOutCounterInitSet",
-        )
-
-    def digital_out_counter_set(self, handle: int, channel_index: int, low_bits: int, high_bits: int) -> None:
-        self._check(
-            self._dwf.FDwfDigitalOutCounterSet(
-                c_int(handle),
-                c_int(channel_index),
-                c_uint(max(low_bits, 0)),
-                c_uint(max(high_bits, 0)),
-            ),
-            "FDwfDigitalOutCounterSet",
-        )
-
-    def digital_out_type_set(self, handle: int, channel_index: int, output_type: int | DigitalOutType) -> None:
-        mapped = self._enum_value(self._DO_TYPES, output_type)
-        self._check(
-            self._dwf.FDwfDigitalOutTypeSet(c_int(handle), c_int(channel_index), c_int(mapped)),
-            "FDwfDigitalOutTypeSet",
-        )
-
-    def digital_out_idle_set(self, handle: int, channel_index: int, idle_state: int | DigitalOutIdleState) -> None:
-        mapped = self._enum_value(self._DO_IDLE, idle_state)
-        self._check(
-            self._dwf.FDwfDigitalOutIdleSet(c_int(handle), c_int(channel_index), c_int(mapped)),
-            "FDwfDigitalOutIdleSet",
-        )
-
-    def digital_out_data_set(self, handle: int, channel_index: int, bits: list[int]) -> None:
-        data = (c_ubyte * len(bits))(*[int(bool(bit)) for bit in bits])
-        self._check(
-            self._dwf.FDwfDigitalOutDataSet(c_int(handle), c_int(channel_index), data, c_int(len(bits))),
-            "FDwfDigitalOutDataSet",
-        )
-
-    def digital_out_data_info(self, handle: int, channel_index: int) -> int:
-        maximum = c_uint()
-        self._check(self._dwf.FDwfDigitalOutDataInfo(c_int(handle), c_int(channel_index), byref(maximum)), "FDwfDigitalOutDataInfo")
-        return maximum.value
-
-    def digital_out_wait_set(self, handle: int, wait_s: float) -> None:
-        self._check(self._dwf.FDwfDigitalOutWaitSet(c_int(handle), c_double(wait_s)), "FDwfDigitalOutWaitSet")
-
-    def digital_out_run_set(self, handle: int, run_s: float) -> None:
-        self._check(self._dwf.FDwfDigitalOutRunSet(c_int(handle), c_double(run_s)), "FDwfDigitalOutRunSet")
-
-    def digital_out_repeat_set(self, handle: int, repeat_count: int) -> None:
-        self._check(self._dwf.FDwfDigitalOutRepeatSet(c_int(handle), c_int(repeat_count)), "FDwfDigitalOutRepeatSet")
-
-    def digital_out_repeat_trigger_set(self, handle: int, repeat_trigger: bool) -> None:
-        self._check(self._dwf.FDwfDigitalOutRepeatTriggerSet(c_int(handle), c_int(int(repeat_trigger))), "FDwfDigitalOutRepeatTriggerSet")
-
-    def digital_out_trigger_source_set(self, handle: int, trigger_source: int | TriggerSource) -> None:
-        mapped = self._enum_value(self._TRIGGER_SOURCES, trigger_source)
-        self._check(self._dwf.FDwfDigitalOutTriggerSourceSet(c_int(handle), c_int(mapped)), "FDwfDigitalOutTriggerSourceSet")
-
-    def digital_out_configure(self, handle: int, start: bool) -> None:
-        # Real reachable call site: hardware_tests/test_real_workflow_smoke.py's
-        # safe_disable_ad2_outputs() (real post-test AD2 output cleanup).
-        with log_call("ad2", "digital_out_configure", command=start) as result:
-            self._check(self._dwf.FDwfDigitalOutConfigure(c_int(handle), c_int(int(start))), "FDwfDigitalOutConfigure")
-            result["response"] = "applied"
 
     def capture_analog_in(
         self,
