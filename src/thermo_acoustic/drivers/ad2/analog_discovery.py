@@ -112,8 +112,8 @@ class AnalogDiscovery2:
         try:
             for channel_index in (0, 1):
                 for operation, action in (
-                    ("stop", lambda channel_index=channel_index: self.analog_out_configure(handle, channel_index, False)),
-                    ("reset", lambda channel_index=channel_index: self.analog_out_reset(handle, channel_index)),
+                    ("stop", lambda channel_index=channel_index: self._stop_analog_output(handle, channel_index)),
+                    ("reset", lambda channel_index=channel_index: self._reset_analog_output(handle, channel_index)),
                 ):
                     try:
                         action()
@@ -459,154 +459,18 @@ class AnalogDiscovery2:
             result["response"] = serial
         return serial
 
-    def _analog_out_set_double(self, function_name: str, handle: int, channel_index: int, value: float) -> None:
-        self._check(getattr(self._dwf, function_name)(c_int(handle), c_int(channel_index), c_double(value)), function_name)
+    def _stop_analog_output(self, handle: int, channel_index: int) -> None:
+        with log_call("ad2", "stop_analog_output", command=channel_index) as result:
+            self._check(
+                self._dwf.FDwfAnalogOutConfigure(
+                    c_int(handle), c_int(channel_index), c_int(0)
+                ),
+                "FDwfAnalogOutConfigure",
+            )
+            result["response"] = "stopped"
 
-    def _analog_out_get_double(self, function_name: str, handle: int, channel_index: int) -> float:
-        value = c_double()
-        self._check(getattr(self._dwf, function_name)(c_int(handle), c_int(channel_index), byref(value)), function_name)
-        return value.value
-
-    def _analog_out_set_int(self, function_name: str, handle: int, channel_index: int, value: int) -> None:
-        self._check(getattr(self._dwf, function_name)(c_int(handle), c_int(channel_index), c_int(value)), function_name)
-
-    def _analog_out_get_int(self, function_name: str, handle: int, channel_index: int) -> int:
-        value = c_int()
-        self._check(getattr(self._dwf, function_name)(c_int(handle), c_int(channel_index), byref(value)), function_name)
-        return value.value
-
-    def _analog_node_set_double(self, function_name: str, handle: int, channel_index: int, node: int, value: float) -> None:
-        self._check(getattr(self._dwf, function_name)(c_int(handle), c_int(channel_index), c_int(node), c_double(value)), function_name)
-
-    def _analog_node_get_double(self, function_name: str, handle: int, channel_index: int, node: int) -> float:
-        value = c_double()
-        self._check(getattr(self._dwf, function_name)(c_int(handle), c_int(channel_index), c_int(node), byref(value)), function_name)
-        return value.value
-
-    def _analog_node_info_double(self, function_name: str, handle: int, channel_index: int, node: int) -> tuple[float, float]:
-        minimum = c_double()
-        maximum = c_double()
-        self._check(
-            getattr(self._dwf, function_name)(c_int(handle), c_int(channel_index), c_int(node), byref(minimum), byref(maximum)),
-            function_name,
-        )
-        return minimum.value, maximum.value
-
-    def _analog_node_set_int(self, function_name: str, handle: int, channel_index: int, node: int, value: int) -> None:
-        self._check(getattr(self._dwf, function_name)(c_int(handle), c_int(channel_index), c_int(node), c_int(value)), function_name)
-
-    def _analog_node_get_int(self, function_name: str, handle: int, channel_index: int, node: int) -> int:
-        value = c_int()
-        self._check(getattr(self._dwf, function_name)(c_int(handle), c_int(channel_index), c_int(node), byref(value)), function_name)
-        return value.value
-
-    def analog_out_node_enable_set(self, handle: int, channel_index: int, node: int, enabled: bool) -> None:
-        # Real reachable call site: hardware_tests/test_real_workflow_smoke.py's
-        # safe_disable_ad2_outputs() (real post-test AD2 output cleanup).
-        with log_call("ad2", "analog_out_node_enable_set", command=(channel_index, node, enabled)) as result:
-            self._analog_node_set_int("FDwfAnalogOutNodeEnableSet", handle, channel_index, node, int(enabled))
-            result["response"] = "applied"
-
-    def analog_out_node_enable_get(self, handle: int, channel_index: int, node: int) -> bool:
-        return bool(self._analog_node_get_int("FDwfAnalogOutNodeEnableGet", handle, channel_index, node))
-
-    def analog_out_node_function_set(self, handle: int, channel_index: int, node: int, function: int | WaveformFunction) -> None:
-        self._analog_node_set_int("FDwfAnalogOutNodeFunctionSet", handle, channel_index, node, self._enum_value(self._FUNCTIONS, function))
-
-    def analog_out_node_function_get(self, handle: int, channel_index: int, node: int) -> int:
-        return self._analog_node_get_int("FDwfAnalogOutNodeFunctionGet", handle, channel_index, node)
-
-    def analog_out_node_frequency_set(self, handle: int, channel_index: int, node: int, frequency_hz: float) -> None:
-        self._analog_node_set_double("FDwfAnalogOutNodeFrequencySet", handle, channel_index, node, frequency_hz)
-
-    def analog_out_node_frequency_get(self, handle: int, channel_index: int, node: int) -> float:
-        return self._analog_node_get_double("FDwfAnalogOutNodeFrequencyGet", handle, channel_index, node)
-
-    def analog_out_node_frequency_info(self, handle: int, channel_index: int, node: int) -> tuple[float, float]:
-        return self._analog_node_info_double("FDwfAnalogOutNodeFrequencyInfo", handle, channel_index, node)
-
-    def analog_out_node_amplitude_set(self, handle: int, channel_index: int, node: int, amplitude_v: float) -> None:
-        self._analog_node_set_double("FDwfAnalogOutNodeAmplitudeSet", handle, channel_index, node, amplitude_v)
-
-    def analog_out_node_amplitude_get(self, handle: int, channel_index: int, node: int) -> float:
-        return self._analog_node_get_double("FDwfAnalogOutNodeAmplitudeGet", handle, channel_index, node)
-
-    def analog_out_node_amplitude_info(self, handle: int, channel_index: int, node: int) -> tuple[float, float]:
-        return self._analog_node_info_double("FDwfAnalogOutNodeAmplitudeInfo", handle, channel_index, node)
-
-    def analog_out_node_offset_set(self, handle: int, channel_index: int, node: int, offset_v: float) -> None:
-        self._analog_node_set_double("FDwfAnalogOutNodeOffsetSet", handle, channel_index, node, offset_v)
-
-    def analog_out_node_offset_get(self, handle: int, channel_index: int, node: int) -> float:
-        return self._analog_node_get_double("FDwfAnalogOutNodeOffsetGet", handle, channel_index, node)
-
-    def analog_out_node_offset_info(self, handle: int, channel_index: int, node: int) -> tuple[float, float]:
-        return self._analog_node_info_double("FDwfAnalogOutNodeOffsetInfo", handle, channel_index, node)
-
-    def analog_out_node_symmetry_set(self, handle: int, channel_index: int, node: int, symmetry_percent: float) -> None:
-        self._analog_node_set_double("FDwfAnalogOutNodeSymmetrySet", handle, channel_index, node, symmetry_percent)
-
-    def analog_out_node_symmetry_get(self, handle: int, channel_index: int, node: int) -> float:
-        return self._analog_node_get_double("FDwfAnalogOutNodeSymmetryGet", handle, channel_index, node)
-
-    def analog_out_node_symmetry_info(self, handle: int, channel_index: int, node: int) -> tuple[float, float]:
-        return self._analog_node_info_double("FDwfAnalogOutNodeSymmetryInfo", handle, channel_index, node)
-
-    def analog_out_node_phase_set(self, handle: int, channel_index: int, node: int, phase_deg: float) -> None:
-        self._analog_node_set_double("FDwfAnalogOutNodePhaseSet", handle, channel_index, node, phase_deg)
-
-    def analog_out_node_phase_get(self, handle: int, channel_index: int, node: int) -> float:
-        return self._analog_node_get_double("FDwfAnalogOutNodePhaseGet", handle, channel_index, node)
-
-    def analog_out_node_phase_info(self, handle: int, channel_index: int, node: int) -> tuple[float, float]:
-        return self._analog_node_info_double("FDwfAnalogOutNodePhaseInfo", handle, channel_index, node)
-
-    def analog_out_run_set(self, handle: int, channel_index: int, run_s: float) -> None:
-        self._analog_out_set_double("FDwfAnalogOutRunSet", handle, channel_index, run_s)
-
-    def analog_out_run_get(self, handle: int, channel_index: int) -> float:
-        return self._analog_out_get_double("FDwfAnalogOutRunGet", handle, channel_index)
-
-    def analog_out_wait_set(self, handle: int, channel_index: int, wait_s: float) -> None:
-        self._analog_out_set_double("FDwfAnalogOutWaitSet", handle, channel_index, wait_s)
-
-    def analog_out_wait_get(self, handle: int, channel_index: int) -> float:
-        return self._analog_out_get_double("FDwfAnalogOutWaitGet", handle, channel_index)
-
-    def analog_out_repeat_set(self, handle: int, channel_index: int, repeat_count: int) -> None:
-        self._analog_out_set_int("FDwfAnalogOutRepeatSet", handle, channel_index, repeat_count)
-
-    def analog_out_repeat_get(self, handle: int, channel_index: int) -> int:
-        return self._analog_out_get_int("FDwfAnalogOutRepeatGet", handle, channel_index)
-
-    def analog_out_repeat_trigger_set(self, handle: int, channel_index: int, repeat_trigger: bool) -> None:
-        self._analog_out_set_int("FDwfAnalogOutRepeatTriggerSet", handle, channel_index, int(repeat_trigger))
-
-    def analog_out_repeat_trigger_get(self, handle: int, channel_index: int) -> bool:
-        return bool(self._analog_out_get_int("FDwfAnalogOutRepeatTriggerGet", handle, channel_index))
-
-    def analog_out_trigger_source_set(self, handle: int, channel_index: int, trigger_source: int | TriggerSource) -> None:
-        self._analog_out_set_int("FDwfAnalogOutTriggerSourceSet", handle, channel_index, self._enum_value(self._TRIGGER_SOURCES, trigger_source))
-
-    def analog_out_trigger_source_get(self, handle: int, channel_index: int) -> int:
-        return self._analog_out_get_int("FDwfAnalogOutTriggerSourceGet", handle, channel_index)
-
-    def analog_out_idle_set(self, handle: int, channel_index: int, idle: int) -> None:
-        self._analog_out_set_int("FDwfAnalogOutIdleSet", handle, channel_index, idle)
-
-    def analog_out_master_set(self, handle: int, channel_index: int, master_channel_index: int) -> None:
-        self._analog_out_set_int("FDwfAnalogOutMasterSet", handle, channel_index, master_channel_index)
-
-    def analog_out_configure(self, handle: int, channel_index: int, start: bool) -> None:
-        # Real reachable call site: hardware_tests/test_real_workflow_smoke.py's
-        # safe_disable_ad2_outputs() (real post-test AD2 output cleanup).
-        with log_call("ad2", "analog_out_configure", command=(channel_index, start)) as result:
-            self._analog_out_set_int("FDwfAnalogOutConfigure", handle, channel_index, int(start))
-            result["response"] = "applied"
-
-    def analog_out_reset(self, handle: int, channel_index: int) -> None:
-        """Reset one AnalogOut channel before the owning device is closed."""
-        with log_call("ad2", "analog_out_reset", command=channel_index) as result:
+    def _reset_analog_output(self, handle: int, channel_index: int) -> None:
+        with log_call("ad2", "reset_analog_output", command=channel_index) as result:
             self._check(
                 self._dwf.FDwfAnalogOutReset(c_int(handle), c_int(channel_index)),
                 "FDwfAnalogOutReset",

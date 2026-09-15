@@ -116,3 +116,33 @@ def test_analog_discovery_do_config_keeps_custom_pattern_and_clock_settings() ->
     assert configured == [(11, device.do_config)]
     assert channel.clock_frequency_hz == 500.0
     assert channel.custom_data.bits == [1, 1, 0, 0]
+
+
+def test_analog_discovery_cleanup_stops_resets_and_closes_directly() -> None:
+    device = AnalogDiscovery2(enabled=False)
+    operations: list[tuple[object, ...]] = []
+    device.device_handle = 13
+    device._stop_analog_output = lambda handle, channel: operations.append(
+        ("stop", handle, channel)
+    )
+    device._reset_analog_output = lambda handle, channel: operations.append(
+        ("reset", handle, channel)
+    )
+    device.digital_out_configure = lambda handle, running: operations.append(
+        ("stop-do", handle, running)
+    )
+    device.reset_do = lambda handle: operations.append(("reset-do", handle))
+    device._close = lambda handle: operations.append(("close", handle))
+
+    device.cleanup()
+
+    assert operations == [
+        ("stop", 13, 0),
+        ("reset", 13, 0),
+        ("stop", 13, 1),
+        ("reset", 13, 1),
+        ("stop-do", 13, False),
+        ("reset-do", 13),
+        ("close", 13),
+    ]
+    assert device.device_handle is None
