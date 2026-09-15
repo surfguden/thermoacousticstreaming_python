@@ -13,8 +13,6 @@ class PumpWorker(DeviceWorker):
         self.register("stop", self.safe_stop)
 
     def set_flow(self, flow_ul_min: float) -> None:
-        if not -10000 <= flow_ul_min <= 10000:
-            raise ValueError("flow_ul_min out of range")
         self.device.generate_flow(flow_ul_min)
         self.state.readings["flow_ul_min"] = flow_ul_min
         self.state.active = flow_ul_min != 0

@@ -13,9 +13,7 @@ class TecWorker(DeviceWorker):
         self.register("outputs-off", self.safe_stop)
 
     def set_temperature(self, temperature_c: float) -> None:
-        if not -20 <= temperature_c <= 120:
-            raise ValueError("temperature_c out of range")
-        self.device.apply_static_setpoint({1: temperature_c})
+        self.device.apply_static_setpoint(temperature_c)
         self.state.readings["temperature_c"] = temperature_c
         self.state.active = True
 

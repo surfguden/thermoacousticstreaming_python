@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 
 class SimulatedPump:
     def __init__(self) -> None:
@@ -7,6 +9,7 @@ class SimulatedPump:
         self.flow_ul_min = 0.0
         self.fill_level_ml = 0.0
         self.max_volume_ml = 1.0
+        self.max_flow_rate_ul_min = 10000.0
         self.syringe_config: dict | None = None
         self.flow_unit: str | None = None
         self.referenced = False
@@ -22,6 +25,11 @@ class SimulatedPump:
         self.initialize()
 
     def generate_flow(self, flow_rate: float) -> None:
+        flow_rate = float(flow_rate)
+        if not math.isfinite(flow_rate) or abs(flow_rate) > self.max_flow_rate_ul_min:
+            raise ValueError(
+                f"flow_rate must be finite and within +/-{self.max_flow_rate_ul_min} ul/min"
+            )
         self.flow_ul_min = flow_rate
 
     def stop(self) -> None:

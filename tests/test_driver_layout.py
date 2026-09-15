@@ -69,6 +69,8 @@ def test_simulated_devices_are_reusable_without_the_hal() -> None:
     pump.generate_flow(25.0)
     assert pump.flow_ul_min == 25.0
     assert pump.read_status()
+    with pytest.raises(ValueError, match="within"):
+        pump.generate_flow(10001.0)
     pump.cleanup()
     assert pump.flow_ul_min == 0.0
     pump.clear_fault_and_reinitialize()

@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import sys
 import time
+import math
 from typing import Any
 
 from ..common.logging import log_call, log_transaction, run_with_timeout
@@ -378,17 +379,11 @@ class CetoniPump:
         pump = self._require_pump()
         self._enable_pump()
         flow_rate = float(flow_rate)
-        # Session 51: max_flow_rate_ul_min is already populated (initialize(),
-        # configure_syringe(), configure_flow_unit() all read it back from the
-        # pump) but was never actually compared against here before this --
-        # LCP_GenerateFlow was called with whatever was requested,
-        # unconditionally. abs() because a negative flow_rate means aspirate,
-        # positive means dispense (generate_flow()'s own docstring) -- the
-        # magnitude is what must not exceed the pump's own reported ceiling,
-        # in either direction. None means the pump hasn't reported a real
-        # ceiling yet (e.g. configure_syringe() never called) -- nothing to
-        # validate against, so pass through unchanged, same as before.
-        if self.max_flow_rate_ul_min is not None and abs(flow_rate) > self.max_flow_rate_ul_min:
+        if not math.isfinite(flow_rate):
+            raise CetoniPumpError(f"Requested flow_rate must be finite, got {flow_rate!r}.")
+        if self.max_flow_rate_ul_min is None:
+            self.max_flow_rate_ul_min = float(pump.get_flow_rate_max())
+        if abs(flow_rate) > abs(self.max_flow_rate_ul_min):
             error = (
                 f"Requested flow_rate={flow_rate!r} exceeds the pump's own reported "
                 f"max_flow_rate_ul_min={self.max_flow_rate_ul_min!r} -- rejected before reaching the pump SDK."

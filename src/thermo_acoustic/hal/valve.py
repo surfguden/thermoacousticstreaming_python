@@ -12,7 +12,5 @@ class ValveWorker(DeviceWorker):
         self.register("set-position", self.set_position)
 
     def set_position(self, position: int) -> None:
-        if position not in (1, 2):
-            raise ValueError("position must be 1 or 2")
         self.device.set_position(position)
         self.state.readings["position"] = position
