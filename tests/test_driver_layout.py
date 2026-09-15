@@ -92,6 +92,17 @@ def test_simulated_devices_are_reusable_without_the_hal() -> None:
     assert valve.read_position() == 2
     valve.cleanup()
 
+    tec = SimulatedTec()
+    tec.initialize()
+    status = tec.apply_static_setpoint({1: 25.0, 2: 26.0})
+    assert status[1].target_temperature_c == 25.0
+    assert status[2].target_temperature_c == 26.0
+    with pytest.raises(ValueError, match="outside the local safety range"):
+        tec.apply_static_setpoint({1: -1.0, 2: 26.0})
+    with pytest.raises(ValueError, match="must exactly match"):
+        tec.apply_static_setpoint({1: 25.0}, channels=(1, 2))
+    tec.set_output_stage_static_off()
+
 
 def test_camera_roi_can_be_centered_with_integer_limits() -> None:
     limits = SubRegionLimits(
