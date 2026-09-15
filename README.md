@@ -12,12 +12,24 @@ global FIFO queue and dispatches exactly one command at a time. UI buttons and
 stdin both create the same `DeviceCommand` objects, so they have identical
 validation, request IDs, lifecycle events, and audit records.
 
-Each `DeviceWorker` is a `QObject` moved to its own persistent `QThread`.
+The `hal/` package is the application-facing Hardware Abstraction Layer. Each
+`DeviceWorker` is a `QObject` moved to its own persistent `QThread`.
 `AD2Worker`, `PumpWorker`, `ValveWorker`, `CameraWorker`, `TecWorker`, and
 `ZStageWorker` keep device-specific validation and driver calls behind the HAL.
 Simulation workers implement the same application-facing operations. Real
-workers receive injected drivers; retained drivers are not imported or
-connected during simulation startup.
+workers receive injected drivers from the separate `drivers/` package; retained
+vendor code is not imported or connected during simulation startup.
+
+```text
+thermo_acoustic/
+├── application/  command queue, controller, configuration, and audit
+├── console/      stdin parsing and reading
+├── domain/       shared device identity and status models
+├── hal/          Qt device workers, registry, and simulations
+├── drivers/      low-level vendor-facing implementations, grouped by device
+├── ui/           Qt Widgets only
+└── main.py       the single process entry point
+```
 
 The design is analogous to a LabVIEW queued message handler: one producer-safe
 application queue, one dispatcher, and a dedicated actor/loop for each device.
@@ -28,7 +40,7 @@ process.
 
 ```powershell
 pip install -e ".[ui,test]"
-python -m thermo_acoustic.ui.main
+python -m thermo_acoustic.main
 ```
 
 The program starts with every device disconnected. Example stdin commands:
@@ -60,7 +72,7 @@ a presentation of that policy; safety and validation remain in application and
 worker code. Existing driver timeouts remain in the retained drivers.
 
 ```powershell
-python -m thermo_acoustic.ui.main --mode real --audit-log logs\run.jsonl
+python -m thermo_acoustic.main --mode real --audit-log logs\run.jsonl
 ```
 
 Offline tests use simulation or injected fake drivers and do not prove physical
@@ -80,8 +92,8 @@ provided. Tests write logs only under temporary directories.
 
 ## Retained drivers
 
-The canonical pump path is `CetoniPump` with `QmixPumpBackend`. Other retained
-drivers include WaveForms/AD2, Hamamatsu DCAM, Meerstetter TEC, valve, and
-Thorlabs Z-stage implementations. Vendor APIs, data types, and errors remain
-behind the worker/HAL boundary. The redundant standalone neMESYS pump path and
-its compatibility residue are not part of this application.
+The canonical pump path is `drivers/pump/CetoniPump` with `QmixPumpBackend`.
+Other retained drivers are grouped under `drivers/ad2`, `drivers/camera`,
+`drivers/tec`, `drivers/valve`, and `drivers/z_stage`. Vendor APIs, data types,
+and errors remain behind the HAL boundary. There is no aggregate
+`instruments.py` module or redundant standalone neMESYS path.

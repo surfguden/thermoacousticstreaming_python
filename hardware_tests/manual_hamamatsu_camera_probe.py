@@ -18,7 +18,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from thermo_acoustic.hamamatsu_dcam import HamamatsuDcamBackend
+from thermo_acoustic.drivers.camera.dcam_backend import HamamatsuDcamBackend
 
 
 CONFIRM_TEXT = "CONFIRM_REAL_CAMERA_CAPTURE"

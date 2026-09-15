@@ -22,7 +22,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from thermo_acoustic.tec import (  # noqa: E402
+from thermo_acoustic.drivers.tec.controller import (  # noqa: E402
     _MECOM_PARAM_DEVICE_STATUS,
     _MECOM_PARAM_ERROR_NUMBER,
     _MECOM_PARAM_OBJECT_TEMP,

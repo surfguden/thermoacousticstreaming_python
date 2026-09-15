@@ -22,13 +22,13 @@ if str(SRC) not in sys.path:
 
 import matplotlib.pyplot as plt
 
-from thermo_acoustic.ad2 import CarrierSettings, TriggerSettings, WaveformFunction, WfgChannelConfig, WfgConfig
-from thermo_acoustic.ad2_capture_tooling import (
+from thermo_acoustic.drivers.ad2.models import CarrierSettings, TriggerSettings, WaveformFunction, WfgChannelConfig, WfgConfig
+from thermo_acoustic.drivers.ad2.capture_tooling import (
     REAL_AD2_W1_CONFIRMATION,
     require_real_ad2_w1_confirmation,
     run_capture_with_cleanup,
 )
-from thermo_acoustic.instruments import AD2Sdk
+from thermo_acoustic.drivers.ad2.sdk import AD2Sdk
 
 
 CSV_PATH = ROOT / "ad2_scope_capture.csv"

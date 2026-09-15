@@ -8,7 +8,7 @@ from pathlib import Path
 import time
 from typing import Iterable
 
-from .ad2 import (
+from .models import (
     DigitalOutIdleState,
     DigitalOutType,
     DoConfig,
@@ -17,7 +17,7 @@ from .ad2 import (
     WfgConfig,
     waveform_parameter_policy,
 )
-from .hw_logging import log_call
+from ..common.logging import log_call
 
 
 class WaveFormsError(RuntimeError):

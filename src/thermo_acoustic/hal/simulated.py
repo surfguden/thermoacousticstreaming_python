@@ -69,4 +69,3 @@ class SimulatedZStageWorker(SimulatedWorker):
         if not 0 <= position_um <= 450: raise ValueError("position_um must be between 0 and 450")
         if not self.state.readings.get("closed_loop"): raise RuntimeError("Enable closed-loop before moving")
         self.state.readings["position_um"] = position_um
-

@@ -19,7 +19,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from thermo_acoustic.qmix_backend import QmixPumpBackend
+from thermo_acoustic.drivers.pump.qmix import QmixPumpBackend
 
 
 CONFIRM_TEXT = "CONFIRM_REAL_CETONI_QMIX"

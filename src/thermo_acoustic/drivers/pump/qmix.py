@@ -6,7 +6,7 @@ import sys
 import time
 from typing import Any
 
-from .hw_logging import log_call, log_transaction, run_with_timeout
+from ..common.logging import log_call, log_transaction, run_with_timeout
 
 
 class QmixPumpError(RuntimeError):

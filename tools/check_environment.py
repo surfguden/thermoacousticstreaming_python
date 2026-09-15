@@ -18,10 +18,10 @@ import sys
 # name -> (module to import, why it's needed, which real file imports it)
 CORE_DEPENDENCIES: dict[str, tuple[str, str]] = {
     "Pillow": ("PIL", "used for image handling"),
-    "pyserial": ("serial", "instruments.py -- valve serial backend"),
+    "pyserial": ("serial", "drivers/valve -- serial valve backend"),
     "numpy": ("numpy", "DCAM vendor wrapper -- camera frame arrays"),
-    "pythonnet": ("clr", "thorlabs_piezo.py -- real Z-stage/piezo motion via Kinesis .NET"),
-    "mecom": ("mecom", "tec.py -- real Meerstetter TEC controller via pyMeCom (MeComSerial)"),
+    "pythonnet": ("clr", "drivers/z_stage -- real piezo motion via Kinesis .NET"),
+    "mecom": ("mecom", "drivers/tec -- real Meerstetter controller via pyMeCom"),
 }
 
 # Only needed for standalone diagnostic scripts, not the core driver

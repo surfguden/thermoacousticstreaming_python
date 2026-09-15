@@ -19,7 +19,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from thermo_acoustic.qmix_backend import QmixPumpBackend  # noqa: E402
+from thermo_acoustic.drivers.pump.qmix import QmixPumpBackend  # noqa: E402
 
 
 DEFAULT_CONFIGURATION_PATH = Path(

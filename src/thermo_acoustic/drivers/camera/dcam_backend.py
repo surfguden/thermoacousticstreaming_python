@@ -8,8 +8,8 @@ import sys
 import time
 from typing import Any
 
-from .camera import MinMaxInc, SubRegion, SubRegionLimits
-from .hw_logging import log_action, log_call, log_transaction
+from .models import MinMaxInc, SubRegion, SubRegionLimits
+from ..common.logging import log_action, log_call, log_transaction
 
 
 class HamamatsuDcamError(RuntimeError):
@@ -721,7 +721,6 @@ class HamamatsuDcamBackend:
         if minimum <= numeric <= maximum:
             return numeric
         raise HamamatsuDcamError(f"{name} must be between {minimum} and {maximum}; got {numeric}")
-
     def _bounded_int(self, value: object, minimum: int, maximum: int, name: str) -> int:
         numeric = int(value)
         if minimum <= numeric <= maximum:

@@ -14,7 +14,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from thermo_acoustic.waveforms import WaveFormsBackend
+from thermo_acoustic.drivers.ad2.waveforms import WaveFormsBackend
 
 
 CONFIRM_TEXT = "CONFIRM_REAL_AD2_RELEASE"

@@ -12,4 +12,3 @@ class PumpWorker(DeviceWorker):
     def stop(self):
         if self.driver: self.driver.stop()
         self.state.active = False
-

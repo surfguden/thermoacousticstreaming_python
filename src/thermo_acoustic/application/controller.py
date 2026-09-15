@@ -3,7 +3,7 @@ from collections import deque
 from dataclasses import dataclass
 from time import monotonic
 from PySide6.QtCore import QObject, Signal, Slot
-from ..devices.registry import DeviceRegistry
+from ..hal.registry import DeviceRegistry
 from ..domain.models import DeviceStatus, OperatingMode
 from .audit import AuditLogger
 from .commands import CommandEvent, CommandResult, DeviceCommand

@@ -75,7 +75,6 @@ def _device_info_from_mapping(device: dict[str, Any]) -> ThorlabsAptDeviceInfo:
         raw=device,
     )
 
-
 def _device_info_from_sequence(device: tuple[object, ...] | list[object]) -> ThorlabsAptDeviceInfo:
     serial_number = _text_or_none(device[0]) if device else None
     description = _text_or_none(device[1]) if len(device) > 1 else None

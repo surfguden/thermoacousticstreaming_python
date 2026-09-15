@@ -6,7 +6,7 @@ from PySide6.QtWidgets import QApplication
 from thermo_acoustic.application import ApplicationController, DeviceCommand
 from thermo_acoustic.application.audit import AuditLogger
 from thermo_acoustic.console.parser import parse_command
-from thermo_acoustic.devices.registry import DeviceRegistry
+from thermo_acoustic.hal.registry import DeviceRegistry
 from thermo_acoustic.domain.models import DeviceId, OperatingMode
 from thermo_acoustic.ui.main_window import MainWindow
 
@@ -63,4 +63,3 @@ def test_parser_validation_and_eof_contract():
     assert parse_command("help") == "help"
     assert parse_command("z-stage move 50").args == (50.0,)
     with pytest.raises(ValueError): parse_command("pump set-flow")
-

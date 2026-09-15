@@ -11,7 +11,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from thermo_acoustic.ui.main import main
+from thermo_acoustic.main import main
 
 
 if __name__ == "__main__":

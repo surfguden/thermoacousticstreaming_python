@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .hw_logging import log_call, run_with_timeout
+from ..common.logging import log_call, run_with_timeout
 
 
 class PiezoStageError(RuntimeError):
@@ -43,7 +43,7 @@ class PiezoStage:
     at a different unit.
 
     Testability follows this project's existing SDK-backend pattern (see
-    QmixPumpBackend in qmix_backend.py): device_manager_cli/
+    Qmix backend): device_manager_cli/
     benchtop_precision_piezo_cls/closed_loop_mode are injectable, so tests
     can supply fakes without pythonnet or real Kinesis DLLs installed.
     """

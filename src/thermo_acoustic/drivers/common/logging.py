@@ -1,8 +1,7 @@
 """Shared hardware-transaction logging, so a real hardware failure can be
 diagnosed from a log file alone without needing to reproduce it live.
 
-Every backend module (thorlabs_piezo.py, waveforms.py, hamamatsu_dcam.py,
-qmix_backend.py, instruments.py's serial/valve backends) routes its real
+Every backend module (Z-stage, WaveForms, DCAM, Qmix, and serial valve) routes its real
 device commands and responses through `log_transaction()` (explicit) or
 `log_call()` (a context manager for the common "one command, one
 response/error" shape). One shared logger/file is used deliberately, not

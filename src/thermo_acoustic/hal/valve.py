@@ -7,4 +7,3 @@ class ValveWorker(DeviceWorker):
         if position not in (1, 2): raise ValueError("position must be 1 or 2")
         if self.driver: self.driver.set_position(position)
         self.state.readings["position"] = position
-

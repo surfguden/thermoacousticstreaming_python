@@ -9,4 +9,3 @@ class ZStageWorker(DeviceWorker):
         if not self.state.readings.get("closed_loop"): raise RuntimeError("Enable closed-loop before moving")
         if self.driver: self.driver.move_to(position_um)
         self.state.readings["position_um"] = position_um
-

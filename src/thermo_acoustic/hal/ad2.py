@@ -16,4 +16,3 @@ class AD2Worker(DeviceWorker):
     def stop(self):
         if self.driver: self.driver.wfg_start_stop_all_ch(False)
         self.state.active = False
-

@@ -8,4 +8,3 @@ class TecWorker(DeviceWorker):
         if self.driver: self.driver.apply_static_setpoint({1: temperature_c})
         self.state.readings["temperature_c"] = temperature_c; self.state.active = True
     def stop(self): self.state.active = False
-

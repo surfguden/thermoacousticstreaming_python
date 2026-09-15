@@ -5,4 +5,3 @@ class CameraWorker(DeviceWorker):
         super().__init__(DeviceId.CAMERA, parent=parent); self.driver = driver; self.register("snapshot", self.snapshot)
     def snapshot(self):
         return self.driver.capture_snapshot() if self.driver else {"frames": 1}
-

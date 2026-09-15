@@ -6,7 +6,7 @@ import math
 import time
 from typing import Callable, Protocol
 
-from .hw_logging import log_call, run_with_timeout
+from ..common.logging import log_call, run_with_timeout
 
 
 TEC_TARGET_MIN_C = 0.0
@@ -308,8 +308,8 @@ class _PyMeComTecClient:
 
     `mecom` is imported lazily inside connect(), not at module import time
     -- matching this project's own established convention for vendor SDKs
-    used only on the real-hardware path (qmix_backend.py's _load_sdk(),
-    thorlabs_piezo.py's lazy `import clr`), so a machine without pyMeCom
+    used only on the real-hardware path (Qmix SDK loading and the Z-stage's
+    lazy `import clr`), so a machine without pyMeCom
     installed can still run this app in simulated mode.
     """
 
