@@ -87,7 +87,7 @@ def test_analog_discovery_configures_directly_without_an_inner_driver() -> None:
     device = AnalogDiscovery2(enabled=False)
     configured: list[tuple[int, object]] = []
     device.enabled = True
-    device.open_first_device = lambda: 7
+    device._open_device = lambda _index: 7
     device.configure_wfg = lambda handle, config: configured.append((handle, config))
 
     device.wfg_configure({"frequency_hz": 2500.0, "amplitude_v": 0.5})
@@ -100,7 +100,7 @@ def test_analog_discovery_do_config_keeps_custom_pattern_and_clock_settings() ->
     device = AnalogDiscovery2(enabled=False)
     configured: list[tuple[int, object]] = []
     device.enabled = True
-    device.open_first_device = lambda: 11
+    device._open_device = lambda _index: 11
     device.configure_do = lambda handle, config: configured.append((handle, config))
 
     device.do_configure(

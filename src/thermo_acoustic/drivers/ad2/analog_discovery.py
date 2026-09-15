@@ -128,7 +128,7 @@ class AnalogDiscovery2:
                 except Exception as exc:
                     errors.append(f"DigitalOut {operation} failed: {exc}")
             try:
-                self.close(handle)
+                self._close(handle)
             except Exception as exc:
                 errors.append(f"device close failed: {exc}")
         finally:
@@ -142,7 +142,7 @@ class AnalogDiscovery2:
         if not self.enabled:
             self.device_handle = None
         elif self.device_handle is None:
-            self.device_handle = self.open_first_device()
+            self.device_handle = self._open_device(-1)
         return self.device_handle
 
     def _require_handle(self, operation: str) -> int:
@@ -154,7 +154,7 @@ class AnalogDiscovery2:
         return handle
 
     def pc_trigger(self) -> None:
-        self.trigger_pc(self._require_handle("pc_trigger()"))
+        self._trigger_pc(self._require_handle("pc_trigger()"))
         self.triggered = True
 
     def _get_wfg_config(self) -> WfgConfig:
@@ -400,10 +400,7 @@ class AnalogDiscovery2:
             )
         return self._OUTPUT_MODES[key]
 
-    def open_first_device(self) -> int:
-        return self.open_device(-1)
-
-    def open_device(self, device_index: int = -1) -> int:
+    def _open_device(self, device_index: int) -> int:
         with log_call("ad2", "open_device", command=device_index) as result:
             handle = c_int()
             self._check(self._dwf.FDwfDeviceOpen(c_int(device_index), byref(handle)), "FDwfDeviceOpen")
@@ -412,7 +409,7 @@ class AnalogDiscovery2:
             result["response"] = handle.value
         return handle.value
 
-    def close(self, handle: int) -> None:
+    def _close(self, handle: int) -> None:
         with log_call("ad2", "close", command=handle) as result:
             self._check(self._dwf.FDwfDeviceClose(c_int(handle)), "FDwfDeviceClose")
             result["response"] = "closed"
@@ -424,28 +421,10 @@ class AnalogDiscovery2:
             self._check(self._dwf.FDwfDeviceCloseAll(), "FDwfDeviceCloseAll")
             result["response"] = "all closed"
 
-    def reset_device(self, handle: int) -> None:
-        # Real reachable call site: hardware_tests/test_real_workflow_smoke.py's
-        # safe_disable_ad2_outputs() (real post-test AD2 output cleanup).
-        with log_call("ad2", "reset_device", command=handle) as result:
-            self._check(self._dwf.FDwfDeviceReset(c_int(handle)), "FDwfDeviceReset")
-            result["response"] = "reset"
-
-    def set_auto_configure(self, handle: int, enabled: bool) -> None:
-        self._check(self._dwf.FDwfDeviceAutoConfigureSet(c_int(handle), c_int(int(enabled))), "FDwfDeviceAutoConfigureSet")
-
-    def trigger_pc(self, handle: int) -> None:
+    def _trigger_pc(self, handle: int) -> None:
         with log_call("ad2", "trigger_pc", command=handle) as result:
             self._check(self._dwf.FDwfDeviceTriggerPC(c_int(handle)), "FDwfDeviceTriggerPC")
             result["response"] = "triggered"
-
-    def get_last_error_code(self) -> int:
-        code = c_int()
-        self._dwf.FDwfGetLastError(byref(code))
-        return code.value
-
-    def get_last_error_message(self) -> str:
-        return self._last_error()
 
     def enum_devices(self, filter_id: int = 0) -> int:
         # Real reachable call sites: hardware_tests/manual_release_ad2.py and
