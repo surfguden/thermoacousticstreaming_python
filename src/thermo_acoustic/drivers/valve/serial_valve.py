@@ -129,7 +129,7 @@ class Valve:
         while True:
             raw_response = self.transport.query(self.status_query_command)
             self._apply_status_response(raw_response)
-            if self.status_note in ("ready", "confirmed"):
+            if self.status_note == "confirmed":
                 return True
             if time.monotonic() >= deadline:
                 return False

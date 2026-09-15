@@ -81,6 +81,14 @@ def test_simulated_devices_are_reusable_without_the_hal() -> None:
     assert z_stage.set_position(50.0) == 50.0
     z_stage.disconnect()
 
+    valve = SimulatedValve()
+    valve.initialize()
+    valve.set_position(2)
+    assert "pending" in valve.status_note
+    assert valve.wait_until_ready()
+    assert valve.status_note == "confirmed"
+    valve.cleanup()
+
 
 def test_camera_roi_can_be_centered_with_integer_limits() -> None:
     limits = SubRegionLimits(
