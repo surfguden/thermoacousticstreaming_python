@@ -8,7 +8,7 @@ import sys
 import time
 from typing import Any
 
-from .models import MinMaxInc, SubRegion, SubRegionLimits
+from .roi import IntegerRange, SubRegion, SubRegionLimits
 from ..common.logging import log_action, log_call, log_transaction
 
 
@@ -470,10 +470,10 @@ class HamamatsuDcamDriver:
         ) as log_result:
             props = self.dcam_module.DCAM_IDPROP
             limits = SubRegionLimits(
-                horizontal_offset=self._minmaxinc(props.SUBARRAYHPOS),
-                vertical_offset=self._minmaxinc(props.SUBARRAYVPOS),
-                horizontal_size=self._minmaxinc(props.SUBARRAYHSIZE),
-                vertical_size=self._minmaxinc(props.SUBARRAYVSIZE),
+                horizontal_offset=self._integer_range(props.SUBARRAYHPOS),
+                vertical_offset=self._integer_range(props.SUBARRAYVPOS),
+                horizontal_size=self._integer_range(props.SUBARRAYHSIZE),
+                vertical_size=self._integer_range(props.SUBARRAYVSIZE),
             )
             roi = SubRegion(
                 horizontal_offset=int(self.dcam.prop_getvalue(props.SUBARRAYHPOS) or 0),
@@ -704,11 +704,11 @@ class HamamatsuDcamDriver:
         self._check(frame is not False, "Dcam.buf_getlastframedata")
         return frame.copy(), None
 
-    def _minmaxinc(self, idprop: object) -> MinMaxInc:
+    def _integer_range(self, idprop: object) -> IntegerRange:
         attr = self.dcam.prop_getattr(idprop)
         if attr is False:
-            return MinMaxInc()
-        return MinMaxInc(int(attr.valuemin), int(attr.valuemax), max(int(attr.valuestep), 1))
+            return IntegerRange()
+        return IntegerRange(int(attr.valuemin), int(attr.valuemax), max(int(attr.valuestep), 1))
 
     def _mapped_value(self, value: object, mapping: dict[str, object], name: str) -> object:
         key = str(value).strip().lower().replace("_", " ")

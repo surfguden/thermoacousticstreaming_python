@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 
 
 @dataclass(slots=True)
-class MinMaxInc:
+class IntegerRange:
     minimum: int = 0
     maximum: int = 0
     increment: int = 1
@@ -27,7 +27,7 @@ class SubRegion:
 
 @dataclass(slots=True)
 class SubRegionLimits:
-    horizontal_offset: MinMaxInc = field(default_factory=MinMaxInc)
-    vertical_offset: MinMaxInc = field(default_factory=MinMaxInc)
-    horizontal_size: MinMaxInc = field(default_factory=MinMaxInc)
-    vertical_size: MinMaxInc = field(default_factory=MinMaxInc)
+    horizontal_offset: IntegerRange = field(default_factory=IntegerRange)
+    vertical_offset: IntegerRange = field(default_factory=IntegerRange)
+    horizontal_size: IntegerRange = field(default_factory=IntegerRange)
+    vertical_size: IntegerRange = field(default_factory=IntegerRange)

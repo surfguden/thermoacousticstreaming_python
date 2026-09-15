@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 from thermo_acoustic.drivers.ad2 import AD2Sdk, SimulatedAD2, WaveFormsDriver
-from thermo_acoustic.drivers.camera import HamamatsuDcamDriver, SimulatedCamera
+from thermo_acoustic.drivers.camera import (
+    HamamatsuDcamDriver,
+    IntegerRange,
+    SimulatedCamera,
+    SubRegion,
+    SubRegionLimits,
+)
 from thermo_acoustic.drivers.pump import CetoniPump, SimulatedPump
 from thermo_acoustic.drivers.tec import MeerstetterTecDriver, SimulatedTec, TecController
 from thermo_acoustic.drivers.valve import SerialTextCommandTransport, SimulatedValve, Valve
@@ -61,3 +67,17 @@ def test_simulated_devices_are_reusable_without_the_hal() -> None:
     z_stage.switch_to_closed_loop()
     assert z_stage.set_position(50.0) == 50.0
     z_stage.disconnect()
+
+
+def test_camera_roi_can_be_centered_with_integer_limits() -> None:
+    limits = SubRegionLimits(
+        horizontal_size=IntegerRange(minimum=4, maximum=2048, increment=4),
+        vertical_size=IntegerRange(minimum=4, maximum=1024, increment=4),
+    )
+
+    assert SubRegion(horizontal_size=512, vertical_size=256).centered(limits) == SubRegion(
+        horizontal_offset=768,
+        vertical_offset=384,
+        horizontal_size=512,
+        vertical_size=256,
+    )
