@@ -13,7 +13,6 @@ from .configuration import (
     DigitalOutIdleState,
     DigitalOutType,
     DoConfig,
-    DoSingleChannelConfig,
     MsoConfig,
     TriggerSource,
     WaveformFunction,
@@ -81,8 +80,6 @@ class AnalogDiscovery2:
         self.enabled = enabled
         self.wfg_config: WfgConfig | None = None
         self.do_config: DoConfig | None = None
-        self.do_custom_config: DoConfig | None = None
-        self.do_clock_settings: DoConfig | None = None
         self.mso_config: MsoConfig | None = None
         self.device_handle: int | None = None
         self.triggered = False
@@ -179,52 +176,10 @@ class AnalogDiscovery2:
         self.configure_wfg(self._require_handle("wfg_start_stop_all_ch()"), new_config)
         self.wfg_config = new_config
 
-    def get_do_config(self) -> DoConfig:
+    def _get_do_config(self) -> DoConfig:
         if self.do_config is None:
             self.do_config = DoConfig()
         return self.do_config
-
-    def config_do_custom(self, config: DoConfig | dict | None) -> None:
-        new_config = coerce_do_config(config)
-        self.configure_do(self._require_handle("config_do_custom()"), new_config)
-        self.do_custom_config = new_config
-        self.do_config = new_config
-
-    def config_do_clock_special(self, settings: DoConfig | dict | None) -> None:
-        new_config = coerce_do_config(settings)
-        self.configure_do(self._require_handle("config_do_clock_special()"), new_config)
-        self.do_clock_settings = new_config
-        self.do_config = new_config
-
-    def do_config_trigger(self, trigger_source: str) -> None:
-        for channel in self.get_do_config().channels:
-            channel.trigger.source = trigger_source
-
-    def do_configure_idle(
-        self, channel_index: int, channel: DoSingleChannelConfig
-    ) -> None:
-        self.get_do_config().channel(channel_index).idle_state = channel.idle_state
-
-    def do_divider_config(self, channel_index: int, clock_divider: int) -> None:
-        self.get_do_config().channel(channel_index).clock_divider = clock_divider
-
-    def do_type_config(
-        self, channel_index: int, channel: DoSingleChannelConfig
-    ) -> None:
-        target = self.get_do_config().channel(channel_index)
-        target.output_type = channel.output_type
-        target.output_mode = channel.output_mode
-
-    def do_enable_set(self, channel_index: int, enabled: bool) -> None:
-        self.get_do_config().channel(channel_index).enable = enabled
-
-    def do_custom_pattern_build_array(self, high_bits: int, low_bits: int) -> list[int]:
-        return [1] * max(high_bits, 0) + [0] * max(low_bits, 0)
-
-    def do_configure_custom_pattern(self, channel_index: int, bits: list[int]) -> None:
-        channel = self.get_do_config().channel(channel_index)
-        channel.custom_data.bits = bits
-        channel.custom_data.count_of_bits = len(bits)
 
     def do_configure(self, config: DoConfig | dict | None) -> None:
         new_config = coerce_do_config(config)
@@ -236,7 +191,7 @@ class AnalogDiscovery2:
         self.do_config = DoConfig()
 
     def start_stop_do(self, running: bool) -> None:
-        new_config = deepcopy(self.get_do_config())
+        new_config = deepcopy(self._get_do_config())
         new_config.running = running
         self.configure_do(self._require_handle("start_stop_do()"), new_config)
         self.do_config = new_config
