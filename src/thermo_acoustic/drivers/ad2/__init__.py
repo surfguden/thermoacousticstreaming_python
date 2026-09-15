@@ -1,3 +1,4 @@
-from .sdk import AD2Sdk, SimulatedAD2Sdk
+from .sdk import AD2Sdk
+from .waveforms import WaveFormsDriver
 
-__all__ = ["AD2Sdk", "SimulatedAD2Sdk"]
+__all__ = ["AD2Sdk", "WaveFormsDriver"]

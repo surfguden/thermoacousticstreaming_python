@@ -12,7 +12,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from thermo_acoustic.drivers.camera.dcam_backend import HamamatsuDcamBackend
+from thermo_acoustic.drivers.camera.dcam_driver import HamamatsuDcamDriver
 
 
 CONFIRM_TEXT = "READONLY_PROBE"
@@ -61,9 +61,9 @@ def property_name(camera: Any, idprop: object) -> str:
     return str(name)
 
 
-def read_device_strings(backend: HamamatsuDcamBackend) -> None:
-    dcam_module = backend.dcam_module
-    camera = backend.dcam
+def read_device_strings(driver: HamamatsuDcamDriver) -> None:
+    dcam_module = driver.dcam_module
+    camera = driver.dcam
     if dcam_module is None or camera is None:
         return
     print_step("reading camera identity strings")
@@ -192,11 +192,11 @@ def print_value_list(camera: Any, idprop: object, values: list[float]) -> None:
         print(f"    {display_value}: {text}", flush=True)
 
 
-def inspect_property(backend: HamamatsuDcamBackend, enum_name_hint: str, idprop: object) -> None:
-    dcam_module = backend.dcam_module
-    camera = backend.dcam
+def inspect_property(driver: HamamatsuDcamDriver, enum_name_hint: str, idprop: object) -> None:
+    dcam_module = driver.dcam_module
+    camera = driver.dcam
     if dcam_module is None or camera is None:
-        raise RuntimeError("DCAM backend was not opened.")
+        raise RuntimeError("DCAM driver was not opened.")
 
     prop_id = enum_int(idprop)
     print()
@@ -265,16 +265,16 @@ def main() -> int:
         print_step(f"refusing to run without --confirm {CONFIRM_TEXT}")
         return 2
 
-    backend = HamamatsuDcamBackend(device_index=args.device_index)
+    driver = HamamatsuDcamDriver(device_index=args.device_index)
     if args.sdk_python_path is not None:
-        backend.sdk_python_path = args.sdk_python_path
+        driver.sdk_python_path = args.sdk_python_path
 
     try:
-        print_step("opening Hamamatsu camera through HamamatsuDcamBackend")
-        backend.open_camera()
-        read_device_strings(backend)
+        print_step("opening Hamamatsu camera through HamamatsuDcamDriver")
+        driver.open_camera()
+        read_device_strings(driver)
 
-        dcam_module = backend.dcam_module
+        dcam_module = driver.dcam_module
         if dcam_module is None:
             raise RuntimeError("DCAM module was not loaded.")
         candidates = collect_property_candidates(dcam_module)
@@ -285,7 +285,7 @@ def main() -> int:
             print(f"  {name}: {prop_id} / 0x{prop_id:08X}", flush=True)
 
         for name, idprop in candidates:
-            inspect_property(backend, name, idprop)
+            inspect_property(driver, name, idprop)
 
         print()
         print_step("read-only DCAM property discovery completed")
@@ -296,10 +296,10 @@ def main() -> int:
     finally:
         print_step("entering cleanup")
         try:
-            backend.close()
-            print_step("cleanup ok: backend.close() stopped capture if needed, released buffers, closed camera, and uninitialized DCAM")
+            driver.close()
+            print_step("cleanup ok: driver.close() stopped capture if needed, released buffers, closed camera, and uninitialized DCAM")
         except Exception as exc:
-            print_step(f"cleanup warning: backend.close() failed: {exc}")
+            print_step(f"cleanup warning: driver.close() failed: {exc}")
         print_step("cleanup finished")
 
 

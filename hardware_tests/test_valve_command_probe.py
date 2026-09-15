@@ -5,7 +5,7 @@ Purpose:
   Test a SINGLE candidate command string against the real Rheodyne MX valve
   on a serial port, so the user can observe whether the valve physically
   switches. This is intentionally isolated from src/ and from the main
-  application code -- it does not import Valve, SerialTextCommandBackend,
+  application code -- it does not import Valve, SerialTextCommandTransport,
   or anything from src/thermo_acoustic.
 
 This is not an automated pytest test despite the historical ``test_`` file

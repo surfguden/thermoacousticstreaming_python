@@ -87,7 +87,7 @@ MAX_SYRINGE_STROKE_MM = 65.0
 
 
 @dataclass(slots=True)
-class QmixPumpBackend:
+class QmixPumpDriver:
     sdk_python_path: Path = field(default_factory=_default_sdk_python_path)
     pump_name: str | None = None
     pump_index: int = 0

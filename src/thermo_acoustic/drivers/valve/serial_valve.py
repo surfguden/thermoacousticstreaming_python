@@ -1,7 +1,8 @@
 from __future__ import annotations
 from dataclasses import dataclass
 import time
-from ..common.serial import TextCommandBackend
+from ..common.serial import TextCommandTransport
+
 
 class ValveError(RuntimeError):
     pass
@@ -9,15 +10,14 @@ class ValveError(RuntimeError):
 
 @dataclass(slots=True)
 class Valve:
+    transport: TextCommandTransport
     enabled: bool = True
-    simulate: bool = True
     # Real-hardware-confirmed default (a real-hardware verification session,
     # re-confirmed by a prior session too, not a one-off): the valve responds
     # correctly to the documented "S" status-query protocol on COM5, not the
     # previously-documented COM6 -- COM6 was a standing documentation error,
     # not a transient port reassignment.
     visa_resource: str = "COM5"
-    backend: TextCommandBackend | None = None
     # Protocol-confirmed numeric positions. The physical fluidic routing of
     # P01/P02 remains a bench-confirmation item; do not infer Open/Closed
     # semantics from the serial position token alone.
@@ -30,24 +30,23 @@ class Valve:
 
     def initialize(self) -> None:
         self.status_note = ""
-        if self.backend is not None:
+        try:
+            self.transport.write(f"OPEN {self.visa_resource}")
+            raw_response = self.transport.query(self.status_query_command)
+            if not self._apply_status_response(raw_response):
+                raise ValveError(
+                    f"Valve returned unrecognized status on {self.visa_resource}: {self.status_note}"
+                )
+        except Exception as exc:
+            self.initialized = False
             try:
-                self.backend.write(f"OPEN {self.visa_resource}")
-                raw_response = self.backend.query(self.status_query_command)
-                if not self._apply_status_response(raw_response):
-                    raise ValveError(
-                        f"Valve returned unrecognized status on {self.visa_resource}: {self.status_note}"
-                    )
-            except Exception as exc:
-                self.initialized = False
-                try:
-                    self.backend.close()
-                except Exception as cleanup_exc:
-                    raise ValveError(
-                        f"Valve initialize failed on {self.visa_resource}: {exc}; "
-                        f"cleanup after failed initialize also failed: {cleanup_exc}"
-                    ) from exc
-                raise
+                self.transport.close()
+            except Exception as cleanup_exc:
+                raise ValveError(
+                    f"Valve initialize failed on {self.visa_resource}: {exc}; "
+                    f"cleanup after failed initialize also failed: {cleanup_exc}"
+                ) from exc
+            raise
         self.initialized = True
 
     def _apply_status_response(self, raw_response: str) -> bool:
@@ -66,7 +65,7 @@ class Valve:
         # chatter containing a digit. In particular, do not treat strings
         # such as ``device=1`` or ``foo2bar`` as a confirmed valve position.
         # ``01``/``02`` are the observed protocol replies; the other exact
-        # forms keep compatibility with existing simulated/echo responses.
+        # forms accept equivalent position tokens.
         position_responses = {
             "1": 1,
             "01": 1,
@@ -85,7 +84,7 @@ class Valve:
     def _ensure_connected(self) -> None:
         # Lazy reconnect (2026-08-13 architecture fix), matching the pattern
         # already proven for AD2Sdk.open_and_use_first_device()/
-        # HamamatsuDcamBackend.open_camera(): a manual Pump&Valve-tab action
+        # HamamatsuDcamDriver.open_camera(): a manual Pump&Valve-tab action
         # must not require a prior, successful, whole-system
         # Application.initialize() -- e.g. this Valve was skipped because an
         # earlier device in the reporting order failed under the old
@@ -96,9 +95,8 @@ class Valve:
         # Valve.initialize() is not just a handle open, it also runs the
         # real "S" status handshake/validation (_apply_status_response()) --
         # skipping that here would silently accept an unconfirmed connection
-        # on the fluid-routing-critical path. No-op when already initialized
-        # or simulated (backend is None).
-        if self.backend is not None and not self.initialized:
+        # on the fluid-routing-critical path. No-op when already initialized.
+        if not self.initialized:
             self.initialize()
 
     def set_position(self, position: int) -> None:
@@ -108,20 +106,16 @@ class Valve:
             raise ValueError(f"Unsupported valve position: {position}")
         self._ensure_connected()
         # Valve-driver review: self.position is now only
-        # assigned after backend.write() returns without raising -- assigning
+        # assigned after transport.write() returns without raising -- assigning
         # it first (the old order) meant a raised exception from write() left
         # self.position claiming a move that was never actually sent.
-        if self.backend is not None:
-            command = self.command_position_1 if position == 1 else self.command_position_2
-            self.backend.write(command)
+        command = self.command_position_1 if position == 1 else self.command_position_2
+        self.transport.write(command)
         self.position = position
-        if self.backend is not None:
-            # A successful serial write confirms only that the command was
-            # accepted by the host serial API. Do not carry a previous
-            # position's "confirmed" status across this new request; the next
-            # S-query/readback must confirm the requested protocol position.
-            command = self.command_position_1 if position == 1 else self.command_position_2
-            self.status_note = f"requested {command}; confirmation pending"
+        # A successful serial write confirms only that the command was
+        # accepted by the host serial API. The next status query confirms the
+        # requested protocol position.
+        self.status_note = f"requested {command}; confirmation pending"
 
     def wait_until_ready(self, timeout_s: float = 1.0, poll_interval_s: float = 0.05) -> bool:
         # Bounded poll of the same "S\r" handshake used at initialize() time,
@@ -131,11 +125,9 @@ class Valve:
         # "still busy" result is tolerated up to the timeout, at which point
         # this returns False. Hardware workflows must treat that as an
         # unconfirmed position and stop their next actuator command.
-        if self.backend is None:
-            return True
         deadline = time.monotonic() + max(timeout_s, 0.0)
         while True:
-            raw_response = self.backend.query(self.status_query_command)
+            raw_response = self.transport.query(self.status_query_command)
             self._apply_status_response(raw_response)
             if self.status_note in ("ready", "confirmed"):
                 return True
@@ -144,7 +136,6 @@ class Valve:
             time.sleep(max(poll_interval_s, 0.0))
 
     def cleanup(self) -> None:
-        if self.backend is not None:
-            self.backend.close()
+        self.transport.close()
         self.initialized = False
         self.status_note = ""

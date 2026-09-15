@@ -1,3 +1,3 @@
-from .camera import HamamatsuCamera
+from .dcam_driver import HamamatsuDcamDriver
 
-__all__ = ["HamamatsuCamera"]
+__all__ = ["HamamatsuDcamDriver"]

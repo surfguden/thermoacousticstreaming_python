@@ -1,7 +1,7 @@
 """Shared hardware-transaction logging, so a real hardware failure can be
 diagnosed from a log file alone without needing to reproduce it live.
 
-Every backend module (Z-stage, WaveForms, DCAM, Qmix, and serial valve) routes its real
+Every driver module (Z-stage, WaveForms, DCAM, Qmix, and serial valve) routes its real
 device commands and responses through `log_transaction()` (explicit) or
 `log_call()` (a context manager for the common "one command, one
 response/error" shape). One shared logger/file is used deliberately, not
@@ -40,7 +40,7 @@ here, exactly like a failed JSONL write.
 background thread -- shared home in this module because it's the other
 piece of cross-cutting hardware infrastructure (the standard
 timeout-guarded-cleanup-thread shape, previously hand-copied independently
-in Application/QmixPumpBackend/PiezoStage).
+in Application/QmixPumpDriver/PiezoStage).
 """
 
 from __future__ import annotations
@@ -116,7 +116,7 @@ def action_scope(
 ) -> Iterator[None]:
     """Bind durable action-log correlation to the current execution context.
 
-    The scope is intentionally local to one run/repeat. Existing backend
+    The scope is intentionally local to one run/repeat. Existing driver
     ``log_call`` sites inherit it without receiving new control parameters,
     and a missing/unwritable action log can never change hardware behavior.
     ``elapsed_s`` is host monotonic duration since this scope began; it is
@@ -429,7 +429,7 @@ def run_with_timeout(action: Callable[[], None], name: str, timeout_s: float) ->
     (device/step name, and "cleanup" if that's the caller's own convention)
     -- this function does not add its own prefix, so callers control their
     own message wording exactly as before extracting this from three
-    independent hand-copied implementations (Application, QmixPumpBackend,
+    independent hand-copied implementations (Application, QmixPumpDriver,
     PiezoStage).
 
     Usage:

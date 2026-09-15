@@ -19,7 +19,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from thermo_acoustic.drivers.pump.qmix import QmixPumpBackend
+from thermo_acoustic.drivers.pump.qmix_driver import QmixPumpDriver
 
 
 CONFIRM_TEXT = "CONFIRM_REAL_CETONI_QMIX"
@@ -60,18 +60,18 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    backend = QmixPumpBackend(pump_name=args.pump_name, pump_index=args.pump_index)
+    driver = QmixPumpDriver(pump_name=args.pump_name, pump_index=args.pump_index)
     result = 0
     try:
-        backend.initialize(Path(args.configuration_path))
+        driver.initialize(Path(args.configuration_path))
         print(f"Initialized Qmix pump index={args.pump_index} name={args.pump_name!r}")
-        print(f"Max flow: {backend.max_flow_rate_ul_min} uL/min")
-        print(f"Max volume: {backend.max_volume_ml} mL")
+        print(f"Max flow: {driver.max_flow_rate_ul_min} uL/min")
+        print(f"Max volume: {driver.max_volume_ml} mL")
         if args.flow_ul_min:
-            backend.generate_flow(args.flow_ul_min)
+            driver.generate_flow(args.flow_ul_min)
             print(f"Commanded flow: {args.flow_ul_min} uL/min")
-            print(f"Pumping: {backend.read_status()}")
-            backend.stop()
+            print(f"Pumping: {driver.read_status()}")
+            driver.stop()
             print("Stopped pump")
     except KeyboardInterrupt:
         print("Legacy probe interrupted by operator.", file=sys.stderr, flush=True)
@@ -81,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
         result = 1
     finally:
         try:
-            backend.close()
+            driver.close()
         except Exception as close_exc:
             print(
                 f"Warning: connection cleanup failed: {type(close_exc).__name__}: {close_exc}",

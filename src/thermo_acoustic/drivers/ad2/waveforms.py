@@ -24,7 +24,7 @@ class WaveFormsError(RuntimeError):
     """Raised when the Digilent WaveForms SDK returns an error."""
 
 
-class WaveFormsBackend:
+class WaveFormsDriver:
     """Small ctypes wrapper around the Digilent WaveForms DWF API."""
 
     _FUNCTIONS = {

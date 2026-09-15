@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Protocol
 from .logging import log_call
 
-class TextCommandBackend(Protocol):
+class TextCommandTransport(Protocol):
     def write(self, command: str) -> None: ...
 
     def query(self, command: str) -> str: ...
@@ -12,7 +12,7 @@ class TextCommandBackend(Protocol):
 
 
 @dataclass(slots=True)
-class SerialTextCommandBackend:
+class SerialTextCommandTransport:
     baud_rate: int = 19200
     timeout_s: float = 1.0
     write_timeout_s: float = 5.0
@@ -20,7 +20,7 @@ class SerialTextCommandBackend:
     port: object | None = None
     # Which device this instance's transactions get tagged as in the shared
     # hw_logging log (e.g. "valve") -- set by the caller that constructs this
-    # backend, since the backend itself is generic and has no device identity
+    # transport, since the transport itself is generic and has no device identity
     # of its own. Left at the generic default only if a caller forgets to set it.
     device_name: str = "serial"
 
@@ -67,14 +67,14 @@ class SerialTextCommandBackend:
             self._send(command)
             if self.port is None:
                 raise RuntimeError("Serial port is not open.")
-            # readline() splits on b"\n", but this backend's own devices are
+            # readline() splits on b"\n", but this transport's own devices are
             # only ever confirmed to terminate responses with line_ending
             # ("\r" by default -- see write() above). Real-hardware timing
             # characterization (Session 54) showed every query() call blocking
             # for the entire configured timeout_s before returning, regardless
             # of how quickly the device actually responded -- the signature of
             # readline() never finding the "\n" it was looking for. Reading
-            # until the same terminator this backend writes with fixes that.
+            # until the same terminator this transport writes with fixes that.
             terminator = self.line_ending.encode("ascii")
             response = self.port.read_until(expected=terminator).decode("ascii", errors="replace")
             result["response"] = response
@@ -82,7 +82,7 @@ class SerialTextCommandBackend:
 
     def close(self) -> None:
         with log_call(self.device_name, "close") as result:
-            # Serial-backend review: self.port must be
+            # Serial-transport review: self.port must be
             # reset to None even if port.close() itself raises -- otherwise
             # a future _open() sees self.port is not None and skips
             # reopening entirely, permanently reusing the broken handle,

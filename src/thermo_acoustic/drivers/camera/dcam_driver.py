@@ -24,7 +24,7 @@ def _default_sdk_python_path() -> Path:
 
 
 @dataclass(slots=True)
-class HamamatsuDcamBackend:
+class HamamatsuDcamDriver:
     device_index: int = 0
     sdk_python_path: Path = field(default_factory=_default_sdk_python_path)
     buffer_frames: int = 3
@@ -552,7 +552,7 @@ class HamamatsuDcamBackend:
             # Finding F (silent-failure/data-integrity sweep): these two
             # cleanup steps were silently swallowed with a bare `pass` --
             # unlike every other cleanup path in this codebase
-            # (Application._cleanup_instruments logs; QmixPumpBackend.close()/
+            # (Application._cleanup_instruments logs; QmixPumpDriver.close()/
             # PiezoStage.disconnect() both re-raise with details). If the
             # camera genuinely failed to stop capture or release its buffer
             # here, Application.cleanup() would see a clean success (no

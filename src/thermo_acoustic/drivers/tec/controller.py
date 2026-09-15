@@ -78,7 +78,7 @@ class TecStatus:
     error_state: str | None = None
 
 
-class TecBackend(Protocol):
+class TecDriver(Protocol):
     def connect(self) -> None: ...
 
     def close(self) -> None: ...
@@ -118,62 +118,12 @@ class TecPartialApplicationError(TecError):
 
 
 @dataclass(slots=True)
-class SimulatedTecBackend:
-    channels: tuple[int, ...] = TEC_CHANNELS
-    connected: bool = False
-    written: bool = False
-    _current_temperature_c: dict[int, float] = field(default_factory=dict)
-    _target_temperature_c: dict[int, float] = field(default_factory=dict)
-    _output_stage_static_on: dict[int, bool] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        for channel in self.channels:
-            self._current_temperature_c.setdefault(channel, 25.0)
-            self._target_temperature_c.setdefault(channel, 25.0)
-            self._output_stage_static_on.setdefault(channel, False)
-
-    def connect(self) -> None:
-        self.connected = True
-
-    def close(self) -> None:
-        self.connected = False
-
-    def read_status(self, channels: tuple[int, ...]) -> dict[int, TecStatus]:
-        return {
-            channel: TecStatus(
-                channel=channel,
-                current_temperature_c=self._current_temperature_c[channel],
-                target_temperature_c=self._target_temperature_c[channel],
-                output_stage_static_on=self._output_stage_static_on[channel],
-                ready=self.connected and self._output_stage_static_on[channel],
-                error_state=None,
-            )
-            for channel in channels
-        }
-
-    def set_output_stage_static_on(self, channel: int) -> None:
-        self._output_stage_static_on[channel] = True
-
-    def set_output_stage_static_off(self, channel: int) -> None:
-        self._output_stage_static_on[channel] = False
-
-    def set_target_temperature(self, channel: int, temperature_c: float) -> None:
-        self._target_temperature_c[channel] = float(temperature_c)
-
-    def write_config(self) -> None:
-        self.written = True
-        # Simulated backend settles immediately after an explicit write.
-        for channel in self.channels:
-            self._current_temperature_c[channel] = self._target_temperature_c[channel]
-
-
-@dataclass(slots=True)
-class MeerstetterTecBackend:
+class MeerstetterTecDriver:
     """Thin adapter for a Meerstetter/MeCom client supplied by integration code.
 
     The client (built by ``client_factory``, e.g. ``_real_tec_client_factory``
     below) is expected to expose the same channel-aware high-level methods
-    as ``TecBackend`` -- this adapter forwards to it without inventing any
+    as ``TecDriver`` -- this adapter forwards to it without inventing any
     hardware command of its own.
     """
 
@@ -271,7 +221,7 @@ class MeerstetterTecBackend:
 
     def _client(self) -> object:
         if self.client is None:
-            raise TecError("Meerstetter TEC backend is not connected.")
+            raise TecError("Meerstetter TEC driver is not connected.")
         return self.client
 
 
@@ -307,10 +257,9 @@ class _PyMeComTecClient:
     approval item.
 
     `mecom` is imported lazily inside connect(), not at module import time
-    -- matching this project's own established convention for vendor SDKs
-    used only on the real-hardware path (Qmix SDK loading and the Z-stage's
-    lazy `import clr`), so a machine without pyMeCom
-    installed can still run this app in simulated mode.
+    -- matching this project's established convention for optional vendor
+    SDKs (Qmix SDK loading and the Z-stage's lazy `import clr`). This keeps
+    importing the application independent of installed hardware packages.
     """
 
     def __init__(self, port: str | None, baudrate: int = 57600, timeout_s: float = 1.0) -> None:
@@ -323,7 +272,7 @@ class _PyMeComTecClient:
         from mecom import MeComSerial
 
         if not self._port:
-            raise TecError("MeerstetterTecBackend has no port configured; cannot connect a real TEC client.")
+            raise TecError("MeerstetterTecDriver has no port configured; cannot connect a real TEC client.")
         self._mc = MeComSerial(
             serialport=self._port,
             timeout=self._timeout_s,
@@ -410,9 +359,8 @@ def _real_tec_client_factory(port: str | None) -> _PyMeComTecClient:
 
 @dataclass(slots=True)
 class TecController:
+    driver: TecDriver
     enabled: bool = False
-    simulate: bool = True
-    backend: TecBackend | None = None
     initialized: bool = False
     # Real device is a 2-channel unit (TEC_CHANNELS). Every public method
     # below defaults to operating on all of these channels when called
@@ -432,24 +380,19 @@ class TecController:
     cleanup_timeout_s: float = 5.0
     operation_timeout_s: float = 5.0
 
-    def _backend(self) -> TecBackend:
-        if self.backend is None:
-            self.backend = SimulatedTecBackend(channels=self.channels) if self.simulate else MeerstetterTecBackend()
-        return self.backend
-
     def _channels_or_default(self, channels: tuple[int, ...] | None) -> tuple[int, ...]:
         return channels if channels is not None else self.channels
 
     def initialize(self) -> None:
         if not self.enabled:
             return
-        backend = self._backend()
+        driver = self.driver
         try:
-            backend.connect()
-            status = backend.read_status(self.channels)
+            driver.connect()
+            status = driver.read_status(self.channels)
         except Exception as exc:
             self.initialized = False
-            cleanup_error = run_with_timeout(backend.close, "TEC failed-initialize cleanup", self.cleanup_timeout_s)
+            cleanup_error = run_with_timeout(driver.close, "TEC failed-initialize cleanup", self.cleanup_timeout_s)
             if cleanup_error is not None:
                 raise TecError(
                     f"TEC initialize failed: {exc}; cleanup after the failed initialize also failed: "
@@ -464,7 +407,7 @@ class TecController:
         # Real-shakedown finding (2026-09-06, Checkpoint S): the TEC remained
         # actively regulating after V3's application/software was closed.
         # Root cause: this method only ever closed communication
-        # (backend.close()) -- it never asked the controller to leave Static
+        # (driver.close()) -- it never asked the controller to leave Static
         # ON. A Meerstetter TEC autonomously maintains its last commanded
         # setpoint once Static ON has been set; closing the serial link does
         # not command the controller into any different output state
@@ -473,28 +416,18 @@ class TecController:
         # pattern (e.g. AD2's stop-then-reset-then-close): an output-disable
         # failure must not prevent the communication-close attempt, and both
         # errors are collected and reported together, not silently dropped.
-        # set_output_stage_static_off() is itself a no-op-safe call when
-        # self.enabled is False; it is deliberately not called when
-        # self.backend is None, matching the pre-existing "nothing was ever
-        # connected" no-op below -- _backend() would otherwise lazily
-        # construct and leave behind an unconnected real backend.
         errors: list[str] = []
-        if self.backend is not None:
-            try:
-                self.set_output_stage_static_off()
-            except Exception as exc:
-                errors.append(f"TEC output-disable before cleanup failed: {exc}")
-            cleanup_error = run_with_timeout(self.backend.close, "TEC cleanup", self.cleanup_timeout_s)
-            if cleanup_error is not None:
-                errors.append(cleanup_error)
-            if errors:
-                # Preserves the pre-existing invariant this class already
-                # established: initialized is left unchanged (not forced to
-                # False) when cleanup could not be confirmed -- a stuck/
-                # failed close leaves the connection state genuinely
-                # unknown, so this deliberately does not claim
-                # "uninitialized" for a device that may still be live.
-                raise TecError("; ".join(errors))
+        try:
+            self.set_output_stage_static_off()
+        except Exception as exc:
+            errors.append(f"TEC output-disable before cleanup failed: {exc}")
+        cleanup_error = run_with_timeout(self.driver.close, "TEC cleanup", self.cleanup_timeout_s)
+        if cleanup_error is not None:
+            errors.append(cleanup_error)
+        if errors:
+            # Leave initialized unchanged when cleanup cannot be confirmed;
+            # the physical connection/output state may still be live.
+            raise TecError("; ".join(errors))
         self.initialized = False
 
     def read_status(self, channels: tuple[int, ...] | None = None) -> dict[int, TecStatus]:
@@ -503,8 +436,8 @@ class TecController:
             self.last_status = {channel: TecStatus(channel=channel) for channel in channels}
             self.last_status_at_utc = datetime.now(timezone.utc)
             return self.last_status
-        backend = self._backend()
-        self.last_status = backend.read_status(channels)
+        driver = self.driver
+        self.last_status = driver.read_status(channels)
         self.last_status_at_utc = datetime.now(timezone.utc)
         return self.last_status
 
@@ -531,13 +464,13 @@ class TecController:
             }
             self.last_status_at_utc = datetime.now(timezone.utc)
             return self.last_status
-        backend = self._backend()
+        driver = self.driver
         effective_timeout = self.operation_timeout_s if timeout_s is None else max(timeout_s, 0.0)
         errors: list[str] = []
         timed_out = False
         for channel in channels:
             error = run_with_timeout(
-                lambda channel=channel: backend.set_output_stage_static_off(channel),
+                lambda channel=channel: driver.set_output_stage_static_off(channel),
                 f"TEC channel {channel} Static OFF",
                 effective_timeout,
             )
@@ -551,7 +484,7 @@ class TecController:
 
         status_box: dict[str, dict[int, TecStatus]] = {}
         readback_error = run_with_timeout(
-            lambda: status_box.setdefault("status", backend.read_status(channels)),
+            lambda: status_box.setdefault("status", driver.read_status(channels)),
             "TEC Static OFF readback",
             effective_timeout,
         )
@@ -587,17 +520,17 @@ class TecController:
             }
             self.last_status = result
             return result
-        backend = self._backend()
+        driver = self.driver
         on_attempted: list[int] = []
         try:
             for channel in channels:
                 # Include the channel before the call: a transport exception
                 # can mean the command applied but its response was lost.
                 on_attempted.append(channel)
-                backend.set_output_stage_static_on(channel)
-                backend.set_target_temperature(channel, targets[channel])
-            backend.write_config()
-            result = backend.read_status(channels)
+                driver.set_output_stage_static_on(channel)
+                driver.set_target_temperature(channel, targets[channel])
+            driver.write_config()
+            result = driver.read_status(channels)
             for channel, status in result.items():
                 if status.error_state:
                     raise TecError(

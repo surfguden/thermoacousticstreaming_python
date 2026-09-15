@@ -92,7 +92,7 @@ provided. Tests write logs only under temporary directories.
 
 ## Retained drivers
 
-The canonical pump path is `drivers/pump/CetoniPump` with `QmixPumpBackend`.
+The canonical pump path is `drivers/pump/CetoniPump` with `QmixPumpDriver`.
 Other retained drivers are grouped under `drivers/ad2`, `drivers/camera`,
 `drivers/tec`, `drivers/valve`, and `drivers/z_stage`. Vendor APIs, data types,
 and errors remain behind the HAL boundary. There is no aggregate

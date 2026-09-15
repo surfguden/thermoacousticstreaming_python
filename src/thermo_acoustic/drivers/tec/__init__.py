@@ -1,3 +1,3 @@
-from .controller import TecController
+from .controller import MeerstetterTecDriver, TecController
 
-__all__ = ["TecController"]
+__all__ = ["MeerstetterTecDriver", "TecController"]

@@ -18,7 +18,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from thermo_acoustic.drivers.camera.dcam_backend import HamamatsuDcamBackend
+from thermo_acoustic.drivers.camera.dcam_driver import HamamatsuDcamDriver
 
 
 CONFIRM_TEXT = "CONFIRM_REAL_CAMERA_CAPTURE"
@@ -32,12 +32,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"REFUSING real camera capture. Pass --confirm {CONFIRM_TEXT} after verifying bench readiness.", file=sys.stderr)
         return 2
 
-    backend = HamamatsuDcamBackend()
+    driver = HamamatsuDcamDriver()
     try:
-        camera = backend.open_camera()
+        camera = driver.open_camera()
         print(f"Opened Hamamatsu camera: {camera}")
-        backend.configure_exposure_time(50.0)
-        frame = backend.capture_snapshot()
+        driver.configure_exposure_time(50.0)
+        frame = driver.capture_snapshot()
         shape = getattr(frame, "shape", None)
         dtype = getattr(frame, "dtype", None)
         print(f"Captured snapshot shape={shape} dtype={dtype}")
@@ -50,7 +50,7 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:
             print(f"Could not save snapshot: {exc}")
     finally:
-        backend.close()
+        driver.close()
     return 0
 
 

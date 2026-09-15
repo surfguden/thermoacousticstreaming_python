@@ -18,7 +18,7 @@ import sys
 # name -> (module to import, why it's needed, which real file imports it)
 CORE_DEPENDENCIES: dict[str, tuple[str, str]] = {
     "Pillow": ("PIL", "used for image handling"),
-    "pyserial": ("serial", "drivers/valve -- serial valve backend"),
+    "pyserial": ("serial", "drivers/valve -- serial valve transport"),
     "numpy": ("numpy", "DCAM vendor wrapper -- camera frame arrays"),
     "pythonnet": ("clr", "drivers/z_stage -- real piezo motion via Kinesis .NET"),
     "mecom": ("mecom", "drivers/tec -- real Meerstetter controller via pyMeCom"),

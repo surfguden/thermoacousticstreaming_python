@@ -6,7 +6,7 @@ import math
 import time
 from .models import DoConfig, DoSingleChannelConfig, MsoConfig, TriggerSource, WfgChannelConfig, WfgConfig, coerce_do_config, coerce_wfg_config
 from ..common.logging import log_call
-from .waveforms import WaveFormsBackend
+from .waveforms import WaveFormsDriver
 
 logger = logging.getLogger(__name__)
 
@@ -16,9 +16,8 @@ class AD2SdkError(RuntimeError):
 
 @dataclass(slots=True)
 class AD2Sdk:
+    driver: WaveFormsDriver
     enabled: bool = True
-    backend: WaveFormsBackend | None = None
-    library_path: str | Path | None = None
     wfg_config: WfgConfig | None = None
     do_config: DoConfig | None = None
     do_custom_config: DoConfig | None = None
@@ -27,10 +26,8 @@ class AD2Sdk:
     device_handle: int | None = None
     triggered: bool = False
 
-    def get_backend(self) -> WaveFormsBackend:
-        if self.backend is None:
-            self.backend = WaveFormsBackend(self.library_path)
-        return self.backend
+    def get_driver(self) -> WaveFormsDriver:
+        return self.driver
 
     def initialize(self) -> None:
         if self.enabled:
@@ -43,11 +40,11 @@ class AD2Sdk:
         try:
             if handle is None:
                 return
-            backend = self.get_backend()
+            driver = self.get_driver()
             for channel_index in (0, 1):
                 for operation, action in (
-                    ("stop", lambda channel_index=channel_index: backend.analog_out_configure(handle, channel_index, False)),
-                    ("reset", lambda channel_index=channel_index: backend.analog_out_reset(handle, channel_index)),
+                    ("stop", lambda channel_index=channel_index: driver.analog_out_configure(handle, channel_index, False)),
+                    ("reset", lambda channel_index=channel_index: driver.analog_out_reset(handle, channel_index)),
                 ):
                     try:
                         action()
@@ -59,15 +56,15 @@ class AD2Sdk:
             # Keep its shutdown independent from AnalogOut and device-close so
             # one failed cleanup command cannot skip the remaining safeguards.
             for operation, action in (
-                ("stop", lambda: backend.digital_out_configure(handle, False)),
-                ("reset", lambda: backend.reset_do(handle)),
+                ("stop", lambda: driver.digital_out_configure(handle, False)),
+                ("reset", lambda: driver.reset_do(handle)),
             ):
                 try:
                     action()
                 except Exception as exc:
                     errors.append(f"DigitalOut {operation} failed: {exc}")
             try:
-                backend.close(handle)
+                driver.close(handle)
             except Exception as exc:
                 errors.append(f"device close failed: {exc}")
         finally:
@@ -80,7 +77,7 @@ class AD2Sdk:
         if not self.enabled:
             self.device_handle = None
         elif self.device_handle is None:
-            self.device_handle = self.get_backend().open_first_device()
+            self.device_handle = self.get_driver().open_first_device()
         return self.device_handle
 
     def get_phdwf(self) -> int | None:
@@ -98,7 +95,7 @@ class AD2Sdk:
         handle = self.open_and_use_first_device()
         if handle is None:
             raise AD2SdkError("pc_trigger() called while AD2 is disabled -- caller must check ad2.enabled first.")
-        self.get_backend().trigger_pc(handle)
+        self.get_driver().trigger_pc(handle)
         self.triggered = True
 
     def get_wfg_config(self) -> WfgConfig:
@@ -111,7 +108,7 @@ class AD2Sdk:
 
     def config_wfg(self, config: WfgConfig | dict | None) -> None:
         # Finding 2 (waveforms.py review, Session 66): self.wfg_config is
-        # only committed after the real backend call succeeds -- previously
+        # only committed after the real driver call succeeds -- previously
         # assigned up front (via set_wfg_config()), so a failure partway
         # through a multi-channel configure_wfg() call (each channel issues
         # several independent _check()-guarded DWF calls) left self.wfg_config
@@ -123,7 +120,7 @@ class AD2Sdk:
         if handle is None:
             # open_and_use_first_device() only returns None when self.enabled
             # is False (a real device failure raises instead, never returns a
-            # falsy handle -- see WaveFormsBackend.open_device()). Callers on
+            # falsy handle -- see WaveFormsDriver.open_device()). Callers on
             # the real automated path (Application.run_experiment2()) are
             # expected to check ad2.enabled themselves and skip this call
             # entirely when disabled -- reaching here with a disabled device
@@ -132,7 +129,7 @@ class AD2Sdk:
             # which let a disabled AD2 report a successful WFG configuration
             # that never actually reached hardware).
             raise AD2SdkError("config_wfg() called while AD2 is disabled -- caller must check ad2.enabled first.")
-        self.get_backend().configure_wfg(handle, new_config)
+        self.get_driver().configure_wfg(handle, new_config)
         self.wfg_config = new_config
 
     def wfg_check_config_valid(self) -> bool:
@@ -163,7 +160,7 @@ class AD2Sdk:
         handle = self.open_and_use_first_device()
         if handle is None:
             raise AD2SdkError("wfg_configure() called while AD2 is disabled -- caller must check ad2.enabled first.")
-        self.get_backend().configure_wfg(handle, new_config)
+        self.get_driver().configure_wfg(handle, new_config)
         self.wfg_config = new_config
 
     def wfg_configure_read_back(self) -> WfgConfig:
@@ -179,7 +176,7 @@ class AD2Sdk:
             raise AD2SdkError(
                 "wfg_start_stop_all_ch() called while AD2 is disabled -- caller must check ad2.enabled first."
             )
-        self.get_backend().configure_wfg(handle, new_config)
+        self.get_driver().configure_wfg(handle, new_config)
         self.wfg_config = new_config
 
     def get_do_config(self) -> DoConfig:
@@ -189,7 +186,7 @@ class AD2Sdk:
 
     def config_do_custom(self, config: DoConfig | dict | None) -> None:
         # Finding 2 (waveforms.py review, Session 66): commit do_custom_config/
-        # do_config only after the real backend call succeeds -- same
+        # do_config only after the real driver call succeeds -- same
         # reasoning as config_wfg() above.
         new_config = coerce_do_config(config)
         handle = self.open_and_use_first_device()
@@ -197,7 +194,7 @@ class AD2Sdk:
             raise AD2SdkError(
                 "config_do_custom() called while AD2 is disabled -- caller must check ad2.enabled first."
             )
-        self.get_backend().configure_do(handle, new_config)
+        self.get_driver().configure_do(handle, new_config)
         self.do_custom_config = new_config
         self.do_config = new_config
 
@@ -213,7 +210,7 @@ class AD2Sdk:
             raise AD2SdkError(
                 "config_do_clock_special() called while AD2 is disabled -- caller must check ad2.enabled first."
             )
-        self.get_backend().configure_do(handle, new_config)
+        self.get_driver().configure_do(handle, new_config)
         self.do_clock_settings = new_config
         self.do_config = new_config
 
@@ -245,24 +242,24 @@ class AD2Sdk:
 
     def do_configure(self, config: DoConfig | dict | None) -> None:
         # Keep the cached value as the last confirmed hardware config until
-        # the backend accepts this requested replacement.
+        # the driver accepts this requested replacement.
         new_config = coerce_do_config(config)
         handle = self.open_and_use_first_device()
         if handle is None:
             raise AD2SdkError("do_configure() called while AD2 is disabled -- caller must check ad2.enabled first.")
-        self.get_backend().configure_do(handle, new_config)
+        self.get_driver().configure_do(handle, new_config)
         self.do_config = new_config
 
     def do_reset(self) -> None:
         handle = self.open_and_use_first_device()
         if handle is None:
             raise AD2SdkError("do_reset() called while AD2 is disabled -- caller must check ad2.enabled first.")
-        self.get_backend().reset_do(handle)
+        self.get_driver().reset_do(handle)
         self.do_config = DoConfig()
 
     def start_stop_do(self, running: bool) -> None:
         # Keep the cached value as the last confirmed hardware configuration
-        # until the backend accepts the requested start/stop transition.
+        # until the driver accepts the requested start/stop transition.
         new_config = deepcopy(self.get_do_config())
         new_config.running = running
         handle = self.open_and_use_first_device()
@@ -270,7 +267,7 @@ class AD2Sdk:
             raise AD2SdkError(
                 "start_stop_do() called while AD2 is disabled -- caller must check ad2.enabled first."
             )
-        self.get_backend().configure_do(handle, new_config)
+        self.get_driver().configure_do(handle, new_config)
         self.do_config = new_config
 
     def mso_init(self, phdwf: object | int | None = None) -> None:
@@ -304,7 +301,7 @@ class AD2Sdk:
             sample_frequency_hz=sample_frequency_hz,
             sample_count=sample_count,
         )
-        return self.get_backend().capture_analog_in(
+        return self.get_driver().capture_analog_in(
             handle,
             channel_index=channel_index,
             sample_frequency_hz=sample_frequency_hz,
@@ -336,7 +333,7 @@ class AD2Sdk:
             sample_count=sample_count,
             trigger_source=trigger_source,
         )
-        return self.get_backend().capture_analog_in_channels(
+        return self.get_driver().capture_analog_in_channels(
             handle,
             channel_indices=channel_indices,
             sample_frequency_hz=sample_frequency_hz,
@@ -351,101 +348,3 @@ class AD2Sdk:
             self.mso_init()
         assert self.mso_config is not None
         return self.mso_config
-
-
-@dataclass(slots=True)
-class SimulatedAD2Sdk(AD2Sdk):
-    device_handle: object | None = None
-
-    def get_backend(self) -> WaveFormsBackend:
-        raise RuntimeError("SimulatedAD2Sdk does not use the WaveForms hardware backend.")
-
-    def cleanup(self) -> None:
-        self.device_handle = None
-        self.triggered = False
-
-    def open_and_use_first_device(self) -> object | None:
-        if not self.enabled:
-            self.device_handle = None
-        elif self.device_handle is None:
-            self.device_handle = object()
-        return self.device_handle
-
-    def pc_trigger(self) -> None:
-        self.triggered = True
-
-    def config_wfg(self, config: WfgConfig | dict | None) -> None:
-        self._set_effective_wfg_config(config)
-
-    def _set_effective_wfg_config(self, config: WfgConfig | dict | None) -> None:
-        self.set_wfg_config(config)
-        for channel in self.get_wfg_config().channels:
-            channel.effective_carrier = deepcopy(channel.carrier)
-            channel.effective_fm_mod = deepcopy(channel.fm_mod) if channel.fm_mod.enable else None
-
-    def wfg_configure(self, config: WfgConfig | dict | None) -> None:
-        self._set_effective_wfg_config(config)
-
-    def wfg_start_stop_all_ch(self, running: bool) -> None:
-        self.get_wfg_config().running = running
-
-    def config_do_custom(self, config: DoConfig | dict | None) -> None:
-        self.do_custom_config = coerce_do_config(config)
-        self.do_config = self.do_custom_config
-
-    def config_do_clock_special(self, settings: DoConfig | dict | None) -> None:
-        self.do_clock_settings = coerce_do_config(settings)
-        self.do_config = self.do_clock_settings
-
-    def do_configure(self, config: DoConfig | dict | None) -> None:
-        self.do_config = coerce_do_config(config)
-
-    def do_reset(self) -> None:
-        self.do_config = DoConfig()
-
-    def start_stop_do(self, running: bool) -> None:
-        self.get_do_config().running = running
-
-    def capture_scope(
-        self,
-        *,
-        channel_index: int = 0,
-        sample_frequency_hz: float = 10_000.0,
-        sample_count: int = 4096,
-        range_v: float = 1.0,
-        offset_v: float = 0.0,
-    ) -> list[float]:
-        _ = channel_index
-        _ = sample_frequency_hz
-        _ = sample_count
-        _ = range_v
-        _ = offset_v
-        count = max(int(sample_count), 1)
-        frequency_hz = 100.0 if channel_index == 0 else 250.0
-        amplitude = min(max(range_v / 4.0, 0.05), range_v)
-        return [
-            offset_v + amplitude * math.sin(2.0 * math.pi * frequency_hz * index / sample_frequency_hz)
-            for index in range(count)
-        ]
-
-    def capture_scope_channels(
-        self,
-        *,
-        channel_indices: list[int],
-        sample_frequency_hz: float = 10_000.0,
-        sample_count: int = 4096,
-        range_v: float = 1.0,
-        offset_v: float = 0.0,
-        trigger_source: TriggerSource | str = TriggerSource.NONE,
-    ) -> dict[int, list[float]]:
-        _ = trigger_source
-        return {
-            index: self.capture_scope(
-                channel_index=index,
-                sample_frequency_hz=sample_frequency_hz,
-                sample_count=sample_count,
-                range_v=range_v,
-                offset_v=offset_v,
-            )
-            for index in channel_indices
-        }

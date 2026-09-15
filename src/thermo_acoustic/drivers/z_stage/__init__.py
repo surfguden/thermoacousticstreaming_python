@@ -1,3 +1,3 @@
-from .stage import ZStage
+from .thorlabs_piezo import PiezoStage
 
-__all__ = ["ZStage"]
+__all__ = ["PiezoStage"]

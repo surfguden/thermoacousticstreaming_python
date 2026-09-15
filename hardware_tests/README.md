@@ -30,7 +30,7 @@ bench confirmation.
 | `manual_hamamatsu_camera_probe.py` | Capture a camera frame; `CONFIRM_REAL_CAMERA_CAPTURE` |
 | `manual_qmix_pump_probe.py` | Initialize the pump and optionally command flow; `CONFIRM_REAL_CETONI_QMIX` |
 | `manual_nemesys_reference.py` | Pump reference move; `CONFIRM_REAL_CETONI_QMIX` |
-| `manual_qmix_backend_refill.py` | Reference and refill at reported maximum flow; `CONFIRM_REAL_CETONI_QMIX` |
+| `manual_qmix_driver_refill.py` | Reference and refill at reported maximum flow; `CONFIRM_REAL_CETONI_QMIX` |
 | `manual_capture_ad2_wavegen_scope.py` | Real W1 output and scope capture; exact token documented by `--confirm` |
 | `manual_capture_ad2_wavegen_scope_matplotlib.py` | Capture with Matplotlib display; same AD2 gate |
 | `manual_release_ad2.py` | Enumerate and release WaveForms device handles; `CONFIRM_REAL_AD2_RELEASE` |

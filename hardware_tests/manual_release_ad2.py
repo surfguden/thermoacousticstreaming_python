@@ -14,7 +14,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from thermo_acoustic.drivers.ad2.waveforms import WaveFormsBackend
+from thermo_acoustic.drivers.ad2.waveforms import WaveFormsDriver
 
 
 CONFIRM_TEXT = "CONFIRM_REAL_AD2_RELEASE"
@@ -28,23 +28,23 @@ def main(argv: list[str] | None = None) -> int:
         print(f"REFUSING real device access. Pass --confirm {CONFIRM_TEXT} after checking active device use.", file=sys.stderr)
         return 2
 
-    backend = WaveFormsBackend()
+    driver = WaveFormsDriver()
     try:
-        count = backend.enum_devices()
+        count = driver.enum_devices()
         print(f"WaveForms sees {count} device(s).")
         for index in range(count):
-            name = backend.enum_device_name(index)
-            serial = backend.enum_device_serial_number(index)
-            opened = backend.enum_device_is_opened(index)
+            name = driver.enum_device_name(index)
+            serial = driver.enum_device_serial_number(index)
+            opened = driver.enum_device_is_opened(index)
             print(f"  [{index}] {name} SN={serial} opened={opened}")
     except Exception as exc:
         print(f"Device enumeration failed before release: {exc}")
-    backend.close_all()
+    driver.close_all()
     print("Released all Digilent WaveForms device handles.")
     try:
-        count = backend.enum_devices()
+        count = driver.enum_devices()
         for index in range(count):
-            opened = backend.enum_device_is_opened(index)
+            opened = driver.enum_device_is_opened(index)
             print(f"  [{index}] opened={opened}")
     except Exception as exc:
         print(f"Device enumeration failed after release: {exc}")

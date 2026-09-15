@@ -127,7 +127,7 @@ _WAVEFORM_POLICIES = {
 
 
 def waveform_parameter_policy(function: WaveformFunction | str) -> WaveformParameterPolicy:
-    """Return the single shared, static policy consumed by UI and backend."""
+    """Return the single shared, static policy consumed by UI and driver."""
     return _WAVEFORM_POLICIES[WaveformFunction(function)]
 
 
@@ -411,7 +411,7 @@ class DoSingleChannelConfig:
     clock_divider: int = 0
     clock_frequency_hz: float | None = None
     # Finding E (silent-failure/data-integrity sweep): the real achieved
-    # frequency after WaveFormsBackend.configure_do() rounds clock_frequency_hz
+    # frequency after WaveFormsDriver.configure_do() rounds clock_frequency_hz
     # down to an integer divider -- None until a real configure_do() call sets
     # it (mirrors WfgChannelConfig.out_of_range's "never assigned until the
     # real hardware call runs" pattern). Requested and achieved can differ by
@@ -434,7 +434,7 @@ class DoConfig:
     channels: list[DoSingleChannelConfig] = field(default_factory=list)
     running: bool = False
     # Canonical finite camera-trigger window. Kept separate from the requested
-    # frequency so the backend can program its global Run using achieved DIO0.
+    # frequency so the driver can program its global Run using achieved DIO0.
     frame_count: int | None = None
 
     def channel(self, index: int) -> DoSingleChannelConfig:

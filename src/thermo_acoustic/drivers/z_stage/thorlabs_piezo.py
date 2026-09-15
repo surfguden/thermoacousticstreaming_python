@@ -42,8 +42,8 @@ class PiezoStage:
     time, never hardcoded, so this class stays correct if it's ever pointed
     at a different unit.
 
-    Testability follows this project's existing SDK-backend pattern (see
-    Qmix backend): device_manager_cli/
+    Testability follows this project's existing SDK-driver pattern (see
+    Qmix driver): device_manager_cli/
     benchtop_precision_piezo_cls/closed_loop_mode are injectable, so tests
     can supply fakes without pythonnet or real Kinesis DLLs installed.
     """
@@ -53,7 +53,7 @@ class PiezoStage:
     kinesis_dir: str = DEFAULT_KINESIS_DIR
     polling_interval_ms: int = 250
     settings_timeout_ms: int = 10000
-    # Matches QmixPumpBackend.close_timeout_s's default -- the documented
+    # Matches QmixPumpDriver.close_timeout_s's default -- the documented
     # timeout-guarded hardware-cleanup pattern.
     disconnect_timeout_s: float = 5.0
 
@@ -166,7 +166,7 @@ class PiezoStage:
 
     def disconnect(self) -> None:
         # Timeout-guarded per step, collect-then-raise-once -- matches
-        # QmixPumpBackend.close()'s hardware-cleanup pattern.
+        # QmixPumpDriver.close()'s hardware-cleanup pattern.
         # Previously plain try/except with no timeout guard: a hung Kinesis
         # .NET call here could block indefinitely instead of being reported.
         # Drop-in behavioral superset of the old shape -- the success path
@@ -190,7 +190,7 @@ class PiezoStage:
         # hw_logging.run_with_timeout() utility -- was previously its own
         # hand-copied implementation of the same shape
         # Application._run_cleanup_call_with_timeout()/
-        # QmixPumpBackend._run_close_step() each independently
+        # QmixPumpDriver._run_close_step() each independently
         # re-implemented. Message wording ("Piezo {name} ...") unchanged.
         error = run_with_timeout(action, f"Piezo {name}", self.disconnect_timeout_s)
         return [error] if error is not None else []

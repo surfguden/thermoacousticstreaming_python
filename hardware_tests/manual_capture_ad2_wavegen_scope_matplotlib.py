@@ -29,6 +29,7 @@ from thermo_acoustic.drivers.ad2.capture_tooling import (
     run_capture_with_cleanup,
 )
 from thermo_acoustic.drivers.ad2.sdk import AD2Sdk
+from thermo_acoustic.drivers.ad2.waveforms import WaveFormsDriver
 
 
 CSV_PATH = ROOT / "ad2_scope_capture.csv"
@@ -55,7 +56,7 @@ def main() -> None:
     wave_frequency_hz = 100.0
     amplitude_v = 0.2
 
-    ad2 = AD2Sdk()
+    ad2 = AD2Sdk(driver=WaveFormsDriver())
 
     def capture() -> list[float]:
         ad2.initialize()
