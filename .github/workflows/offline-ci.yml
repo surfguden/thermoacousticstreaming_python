@@ -2,7 +2,11 @@ name: Driver source checks
 
 on:
   pull_request:
+    branches-ignore:
+      - ola-branch
   push:
+    branches-ignore:
+      - ola-branch
 
 jobs:
   source-checks:
