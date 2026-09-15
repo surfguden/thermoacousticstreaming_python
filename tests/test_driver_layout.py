@@ -85,8 +85,11 @@ def test_simulated_devices_are_reusable_without_the_hal() -> None:
     valve.initialize()
     valve.set_position(2)
     assert "pending" in valve.status_note
+    with pytest.raises(RuntimeError, match="not confirmed"):
+        valve.read_position()
     assert valve.wait_until_ready()
     assert valve.status_note == "confirmed"
+    assert valve.read_position() == 2
     valve.cleanup()
 
 

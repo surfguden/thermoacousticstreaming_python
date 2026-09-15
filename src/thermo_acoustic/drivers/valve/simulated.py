@@ -20,6 +20,13 @@ class SimulatedValve:
         self.position = position
         self.status_note = "requested P%02d; confirmation pending" % position
 
+    def read_position(self) -> int:
+        if not self.initialized:
+            raise RuntimeError("valve is not initialized")
+        if self.status_note != "confirmed":
+            raise RuntimeError(f"valve position is not confirmed: {self.status_note}")
+        return self.position
+
     def wait_until_ready(self, timeout_s: float = 1.0, poll_interval_s: float = 0.05) -> bool:
         del timeout_s, poll_interval_s
         if not self.initialized:

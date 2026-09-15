@@ -117,6 +117,17 @@ class Valve:
         # requested protocol position.
         self.status_note = f"requested {command}; confirmation pending"
 
+    def read_position(self) -> int:
+        """Read and return the valve position without waiting for motion."""
+        self._ensure_connected()
+        raw_response = self.transport.query(self.status_query_command)
+        if not self._apply_status_response(raw_response) or self.status_note != "confirmed":
+            raise ValveError(
+                f"Valve position is not currently confirmed on {self.visa_resource}: "
+                f"{self.status_note}"
+            )
+        return self.position
+
     def wait_until_ready(self, timeout_s: float = 1.0, poll_interval_s: float = 0.05) -> bool:
         # Bounded poll of the same "S\r" handshake used at initialize() time,
         # so a real mechanical-transition confirmation replaces a fixed sleep
