@@ -13,6 +13,8 @@ class AD2Worker(DeviceWorker):
         self.register("start", self.start)
         self.register("stop", self.safe_stop)
         self.register("trigger", self.trigger)
+        self.register("scope-configure", self.scope_configure)
+        self.register("scope-read", self.scope_read)
 
     def configure(self, frequency_hz: float = 1000.0, amplitude_v: float = 1.0) -> None:
         if frequency_hz <= 0 or not 0 <= amplitude_v <= 5:
@@ -36,3 +38,15 @@ class AD2Worker(DeviceWorker):
 
     def trigger(self) -> None:
         self.device.pc_trigger()
+
+    def scope_configure(self, configuration: object = None) -> None:
+        self.device.scope_configure(configuration)
+        self.state.active = True
+        self.state.readings["scope_state"] = "armed"
+
+    def scope_read(self) -> dict[int, list[float]]:
+        try:
+            return self.device.scope_read()
+        finally:
+            self.state.active = False
+            self.state.readings["scope_state"] = "idle"

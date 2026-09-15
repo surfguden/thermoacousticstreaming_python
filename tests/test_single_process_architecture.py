@@ -96,6 +96,36 @@ def test_all_simulated_devices_have_basic_operations(qt_app):
     controller.shutdown()
 
 
+def test_ad2_scope_arm_trigger_and_read_share_one_worker(qt_app):
+    registry = DeviceRegistry()
+    controller = ApplicationController(registry, mode=OperatingMode.SIMULATION)
+    completed = []
+    controller.command_result.connect(completed.append)
+    controller.start()
+    controller.submit(DeviceCommand(DeviceId.AD2, "connect"))
+    controller.submit(
+        DeviceCommand(
+            DeviceId.AD2,
+            "scope-configure",
+            ({"sample_count": 3, "trigger_source": "DIGITAL_OUT"},),
+        )
+    )
+    controller.submit(DeviceCommand(DeviceId.AD2, "trigger"))
+    controller.submit(DeviceCommand(DeviceId.AD2, "scope-read"))
+    wait(qt_app, 300)
+
+    assert [item.operation for item in completed] == [
+        "connect",
+        "scope-configure",
+        "trigger",
+        "scope-read",
+    ]
+    assert all(item.ok for item in completed)
+    assert completed[-1].value == {0: [0.0, 0.0, 0.0]}
+    assert controller.statuses()[DeviceId.AD2].readings["scope_state"] == "idle"
+    controller.shutdown()
+
+
 def test_real_connection_confirmation_and_lazy_fake_device(qt_app):
     calls = []
     worker_thread_checks = []

@@ -448,14 +448,37 @@ class DoConfig:
         return created
 
 
-@dataclass(slots=True)
-class MsoConfig:
-    device_handle: object | int | None = None
-    range_ch1: float | None = None
-    range_ch2: float | None = None
-    sample_frequency_hz: float | None = None
-    sample_count: int | None = None
+@dataclass(frozen=True, slots=True)
+class ScopeChannelConfig:
+    channel_index: int = 0
+    range_v: float = 1.0
+    offset_v: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class ScopeConfig:
+    channels: tuple[ScopeChannelConfig, ...] = (ScopeChannelConfig(),)
+    sample_frequency_hz: float = 10_000.0
+    sample_count: int = 4096
     trigger_source: TriggerSource | str = TriggerSource.NONE
+    timeout_s: float = 5.0
+
+    def __post_init__(self) -> None:
+        indices = [channel.channel_index for channel in self.channels]
+        if not indices:
+            raise ValueError("Scope configuration requires at least one channel.")
+        if len(indices) != len(set(indices)):
+            raise ValueError("Scope channels must be unique.")
+        if any(index not in (0, 1) for index in indices):
+            raise ValueError("Analog Discovery 2 scope channels must be 0 or 1.")
+        if any(channel.range_v <= 0 for channel in self.channels):
+            raise ValueError("Scope channel range must be greater than 0 V.")
+        if self.sample_frequency_hz <= 0:
+            raise ValueError("Scope sample frequency must be greater than 0 Hz.")
+        if self.sample_count < 1:
+            raise ValueError("Scope sample count must be at least one.")
+        if self.timeout_s <= 0:
+            raise ValueError("Scope timeout must be greater than 0 seconds.")
 
 
 def _first_present(data: dict[str, Any], *names: str, default: Any = None) -> Any:
@@ -497,6 +520,74 @@ def coerce_trigger_settings(config: TriggerSettings | dict[str, Any] | None) -> 
             _first_present(config, "source", "trigger_source", "triggerSource", default=TriggerSource.NONE),
             TriggerSource.NONE,
         ),
+    )
+
+
+def coerce_scope_channel_config(
+    config: ScopeChannelConfig | dict[str, Any] | int,
+    index: int = 0,
+    *,
+    default_range_v: float = 1.0,
+    default_offset_v: float = 0.0,
+) -> ScopeChannelConfig:
+    if isinstance(config, ScopeChannelConfig):
+        return config
+    if isinstance(config, int):
+        return ScopeChannelConfig(config, default_range_v, default_offset_v)
+    return ScopeChannelConfig(
+        channel_index=int(
+            _first_present(
+                config, "channel_index", "channelIndex", "channel", "index", default=index
+            )
+        ),
+        range_v=float(_first_present(config, "range_v", "rangeV", "range", default=default_range_v)),
+        offset_v=float(_first_present(config, "offset_v", "offsetV", "offset", default=default_offset_v)),
+    )
+
+
+def coerce_scope_config(config: ScopeConfig | dict[str, Any] | None) -> ScopeConfig:
+    if isinstance(config, ScopeConfig):
+        return config
+    if config is None:
+        return ScopeConfig()
+
+    default_range_v = float(_first_present(config, "range_v", "rangeV", "range", default=1.0))
+    default_offset_v = float(_first_present(config, "offset_v", "offsetV", "offset", default=0.0))
+    raw_channels = _first_present(config, "channels", "channel_indices", "channelIndices", default=None)
+    if raw_channels is None:
+        raw_channels = [0]
+    channels = tuple(
+        coerce_scope_channel_config(
+            channel,
+            index,
+            default_range_v=default_range_v,
+            default_offset_v=default_offset_v,
+        )
+        for index, channel in enumerate(raw_channels)
+    )
+    return ScopeConfig(
+        channels=channels,
+        sample_frequency_hz=float(
+            _first_present(
+                config,
+                "sample_frequency_hz",
+                "sampleFrequencyHz",
+                "sample_rate_hz",
+                default=10_000.0,
+            )
+        ),
+        sample_count=int(_first_present(config, "sample_count", "sampleCount", default=4096)),
+        trigger_source=_coerce_enum(
+            TriggerSource,
+            _first_present(
+                config,
+                "trigger_source",
+                "triggerSource",
+                default=TriggerSource.NONE,
+            ),
+            TriggerSource.NONE,
+        ),
+        timeout_s=float(_first_present(config, "timeout_s", "timeoutS", "timeout", default=5.0)),
     )
 
 

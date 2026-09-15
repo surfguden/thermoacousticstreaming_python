@@ -1,6 +1,15 @@
 from __future__ import annotations
 
-from thermo_acoustic.drivers.ad2 import AnalogDiscovery2, SimulatedAD2
+import pytest
+
+from thermo_acoustic.drivers.ad2 import (
+    AnalogDiscovery2,
+    AnalogDiscoveryError,
+    ScopeConfig,
+    ScopeState,
+    SimulatedAD2,
+)
+from thermo_acoustic.drivers.ad2.configuration import TriggerSource
 from thermo_acoustic.drivers.camera import (
     HamamatsuDcamDriver,
     IntegerRange,
@@ -122,6 +131,7 @@ def test_analog_discovery_cleanup_stops_resets_and_closes_directly() -> None:
     device = AnalogDiscovery2(enabled=False)
     operations: list[tuple[object, ...]] = []
     device.device_handle = 13
+    device.scope_state = ScopeState.ARMED
     device._stop_analog_output = lambda handle, channel: operations.append(
         ("stop", handle, channel)
     )
@@ -130,6 +140,7 @@ def test_analog_discovery_cleanup_stops_resets_and_closes_directly() -> None:
     )
     device._stop_digital_output = lambda handle: operations.append(("stop-do", handle))
     device._reset_digital_output = lambda handle: operations.append(("reset-do", handle))
+    device._reset_scope = lambda handle: operations.append(("reset-scope", handle))
     device._close = lambda handle: operations.append(("close", handle))
 
     device.cleanup()
@@ -141,6 +152,58 @@ def test_analog_discovery_cleanup_stops_resets_and_closes_directly() -> None:
         ("reset", 13, 1),
         ("stop-do", 13),
         ("reset-do", 13),
+        ("reset-scope", 13),
         ("close", 13),
     ]
     assert device.device_handle is None
+    assert device.scope_state is ScopeState.IDLE
+
+
+def test_analog_discovery_scope_can_arm_trigger_and_read_in_sequence() -> None:
+    device = AnalogDiscovery2(enabled=False)
+    operations: list[tuple[object, ...]] = []
+    device.enabled = True
+    device._open_device = lambda _index: 17
+    device._configure_scope = lambda handle, config: operations.append(
+        ("configure-scope", handle, config)
+    )
+    device._trigger_pc = lambda handle: operations.append(("trigger", handle))
+    device._read_scope = lambda handle, config: (
+        operations.append(("read-scope", handle, config)) or {0: [1.0, 2.0]}
+    )
+
+    configuration = ScopeConfig(
+        sample_count=2,
+        trigger_source=TriggerSource.DIGITAL_OUT,
+    )
+    device.scope_configure(configuration)
+    assert device.scope_state is ScopeState.ARMED
+
+    device.pc_trigger()
+    samples = device.scope_read()
+
+    assert samples == {0: [1.0, 2.0]}
+    assert [operation[0] for operation in operations] == [
+        "configure-scope",
+        "trigger",
+        "read-scope",
+    ]
+    assert device.scope_state is ScopeState.IDLE
+
+
+def test_analog_discovery_scope_read_requires_an_armed_scope() -> None:
+    with pytest.raises(AnalogDiscoveryError, match="requires an armed scope"):
+        AnalogDiscovery2(enabled=False).scope_read()
+
+
+def test_simulated_scope_uses_the_same_arm_and_read_lifecycle() -> None:
+    device = SimulatedAD2()
+    device.initialize()
+
+    device.scope_configure({"channels": [0, 1], "sample_count": 3})
+    device.pc_trigger()
+    samples = device.scope_read()
+
+    assert samples == {0: [0.0, 0.0, 0.0], 1: [0.0, 0.0, 0.0]}
+    assert device.triggered
+    assert not device.scope_armed

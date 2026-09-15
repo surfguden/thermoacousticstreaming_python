@@ -5,6 +5,7 @@ from ctypes import byref, c_char, c_double, c_int, c_ubyte, c_uint, create_strin
 from ctypes.util import find_library
 from copy import deepcopy
 from dataclasses import replace
+from enum import Enum
 from pathlib import Path
 import time
 from typing import Iterable
@@ -13,11 +14,13 @@ from .configuration import (
     DigitalOutIdleState,
     DigitalOutType,
     DoConfig,
-    MsoConfig,
+    ScopeChannelConfig,
+    ScopeConfig,
     TriggerSource,
     WaveformFunction,
     WfgConfig,
     coerce_do_config,
+    coerce_scope_config,
     coerce_wfg_config,
     waveform_parameter_policy,
 )
@@ -26,6 +29,12 @@ from ..common.logging import log_call
 
 class AnalogDiscoveryError(RuntimeError):
     """Raised when Analog Discovery configuration or communication fails."""
+
+
+class ScopeState(str, Enum):
+    IDLE = "idle"
+    ARMED = "armed"
+    READING = "reading"
 
 
 class AnalogDiscovery2:
@@ -80,7 +89,8 @@ class AnalogDiscovery2:
         self.enabled = enabled
         self.wfg_config: WfgConfig | None = None
         self.do_config: DoConfig | None = None
-        self.mso_config: MsoConfig | None = None
+        self.scope_config: ScopeConfig | None = None
+        self.scope_state = ScopeState.IDLE
         self.device_handle: int | None = None
         self.triggered = False
         if not enabled:
@@ -127,6 +137,11 @@ class AnalogDiscovery2:
                     action()
                 except Exception as exc:
                     errors.append(f"DigitalOut {operation} failed: {exc}")
+            if self.scope_state is not ScopeState.IDLE:
+                try:
+                    self._reset_scope(handle)
+                except Exception as exc:
+                    errors.append(f"Scope reset failed: {exc}")
             try:
                 self._close(handle)
             except Exception as exc:
@@ -134,6 +149,7 @@ class AnalogDiscovery2:
         finally:
             self.device_handle = None
             self.triggered = False
+            self.scope_state = ScopeState.IDLE
 
         if errors:
             raise AnalogDiscoveryError("; ".join(errors))
@@ -205,22 +221,14 @@ class AnalogDiscovery2:
         range_v: float = 1.0,
         offset_v: float = 0.0,
     ) -> list[float]:
-        handle = self._require_handle("capture_scope()")
-        self.mso_config = MsoConfig(
-            device_handle=handle,
-            range_ch1=range_v if channel_index == 0 else None,
-            range_ch2=range_v if channel_index == 1 else None,
-            sample_frequency_hz=sample_frequency_hz,
-            sample_count=sample_count,
+        self.scope_configure(
+            ScopeConfig(
+                channels=(ScopeChannelConfig(channel_index, range_v, offset_v),),
+                sample_frequency_hz=sample_frequency_hz,
+                sample_count=sample_count,
+            )
         )
-        return self._capture_analog_in(
-            handle,
-            channel_index=channel_index,
-            sample_frequency_hz=sample_frequency_hz,
-            sample_count=sample_count,
-            range_v=range_v,
-            offset_v=offset_v,
-        )
+        return self.scope_read()[channel_index]
 
     def capture_scope_channels(
         self,
@@ -232,24 +240,60 @@ class AnalogDiscovery2:
         offset_v: float = 0.0,
         trigger_source: TriggerSource | str = TriggerSource.NONE,
     ) -> dict[int, list[float]]:
-        handle = self._require_handle("capture_scope_channels()")
-        self.mso_config = MsoConfig(
-            device_handle=handle,
-            range_ch1=range_v if 0 in channel_indices else None,
-            range_ch2=range_v if 1 in channel_indices else None,
-            sample_frequency_hz=sample_frequency_hz,
-            sample_count=sample_count,
-            trigger_source=trigger_source,
+        if not channel_indices:
+            return {}
+        self.scope_configure(
+            ScopeConfig(
+                channels=tuple(
+                    ScopeChannelConfig(index, range_v, offset_v)
+                    for index in channel_indices
+                ),
+                sample_frequency_hz=sample_frequency_hz,
+                sample_count=sample_count,
+                trigger_source=trigger_source,
+            )
         )
-        return self._capture_analog_in_channels(
-            handle,
-            channel_indices=channel_indices,
-            sample_frequency_hz=sample_frequency_hz,
-            sample_count=sample_count,
-            range_v=range_v,
-            offset_v=offset_v,
-            trigger_source=trigger_source,
-        )
+        return self.scope_read()
+
+    def scope_configure(self, config: ScopeConfig | dict | None) -> None:
+        if self.scope_state is not ScopeState.IDLE:
+            raise AnalogDiscoveryError(
+                f"Cannot configure scope while it is {self.scope_state.value}"
+            )
+        new_config = coerce_scope_config(config)
+        handle = self._require_handle("scope_configure()")
+        try:
+            self._configure_scope(handle, new_config)
+        except Exception as primary_error:
+            try:
+                self._reset_scope(handle)
+            except Exception as cleanup_error:
+                raise AnalogDiscoveryError(
+                    f"Scope configuration failed: {primary_error}; "
+                    f"scope reset also failed: {cleanup_error}"
+                ) from primary_error
+            raise
+        self.scope_config = new_config
+        self.scope_state = ScopeState.ARMED
+
+    def scope_read(self) -> dict[int, list[float]]:
+        if self.scope_state is not ScopeState.ARMED or self.scope_config is None:
+            raise AnalogDiscoveryError("scope_read() requires an armed scope")
+        handle = self._require_handle("scope_read()")
+        self.scope_state = ScopeState.READING
+        try:
+            captured = self._read_scope(handle, self.scope_config)
+        except Exception as primary_error:
+            try:
+                self._reset_scope(handle)
+            except Exception as cleanup_error:
+                raise AnalogDiscoveryError(
+                    f"Scope read failed: {primary_error}; scope reset also failed: {cleanup_error}"
+                ) from primary_error
+            raise
+        finally:
+            self.scope_state = ScopeState.IDLE
+        return captured
 
     @classmethod
     def is_available(cls) -> bool:
@@ -335,6 +379,7 @@ class AnalogDiscovery2:
             "FDwfAnalogInFrequencySet": ([c_int, c_double], c_int),
             "FDwfAnalogInBufferSizeSet": ([c_int, c_int], c_int),
             "FDwfAnalogInTriggerSourceSet": ([c_int, c_int], c_int),
+            "FDwfAnalogInReset": ([c_int], c_int),
             "FDwfAnalogInConfigure": ([c_int, c_int, c_int], c_int),
             "FDwfAnalogInStatus": ([c_int, c_int, ctypes.POINTER(c_int)], c_int),
             "FDwfAnalogInStatusData": ([c_int, c_int, ctypes.POINTER(c_double), c_int], c_int),
@@ -792,110 +837,105 @@ class AnalogDiscovery2:
         )
         return minimum.value, maximum.value
 
-    def _capture_analog_in(
-        self,
-        handle: int,
-        *,
-        channel_index: int = 0,
-        sample_frequency_hz: float = 10_000.0,
-        sample_count: int = 4096,
-        range_v: float = 1.0,
-        offset_v: float = 0.0,
-        timeout_s: float = 5.0,
-    ) -> list[float]:
+    def _configure_scope(self, handle: int, config: ScopeConfig) -> None:
+        selected = {channel.channel_index for channel in config.channels}
         with log_call(
-            "ad2", "capture_analog_in",
-            command=f"ch={channel_index}, fs={sample_frequency_hz}, n={sample_count}, range={range_v}",
-        ) as log_result:
+            "ad2",
+            "configure_scope",
+            command=(
+                f"channels={sorted(selected)}, fs={config.sample_frequency_hz}, "
+                f"n={config.sample_count}, trigger={config.trigger_source}"
+            ),
+        ) as result:
             h = c_int(handle)
-            idx = c_int(channel_index)
-            count = max(1, int(sample_count))
+            for index in (0, 1):
+                self._check(
+                    self._dwf.FDwfAnalogInChannelEnableSet(
+                        h, c_int(index), c_int(1 if index in selected else 0)
+                    ),
+                    "FDwfAnalogInChannelEnableSet",
+                )
+            for channel in config.channels:
+                idx = c_int(channel.channel_index)
+                self._check(
+                    self._dwf.FDwfAnalogInChannelRangeSet(
+                        h, idx, c_double(channel.range_v)
+                    ),
+                    "FDwfAnalogInChannelRangeSet",
+                )
+                self._check(
+                    self._dwf.FDwfAnalogInChannelOffsetSet(
+                        h, idx, c_double(channel.offset_v)
+                    ),
+                    "FDwfAnalogInChannelOffsetSet",
+                )
+            self._check(
+                self._dwf.FDwfAnalogInFrequencySet(
+                    h, c_double(config.sample_frequency_hz)
+                ),
+                "FDwfAnalogInFrequencySet",
+            )
+            self._check(
+                self._dwf.FDwfAnalogInBufferSizeSet(h, c_int(config.sample_count)),
+                "FDwfAnalogInBufferSizeSet",
+            )
+            self._set_analog_input_trigger_source(handle, config.trigger_source)
+            self._check(
+                self._dwf.FDwfAnalogInConfigure(h, c_int(1), c_int(1)),
+                "FDwfAnalogInConfigure",
+            )
+            result["response"] = "armed"
 
-            self._check(self._dwf.FDwfAnalogInChannelEnableSet(h, idx, c_int(1)), "FDwfAnalogInChannelEnableSet")
-            self._check(self._dwf.FDwfAnalogInChannelRangeSet(h, idx, c_double(range_v)), "FDwfAnalogInChannelRangeSet")
-            self._check(self._dwf.FDwfAnalogInChannelOffsetSet(h, idx, c_double(offset_v)), "FDwfAnalogInChannelOffsetSet")
-            self._check(self._dwf.FDwfAnalogInFrequencySet(h, c_double(sample_frequency_hz)), "FDwfAnalogInFrequencySet")
-            self._check(self._dwf.FDwfAnalogInBufferSizeSet(h, c_int(count)), "FDwfAnalogInBufferSizeSet")
-            self._check(self._dwf.FDwfAnalogInConfigure(h, c_int(1), c_int(1)), "FDwfAnalogInConfigure")
-
-            # Not logging each poll iteration individually (this loop can run
-            # hundreds of times per capture) -- only the terminal outcome, via
-            # the outer log_call above, matching the "diagnostic log, not a
-            # database" instruction.
+    def _read_scope(self, handle: int, config: ScopeConfig) -> dict[int, list[float]]:
+        with log_call(
+            "ad2",
+            "read_scope",
+            command=f"channels={[channel.channel_index for channel in config.channels]}",
+        ) as result:
+            h = c_int(handle)
             status = c_int()
-            deadline = time.monotonic() + timeout_s
+            deadline = time.monotonic() + config.timeout_s
             while time.monotonic() < deadline:
-                self._check(self._dwf.FDwfAnalogInStatus(h, c_int(1), byref(status)), "FDwfAnalogInStatus")
+                self._check(
+                    self._dwf.FDwfAnalogInStatus(h, c_int(1), byref(status)),
+                    "FDwfAnalogInStatus",
+                )
                 if status.value == 2:
                     break
                 time.sleep(0.01)
             else:
-                raise AnalogDiscoveryError("AnalogIn capture timed out before acquisition completed.")
+                raise AnalogDiscoveryError(
+                    "AnalogIn capture timed out before acquisition completed."
+                )
 
-            samples = (c_double * count)()
-            self._check(self._dwf.FDwfAnalogInStatusData(h, idx, samples, c_int(count)), "FDwfAnalogInStatusData")
-            result = list(samples)
-            log_result["response"] = f"{len(result)} samples, first={result[:3]}"
-        return result
+            captured: dict[int, list[float]] = {}
+            for channel in config.channels:
+                samples = (c_double * config.sample_count)()
+                self._check(
+                    self._dwf.FDwfAnalogInStatusData(
+                        h,
+                        c_int(channel.channel_index),
+                        samples,
+                        c_int(config.sample_count),
+                    ),
+                    "FDwfAnalogInStatusData",
+                )
+                captured[channel.channel_index] = list(samples)
+            result["response"] = (
+                f"channels={list(captured)}, {config.sample_count} samples each"
+            )
+        return captured
+
+    def _reset_scope(self, handle: int) -> None:
+        with log_call("ad2", "reset_scope", command=handle) as result:
+            self._check(
+                self._dwf.FDwfAnalogInReset(c_int(handle)),
+                "FDwfAnalogInReset",
+            )
+            result["response"] = "reset"
 
     def _set_analog_input_trigger_source(
         self, handle: int, trigger_source: int | TriggerSource
     ) -> None:
         mapped = self._enum_value(self._TRIGGER_SOURCES, trigger_source)
         self._check(self._dwf.FDwfAnalogInTriggerSourceSet(c_int(handle), c_int(mapped)), "FDwfAnalogInTriggerSourceSet")
-
-    def _capture_analog_in_channels(
-        self,
-        handle: int,
-        *,
-        channel_indices: list[int],
-        sample_frequency_hz: float = 10_000.0,
-        sample_count: int = 4096,
-        range_v: float = 1.0,
-        offset_v: float = 0.0,
-        trigger_source: TriggerSource | str = TriggerSource.NONE,
-        timeout_s: float = 5.0,
-    ) -> dict[int, list[float]]:
-        h = c_int(handle)
-        count = max(1, int(sample_count))
-        selected = sorted(set(int(index) for index in channel_indices))
-        if not selected:
-            return {}
-
-        with log_call(
-            "ad2", "capture_analog_in_channels",
-            command=f"channels={selected}, fs={sample_frequency_hz}, n={sample_count}, trigger={trigger_source}",
-        ) as log_result:
-            for index in (0, 1):
-                self._check(
-                    self._dwf.FDwfAnalogInChannelEnableSet(h, c_int(index), c_int(1 if index in selected else 0)),
-                    "FDwfAnalogInChannelEnableSet",
-                )
-            for index in selected:
-                idx = c_int(index)
-                self._check(self._dwf.FDwfAnalogInChannelRangeSet(h, idx, c_double(range_v)), "FDwfAnalogInChannelRangeSet")
-                self._check(self._dwf.FDwfAnalogInChannelOffsetSet(h, idx, c_double(offset_v)), "FDwfAnalogInChannelOffsetSet")
-            self._check(self._dwf.FDwfAnalogInFrequencySet(h, c_double(sample_frequency_hz)), "FDwfAnalogInFrequencySet")
-            self._check(self._dwf.FDwfAnalogInBufferSizeSet(h, c_int(count)), "FDwfAnalogInBufferSizeSet")
-            self._set_analog_input_trigger_source(handle, trigger_source)
-            self._check(self._dwf.FDwfAnalogInConfigure(h, c_int(1), c_int(1)), "FDwfAnalogInConfigure")
-
-            # Not logging each poll iteration individually -- see
-            # _capture_analog_in()'s matching comment above.
-            status = c_int()
-            deadline = time.monotonic() + timeout_s
-            while time.monotonic() < deadline:
-                self._check(self._dwf.FDwfAnalogInStatus(h, c_int(1), byref(status)), "FDwfAnalogInStatus")
-                if status.value == 2:
-                    break
-                time.sleep(0.01)
-            else:
-                raise AnalogDiscoveryError("AnalogIn capture timed out before acquisition completed.")
-
-            captured: dict[int, list[float]] = {}
-            for index in selected:
-                samples = (c_double * count)()
-                self._check(self._dwf.FDwfAnalogInStatusData(h, c_int(index), samples, c_int(count)), "FDwfAnalogInStatusData")
-                captured[index] = list(samples)
-            log_result["response"] = f"channels={list(captured.keys())}, {count} samples each"
-        return captured
