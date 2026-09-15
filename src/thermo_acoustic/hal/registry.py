@@ -18,9 +18,9 @@ DeviceFactory = Callable[[], object]
 
 
 def _create_ad2_driver() -> object:
-    from ..drivers.ad2 import AD2Sdk, WaveFormsDriver
+    from ..drivers.ad2 import AnalogDiscovery2
 
-    return AD2Sdk(driver=WaveFormsDriver())
+    return AnalogDiscovery2()
 
 
 def _create_pump_driver() -> object:

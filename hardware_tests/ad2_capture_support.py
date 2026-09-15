@@ -1,4 +1,4 @@
-"""Safety support shared by the retained real-AD2 capture diagnostics."""
+"""Safety support shared by the manual real-AD2 capture diagnostics."""
 
 from __future__ import annotations
 

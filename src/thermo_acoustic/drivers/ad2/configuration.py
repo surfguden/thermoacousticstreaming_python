@@ -1,3 +1,5 @@
+"""Configuration types and validation for the Analog Discovery 2."""
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
@@ -258,7 +260,7 @@ _FM_SWEEP_TYPE_TO_FUNCTION: dict[str, WaveformFunction] = {
 @dataclass(slots=True)
 class FmSweepSettings:
     """Millisecond-timescale FM sweep calibration parameters, translated
-    into the AD2's native FM modulation node (waveforms.py's node=1 path,
+    into the AD2's native FM modulation node (the node=1 path,
     already wired for the manual WFG tab's "FM Mod" group).
 
     Reference test case (Martens et al., PhysRevApplied.23.024043):
@@ -411,7 +413,7 @@ class DoSingleChannelConfig:
     clock_divider: int = 0
     clock_frequency_hz: float | None = None
     # Finding E (silent-failure/data-integrity sweep): the real achieved
-    # frequency after WaveFormsDriver.configure_do() rounds clock_frequency_hz
+    # frequency after AnalogDiscovery2.configure_do() rounds clock_frequency_hz
     # down to an integer divider -- None until a real configure_do() call sets
     # it (mirrors WfgChannelConfig.out_of_range's "never assigned until the
     # real hardware call runs" pattern). Requested and achieved can differ by

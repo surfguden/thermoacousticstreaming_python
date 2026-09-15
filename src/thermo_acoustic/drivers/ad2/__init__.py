@@ -1,5 +1,4 @@
-from .sdk import AD2Sdk
+from .analog_discovery import AnalogDiscovery2, AnalogDiscoveryError
 from .simulated import SimulatedAD2
-from .waveforms import WaveFormsDriver
 
-__all__ = ["AD2Sdk", "SimulatedAD2", "WaveFormsDriver"]
+__all__ = ["AnalogDiscovery2", "AnalogDiscoveryError", "SimulatedAD2"]

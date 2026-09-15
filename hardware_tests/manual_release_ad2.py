@@ -14,7 +14,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from thermo_acoustic.drivers.ad2.waveforms import WaveFormsDriver
+from thermo_acoustic.drivers.ad2 import AnalogDiscovery2
 
 
 CONFIRM_TEXT = "CONFIRM_REAL_AD2_RELEASE"
@@ -28,7 +28,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"REFUSING real device access. Pass --confirm {CONFIRM_TEXT} after checking active device use.", file=sys.stderr)
         return 2
 
-    driver = WaveFormsDriver()
+    driver = AnalogDiscovery2()
     try:
         count = driver.enum_devices()
         print(f"WaveForms sees {count} device(s).")

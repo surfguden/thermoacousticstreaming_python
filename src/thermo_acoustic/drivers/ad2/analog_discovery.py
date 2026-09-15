@@ -3,29 +3,35 @@ from __future__ import annotations
 import ctypes
 from ctypes import byref, c_char, c_double, c_int, c_ubyte, c_uint, create_string_buffer
 from ctypes.util import find_library
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 import time
 from typing import Iterable
 
-from .models import (
+from .configuration import (
     DigitalOutIdleState,
     DigitalOutType,
     DoConfig,
+    DoSingleChannelConfig,
+    MsoConfig,
     TriggerSource,
     WaveformFunction,
+    WfgChannelConfig,
     WfgConfig,
+    coerce_do_config,
+    coerce_wfg_config,
     waveform_parameter_policy,
 )
 from ..common.logging import log_call
 
 
-class WaveFormsError(RuntimeError):
-    """Raised when the Digilent WaveForms SDK returns an error."""
+class AnalogDiscoveryError(RuntimeError):
+    """Raised when Analog Discovery configuration or communication fails."""
 
 
-class WaveFormsDriver:
-    """Small ctypes wrapper around the Digilent WaveForms DWF API."""
+class AnalogDiscovery2:
+    """Direct device driver for the Digilent Analog Discovery 2."""
 
     _FUNCTIONS = {
         WaveformFunction.DC: 0,
@@ -66,7 +72,25 @@ class WaveFormsDriver:
         "threestate": 3,
     }
 
-    def __init__(self, library_path: str | Path | None = None, dwf: object | None = None) -> None:
+    def __init__(
+        self,
+        library_path: str | Path | None = None,
+        dwf: object | None = None,
+        *,
+        enabled: bool = True,
+    ) -> None:
+        self.enabled = enabled
+        self.wfg_config: WfgConfig | None = None
+        self.do_config: DoConfig | None = None
+        self.do_custom_config: DoConfig | None = None
+        self.do_clock_settings: DoConfig | None = None
+        self.mso_config: MsoConfig | None = None
+        self.device_handle: int | None = None
+        self.triggered = False
+        if not enabled:
+            self.library_path = Path(library_path) if library_path is not None else None
+            self._dwf = dwf
+            return
         if dwf is not None:
             self.library_path = Path(library_path) if library_path is not None else None
             self._dwf = dwf
@@ -79,11 +103,256 @@ class WaveFormsDriver:
             )
         self._bind_signatures()
 
+    def initialize(self) -> None:
+        if self.enabled:
+            self.open_and_use_first_device()
+
+    def cleanup(self) -> None:
+        handle = self.device_handle
+        if handle is None:
+            return
+
+        errors: list[str] = []
+        try:
+            for channel_index in (0, 1):
+                for operation, action in (
+                    ("stop", lambda channel_index=channel_index: self.analog_out_configure(handle, channel_index, False)),
+                    ("reset", lambda channel_index=channel_index: self.analog_out_reset(handle, channel_index)),
+                ):
+                    try:
+                        action()
+                    except Exception as exc:
+                        errors.append(f"AnalogOut channel {channel_index} {operation} failed: {exc}")
+            for operation, action in (
+                ("stop", lambda: self.digital_out_configure(handle, False)),
+                ("reset", lambda: self.reset_do(handle)),
+            ):
+                try:
+                    action()
+                except Exception as exc:
+                    errors.append(f"DigitalOut {operation} failed: {exc}")
+            try:
+                self.close(handle)
+            except Exception as exc:
+                errors.append(f"device close failed: {exc}")
+        finally:
+            self.device_handle = None
+            self.triggered = False
+
+        if errors:
+            raise AnalogDiscoveryError("; ".join(errors))
+
+    def open_and_use_first_device(self) -> int | None:
+        if not self.enabled:
+            self.device_handle = None
+        elif self.device_handle is None:
+            self.device_handle = self.open_first_device()
+        return self.device_handle
+
+    def _require_handle(self, operation: str) -> int:
+        handle = self.open_and_use_first_device()
+        if handle is None:
+            raise AnalogDiscoveryError(
+                f"{operation} called while Analog Discovery 2 is disabled"
+            )
+        return handle
+
+    def get_phdwf(self) -> int | None:
+        return self.device_handle
+
+    def pc_trigger(self) -> None:
+        self.trigger_pc(self._require_handle("pc_trigger()"))
+        self.triggered = True
+
+    def get_wfg_config(self) -> WfgConfig:
+        if self.wfg_config is None:
+            self.wfg_config = WfgConfig()
+        return self.wfg_config
+
+    def set_wfg_config(self, config: WfgConfig | dict | None) -> None:
+        self.wfg_config = coerce_wfg_config(config)
+
+    def _apply_wfg_config(self, config: WfgConfig | dict | None, operation: str) -> None:
+        new_config = coerce_wfg_config(config)
+        self.configure_wfg(self._require_handle(operation), new_config)
+        self.wfg_config = new_config
+
+    def config_wfg(self, config: WfgConfig | dict | None) -> None:
+        self._apply_wfg_config(config, "config_wfg()")
+
+    def wfg_check_config_valid(self) -> bool:
+        return self.get_wfg_config().check_valid()
+
+    def wfg_configure_carrier_single_ch(
+        self, channel_index: int, channel: WfgChannelConfig
+    ) -> None:
+        self.get_wfg_config().channels[channel_index] = channel
+
+    def wfg_configure_trigger_single_ch(
+        self, channel_index: int, channel: WfgChannelConfig
+    ) -> None:
+        self.wfg_configure_carrier_single_ch(channel_index, channel)
+
+    def wfg_configure_fm_mod_single_ch(
+        self, channel_index: int, channel: WfgChannelConfig
+    ) -> None:
+        self.wfg_configure_carrier_single_ch(channel_index, channel)
+
+    def wfg_dynamic_config_ch(
+        self, channel_index: int, channel: WfgChannelConfig
+    ) -> None:
+        self.wfg_configure_carrier_single_ch(channel_index, channel)
+
+    def wfg_configure_single_ch(
+        self, channel_index: int, channel: WfgChannelConfig
+    ) -> None:
+        self.wfg_configure_carrier_single_ch(channel_index, channel)
+
+    def wfg_configure(self, config: WfgConfig | dict | None) -> None:
+        self._apply_wfg_config(config, "wfg_configure()")
+
+    def wfg_configure_read_back(self) -> WfgConfig:
+        return self.get_wfg_config()
+
+    def wfg_start_stop_all_ch(self, running: bool) -> None:
+        new_config = deepcopy(self.get_wfg_config())
+        new_config.running = running
+        self.configure_wfg(self._require_handle("wfg_start_stop_all_ch()"), new_config)
+        self.wfg_config = new_config
+
+    def get_do_config(self) -> DoConfig:
+        if self.do_config is None:
+            self.do_config = DoConfig()
+        return self.do_config
+
+    def config_do_custom(self, config: DoConfig | dict | None) -> None:
+        new_config = coerce_do_config(config)
+        self.configure_do(self._require_handle("config_do_custom()"), new_config)
+        self.do_custom_config = new_config
+        self.do_config = new_config
+
+    def config_do_clock_special(self, settings: DoConfig | dict | None) -> None:
+        new_config = coerce_do_config(settings)
+        self.configure_do(self._require_handle("config_do_clock_special()"), new_config)
+        self.do_clock_settings = new_config
+        self.do_config = new_config
+
+    def do_config_trigger(self, trigger_source: str) -> None:
+        for channel in self.get_do_config().channels:
+            channel.trigger.source = trigger_source
+
+    def do_configure_idle(
+        self, channel_index: int, channel: DoSingleChannelConfig
+    ) -> None:
+        self.get_do_config().channel(channel_index).idle_state = channel.idle_state
+
+    def do_divider_config(self, channel_index: int, clock_divider: int) -> None:
+        self.get_do_config().channel(channel_index).clock_divider = clock_divider
+
+    def do_type_config(
+        self, channel_index: int, channel: DoSingleChannelConfig
+    ) -> None:
+        target = self.get_do_config().channel(channel_index)
+        target.output_type = channel.output_type
+        target.output_mode = channel.output_mode
+
+    def do_enable_set(self, channel_index: int, enabled: bool) -> None:
+        self.get_do_config().channel(channel_index).enable = enabled
+
+    def do_custom_pattern_build_array(self, high_bits: int, low_bits: int) -> list[int]:
+        return [1] * max(high_bits, 0) + [0] * max(low_bits, 0)
+
+    def do_configure_custom_pattern(self, channel_index: int, bits: list[int]) -> None:
+        channel = self.get_do_config().channel(channel_index)
+        channel.custom_data.bits = bits
+        channel.custom_data.count_of_bits = len(bits)
+
+    def do_configure(self, config: DoConfig | dict | None) -> None:
+        new_config = coerce_do_config(config)
+        self.configure_do(self._require_handle("do_configure()"), new_config)
+        self.do_config = new_config
+
+    def do_reset(self) -> None:
+        self.reset_do(self._require_handle("do_reset()"))
+        self.do_config = DoConfig()
+
+    def start_stop_do(self, running: bool) -> None:
+        new_config = deepcopy(self.get_do_config())
+        new_config.running = running
+        self.configure_do(self._require_handle("start_stop_do()"), new_config)
+        self.do_config = new_config
+
+    def mso_init(self, phdwf: object | int | None = None) -> None:
+        if phdwf is None:
+            phdwf = self.open_and_use_first_device()
+        self.mso_config = MsoConfig(device_handle=phdwf)
+
+    def capture_scope(
+        self,
+        *,
+        channel_index: int = 0,
+        sample_frequency_hz: float = 10_000.0,
+        sample_count: int = 4096,
+        range_v: float = 1.0,
+        offset_v: float = 0.0,
+    ) -> list[float]:
+        handle = self._require_handle("capture_scope()")
+        self.mso_config = MsoConfig(
+            device_handle=handle,
+            range_ch1=range_v if channel_index == 0 else None,
+            range_ch2=range_v if channel_index == 1 else None,
+            sample_frequency_hz=sample_frequency_hz,
+            sample_count=sample_count,
+        )
+        return self.capture_analog_in(
+            handle,
+            channel_index=channel_index,
+            sample_frequency_hz=sample_frequency_hz,
+            sample_count=sample_count,
+            range_v=range_v,
+            offset_v=offset_v,
+        )
+
+    def capture_scope_channels(
+        self,
+        *,
+        channel_indices: list[int],
+        sample_frequency_hz: float = 10_000.0,
+        sample_count: int = 4096,
+        range_v: float = 1.0,
+        offset_v: float = 0.0,
+        trigger_source: TriggerSource | str = TriggerSource.NONE,
+    ) -> dict[int, list[float]]:
+        handle = self._require_handle("capture_scope_channels()")
+        self.mso_config = MsoConfig(
+            device_handle=handle,
+            range_ch1=range_v if 0 in channel_indices else None,
+            range_ch2=range_v if 1 in channel_indices else None,
+            sample_frequency_hz=sample_frequency_hz,
+            sample_count=sample_count,
+            trigger_source=trigger_source,
+        )
+        return self.capture_analog_in_channels(
+            handle,
+            channel_indices=channel_indices,
+            sample_frequency_hz=sample_frequency_hz,
+            sample_count=sample_count,
+            range_v=range_v,
+            offset_v=offset_v,
+            trigger_source=trigger_source,
+        )
+
+    def get_mso_config(self) -> MsoConfig:
+        if self.mso_config is None:
+            self.mso_init()
+        assert self.mso_config is not None
+        return self.mso_config
+
     @classmethod
     def is_available(cls) -> bool:
         try:
             cls._resolve_library(None)
-        except WaveFormsError:
+        except AnalogDiscoveryError:
             return False
         return True
 
@@ -103,12 +372,12 @@ class WaveFormsDriver:
             path = Path(library_path)
             if path.exists():
                 return path
-            raise WaveFormsError(f"WaveForms library was not found: {path}")
+            raise AnalogDiscoveryError(f"WaveForms library was not found: {path}")
 
         for path in cls._candidate_paths():
             if path.exists():
                 return path
-        raise WaveFormsError("Could not find dwf.dll. Install Digilent WaveForms or pass library_path.")
+        raise AnalogDiscoveryError("Could not find dwf.dll. Install Digilent WaveForms or pass library_path.")
 
     def _bind_signatures(self) -> None:
         signatures = {
@@ -199,7 +468,7 @@ class WaveFormsDriver:
     def _check(self, result: int, operation: str) -> None:
         if not result:
             message = self._last_error()
-            raise WaveFormsError(f"{operation} failed: {message}")
+            raise AnalogDiscoveryError(f"{operation} failed: {message}")
 
     @staticmethod
     def _enum_value(mapping: dict, value: object) -> int:
@@ -208,13 +477,13 @@ class WaveFormsDriver:
         for key, mapped in mapping.items():
             if value == key or value == getattr(key, "value", None):
                 return mapped
-        raise WaveFormsError(f"Unsupported WaveForms enum value: {value!r}")
+        raise AnalogDiscoveryError(f"Unsupported WaveForms enum value: {value!r}")
 
     def _output_mode_value(self, output_mode: object) -> int:
-        # Finding 1 (waveforms.py review, Session 66): output_mode is a
-        # free-form str field (DoSingleChannelConfig.output_mode), not an
+        # output_mode is a free-form str field
+        # (DoSingleChannelConfig.output_mode), not an
         # enum -- unlike function/trigger_source, nothing upstream (
-        # coerce_do_channel_config() in ad2.py just casts to str, no
+        # coerce_do_channel_config() in configuration.py just casts to str, no
         # validation) can ever catch a typo before it reaches here. This is
         # the only real defense point in the whole pipeline, so a silent
         # fallback to "pushpull" would mean a bad config string silently
@@ -222,7 +491,7 @@ class WaveFormsDriver:
         # drive mode with zero error.
         key = str(output_mode).replace(" ", "").lower()
         if key not in self._OUTPUT_MODES:
-            raise WaveFormsError(
+            raise AnalogDiscoveryError(
                 f"Unsupported digital-out output_mode: {output_mode!r} "
                 f"(expected one of {sorted(self._OUTPUT_MODES)}, case/space-insensitive)."
             )
@@ -236,7 +505,7 @@ class WaveFormsDriver:
             handle = c_int()
             self._check(self._dwf.FDwfDeviceOpen(c_int(device_index), byref(handle)), "FDwfDeviceOpen")
             if handle.value == 0:
-                raise WaveFormsError("FDwfDeviceOpen returned no device handle.")
+                raise AnalogDiscoveryError("FDwfDeviceOpen returned no device handle.")
             result["response"] = handle.value
         return handle.value
 
@@ -625,7 +894,7 @@ class WaveFormsDriver:
                 if channel.enable
             }
             if len(trigger_signatures) > 1:
-                raise WaveFormsError(
+                raise AnalogDiscoveryError(
                     "Digital output channels request different global trigger timing; "
                     "WaveForms applies one Wait/Run/Repeat/TriggerSource configuration to the whole device."
                 )
@@ -641,14 +910,14 @@ class WaveFormsDriver:
                 clock_divider = channel.clock_divider
                 if channel.clock_frequency_hz is not None:
                     if channel.clock_frequency_hz <= 0:
-                        raise WaveFormsError("Digital output clock frequency must be greater than 0 Hz.")
+                        raise AnalogDiscoveryError("Digital output clock frequency must be greater than 0 Hz.")
                     internal_clock_hz = self.digital_out_internal_clock_info(handle)
                     if internal_clock_hz <= 0:
-                        raise WaveFormsError("Digital output internal clock frequency is not available.")
+                        raise AnalogDiscoveryError("Digital output internal clock frequency is not available.")
                     clock_divider = int((internal_clock_hz / channel.clock_frequency_hz) / 2.0)
                     minimum_divider, maximum_divider = self.digital_out_divider_info(handle, channel.channel_index)
                     if not minimum_divider <= clock_divider <= maximum_divider:
-                        raise WaveFormsError(
+                        raise AnalogDiscoveryError(
                             f"DigitalOut divider {clock_divider} for channel {channel.channel_index} is outside "
                             f"the supported range {minimum_divider}..{maximum_divider}."
                         )
@@ -724,9 +993,9 @@ class WaveFormsDriver:
             if config.frame_count is not None:
                 dio0 = next((channel for channel in config.channels if channel.enable and channel.channel_index == 0), None)
                 if dio0 is None or dio0.achieved_clock_frequency_hz is None:
-                    raise WaveFormsError("Canonical DIO0 timing requires a valid achieved DigitalOut frequency.")
+                    raise AnalogDiscoveryError("Canonical DIO0 timing requires a valid achieved DigitalOut frequency.")
                 if config.frame_count < 1:
-                    raise WaveFormsError("Canonical DigitalOut frame count must be at least one.")
+                    raise AnalogDiscoveryError("Canonical DigitalOut frame count must be at least one.")
                 achieved_run_s = config.frame_count / dio0.achieved_clock_frequency_hz
                 for channel in config.channels:
                     if channel.enable:
@@ -895,7 +1164,7 @@ class WaveFormsDriver:
                     break
                 time.sleep(0.01)
             else:
-                raise WaveFormsError("AnalogIn capture timed out before acquisition completed.")
+                raise AnalogDiscoveryError("AnalogIn capture timed out before acquisition completed.")
 
             samples = (c_double * count)()
             self._check(self._dwf.FDwfAnalogInStatusData(h, idx, samples, c_int(count)), "FDwfAnalogInStatusData")
@@ -953,7 +1222,7 @@ class WaveFormsDriver:
                     break
                 time.sleep(0.01)
             else:
-                raise WaveFormsError("AnalogIn capture timed out before acquisition completed.")
+                raise AnalogDiscoveryError("AnalogIn capture timed out before acquisition completed.")
 
             captured: dict[int, list[float]] = {}
             for index in selected:

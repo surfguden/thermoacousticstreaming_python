@@ -22,14 +22,13 @@ if str(SRC) not in sys.path:
 
 import matplotlib.pyplot as plt
 
-from thermo_acoustic.drivers.ad2.models import CarrierSettings, TriggerSettings, WaveformFunction, WfgChannelConfig, WfgConfig
-from thermo_acoustic.drivers.ad2.capture_tooling import (
+from thermo_acoustic.drivers.ad2 import AnalogDiscovery2
+from thermo_acoustic.drivers.ad2.configuration import CarrierSettings, TriggerSettings, WaveformFunction, WfgChannelConfig, WfgConfig
+from ad2_capture_support import (
     REAL_AD2_W1_CONFIRMATION,
     require_real_ad2_w1_confirmation,
     run_capture_with_cleanup,
 )
-from thermo_acoustic.drivers.ad2.sdk import AD2Sdk
-from thermo_acoustic.drivers.ad2.waveforms import WaveFormsDriver
 
 
 CSV_PATH = ROOT / "ad2_scope_capture.csv"
@@ -56,7 +55,7 @@ def main() -> None:
     wave_frequency_hz = 100.0
     amplitude_v = 0.2
 
-    ad2 = AD2Sdk(driver=WaveFormsDriver())
+    ad2 = AnalogDiscovery2()
 
     def capture() -> list[float]:
         ad2.initialize()

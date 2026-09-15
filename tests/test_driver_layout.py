@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from thermo_acoustic.drivers.ad2 import AD2Sdk, SimulatedAD2, WaveFormsDriver
+from thermo_acoustic.drivers.ad2 import AnalogDiscovery2, SimulatedAD2
 from thermo_acoustic.drivers.camera import (
     HamamatsuDcamDriver,
     IntegerRange,
@@ -21,7 +21,7 @@ def test_public_hal_and_driver_imports_are_available() -> None:
     assert all(
         item is not None
         for item in (
-            AD2Sdk,
+            AnalogDiscovery2,
             SimulatedAD2,
             HamamatsuDcamDriver,
             SimulatedCamera,
@@ -39,11 +39,11 @@ def test_public_hal_and_driver_imports_are_available() -> None:
 
 def test_retained_driver_construction_performs_no_hardware_io() -> None:
     dependency = object()
-    assert AD2Sdk(driver=dependency, enabled=False).driver is dependency
+    assert AnalogDiscovery2(enabled=False).device_handle is None
     assert CetoniPump().pump is None
     assert TecController(driver=dependency, enabled=False).driver is dependency
     assert Valve(transport=dependency, enabled=False).transport is dependency
-    assert WaveFormsDriver.is_available() in (True, False)
+    assert AnalogDiscovery2.is_available() in (True, False)
     assert HamamatsuDcamDriver().dcam is None
     assert MeerstetterTecDriver().client is None
     assert SerialTextCommandTransport().port is None
@@ -81,3 +81,16 @@ def test_camera_roi_can_be_centered_with_integer_limits() -> None:
         horizontal_size=512,
         vertical_size=256,
     )
+
+
+def test_analog_discovery_configures_directly_without_an_inner_driver() -> None:
+    device = AnalogDiscovery2(enabled=False)
+    configured: list[tuple[int, object]] = []
+    device.enabled = True
+    device.open_first_device = lambda: 7
+    device.configure_wfg = lambda handle, config: configured.append((handle, config))
+
+    device.wfg_configure({"frequency_hz": 2500.0, "amplitude_v": 0.5})
+
+    assert device.device_handle == 7
+    assert configured == [(7, device.wfg_config)]

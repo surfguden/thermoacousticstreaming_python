@@ -83,7 +83,7 @@ class Valve:
 
     def _ensure_connected(self) -> None:
         # Lazy reconnect (2026-08-13 architecture fix), matching the pattern
-        # already proven for AD2Sdk.open_and_use_first_device()/
+        # already proven for AnalogDiscovery2.open_and_use_first_device()/
         # HamamatsuDcamDriver.open_camera(): a manual Pump&Valve-tab action
         # must not require a prior, successful, whole-system
         # Application.initialize() -- e.g. this Valve was skipped because an
