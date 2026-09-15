@@ -1,4 +1,4 @@
-from .base import DeviceWorker, DriverDeviceWorker
+from .base import DeviceWorker
 from .registry import DeviceRegistry
 
-__all__ = ["DeviceRegistry", "DeviceWorker", "DriverDeviceWorker"]
+__all__ = ["DeviceRegistry", "DeviceWorker"]

@@ -67,21 +67,40 @@ def test_ui_and_console_share_fifo_and_request_ids(qt_app):
     assert any(event.source == "console" and event.request_id == "console-1" for event in events)
     controller.shutdown()
 
-def test_all_simulated_workers_have_basic_operations(qt_app):
-    registry = DeviceRegistry(); controller = ApplicationController(registry, mode=OperatingMode.SIMULATION); controller.start()
-    commands = [(DeviceId.AD2, "connect", ()), (DeviceId.PUMP, "connect", ()), (DeviceId.VALVE, "connect", ()), (DeviceId.CAMERA, "connect", ()), (DeviceId.TEC, "connect", ()), (DeviceId.Z_STAGE, "connect", ())]
-    for device, operation, args in commands: controller.submit(DeviceCommand(device, operation, args))
+def test_all_simulated_devices_have_basic_operations(qt_app):
+    registry = DeviceRegistry()
+    controller = ApplicationController(registry, mode=OperatingMode.SIMULATION)
+    controller.start()
+    for device in DeviceId:
+        controller.submit(DeviceCommand(device, "connect"))
     wait(qt_app, 250)
-    controller.submit(DeviceCommand(DeviceId.PUMP, "set-flow", (20,))); controller.submit(DeviceCommand(DeviceId.VALVE, "set-position", (1,))); controller.submit(DeviceCommand(DeviceId.CAMERA, "snapshot")); controller.submit(DeviceCommand(DeviceId.TEC, "set-temperature", (25,))); controller.submit(DeviceCommand(DeviceId.Z_STAGE, "enable-closed-loop")); controller.submit(DeviceCommand(DeviceId.Z_STAGE, "move", (50,))); wait(qt_app, 350)
+
+    commands = (
+        DeviceCommand(DeviceId.AD2, "configure", (1000.0, 1.0)),
+        DeviceCommand(DeviceId.AD2, "start"),
+        DeviceCommand(DeviceId.AD2, "trigger"),
+        DeviceCommand(DeviceId.PUMP, "set-flow", (20,)),
+        DeviceCommand(DeviceId.VALVE, "set-position", (1,)),
+        DeviceCommand(DeviceId.CAMERA, "snapshot"),
+        DeviceCommand(DeviceId.TEC, "set-temperature", (25,)),
+        DeviceCommand(DeviceId.Z_STAGE, "enable-closed-loop"),
+        DeviceCommand(DeviceId.Z_STAGE, "move", (50,)),
+    )
+    for command in commands:
+        controller.submit(command)
+    wait(qt_app, 450)
+
+    assert controller.statuses()[DeviceId.AD2].active
     assert controller.statuses()[DeviceId.PUMP].readings["flow_ul_min"] == 20
     assert controller.statuses()[DeviceId.Z_STAGE].readings["position_um"] == 50
     controller.shutdown()
 
-def test_real_connection_confirmation_and_lazy_fake_driver(qt_app):
+
+def test_real_connection_confirmation_and_lazy_fake_device(qt_app):
     calls = []
     worker_thread_checks = []
 
-    class FakeDriver:
+    class FakeDevice:
         def initialize(self):
             calls.append("initialized")
             worker_thread_checks.append(QThread.currentThread() is registry.by_id(DeviceId.PUMP).thread())
@@ -94,14 +113,14 @@ def test_real_connection_confirmation_and_lazy_fake_driver(qt_app):
             calls.append("cleaned")
             worker_thread_checks.append(QThread.currentThread() is registry.by_id(DeviceId.PUMP).thread())
 
-    def create_driver():
+    def create_device():
         calls.append("constructed")
         worker_thread_checks.append(QThread.currentThread() is registry.by_id(DeviceId.PUMP).thread())
-        return FakeDriver()
+        return FakeDevice()
 
-    registry = DeviceRegistry(OperatingMode.REAL, {DeviceId.PUMP: create_driver})
+    registry = DeviceRegistry(OperatingMode.REAL, {DeviceId.PUMP: create_device})
     assert calls == []
-    assert not registry.by_id(DeviceId.PUMP).driver_constructed
+    assert not registry.by_id(DeviceId.PUMP).device_constructed
 
     controller = ApplicationController(
         registry,
@@ -129,7 +148,7 @@ def test_real_connection_confirmation_and_lazy_fake_driver(qt_app):
     wait(qt_app)
     assert calls == ["constructed", "initialized", "stopped", "cleaned"]
     assert worker_thread_checks == [True, True, True, True]
-    assert not registry.by_id(DeviceId.PUMP).driver_constructed
+    assert not registry.by_id(DeviceId.PUMP).device_constructed
     controller.shutdown()
 
 def test_ui_renders_offscreen_and_audit_is_jsonl(qt_app, tmp_path):

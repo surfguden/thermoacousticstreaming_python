@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from thermo_acoustic.drivers.ad2 import AD2Sdk, WaveFormsDriver
-from thermo_acoustic.drivers.camera import HamamatsuDcamDriver
-from thermo_acoustic.drivers.pump import CetoniPump, QmixPumpDriver
-from thermo_acoustic.drivers.tec import MeerstetterTecDriver, TecController
-from thermo_acoustic.drivers.valve import SerialTextCommandTransport, Valve
-from thermo_acoustic.drivers.z_stage import PiezoStage
+from thermo_acoustic.drivers.ad2 import AD2Sdk, SimulatedAD2, WaveFormsDriver
+from thermo_acoustic.drivers.camera import HamamatsuDcamDriver, SimulatedCamera
+from thermo_acoustic.drivers.pump import CetoniPump, QmixPumpDriver, SimulatedPump
+from thermo_acoustic.drivers.tec import MeerstetterTecDriver, SimulatedTec, TecController
+from thermo_acoustic.drivers.valve import SerialTextCommandTransport, SimulatedValve, Valve
+from thermo_acoustic.drivers.z_stage import PiezoStage, SimulatedZStage
 from thermo_acoustic.hal import DeviceRegistry, DeviceWorker
 
 
@@ -16,9 +16,15 @@ def test_public_hal_and_driver_imports_are_available() -> None:
         item is not None
         for item in (
             AD2Sdk,
+            SimulatedAD2,
             HamamatsuDcamDriver,
+            SimulatedCamera,
             CetoniPump,
             QmixPumpDriver,
+            SimulatedPump,
+            SimulatedTec,
+            SimulatedValve,
+            SimulatedZStage,
             TecController,
             Valve,
             PiezoStage,
@@ -38,3 +44,18 @@ def test_retained_driver_construction_performs_no_hardware_io() -> None:
     assert MeerstetterTecDriver().client is None
     assert SerialTextCommandTransport().port is None
     assert PiezoStage().connected is False
+
+
+def test_simulated_devices_are_reusable_without_the_hal() -> None:
+    pump = SimulatedPump()
+    pump.initialize()
+    pump.generate_flow(25.0)
+    assert pump.flow_ul_min == 25.0
+    pump.cleanup()
+    assert pump.flow_ul_min == 0.0
+
+    z_stage = SimulatedZStage()
+    z_stage.connect()
+    z_stage.switch_to_closed_loop()
+    assert z_stage.set_position(50.0) == 50.0
+    z_stage.disconnect()

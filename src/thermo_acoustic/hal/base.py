@@ -26,9 +26,18 @@ class DeviceWorker(QObject):
     status_changed = Signal(object)
     stopped = Signal()
 
-    def __init__(self, device_id: DeviceId, *, poll_interval_s: float = 0.0, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        device_id: DeviceId,
+        device_factory: Callable[[], object],
+        *,
+        poll_interval_s: float = 0.0,
+        parent: QObject | None = None,
+    ) -> None:
         super().__init__(parent)
         self.device_id = device_id
+        self._device_factory = device_factory
+        self._device: object | None = None
         self.poll_interval_s = poll_interval_s
         self.state = WorkerState()
         self._operations: dict[str, Callable[..., Any]] = {}
@@ -58,13 +67,55 @@ class DeviceWorker(QObject):
     def _emit_status(self) -> None:
         self.status_changed.emit(self.status())
 
+    @property
+    def device(self) -> object:
+        if self._device is None:
+            raise RuntimeError(f"{self.device_id.value} device is not constructed")
+        return self._device
+
+    @property
+    def device_constructed(self) -> bool:
+        return self._device is not None
+
+    def initialize_device(self) -> None:
+        initialize = getattr(self.device, "initialize", None)
+        if not callable(initialize):
+            raise RuntimeError(f"{self.device_id.value} device has no initialize() method")
+        initialize()
+
+    def cleanup_device(self) -> None:
+        cleanup = getattr(self.device, "cleanup", None)
+        if not callable(cleanup):
+            raise RuntimeError(f"{self.device_id.value} device has no cleanup() method")
+        cleanup()
+
     def connect_device(self) -> None:
+        if self.state.connected:
+            return
+        if self._device is None:
+            device = self._device_factory()
+            if device is None:
+                raise RuntimeError(f"{self.device_id.value} device factory returned no device")
+            self._device = device
+        try:
+            self.initialize_device()
+        except Exception:
+            self._device = None
+            raise
         self.state.connected = True
         self.state.fault = None
         self._emit_status()
 
     def disconnect_device(self) -> None:
-        self.safe_stop()
+        if self._device is None:
+            self.state = WorkerState()
+            self._emit_status()
+            return
+        try:
+            self.cleanup_device()
+        except Exception as exc:
+            raise RuntimeError(f"device cleanup failed: {exc}") from exc
+        self._device = None
         self.state = WorkerState()
         self._emit_status()
 
@@ -121,71 +172,3 @@ class DeviceWorker(QObject):
             self.disconnect_device()
         finally:
             self.stopped.emit()
-
-
-class DriverDeviceWorker(DeviceWorker):
-    """Base for real HAL workers with worker-thread-owned driver lifetimes."""
-
-    def __init__(
-        self,
-        device_id: DeviceId,
-        driver_factory: Callable[[], object],
-        *,
-        poll_interval_s: float = 0.0,
-        parent: QObject | None = None,
-    ) -> None:
-        super().__init__(device_id, poll_interval_s=poll_interval_s, parent=parent)
-        self._driver_factory = driver_factory
-        self._driver: object | None = None
-
-    @property
-    def driver(self) -> object:
-        if self._driver is None:
-            raise RuntimeError(f"{self.device_id.value} driver is not constructed")
-        return self._driver
-
-    @property
-    def driver_constructed(self) -> bool:
-        return self._driver is not None
-
-    def initialize_driver(self) -> None:
-        initialize = getattr(self.driver, "initialize", None)
-        if not callable(initialize):
-            raise RuntimeError(f"{self.device_id.value} driver has no initialize() method")
-        initialize()
-
-    def cleanup_driver(self) -> None:
-        cleanup = getattr(self.driver, "cleanup", None)
-        if not callable(cleanup):
-            raise RuntimeError(f"{self.device_id.value} driver has no cleanup() method")
-        cleanup()
-
-    def connect_device(self) -> None:
-        if self.state.connected:
-            return
-        if self._driver is None:
-            driver = self._driver_factory()
-            if driver is None:
-                raise RuntimeError(f"{self.device_id.value} driver factory returned no driver")
-            self._driver = driver
-        try:
-            self.initialize_driver()
-        except Exception:
-            self._driver = None
-            raise
-        self.state.connected = True
-        self.state.fault = None
-        self._emit_status()
-
-    def disconnect_device(self) -> None:
-        if self._driver is None:
-            self.state = WorkerState()
-            self._emit_status()
-            return
-        try:
-            self.cleanup_driver()
-        except Exception as exc:
-            raise RuntimeError(f"driver cleanup failed: {exc}") from exc
-        self._driver = None
-        self.state = WorkerState()
-        self._emit_status()

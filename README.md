@@ -15,12 +15,11 @@ validation, request IDs, lifecycle events, and audit records.
 The `hal/` package is the application-facing Hardware Abstraction Layer. Each
 `DeviceWorker` is a `QObject` moved to its own persistent `QThread`.
 `AD2Worker`, `PumpWorker`, `ValveWorker`, `CameraWorker`, `TecWorker`, and
-`ZStageWorker` keep device-specific validation and driver calls behind the HAL.
-Simulation workers implement the same application-facing operations without a
-driver. For real mode, `DeviceRegistry` gives each worker a driver factory. The
-factory runs only after a confirmed Connect command reaches that worker's
-thread, so retained vendor code is neither imported nor constructed during
-simulation startup or passive real-mode rendering.
+`ZStageWorker` keep device-specific validation and device calls behind the HAL.
+There is one worker per device in both modes. `DeviceRegistry` selects either a
+real or simulated device factory and gives it to that worker. The factory runs
+only after Connect reaches the worker's thread, so no device implementation is
+constructed during startup or passive rendering.
 
 ```text
 thermo_acoustic/
@@ -28,7 +27,7 @@ thermo_acoustic/
 ├── console/      stdin parsing and reading
 ├── domain/       shared device identity and status models
 ├── hal/          Qt device workers, registry, and simulations
-├── drivers/      low-level vendor-facing implementations, grouped by device
+├── drivers/      reusable real and simulated implementations, grouped by device
 ├── ui/           Qt Widgets only
 └── main.py       the single process entry point
 ```
@@ -68,7 +67,7 @@ shutdown.
 ## Real mode safeguards
 
 Use `--mode real` only on an authorized workstation. Creating the registry and
-workers does not construct, connect to, or probe drivers. Every real connection
+workers does not construct, connect to, or probe devices. Every real connection
 is rejected unless the application controller receives explicit operator
 confirmation; only then does the target worker construct its driver and connect
 on its persistent thread. The UI is only a presentation of that policy; safety
@@ -97,7 +96,8 @@ provided. Tests write logs only under temporary directories.
 ## Retained drivers
 
 The canonical pump path is `drivers/pump/CetoniPump` with `QmixPumpDriver`.
-Other retained drivers are grouped under `drivers/ad2`, `drivers/camera`,
-`drivers/tec`, `drivers/valve`, and `drivers/z_stage`. Vendor APIs, data types,
-and errors remain behind the HAL boundary. There is no aggregate
-`instruments.py` module or redundant standalone neMESYS path.
+Each device folder also contains a reusable simulated implementation exposing
+the device-level methods used by its HAL worker. These simulators contain no Qt
+or application code. Vendor APIs, data types, and errors remain behind the HAL
+boundary. There is no aggregate `instruments.py` module or redundant standalone
+neMESYS path.

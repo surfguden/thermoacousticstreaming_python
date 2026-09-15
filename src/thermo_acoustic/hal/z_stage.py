@@ -3,23 +3,23 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from ..domain.models import DeviceId
-from .base import DriverDeviceWorker
+from .base import DeviceWorker
 
 
-class ZStageWorker(DriverDeviceWorker):
-    def __init__(self, driver_factory: Callable[[], object], parent=None) -> None:
-        super().__init__(DeviceId.Z_STAGE, driver_factory, parent=parent)
+class ZStageWorker(DeviceWorker):
+    def __init__(self, device_factory: Callable[[], object], parent=None) -> None:
+        super().__init__(DeviceId.Z_STAGE, device_factory, parent=parent)
         self.register("enable-closed-loop", self.enable_closed_loop)
         self.register("move", self.move)
 
-    def initialize_driver(self) -> None:
-        self.driver.connect()
+    def initialize_device(self) -> None:
+        self.device.connect()
 
-    def cleanup_driver(self) -> None:
-        self.driver.disconnect()
+    def cleanup_device(self) -> None:
+        self.device.disconnect()
 
     def enable_closed_loop(self) -> None:
-        self.driver.switch_to_closed_loop()
+        self.device.switch_to_closed_loop()
         self.state.configured = True
         self.state.readings["closed_loop"] = True
 
@@ -28,5 +28,5 @@ class ZStageWorker(DriverDeviceWorker):
             raise ValueError("position_um must be between 0 and 450")
         if not self.state.readings.get("closed_loop"):
             raise RuntimeError("Enable closed-loop before moving")
-        confirmed_position_um = self.driver.set_position(position_um)
+        confirmed_position_um = self.device.set_position(position_um)
         self.state.readings["position_um"] = confirmed_position_um
