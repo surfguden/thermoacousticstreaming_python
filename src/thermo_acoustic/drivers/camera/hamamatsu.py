@@ -8,7 +8,7 @@ import sys
 import time
 from typing import Any
 
-from .roi import IntegerRange, SubRegion, SubRegionLimits
+from .roi import CameraMode, IntegerRange, SubRegion, SubRegionLimits
 from ..common.logging import log_action, log_call, log_transaction
 
 
@@ -40,6 +40,7 @@ class HamamatsuDcamDriver:
     last_frame_timestamps: list[str] = field(default_factory=list)
     _timestamp_capability_checked: bool = False
     _timestamp_supported: bool = False
+    mode: CameraMode = CameraMode.SNAPSHOT
 
     def _load_sdk(self) -> None:
         if self.dcam_module is not None:
@@ -204,8 +205,10 @@ class HamamatsuDcamDriver:
             self.configure_exposure_time(float(settings["exposure_ms"]))
         else:
             self.open_camera()
+        self.sequence_settings = None
+        self.mode = CameraMode.SNAPSHOT
 
-    def configure_sequence(self, settings: dict | None) -> None:
+    def configure_sequence(self, settings: dict | None = None) -> None:
         # Session 65 (Finding 1, hamamatsu_dcam.py review): sequence_settings
         # is only committed to self after every property write below is
         # confirmed applied. Previously it was assigned up front, so a
@@ -222,6 +225,7 @@ class HamamatsuDcamDriver:
             self._configure_sequence_properties(new_settings)
             log_result["response"] = "applied"
         self.sequence_settings = new_settings
+        self.mode = CameraMode.SEQUENCE
 
     def _configure_sequence_properties(self, settings: dict[str, Any]) -> None:
         props = self.dcam_module.DCAM_IDPROP
@@ -353,6 +357,7 @@ class HamamatsuDcamDriver:
     def start_capture(self) -> None:
         self.open_camera()
         with log_call("camera", "start_capture") as result:
+            self.mode = CameraMode.SEQUENCE
             self._ensure_buffer(self._sequence_buffer_frame_count())
             self._check(self.dcam.cap_start(True), "Dcam.cap_start")
             self.capture_active = True
@@ -366,6 +371,7 @@ class HamamatsuDcamDriver:
     def capture_snapshot(self) -> object:
         self.open_camera()
         with log_call("camera", "capture_snapshot") as result:
+            self.mode = CameraMode.SNAPSHOT
             self._ensure_buffer(1)
             self._check(self.dcam.cap_snapshot(), "Dcam.cap_snapshot")
             self.capture_active = True
@@ -380,6 +386,7 @@ class HamamatsuDcamDriver:
     def image_sequence(self, frame_count: int = 0, partial_capture_folder: Path | None = None) -> list[object]:
         self.open_camera()
         count = max(int(frame_count), 1)
+        self.mode = CameraMode.SEQUENCE
         with log_call(
             "camera", "image_sequence", command=count, response_stage="OBSERVED"
         ) as log_result:

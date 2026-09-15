@@ -11,6 +11,7 @@ from thermo_acoustic.drivers.ad2 import (
 )
 from thermo_acoustic.drivers.ad2.configuration import TriggerSource
 from thermo_acoustic.drivers.camera import (
+    CameraMode,
     HamamatsuDcamDriver,
     IntegerRange,
     SimulatedCamera,
@@ -83,13 +84,30 @@ def test_camera_roi_can_be_centered_with_integer_limits() -> None:
         horizontal_size=IntegerRange(minimum=4, maximum=2048, increment=4),
         vertical_size=IntegerRange(minimum=4, maximum=1024, increment=4),
     )
-
     assert SubRegion(horizontal_size=512, vertical_size=256).centered(limits) == SubRegion(
         horizontal_offset=768,
         vertical_offset=384,
         horizontal_size=512,
         vertical_size=256,
     )
+
+
+def test_simulated_camera_supports_snapshot_and_buffered_sequence_modes() -> None:
+    camera = SimulatedCamera(buffer_frames=4)
+    camera.open_camera()
+
+    camera.configure_sequence({"frames": 3, "exposure_ms": 2.5})
+    assert camera.mode is CameraMode.SEQUENCE
+    camera.start_capture()
+    frames = camera.image_sequence(3)
+    assert [frame["frame_number"] for frame in frames] == [1, 2, 3]
+    assert camera.capture_active
+    camera.stop_capture()
+
+    camera.configure_snapshot()
+    assert camera.mode is CameraMode.SNAPSHOT
+    assert camera.sequence_settings is None
+    assert camera.capture_snapshot()["frame_number"] == 4
 
 
 def test_analog_discovery_configures_directly_without_an_inner_driver() -> None:

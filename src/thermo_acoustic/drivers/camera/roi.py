@@ -1,6 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
+
+
+class CameraMode(str, Enum):
+    """Acquisition mode selected for the next camera operation."""
+
+    SNAPSHOT = "snapshot"
+    SEQUENCE = "sequence"
 
 
 @dataclass(slots=True)
