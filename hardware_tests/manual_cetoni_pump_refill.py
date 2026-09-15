@@ -1,4 +1,4 @@
-"""Reference and refill a CETONI pump through QmixPumpDriver.
+"""Reference and refill a CETONI pump through CetoniPump.
 
 This is a manual, operator-run hardware test. It performs real pump movement.
 """
@@ -19,7 +19,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from thermo_acoustic.drivers.pump.qmix_driver import QmixPumpDriver  # noqa: E402
+from thermo_acoustic.drivers.pump import CetoniPump  # noqa: E402
 
 
 DEFAULT_CONFIGURATION_PATH = Path(
@@ -32,7 +32,7 @@ CONFIRM_TEXT = "CONFIRM_REAL_CETONI_QMIX"
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Connect through QmixPumpDriver, reference the pump, then refill "
+            "Connect through CetoniPump, reference the pump, then refill "
             "at its live maximum flow while printing fill-level readback."
         )
     )
@@ -103,21 +103,21 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     os.environ["QMIXSDK"] = str(args.qmixsdk)
-    driver = QmixPumpDriver(pump_index=args.pump_index)
+    pump = CetoniPump(configuration_path=args.configuration, pump_index=args.pump_index)
     result = 0
 
-    print("QmixPumpDriver reference-and-refill test", flush=True)
+    print("CetoniPump reference-and-refill test", flush=True)
     print(f"Configuration: {args.configuration}", flush=True)
     print(f"Qmix SDK runtime: {args.qmixsdk}", flush=True)
     print(f"Pump selection: index {args.pump_index}", flush=True)
 
     try:
         print("Connecting to pump...", flush=True)
-        driver.initialize(args.configuration)
+        pump.initialize()
         print("Pump connected.", flush=True)
 
-        maximum_flow_ul_min = driver.max_flow_rate_ul_min
-        maximum_volume_ml = driver.max_volume_ml
+        maximum_flow_ul_min = pump.max_flow_rate_ul_min
+        maximum_volume_ml = pump.max_volume_ml
         if maximum_flow_ul_min is None or maximum_volume_ml is None:
             raise RuntimeError("Pump did not report its live flow and volume limits")
 
@@ -129,7 +129,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         print("Starting reference move...", flush=True)
-        driver.reference_move()
+        pump.reference_move()
         print("Reference move completed.", flush=True)
 
         print(
@@ -137,12 +137,12 @@ def main(argv: list[str] | None = None) -> int:
             flush=True,
         )
         refill_started = time.monotonic()
-        driver.refill(maximum_flow_ul_min)
+        pump.refill(maximum_flow_ul_min)
 
         while True:
             elapsed_s = time.monotonic() - refill_started
-            fill_level_ml = driver.read_fill_level()
-            pumping = driver.read_status()
+            fill_level_ml = pump.read_fill_level()
+            pumping = pump.read_status()
             print(
                 f"{elapsed_s:7.2f} s | fill level: {fill_level_ml:.6f} mL "
                 f"({fill_level_ml * 1000.0:.3f} uL) | "
@@ -153,13 +153,13 @@ def main(argv: list[str] | None = None) -> int:
             if not pumping:
                 break
             if elapsed_s >= refill_timeout_s:
-                driver.stop()
+                pump.stop()
                 raise TimeoutError(
                     f"Refill exceeded {refill_timeout_s:g} seconds and was stopped"
                 )
             time.sleep(poll_interval_s)
 
-        final_level_ml = driver.read_fill_level()
+        final_level_ml = pump.read_fill_level()
         print(
             f"Refill completed at {final_level_ml:.6f} mL "
             f"({final_level_ml * 1000.0:.3f} uL).",
@@ -168,21 +168,21 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("Interrupted by operator; stopping pump...", file=sys.stderr, flush=True)
         try:
-            driver.stop()
+            pump.stop()
         except Exception as stop_exc:
             print(f"Warning: stop failed: {stop_exc}", file=sys.stderr, flush=True)
         result = 130
     except Exception as exc:
         print(f"Test failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
         try:
-            driver.stop()
+            pump.stop()
         except Exception as stop_exc:
             print(f"Warning: stop failed: {stop_exc}", file=sys.stderr, flush=True)
         result = 1
     finally:
         print("Closing pump connection...", flush=True)
         try:
-            driver.close()
+            pump.cleanup()
         except Exception as close_exc:
             print(
                 f"Warning: connection cleanup failed: {type(close_exc).__name__}: {close_exc}",

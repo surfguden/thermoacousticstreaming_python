@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from thermo_acoustic.drivers.ad2 import AD2Sdk, SimulatedAD2, WaveFormsDriver
 from thermo_acoustic.drivers.camera import HamamatsuDcamDriver, SimulatedCamera
-from thermo_acoustic.drivers.pump import CetoniPump, QmixPumpDriver, SimulatedPump
+from thermo_acoustic.drivers.pump import CetoniPump, SimulatedPump
 from thermo_acoustic.drivers.tec import MeerstetterTecDriver, SimulatedTec, TecController
 from thermo_acoustic.drivers.valve import SerialTextCommandTransport, SimulatedValve, Valve
 from thermo_acoustic.drivers.z_stage import PiezoStage, SimulatedZStage
@@ -20,7 +20,6 @@ def test_public_hal_and_driver_imports_are_available() -> None:
             HamamatsuDcamDriver,
             SimulatedCamera,
             CetoniPump,
-            QmixPumpDriver,
             SimulatedPump,
             SimulatedTec,
             SimulatedValve,
@@ -35,12 +34,11 @@ def test_public_hal_and_driver_imports_are_available() -> None:
 def test_retained_driver_construction_performs_no_hardware_io() -> None:
     dependency = object()
     assert AD2Sdk(driver=dependency, enabled=False).driver is dependency
-    assert CetoniPump(driver=dependency, enabled=False).driver is dependency
+    assert CetoniPump().pump is None
     assert TecController(driver=dependency, enabled=False).driver is dependency
     assert Valve(transport=dependency, enabled=False).transport is dependency
     assert WaveFormsDriver.is_available() in (True, False)
     assert HamamatsuDcamDriver().dcam is None
-    assert QmixPumpDriver().pump is None
     assert MeerstetterTecDriver().client is None
     assert SerialTextCommandTransport().port is None
     assert PiezoStage().connected is False
@@ -49,8 +47,12 @@ def test_retained_driver_construction_performs_no_hardware_io() -> None:
 def test_simulated_devices_are_reusable_without_the_hal() -> None:
     pump = SimulatedPump()
     pump.initialize()
+    pump.configure_syringe({"volume_ml": 5.0})
+    pump.refill(100.0)
+    assert pump.read_fill_level() == 5.0
     pump.generate_flow(25.0)
     assert pump.flow_ul_min == 25.0
+    assert pump.read_status()
     pump.cleanup()
     assert pump.flow_ul_min == 0.0
 

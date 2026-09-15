@@ -1,5 +1,4 @@
-from .cetoni import CetoniPump
-from .qmix_driver import QmixPumpDriver
+from .cetoni import CetoniPump, CetoniPumpError
 from .simulated import SimulatedPump
 
-__all__ = ["CetoniPump", "QmixPumpDriver", "SimulatedPump"]
+__all__ = ["CetoniPump", "CetoniPumpError", "SimulatedPump"]

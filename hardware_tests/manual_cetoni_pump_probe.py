@@ -1,4 +1,4 @@
-"""Manual Qmix diagnostic, not automated pytest coverage.
+"""Manual CETONI pump diagnostic, not automated pytest coverage.
 
 Initialization can open the real bus and enable the pump; ``--flow-ul-min``
 can additionally command motion. It requires an explicit confirmation gate;
@@ -19,7 +19,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from thermo_acoustic.drivers.pump.qmix_driver import QmixPumpDriver
+from thermo_acoustic.drivers.pump import CetoniPump
 
 
 CONFIRM_TEXT = "CONFIRM_REAL_CETONI_QMIX"
@@ -60,18 +60,22 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    driver = QmixPumpDriver(pump_name=args.pump_name, pump_index=args.pump_index)
+    pump = CetoniPump(
+        configuration_path=Path(args.configuration_path),
+        pump_name=args.pump_name,
+        pump_index=args.pump_index,
+    )
     result = 0
     try:
-        driver.initialize(Path(args.configuration_path))
+        pump.initialize()
         print(f"Initialized Qmix pump index={args.pump_index} name={args.pump_name!r}")
-        print(f"Max flow: {driver.max_flow_rate_ul_min} uL/min")
-        print(f"Max volume: {driver.max_volume_ml} mL")
+        print(f"Max flow: {pump.max_flow_rate_ul_min} uL/min")
+        print(f"Max volume: {pump.max_volume_ml} mL")
         if args.flow_ul_min:
-            driver.generate_flow(args.flow_ul_min)
+            pump.generate_flow(args.flow_ul_min)
             print(f"Commanded flow: {args.flow_ul_min} uL/min")
-            print(f"Pumping: {driver.read_status()}")
-            driver.stop()
+            print(f"Pumping: {pump.read_status()}")
+            pump.stop()
             print("Stopped pump")
     except KeyboardInterrupt:
         print("Legacy probe interrupted by operator.", file=sys.stderr, flush=True)
@@ -81,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
         result = 1
     finally:
         try:
-            driver.close()
+            pump.cleanup()
         except Exception as close_exc:
             print(
                 f"Warning: connection cleanup failed: {type(close_exc).__name__}: {close_exc}",

@@ -40,7 +40,7 @@ here, exactly like a failed JSONL write.
 background thread -- shared home in this module because it's the other
 piece of cross-cutting hardware infrastructure (the standard
 timeout-guarded-cleanup-thread shape, previously hand-copied independently
-in Application/QmixPumpDriver/PiezoStage).
+in Application/CetoniPump/PiezoStage).
 """
 
 from __future__ import annotations
@@ -429,11 +429,11 @@ def run_with_timeout(action: Callable[[], None], name: str, timeout_s: float) ->
     (device/step name, and "cleanup" if that's the caller's own convention)
     -- this function does not add its own prefix, so callers control their
     own message wording exactly as before extracting this from three
-    independent hand-copied implementations (Application, QmixPumpDriver,
+    independent hand-copied implementations (Application, CetoniPump,
     PiezoStage).
 
     Usage:
-        error = run_with_timeout(self.stop, "pump stop", self.close_timeout_s)
+        error = run_with_timeout(self.stop, "pump stop", self.cleanup_timeout_s)
         if error is not None:
             errors.append(error)
     """

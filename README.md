@@ -95,7 +95,8 @@ provided. Tests write logs only under temporary directories.
 
 ## Retained drivers
 
-The canonical pump path is `drivers/pump/CetoniPump` with `QmixPumpDriver`.
+The canonical real pump implementation is `drivers/pump/CetoniPump`, which
+directly owns the Qmix SDK integration without another pump wrapper.
 Each device folder also contains a reusable simulated implementation exposing
 the device-level methods used by its HAL worker. These simulators contain no Qt
 or application code. Vendor APIs, data types, and errors remain behind the HAL

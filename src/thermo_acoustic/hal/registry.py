@@ -24,9 +24,9 @@ def _create_ad2_driver() -> object:
 
 
 def _create_pump_driver() -> object:
-    from ..drivers.pump import CetoniPump, QmixPumpDriver
+    from ..drivers.pump import CetoniPump
 
-    return CetoniPump(driver=QmixPumpDriver())
+    return CetoniPump()
 
 
 def _create_valve_driver() -> object:

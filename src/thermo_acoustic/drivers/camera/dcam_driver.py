@@ -552,7 +552,7 @@ class HamamatsuDcamDriver:
             # Finding F (silent-failure/data-integrity sweep): these two
             # cleanup steps were silently swallowed with a bare `pass` --
             # unlike every other cleanup path in this codebase
-            # (Application._cleanup_instruments logs; QmixPumpDriver.close()/
+            # (Application._cleanup_instruments logs; CetoniPump.cleanup()/
             # PiezoStage.disconnect() both re-raise with details). If the
             # camera genuinely failed to stop capture or release its buffer
             # here, Application.cleanup() would see a clean success (no
