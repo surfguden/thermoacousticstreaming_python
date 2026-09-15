@@ -187,7 +187,7 @@ class WfgChannelConfig:
     carrier: CarrierSettings = field(default_factory=CarrierSettings)
     trigger: TriggerSettings = field(default_factory=TriggerSettings)
     fm_mod: CarrierSettings = field(default_factory=lambda: CarrierSettings(enable=False))
-    # Populated only after configure_wfg() has successfully sent this
+    # Populated only after _configure_wfg() has successfully sent this
     # channel's SDK configuration.  The requested carrier/fm_mod objects stay
     # unchanged so durable records can preserve request and software-effective
     # evidence independently.

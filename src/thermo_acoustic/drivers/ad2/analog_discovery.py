@@ -164,7 +164,7 @@ class AnalogDiscovery2:
 
     def _apply_wfg_config(self, config: WfgConfig | dict | None, operation: str) -> None:
         new_config = coerce_wfg_config(config)
-        self.configure_wfg(self._require_handle(operation), new_config)
+        self._configure_wfg(self._require_handle(operation), new_config)
         self.wfg_config = new_config
 
     def wfg_configure(self, config: WfgConfig | dict | None) -> None:
@@ -173,7 +173,7 @@ class AnalogDiscovery2:
     def wfg_start_stop_all_ch(self, running: bool) -> None:
         new_config = deepcopy(self._get_wfg_config())
         new_config.running = running
-        self.configure_wfg(self._require_handle("wfg_start_stop_all_ch()"), new_config)
+        self._configure_wfg(self._require_handle("wfg_start_stop_all_ch()"), new_config)
         self.wfg_config = new_config
 
     def _get_do_config(self) -> DoConfig:
@@ -213,7 +213,7 @@ class AnalogDiscovery2:
             sample_frequency_hz=sample_frequency_hz,
             sample_count=sample_count,
         )
-        return self.capture_analog_in(
+        return self._capture_analog_in(
             handle,
             channel_index=channel_index,
             sample_frequency_hz=sample_frequency_hz,
@@ -241,7 +241,7 @@ class AnalogDiscovery2:
             sample_count=sample_count,
             trigger_source=trigger_source,
         )
-        return self.capture_analog_in_channels(
+        return self._capture_analog_in_channels(
             handle,
             channel_indices=channel_indices,
             sample_frequency_hz=sample_frequency_hz,
@@ -477,7 +477,7 @@ class AnalogDiscovery2:
             )
             result["response"] = "reset"
 
-    def configure_wfg(self, handle: int, config: WfgConfig) -> None:
+    def _configure_wfg(self, handle: int, config: WfgConfig) -> None:
         with log_call(
             "ad2", "configure_wfg", command=config, response_stage="EFFECTIVE"
         ) as result:
@@ -510,7 +510,7 @@ class AnalogDiscovery2:
                 # Session 51: never assigned True anywhere before this -- WfgConfig.
                 # check_valid() previously had no producer, so it always reported
                 # "valid" regardless of what was actually applied. It now reflects
-                # whether *this* configure_wfg() call clamped
+                # whether *this* _configure_wfg() call clamped
                 # either node's frequency/amplitude against the device's own real
                 # AnalogOutNode*Info() range.
                 channel.out_of_range = carrier_out_of_range or fm_out_of_range
@@ -792,7 +792,7 @@ class AnalogDiscovery2:
         )
         return minimum.value, maximum.value
 
-    def capture_analog_in(
+    def _capture_analog_in(
         self,
         handle: int,
         *,
@@ -838,11 +838,13 @@ class AnalogDiscovery2:
             log_result["response"] = f"{len(result)} samples, first={result[:3]}"
         return result
 
-    def analog_in_trigger_source_set(self, handle: int, trigger_source: int | TriggerSource) -> None:
+    def _set_analog_input_trigger_source(
+        self, handle: int, trigger_source: int | TriggerSource
+    ) -> None:
         mapped = self._enum_value(self._TRIGGER_SOURCES, trigger_source)
         self._check(self._dwf.FDwfAnalogInTriggerSourceSet(c_int(handle), c_int(mapped)), "FDwfAnalogInTriggerSourceSet")
 
-    def capture_analog_in_channels(
+    def _capture_analog_in_channels(
         self,
         handle: int,
         *,
@@ -875,11 +877,11 @@ class AnalogDiscovery2:
                 self._check(self._dwf.FDwfAnalogInChannelOffsetSet(h, idx, c_double(offset_v)), "FDwfAnalogInChannelOffsetSet")
             self._check(self._dwf.FDwfAnalogInFrequencySet(h, c_double(sample_frequency_hz)), "FDwfAnalogInFrequencySet")
             self._check(self._dwf.FDwfAnalogInBufferSizeSet(h, c_int(count)), "FDwfAnalogInBufferSizeSet")
-            self.analog_in_trigger_source_set(handle, trigger_source)
+            self._set_analog_input_trigger_source(handle, trigger_source)
             self._check(self._dwf.FDwfAnalogInConfigure(h, c_int(1), c_int(1)), "FDwfAnalogInConfigure")
 
             # Not logging each poll iteration individually -- see
-            # capture_analog_in()'s matching comment above.
+            # _capture_analog_in()'s matching comment above.
             status = c_int()
             deadline = time.monotonic() + timeout_s
             while time.monotonic() < deadline:

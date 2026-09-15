@@ -88,7 +88,7 @@ def test_analog_discovery_configures_directly_without_an_inner_driver() -> None:
     configured: list[tuple[int, object]] = []
     device.enabled = True
     device._open_device = lambda _index: 7
-    device.configure_wfg = lambda handle, config: configured.append((handle, config))
+    device._configure_wfg = lambda handle, config: configured.append((handle, config))
 
     device.wfg_configure({"frequency_hz": 2500.0, "amplitude_v": 0.5})
 
