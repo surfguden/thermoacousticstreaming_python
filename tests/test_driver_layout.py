@@ -71,6 +71,9 @@ def test_simulated_devices_are_reusable_without_the_hal() -> None:
     assert pump.read_status()
     pump.cleanup()
     assert pump.flow_ul_min == 0.0
+    pump.clear_fault_and_reinitialize()
+    assert pump.initialized
+    pump.cleanup()
 
     z_stage = SimulatedZStage()
     z_stage.connect()

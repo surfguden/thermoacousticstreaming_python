@@ -145,30 +145,7 @@ class CetoniPump:
         self.bus_started = False
         with log_call("pump", "initialize", command=str(configuration_path)) as result:
             try:
-                with log_call("pump", "bus.open", command=str(configuration_path)) as bus_result:
-                    self.bus.open(str(configuration_path), 0)
-                    bus_result["response"] = "opened"
-                self.bus_opened = True
-                self.pump = self.qmixpump.Pump()
-                selection = {"pump_name": self.pump_name} if self.pump_name else {"pump_index": self.pump_index}
-                with log_call("pump", "select_pump", command=selection) as select_result:
-                    if self.pump_name:
-                        self.pump.lookup_by_name(self.pump_name)
-                    else:
-                        self.pump.lookup_by_device_index(self.pump_index)
-                    select_result["response"] = "selected"
-                with log_call("pump", "bus.start") as bus_result:
-                    self.bus.start()
-                    bus_result["response"] = "started"
-                self.bus_started = True
-                self._auto_clear_fault_on_initialize()
-                self._require_position_sensing_initialized_before_enable()
-                self._enable_pump()
-                self.configure_flow_unit("ul/min")
-                self.pump.set_volume_unit(self.qmixpump.UnitPrefix.milli, self.qmixpump.VolumeUnit.litres)
-                self.max_flow_rate_ul_min = float(self.pump.get_flow_rate_max())
-                self.max_volume_ml = float(self.pump.get_volume_max())
-                self.initialized = True
+                self._initialize_qmix_session(auto_clear_fault=True)
             except Exception as exc:
                 try:
                     self.cleanup()
@@ -241,24 +218,7 @@ class CetoniPump:
         self.bus_started = False
         with log_call("pump", "clear_fault_and_reinitialize", command=str(configuration_path)) as result:
             try:
-                self.bus.open(str(configuration_path), 0)
-                self.bus_opened = True
-                self.pump = self.qmixpump.Pump()
-                if self.pump_name:
-                    self.pump.lookup_by_name(self.pump_name)
-                else:
-                    self.pump.lookup_by_device_index(self.pump_index)
-                self.bus.start()
-                self.bus_started = True
-                if self.pump.is_in_fault_state():
-                    self.pump.clear_fault()
-                self._require_position_sensing_initialized_before_enable()
-                self._enable_pump()
-                self.configure_flow_unit("ul/min")
-                self.pump.set_volume_unit(self.qmixpump.UnitPrefix.milli, self.qmixpump.VolumeUnit.litres)
-                self.max_flow_rate_ul_min = float(self.pump.get_flow_rate_max())
-                self.max_volume_ml = float(self.pump.get_volume_max())
-                self.initialized = True
+                self._initialize_qmix_session(auto_clear_fault=False)
             except Exception as exc:
                 try:
                     self.cleanup()
@@ -269,6 +229,44 @@ class CetoniPump:
                     ) from exc
                 raise
             result["response"] = f"max_flow_rate_ul_min={self.max_flow_rate_ul_min}, max_volume_ml={self.max_volume_ml}"
+
+    def _initialize_qmix_session(self, *, auto_clear_fault: bool) -> None:
+        """Open, select, start, validate, and configure the Qmix session.
+
+        The public initialization paths intentionally choose different fault
+        policies, but all other session setup must remain identical.
+        """
+        configuration_path = self.configuration_path
+        with log_call("pump", "bus.open", command=str(configuration_path)) as bus_result:
+            self.bus.open(str(configuration_path), 0)
+            bus_result["response"] = "opened"
+        self.bus_opened = True
+
+        self.pump = self.qmixpump.Pump()
+        selection = {"pump_name": self.pump_name} if self.pump_name else {"pump_index": self.pump_index}
+        with log_call("pump", "select_pump", command=selection) as select_result:
+            if self.pump_name:
+                self.pump.lookup_by_name(self.pump_name)
+            else:
+                self.pump.lookup_by_device_index(self.pump_index)
+            select_result["response"] = "selected"
+
+        with log_call("pump", "bus.start") as bus_result:
+            self.bus.start()
+            bus_result["response"] = "started"
+        self.bus_started = True
+
+        if auto_clear_fault:
+            self._auto_clear_fault_on_initialize()
+        elif self.pump.is_in_fault_state():
+            self.pump.clear_fault()
+        self._require_position_sensing_initialized_before_enable()
+        self._enable_pump()
+        self.configure_flow_unit("ul/min")
+        self.pump.set_volume_unit(self.qmixpump.UnitPrefix.milli, self.qmixpump.VolumeUnit.litres)
+        self.max_flow_rate_ul_min = float(self.pump.get_flow_rate_max())
+        self.max_volume_ml = float(self.pump.get_volume_max())
+        self.initialized = True
 
     def _require_pump(self) -> Any:
         if self.pump is None:
