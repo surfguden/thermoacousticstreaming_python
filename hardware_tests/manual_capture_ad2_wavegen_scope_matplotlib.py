@@ -59,7 +59,7 @@ def main() -> None:
 
     def capture() -> list[float]:
         ad2.initialize()
-        print(f"handle {ad2.get_phdwf()}", flush=True)
+        print(f"handle {ad2.device_handle}", flush=True)
 
         wavegen_1 = WfgChannelConfig(
             channel_index=0,
@@ -74,7 +74,7 @@ def main() -> None:
         )
         wavegen_2 = WfgChannelConfig(channel_index=1, carrier=CarrierSettings(enable=False))
 
-        ad2.config_wfg(WfgConfig(running=True, channels=[wavegen_1, wavegen_2]))
+        ad2.wfg_configure(WfgConfig(running=True, channels=[wavegen_1, wavegen_2]))
         print("wavegen 1 running", flush=True)
         time.sleep(0.25)
 

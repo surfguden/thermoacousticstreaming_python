@@ -17,7 +17,6 @@ from .configuration import (
     MsoConfig,
     TriggerSource,
     WaveformFunction,
-    WfgChannelConfig,
     WfgConfig,
     coerce_do_config,
     coerce_wfg_config,
@@ -105,7 +104,7 @@ class AnalogDiscovery2:
 
     def initialize(self) -> None:
         if self.enabled:
-            self.open_and_use_first_device()
+            self._open_first_device()
 
     def cleanup(self) -> None:
         handle = self.device_handle
@@ -142,7 +141,7 @@ class AnalogDiscovery2:
         if errors:
             raise AnalogDiscoveryError("; ".join(errors))
 
-    def open_and_use_first_device(self) -> int | None:
+    def _open_first_device(self) -> int | None:
         if not self.enabled:
             self.device_handle = None
         elif self.device_handle is None:
@@ -150,72 +149,32 @@ class AnalogDiscovery2:
         return self.device_handle
 
     def _require_handle(self, operation: str) -> int:
-        handle = self.open_and_use_first_device()
+        handle = self._open_first_device()
         if handle is None:
             raise AnalogDiscoveryError(
                 f"{operation} called while Analog Discovery 2 is disabled"
             )
         return handle
 
-    def get_phdwf(self) -> int | None:
-        return self.device_handle
-
     def pc_trigger(self) -> None:
         self.trigger_pc(self._require_handle("pc_trigger()"))
         self.triggered = True
 
-    def get_wfg_config(self) -> WfgConfig:
+    def _get_wfg_config(self) -> WfgConfig:
         if self.wfg_config is None:
             self.wfg_config = WfgConfig()
         return self.wfg_config
-
-    def set_wfg_config(self, config: WfgConfig | dict | None) -> None:
-        self.wfg_config = coerce_wfg_config(config)
 
     def _apply_wfg_config(self, config: WfgConfig | dict | None, operation: str) -> None:
         new_config = coerce_wfg_config(config)
         self.configure_wfg(self._require_handle(operation), new_config)
         self.wfg_config = new_config
 
-    def config_wfg(self, config: WfgConfig | dict | None) -> None:
-        self._apply_wfg_config(config, "config_wfg()")
-
-    def wfg_check_config_valid(self) -> bool:
-        return self.get_wfg_config().check_valid()
-
-    def wfg_configure_carrier_single_ch(
-        self, channel_index: int, channel: WfgChannelConfig
-    ) -> None:
-        self.get_wfg_config().channels[channel_index] = channel
-
-    def wfg_configure_trigger_single_ch(
-        self, channel_index: int, channel: WfgChannelConfig
-    ) -> None:
-        self.wfg_configure_carrier_single_ch(channel_index, channel)
-
-    def wfg_configure_fm_mod_single_ch(
-        self, channel_index: int, channel: WfgChannelConfig
-    ) -> None:
-        self.wfg_configure_carrier_single_ch(channel_index, channel)
-
-    def wfg_dynamic_config_ch(
-        self, channel_index: int, channel: WfgChannelConfig
-    ) -> None:
-        self.wfg_configure_carrier_single_ch(channel_index, channel)
-
-    def wfg_configure_single_ch(
-        self, channel_index: int, channel: WfgChannelConfig
-    ) -> None:
-        self.wfg_configure_carrier_single_ch(channel_index, channel)
-
     def wfg_configure(self, config: WfgConfig | dict | None) -> None:
         self._apply_wfg_config(config, "wfg_configure()")
 
-    def wfg_configure_read_back(self) -> WfgConfig:
-        return self.get_wfg_config()
-
     def wfg_start_stop_all_ch(self, running: bool) -> None:
-        new_config = deepcopy(self.get_wfg_config())
+        new_config = deepcopy(self._get_wfg_config())
         new_config.running = running
         self.configure_wfg(self._require_handle("wfg_start_stop_all_ch()"), new_config)
         self.wfg_config = new_config
@@ -284,7 +243,7 @@ class AnalogDiscovery2:
 
     def mso_init(self, phdwf: object | int | None = None) -> None:
         if phdwf is None:
-            phdwf = self.open_and_use_first_device()
+            phdwf = self._open_first_device()
         self.mso_config = MsoConfig(device_handle=phdwf)
 
     def capture_scope(
@@ -762,9 +721,9 @@ class AnalogDiscovery2:
                         }
                     )
                 # Session 51: never assigned True anywhere before this -- WfgConfig.
-                # check_valid()/wfg_check_config_valid() existed but had no producer,
-                # so they always reported "valid" regardless of what was actually
-                # applied. Now reflects whether *this* configure_wfg() call clamped
+                # check_valid() previously had no producer, so it always reported
+                # "valid" regardless of what was actually applied. It now reflects
+                # whether *this* configure_wfg() call clamped
                 # either node's frequency/amplitude against the device's own real
                 # AnalogOutNode*Info() range.
                 channel.out_of_range = carrier_out_of_range or fm_out_of_range
