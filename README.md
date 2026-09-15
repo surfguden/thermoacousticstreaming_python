@@ -16,9 +16,11 @@ The `hal/` package is the application-facing Hardware Abstraction Layer. Each
 `DeviceWorker` is a `QObject` moved to its own persistent `QThread`.
 `AD2Worker`, `PumpWorker`, `ValveWorker`, `CameraWorker`, `TecWorker`, and
 `ZStageWorker` keep device-specific validation and driver calls behind the HAL.
-Simulation workers implement the same application-facing operations. Real
-workers receive injected drivers from the separate `drivers/` package; retained
-vendor code is not imported or connected during simulation startup.
+Simulation workers implement the same application-facing operations without a
+driver. For real mode, `DeviceRegistry` gives each worker a driver factory. The
+factory runs only after a confirmed Connect command reaches that worker's
+thread, so retained vendor code is neither imported nor constructed during
+simulation startup or passive real-mode rendering.
 
 ```text
 thermo_acoustic/
@@ -65,11 +67,13 @@ shutdown.
 
 ## Real mode safeguards
 
-Use `--mode real` only on an authorized workstation. Construction does not
-connect or probe hardware. Every real connection is rejected unless the
-application controller receives explicit operator confirmation. The UI is only
-a presentation of that policy; safety and validation remain in application and
-worker code. Existing driver timeouts remain in the retained drivers.
+Use `--mode real` only on an authorized workstation. Creating the registry and
+workers does not construct, connect to, or probe drivers. Every real connection
+is rejected unless the application controller receives explicit operator
+confirmation; only then does the target worker construct its driver and connect
+on its persistent thread. The UI is only a presentation of that policy; safety
+and validation remain in application and worker code. Existing driver timeouts
+remain in the retained drivers.
 
 ```powershell
 python -m thermo_acoustic.main --mode real --audit-log logs\run.jsonl

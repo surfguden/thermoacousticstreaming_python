@@ -1,18 +1,32 @@
-from .base import DeviceWorker
-from ..domain.models import DeviceId
+from __future__ import annotations
 
-class AD2Worker(DeviceWorker):
-    """HAL worker; the real AD2 SDK is supplied by a lazy driver factory."""
-    def __init__(self, driver=None, parent=None):
-        super().__init__(DeviceId.AD2, parent=parent); self.driver = driver
-        self.register("configure", self.configure); self.register("start", self.start); self.register("stop", self.stop)
-    def configure(self, frequency_hz=1000.0, amplitude_v=1.0):
-        if frequency_hz <= 0 or not 0 <= amplitude_v <= 5: raise ValueError("invalid AD2 settings")
-        self.state.configured = True; self.state.readings.update(frequency_hz=frequency_hz, amplitude_v=amplitude_v)
-        if self.driver: self.driver.wfg_configure({})
-    def start(self):
-        if self.driver: self.driver.wfg_start_stop_all_ch(True)
+from collections.abc import Callable
+
+from ..domain.models import DeviceId
+from .base import DriverDeviceWorker
+
+
+class AD2Worker(DriverDeviceWorker):
+    def __init__(self, driver_factory: Callable[[], object], parent=None) -> None:
+        super().__init__(DeviceId.AD2, driver_factory, parent=parent)
+        self.register("configure", self.configure)
+        self.register("start", self.start)
+        self.register("stop", self.safe_stop)
+
+    def configure(self, frequency_hz: float = 1000.0, amplitude_v: float = 1.0) -> None:
+        if frequency_hz <= 0 or not 0 <= amplitude_v <= 5:
+            raise ValueError("frequency_hz must be positive and amplitude_v must be 0..5")
+        self.driver.wfg_configure({})
+        self.state.configured = True
+        self.state.readings.update(frequency_hz=frequency_hz, amplitude_v=amplitude_v)
+
+    def start(self) -> None:
+        if not self.state.configured:
+            raise RuntimeError("Configure AD2 before starting")
+        self.driver.wfg_start_stop_all_ch(True)
         self.state.active = True
-    def stop(self):
-        if self.driver: self.driver.wfg_start_stop_all_ch(False)
+
+    def safe_stop(self) -> None:
+        if self.driver_constructed and self.state.connected:
+            self.driver.wfg_start_stop_all_ch(False)
         self.state.active = False

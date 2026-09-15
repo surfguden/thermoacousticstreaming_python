@@ -1,7 +1,12 @@
 from __future__ import annotations
+
+import os
+from pathlib import Path
+import subprocess
 import sys
+
 import pytest
-from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
+from PySide6.QtCore import QThread, QTimer
 from PySide6.QtWidgets import QApplication
 from thermo_acoustic.application import ApplicationController, DeviceCommand
 from thermo_acoustic.application.audit import AuditLogger
@@ -17,6 +22,31 @@ def qt_app():
 
 def wait(app, ms=80):
     deadline = QTimer(); deadline.setSingleShot(True); deadline.timeout.connect(app.quit); deadline.start(ms); app.exec()
+
+
+def test_registry_startup_does_not_import_real_drivers():
+    source_root = Path(__file__).resolve().parents[1] / "src"
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(source_root)
+    script = """
+import sys
+from thermo_acoustic.domain.models import OperatingMode
+from thermo_acoustic.hal.registry import DeviceRegistry
+
+DeviceRegistry()
+DeviceRegistry(OperatingMode.REAL)
+loaded = sorted(name for name in sys.modules if name.startswith('thermo_acoustic.drivers'))
+if loaded:
+    raise SystemExit('unexpected driver imports: ' + ', '.join(loaded))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
 
 def test_simulation_is_default_and_status_is_cached(qt_app):
     registry = DeviceRegistry(); controller = ApplicationController(registry, mode=OperatingMode.SIMULATION)
@@ -49,11 +79,57 @@ def test_all_simulated_workers_have_basic_operations(qt_app):
 
 def test_real_connection_confirmation_and_lazy_fake_driver(qt_app):
     calls = []
-    class FakeDriver: pass
-    registry = DeviceRegistry(OperatingMode.REAL, {DeviceId.PUMP: lambda: (calls.append("constructed") or FakeDriver())})
-    assert calls == ["constructed"]
-    controller = ApplicationController(registry, mode=OperatingMode.REAL, confirm_real_connection=lambda _: False); controller.start(); controller.submit(DeviceCommand(DeviceId.PUMP, "connect")); wait(qt_app)
+    worker_thread_checks = []
+
+    class FakeDriver:
+        def initialize(self):
+            calls.append("initialized")
+            worker_thread_checks.append(QThread.currentThread() is registry.by_id(DeviceId.PUMP).thread())
+
+        def stop(self):
+            calls.append("stopped")
+            worker_thread_checks.append(QThread.currentThread() is registry.by_id(DeviceId.PUMP).thread())
+
+        def cleanup(self):
+            calls.append("cleaned")
+            worker_thread_checks.append(QThread.currentThread() is registry.by_id(DeviceId.PUMP).thread())
+
+    def create_driver():
+        calls.append("constructed")
+        worker_thread_checks.append(QThread.currentThread() is registry.by_id(DeviceId.PUMP).thread())
+        return FakeDriver()
+
+    registry = DeviceRegistry(OperatingMode.REAL, {DeviceId.PUMP: create_driver})
+    assert calls == []
+    assert not registry.by_id(DeviceId.PUMP).driver_constructed
+
+    controller = ApplicationController(
+        registry,
+        mode=OperatingMode.REAL,
+        confirm_real_connection=lambda _: False,
+    )
+    controller.start()
+    controller.submit(DeviceCommand(DeviceId.PUMP, "connect"))
+    wait(qt_app)
+    assert calls == []
     assert controller.statuses()[DeviceId.PUMP].connection.value == "disconnected"
+
+    controller.confirm_real_connection = lambda _: True
+    controller.submit(DeviceCommand(DeviceId.PUMP, "connect"))
+    wait(qt_app)
+    assert calls == ["constructed", "initialized"]
+    assert worker_thread_checks == [True, True]
+    assert controller.statuses()[DeviceId.PUMP].connection.value == "connected"
+
+    controller.submit(DeviceCommand(DeviceId.PUMP, "safe_stop"))
+    wait(qt_app)
+    assert calls == ["constructed", "initialized", "stopped"]
+
+    controller.submit(DeviceCommand(DeviceId.PUMP, "disconnect"))
+    wait(qt_app)
+    assert calls == ["constructed", "initialized", "stopped", "cleaned"]
+    assert worker_thread_checks == [True, True, True, True]
+    assert not registry.by_id(DeviceId.PUMP).driver_constructed
     controller.shutdown()
 
 def test_ui_renders_offscreen_and_audit_is_jsonl(qt_app, tmp_path):
