@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .roi import CameraMode, SubRegion
+from .roi import CameraMode, IntegerRange, SubRegion, SubRegionLimits
 
 
 class SimulatedCamera:
@@ -17,6 +17,8 @@ class SimulatedCamera:
         self.roi: SubRegion | None = None
         self.readout_time_s = 0.001
         self.minimum_trigger_interval_s = 0.002
+        self.sensor_width = 2048
+        self.sensor_height = 1024
 
     def open_camera(self) -> object:
         self.initialized = True
@@ -99,6 +101,22 @@ class SimulatedCamera:
     def read_min_trigger_interval(self) -> float:
         self._require_initialized()
         return self.minimum_trigger_interval_s
+
+    def read_subregion_limits_and_value(self) -> tuple[SubRegionLimits, SubRegion]:
+        self._require_initialized()
+        limits = SubRegionLimits(
+            horizontal_offset=IntegerRange(0, self.sensor_width - 4, 4),
+            vertical_offset=IntegerRange(0, self.sensor_height - 4, 4),
+            horizontal_size=IntegerRange(4, self.sensor_width, 4),
+            vertical_size=IntegerRange(4, self.sensor_height, 4),
+        )
+        roi = self.roi or SubRegion(
+            horizontal_offset=0,
+            vertical_offset=0,
+            horizontal_size=self.sensor_width,
+            vertical_size=self.sensor_height,
+        )
+        return limits, roi
 
     def stop_capture(self) -> None:
         self.capture_active = False

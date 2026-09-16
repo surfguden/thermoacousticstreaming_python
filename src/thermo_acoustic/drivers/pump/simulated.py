@@ -52,7 +52,20 @@ class SimulatedPump:
 
     def configure_syringe(self, config: dict | None) -> None:
         self.syringe_config = config
-        if config and config.get("volume_ml") is not None:
+        if not config:
+            return
+        preset_volumes = {"BD 1ml": 1.0, "BD 5ml": 5.0, "BD 10ml": 10.0}
+        if config.get("name") in preset_volumes:
+            self.max_volume_ml = preset_volumes[config["name"]]
+        elif (
+            config.get("inner_diameter_mm") is not None
+            and config.get("max_piston_stroke_mm") is not None
+        ):
+            radius_mm = float(config["inner_diameter_mm"]) / 2.0
+            self.max_volume_ml = (
+                math.pi * radius_mm**2 * float(config["max_piston_stroke_mm"]) / 1000.0
+            )
+        elif config.get("volume_ml") is not None:
             self.max_volume_ml = float(config["volume_ml"])
 
     def configure_flow_unit(self, unit: str | None) -> None:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .configuration import ScopeConfig, coerce_scope_config
+from .configuration import DoConfig, ScopeConfig, coerce_do_config, coerce_scope_config
 
 
 class SimulatedAD2:
@@ -12,6 +12,8 @@ class SimulatedAD2:
         self.configuration: object | None = None
         self.scope_config: ScopeConfig | None = None
         self.scope_armed = False
+        self.do_config: DoConfig | None = None
+        self.digital_output_running = False
 
     def initialize(self) -> None:
         self.initialized = True
@@ -20,6 +22,8 @@ class SimulatedAD2:
         self.running = False
         self.scope_armed = False
         self.scope_config = None
+        self.digital_output_running = False
+        self.do_config = None
         self.initialized = False
 
     def wfg_configure(self, configuration: object) -> None:
@@ -33,6 +37,21 @@ class SimulatedAD2:
 
     def pc_trigger(self) -> None:
         self.triggered = True
+
+    def do_configure(self, configuration: DoConfig | dict | None) -> None:
+        self.do_config = coerce_do_config(configuration)
+        self.digital_output_running = False
+
+    def start_stop_do(self, running: bool) -> None:
+        if running and self.do_config is None:
+            raise RuntimeError("Configure digital output before starting")
+        self.digital_output_running = running
+        if self.do_config is not None:
+            self.do_config.running = running
+
+    def do_reset(self) -> None:
+        self.digital_output_running = False
+        self.do_config = DoConfig()
 
     def scope_configure(self, configuration: ScopeConfig | dict | None) -> None:
         if self.scope_armed:

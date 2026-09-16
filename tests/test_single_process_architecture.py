@@ -12,15 +12,28 @@ from PySide6.QtWidgets import QApplication
 from thermo_acoustic.application import ApplicationController, DeviceCommand, DeviceOperation
 from thermo_acoustic.application.audit import AuditLogger
 from thermo_acoustic.application.commands import (
+    Ad2ConfigureDigitalOutputArgs,
     Ad2ConfigureScopeArgs,
     Ad2ConfigureWaveformArgs,
+    Ad2DigitalOutputType,
     Ad2ScopeReadResult,
     Ad2TriggerSource,
     CameraConfigureSnapshotArgs,
+    CameraConfigureExposureArgs,
+    CameraConfigureRoiArgs,
+    CameraExposureResult,
+    CameraRoiResult,
     CameraSnapshotResult,
     CameraTimingResult,
     PumpFillLevelResult,
+    PumpConfigurationResult,
+    PumpConfigureFlowUnitArgs,
+    PumpConfigureSyringeArgs,
+    PumpFlowUnit,
+    PumpRecoveryResult,
+    PumpSetFillLevelArgs,
     PumpSetFlowArgs,
+    PumpSyringePreset,
     PumpStatusResult,
     TecApplySetpointsArgs,
     TecReadStatusArgs,
@@ -157,9 +170,38 @@ def test_all_simulated_devices_have_typed_direct_operations(qt_app):
             Ad2ConfigureWaveformArgs(1000.0, 1.0),
         ),
         DeviceCommand(DeviceId.AD2, DeviceOperation.AD2_WAVEFORM_START),
+        DeviceCommand(
+            DeviceId.AD2,
+            DeviceOperation.AD2_DIGITAL_OUTPUT_CONFIGURE,
+            Ad2ConfigureDigitalOutputArgs(
+                channel_index=0,
+                output_type=Ad2DigitalOutputType.CUSTOM,
+                clock_frequency_hz=500.0,
+                bits=(1, 1, 0, 0),
+            ),
+        ),
+        DeviceCommand(DeviceId.AD2, DeviceOperation.AD2_DIGITAL_OUTPUT_START),
+        DeviceCommand(DeviceId.AD2, DeviceOperation.AD2_DIGITAL_OUTPUT_STOP),
+        DeviceCommand(DeviceId.AD2, DeviceOperation.AD2_DIGITAL_OUTPUT_RESET),
+        DeviceCommand(
+            DeviceId.PUMP,
+            DeviceOperation.PUMP_SYRINGE_CONFIGURE,
+            PumpConfigureSyringeArgs(preset=PumpSyringePreset.BD_5_ML),
+        ),
+        DeviceCommand(
+            DeviceId.PUMP,
+            DeviceOperation.PUMP_FLOW_UNIT_CONFIGURE,
+            PumpConfigureFlowUnitArgs(PumpFlowUnit.MICROLITRE_PER_MINUTE),
+        ),
         DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_FLOW_SET, PumpSetFlowArgs(20)),
+        DeviceCommand(
+            DeviceId.PUMP,
+            DeviceOperation.PUMP_FILL_LEVEL_SET,
+            PumpSetFillLevelArgs(2.0, 100.0),
+        ),
         DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_FILL_LEVEL_READ),
         DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_STATUS_READ),
+        DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_FAULT_RECOVER),
         DeviceCommand(
             DeviceId.VALVE,
             DeviceOperation.VALVE_POSITION_SET,
@@ -178,6 +220,16 @@ def test_all_simulated_devices_have_typed_direct_operations(qt_app):
         ),
         DeviceCommand(DeviceId.CAMERA, DeviceOperation.CAMERA_SNAPSHOT_CAPTURE),
         DeviceCommand(DeviceId.CAMERA, DeviceOperation.CAMERA_TIMING_READ),
+        DeviceCommand(
+            DeviceId.CAMERA,
+            DeviceOperation.CAMERA_EXPOSURE_CONFIGURE,
+            CameraConfigureExposureArgs(3.5),
+        ),
+        DeviceCommand(
+            DeviceId.CAMERA,
+            DeviceOperation.CAMERA_ROI_CONFIGURE,
+            CameraConfigureRoiArgs(100, 120, 512, 256),
+        ),
         DeviceCommand(
             DeviceId.TEC,
             DeviceOperation.TEC_SETPOINTS_APPLY,
@@ -210,16 +262,25 @@ def test_all_simulated_devices_have_typed_direct_operations(qt_app):
     assert all(result.ok for result in results)
     values = [result.value for result in results]
     assert any(isinstance(value, PumpFillLevelResult) for value in values)
+    assert any(isinstance(value, PumpConfigurationResult) for value in values)
+    assert any(isinstance(value, PumpRecoveryResult) for value in values)
     assert any(isinstance(value, PumpStatusResult) for value in values)
     assert any(isinstance(value, ValveReadyResult) for value in values)
     assert any(isinstance(value, ValvePositionResult) for value in values)
     assert any(isinstance(value, CameraSnapshotResult) for value in values)
     assert any(isinstance(value, CameraTimingResult) for value in values)
+    assert any(isinstance(value, CameraExposureResult) for value in values)
+    assert any(isinstance(value, CameraRoiResult) for value in values)
     assert any(isinstance(value, TecStatusResult) for value in values)
     assert any(isinstance(value, ZStageClosedLoopRequirementResult) for value in values)
     assert any(isinstance(value, ZStagePositionResult) for value in values)
     assert controller.statuses()[DeviceId.AD2].readback.waveform_running
-    assert controller.statuses()[DeviceId.PUMP].readback.requested_flow_ul_min == 20
+    assert not controller.statuses()[DeviceId.AD2].readback.digital_output_configured
+    assert controller.statuses()[DeviceId.PUMP].readback.max_volume_ml == 5.0
+    assert controller.statuses()[DeviceId.PUMP].readback.fill_level_ml == 2.0
+    assert controller.statuses()[DeviceId.PUMP].readback.last_recovery_succeeded
+    assert controller.statuses()[DeviceId.CAMERA].readback.exposure_ms == 3.5
+    assert controller.statuses()[DeviceId.CAMERA].readback.roi.horizontal_size == 512
     assert controller.statuses()[DeviceId.Z_STAGE].readback.position_um == 50
     controller.shutdown()
 
@@ -294,6 +355,140 @@ def test_z_stage_mode_switch_requires_query_and_confirmation(qt_app):
     assert events[-1].state == "failed"
     assert len(confirmations) == 1
     assert not status.readback.closed_loop
+    controller.shutdown()
+
+
+def test_second_slice_hal_matches_injected_real_driver_contracts(qt_app):
+    calls = []
+
+    class FakeAd2:
+        def initialize(self):
+            calls.append(("ad2", "initialize"))
+
+        def cleanup(self):
+            calls.append(("ad2", "cleanup"))
+
+        def do_configure(self, config):
+            calls.append(("ad2", "configure", config))
+
+        def start_stop_do(self, running):
+            calls.append(("ad2", "running", running))
+
+        def do_reset(self):
+            calls.append(("ad2", "reset"))
+
+    class FakeCamera:
+        def open_camera(self):
+            calls.append(("camera", "open"))
+
+        def close(self):
+            calls.append(("camera", "close"))
+
+        def configure_exposure_time(self, exposure_ms):
+            calls.append(("camera", "exposure", exposure_ms))
+            return 2.49
+
+        def configure_roi(self, roi):
+            calls.append(("camera", "roi", roi))
+
+        def read_subregion_limits_and_value(self):
+            return None, {
+                "horizontal_offset": 100,
+                "vertical_offset": 120,
+                "horizontal_size": 512,
+                "vertical_size": 256,
+            }
+
+    class FakePump:
+        max_volume_ml = 5.0
+        max_flow_rate_ul_min = 1000.0
+
+        def initialize(self):
+            calls.append(("pump", "initialize"))
+
+        def cleanup(self):
+            calls.append(("pump", "cleanup"))
+
+        def stop(self):
+            calls.append(("pump", "stop"))
+
+        def configure_syringe(self, config):
+            calls.append(("pump", "syringe", config))
+
+        def configure_flow_unit(self, unit):
+            calls.append(("pump", "unit", unit))
+
+        def set_fill_level(self, level, flow):
+            calls.append(("pump", "fill", level, flow))
+
+        def clear_fault_and_reinitialize(self):
+            calls.append(("pump", "recover"))
+
+    registry = DeviceRegistry(
+        OperatingMode.REAL,
+        {
+            DeviceId.AD2: FakeAd2,
+            DeviceId.CAMERA: FakeCamera,
+            DeviceId.PUMP: FakePump,
+        },
+    )
+    controller = ApplicationController(
+        registry,
+        mode=OperatingMode.REAL,
+        confirm_real_connection=lambda _: True,
+    )
+    results = []
+    controller.command_result.connect(results.append)
+    controller.start()
+    for device in (DeviceId.AD2, DeviceId.CAMERA, DeviceId.PUMP):
+        controller.submit(DeviceCommand(device, DeviceOperation.CONNECT))
+    commands = (
+        DeviceCommand(
+            DeviceId.AD2,
+            DeviceOperation.AD2_DIGITAL_OUTPUT_CONFIGURE,
+            Ad2ConfigureDigitalOutputArgs(clock_frequency_hz=500.0),
+        ),
+        DeviceCommand(DeviceId.AD2, DeviceOperation.AD2_DIGITAL_OUTPUT_START),
+        DeviceCommand(DeviceId.AD2, DeviceOperation.AD2_DIGITAL_OUTPUT_STOP),
+        DeviceCommand(DeviceId.AD2, DeviceOperation.AD2_DIGITAL_OUTPUT_RESET),
+        DeviceCommand(
+            DeviceId.CAMERA,
+            DeviceOperation.CAMERA_EXPOSURE_CONFIGURE,
+            CameraConfigureExposureArgs(2.5),
+        ),
+        DeviceCommand(
+            DeviceId.CAMERA,
+            DeviceOperation.CAMERA_ROI_CONFIGURE,
+            CameraConfigureRoiArgs(100, 120, 512, 256),
+        ),
+        DeviceCommand(
+            DeviceId.PUMP,
+            DeviceOperation.PUMP_SYRINGE_CONFIGURE,
+            PumpConfigureSyringeArgs(preset=PumpSyringePreset.BD_5_ML),
+        ),
+        DeviceCommand(
+            DeviceId.PUMP,
+            DeviceOperation.PUMP_FLOW_UNIT_CONFIGURE,
+            PumpConfigureFlowUnitArgs(PumpFlowUnit.MICROLITRE_PER_MINUTE),
+        ),
+        DeviceCommand(
+            DeviceId.PUMP,
+            DeviceOperation.PUMP_FILL_LEVEL_SET,
+            PumpSetFillLevelArgs(2.0, 100.0),
+        ),
+        DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_FAULT_RECOVER),
+    )
+    for command in commands:
+        controller.submit(command)
+    wait(qt_app, 600)
+
+    assert all(result.ok for result in results)
+    assert ("ad2", "running", True) in calls
+    assert ("ad2", "running", False) in calls
+    assert ("camera", "exposure", 2.5) in calls
+    assert ("pump", "unit", "ul/min") in calls
+    assert ("pump", "fill", 2.0, 100.0) in calls
+    assert ("pump", "recover") in calls
     controller.shutdown()
 
 
@@ -373,5 +568,12 @@ def test_parser_is_a_text_to_typed_command_adapter():
     assert move.arguments == ZStageSetPositionArgs(50.0)
     status = parse_command("pump read-status")
     assert status.operation is DeviceOperation.PUMP_STATUS_READ
+    digital = parse_command("ad2 configure-do 0 500 1100")
+    assert digital.arguments.bits == (1, 1, 0, 0)
+    assert digital.arguments.output_type is Ad2DigitalOutputType.CUSTOM
+    syringe = parse_command("pump configure-syringe bd-5ml")
+    assert syringe.arguments.preset is PumpSyringePreset.BD_5_ML
+    roi = parse_command("camera set-roi 100 120 512 256")
+    assert roi.arguments == CameraConfigureRoiArgs(100, 120, 512, 256)
     with pytest.raises(ValueError):
         parse_command("pump set-flow")

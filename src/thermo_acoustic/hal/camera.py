@@ -4,13 +4,17 @@ from collections.abc import Callable
 from dataclasses import replace
 
 from ..application.commands import (
+    CameraConfigureExposureArgs,
+    CameraConfigureRoiArgs,
     CameraConfigureSnapshotArgs,
+    CameraExposureResult,
+    CameraRoiResult,
     CameraSnapshotResult,
     CameraTimingResult,
     DeviceOperation,
     NoArguments,
 )
-from ..domain.models import CameraReadback, DeviceId
+from ..domain.models import CameraReadback, CameraRoiReadback, DeviceId
 from .base import DeviceWorker
 
 
@@ -21,6 +25,8 @@ class CameraWorker(DeviceWorker):
         self.register(DeviceOperation.CAMERA_SNAPSHOT_CAPTURE, self.capture_snapshot)
         self.register(DeviceOperation.CAMERA_CAPTURE_STOP, self.stop_capture)
         self.register(DeviceOperation.CAMERA_TIMING_READ, self.read_timing)
+        self.register(DeviceOperation.CAMERA_EXPOSURE_CONFIGURE, self.configure_exposure)
+        self.register(DeviceOperation.CAMERA_ROI_CONFIGURE, self.configure_roi)
 
     def initialize_device(self) -> None:
         self.device.open_camera()
@@ -59,6 +65,55 @@ class CameraWorker(DeviceWorker):
             buffer_frame_capacity=result.buffer_frame_capacity,
             readout_time_s=result.readout_time_s,
             minimum_trigger_interval_s=result.minimum_trigger_interval_s,
+        )
+        return result
+
+    def configure_exposure(
+        self, args: CameraConfigureExposureArgs
+    ) -> CameraExposureResult:
+        applied_ms = float(self.device.configure_exposure_time(args.exposure_ms))
+        result = CameraExposureResult(applied_ms)
+        self.state.configured = True
+        self.state.readback = replace(self.state.readback, exposure_ms=applied_ms)
+        return result
+
+    def configure_roi(self, args: CameraConfigureRoiArgs) -> CameraRoiResult:
+        if args.horizontal_offset < 0 or args.vertical_offset < 0:
+            raise ValueError("camera ROI offsets must be non-negative")
+        if args.horizontal_size <= 0 or args.vertical_size <= 0:
+            raise ValueError("camera ROI dimensions must be positive")
+        requested = {
+            "horizontal_offset": args.horizontal_offset,
+            "vertical_offset": args.vertical_offset,
+            "horizontal_size": args.horizontal_size,
+            "vertical_size": args.vertical_size,
+        }
+        self.device.configure_roi(requested)
+        _limits, applied = self.device.read_subregion_limits_and_value()
+        if isinstance(applied, dict):
+            values = applied
+        else:
+            values = {
+                "horizontal_offset": applied.horizontal_offset,
+                "vertical_offset": applied.vertical_offset,
+                "horizontal_size": applied.horizontal_size,
+                "vertical_size": applied.vertical_size,
+            }
+        result = CameraRoiResult(
+            horizontal_offset=int(values["horizontal_offset"]),
+            vertical_offset=int(values["vertical_offset"]),
+            horizontal_size=int(values["horizontal_size"]),
+            vertical_size=int(values["vertical_size"]),
+        )
+        self.state.configured = True
+        self.state.readback = replace(
+            self.state.readback,
+            roi=CameraRoiReadback(
+                result.horizontal_offset,
+                result.vertical_offset,
+                result.horizontal_size,
+                result.vertical_size,
+            ),
         )
         return result
 

@@ -3,10 +3,19 @@ from __future__ import annotations
 import shlex
 
 from ..application.commands import (
+    Ad2ConfigureDigitalOutputArgs,
+    Ad2DigitalOutputType,
+    CameraConfigureExposureArgs,
+    CameraConfigureRoiArgs,
     CameraConfigureSnapshotArgs,
     DeviceCommand,
     DeviceOperation,
     PumpSetFlowArgs,
+    PumpConfigureFlowUnitArgs,
+    PumpConfigureSyringeArgs,
+    PumpFlowUnit,
+    PumpSetFillLevelArgs,
+    PumpSyringePreset,
     TecApplySetpointsArgs,
     TecReadStatusArgs,
     ValveSetPositionArgs,
@@ -17,14 +26,24 @@ from ..domain.models import DeviceId
 
 
 _DEVICES = {device.value: device for device in DeviceId}
+_SYRINGE_PRESETS = {
+    "bd-1ml": PumpSyringePreset.BD_1_ML,
+    "bd-5ml": PumpSyringePreset.BD_5_ML,
+    "bd-10ml": PumpSyringePreset.BD_10_ML,
+}
 
 
 def help_text() -> str:
     return (
         "status | devices | connect DEVICE | disconnect DEVICE | "
         "pump set-flow UL_MIN | pump stop | pump read-fill-level | pump read-status | "
+        "pump set-fill-level ML [UL_MIN] | pump configure-syringe bd-1ml|bd-5ml|bd-10ml | "
+        "pump configure-syringe custom DIAMETER_MM STROKE_MM | "
+        "pump configure-flow-unit ul/min|ml/min|ul/s|ml/s | pump recover-fault | "
         "valve set-position 1|2 | valve read-position | valve wait-ready | "
         "camera configure-snapshot [EXPOSURE_MS] | camera snapshot | camera read-timing | "
+        "camera set-exposure EXPOSURE_MS | camera set-roi X Y WIDTH HEIGHT | "
+        "ad2 configure-do CHANNEL FREQUENCY_HZ [BIT_PATTERN] | ad2 start-do|stop-do|reset-do | "
         "tec set-temperature C | tec read-status | tec outputs-off | "
         "z-stage check-closed-loop | z-stage enable-closed-loop | "
         "z-stage move UM | z-stage read-position | quit"
@@ -55,6 +74,43 @@ def parse_command(line: str, *, source: str = "console") -> DeviceCommand | str 
         return DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_FILL_LEVEL_READ, source=source)
     if words == ["pump", "read-status"]:
         return DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_STATUS_READ, source=source)
+    if words[:2] == ["pump", "set-fill-level"] and len(words) in (3, 4):
+        flow_rate = None if len(words) == 3 else float(words[3])
+        return DeviceCommand(
+            DeviceId.PUMP,
+            DeviceOperation.PUMP_FILL_LEVEL_SET,
+            PumpSetFillLevelArgs(float(words[2]), flow_rate),
+            source=source,
+        )
+    if words[:2] == ["pump", "configure-syringe"] and len(words) == 3:
+        preset = _SYRINGE_PRESETS.get(words[2].lower())
+        if preset is None:
+            raise ValueError(f"Unknown syringe preset: {words[2]}")
+        return DeviceCommand(
+            DeviceId.PUMP,
+            DeviceOperation.PUMP_SYRINGE_CONFIGURE,
+            PumpConfigureSyringeArgs(preset=preset),
+            source=source,
+        )
+    if words[:3] == ["pump", "configure-syringe", "custom"] and len(words) == 5:
+        return DeviceCommand(
+            DeviceId.PUMP,
+            DeviceOperation.PUMP_SYRINGE_CONFIGURE,
+            PumpConfigureSyringeArgs(
+                inner_diameter_mm=float(words[3]),
+                max_piston_stroke_mm=float(words[4]),
+            ),
+            source=source,
+        )
+    if words[:2] == ["pump", "configure-flow-unit"] and len(words) == 3:
+        return DeviceCommand(
+            DeviceId.PUMP,
+            DeviceOperation.PUMP_FLOW_UNIT_CONFIGURE,
+            PumpConfigureFlowUnitArgs(PumpFlowUnit(words[2].lower())),
+            source=source,
+        )
+    if words == ["pump", "recover-fault"]:
+        return DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_FAULT_RECOVER, source=source)
     if len(words) == 3 and words[:2] == ["valve", "set-position"]:
         return DeviceCommand(
             DeviceId.VALVE,
@@ -79,6 +135,41 @@ def parse_command(line: str, *, source: str = "console") -> DeviceCommand | str 
         )
     if words == ["camera", "read-timing"]:
         return DeviceCommand(DeviceId.CAMERA, DeviceOperation.CAMERA_TIMING_READ, source=source)
+    if words[:2] == ["camera", "set-exposure"] and len(words) == 3:
+        return DeviceCommand(
+            DeviceId.CAMERA,
+            DeviceOperation.CAMERA_EXPOSURE_CONFIGURE,
+            CameraConfigureExposureArgs(float(words[2])),
+            source=source,
+        )
+    if words[:2] == ["camera", "set-roi"] and len(words) == 6:
+        return DeviceCommand(
+            DeviceId.CAMERA,
+            DeviceOperation.CAMERA_ROI_CONFIGURE,
+            CameraConfigureRoiArgs(*(int(value) for value in words[2:])),
+            source=source,
+        )
+    if words[:2] == ["ad2", "configure-do"] and len(words) in (4, 5):
+        bits = tuple(int(bit) for bit in words[4]) if len(words) == 5 else ()
+        output_type = Ad2DigitalOutputType.CUSTOM if bits else Ad2DigitalOutputType.PULSE
+        return DeviceCommand(
+            DeviceId.AD2,
+            DeviceOperation.AD2_DIGITAL_OUTPUT_CONFIGURE,
+            Ad2ConfigureDigitalOutputArgs(
+                channel_index=int(words[2]),
+                output_type=output_type,
+                clock_frequency_hz=float(words[3]),
+                bits=bits,
+            ),
+            source=source,
+        )
+    ad2_digital_commands = {
+        ("ad2", "start-do"): DeviceOperation.AD2_DIGITAL_OUTPUT_START,
+        ("ad2", "stop-do"): DeviceOperation.AD2_DIGITAL_OUTPUT_STOP,
+        ("ad2", "reset-do"): DeviceOperation.AD2_DIGITAL_OUTPUT_RESET,
+    }
+    if tuple(words) in ad2_digital_commands:
+        return DeviceCommand(DeviceId.AD2, ad2_digital_commands[tuple(words)], source=source)
     if len(words) == 3 and words[:2] == ["tec", "set-temperature"]:
         return DeviceCommand(
             DeviceId.TEC,

@@ -40,6 +40,18 @@ class Ad2Readback:
     waveform_amplitude_v: float | None = None
     waveform_running: bool = False
     scope_state: str = "idle"
+    digital_output_configured: bool = False
+    digital_output_running: bool = False
+    digital_output_channel: int | None = None
+    digital_output_clock_frequency_hz: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CameraRoiReadback:
+    horizontal_offset: int
+    vertical_offset: int
+    horizontal_size: int
+    vertical_size: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,13 +62,22 @@ class CameraReadback:
     buffer_frame_capacity: int | None = None
     readout_time_s: float | None = None
     minimum_trigger_interval_s: float | None = None
+    roi: CameraRoiReadback | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class PumpReadback:
     requested_flow_ul_min: float = 0.0
     fill_level_ml: float | None = None
+    requested_fill_level_ml: float | None = None
     is_pumping: bool | None = None
+    flow_unit: str | None = None
+    syringe_name: str | None = None
+    syringe_inner_diameter_mm: float | None = None
+    syringe_max_piston_stroke_mm: float | None = None
+    max_volume_ml: float | None = None
+    max_flow_rate_ul_min: float | None = None
+    last_recovery_succeeded: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)

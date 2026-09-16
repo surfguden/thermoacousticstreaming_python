@@ -53,9 +53,16 @@ connect pump
 pump set-flow 100
 pump stop
 pump read-fill-level
+pump configure-syringe bd-5ml
+pump configure-flow-unit ul/min
+camera set-exposure 2.5
+camera set-roi 100 120 512 256
 valve wait-ready
 camera snapshot
 camera read-timing
+ad2 configure-do 0 500 1100
+ad2 start-do
+ad2 stop-do
 tec set-temperature 25
 tec read-status
 z-stage check-closed-loop

@@ -23,14 +23,24 @@ class DeviceOperation(str, Enum):
     AD2_SOFTWARE_TRIGGER = "ad2.software_trigger"
     AD2_SCOPE_CONFIGURE = "ad2.scope.configure"
     AD2_SCOPE_READ = "ad2.scope.read"
+    AD2_DIGITAL_OUTPUT_CONFIGURE = "ad2.digital_output.configure"
+    AD2_DIGITAL_OUTPUT_START = "ad2.digital_output.start"
+    AD2_DIGITAL_OUTPUT_STOP = "ad2.digital_output.stop"
+    AD2_DIGITAL_OUTPUT_RESET = "ad2.digital_output.reset"
     CAMERA_SNAPSHOT_CONFIGURE = "camera.snapshot.configure"
     CAMERA_SNAPSHOT_CAPTURE = "camera.snapshot.capture"
     CAMERA_CAPTURE_STOP = "camera.capture.stop"
     CAMERA_TIMING_READ = "camera.timing.read"
+    CAMERA_EXPOSURE_CONFIGURE = "camera.exposure.configure"
+    CAMERA_ROI_CONFIGURE = "camera.roi.configure"
     PUMP_FLOW_SET = "pump.flow.set"
     PUMP_FLOW_STOP = "pump.flow.stop"
     PUMP_FILL_LEVEL_READ = "pump.fill_level.read"
+    PUMP_FILL_LEVEL_SET = "pump.fill_level.set"
     PUMP_STATUS_READ = "pump.status.read"
+    PUMP_SYRINGE_CONFIGURE = "pump.syringe.configure"
+    PUMP_FLOW_UNIT_CONFIGURE = "pump.flow_unit.configure"
+    PUMP_FAULT_RECOVER = "pump.fault.recover"
     VALVE_POSITION_SET = "valve.position.set"
     VALVE_POSITION_READ = "valve.position.read"
     VALVE_WAIT_READY = "valve.wait_ready"
@@ -57,6 +67,25 @@ class Ad2TriggerSource(str, Enum):
     ANALOG_OUT_4 = "trigsrcAnalogOut4"
 
 
+class Ad2DigitalOutputType(str, Enum):
+    PULSE = "Pulse"
+    CUSTOM = "Custom"
+    RANDOM = "Random"
+
+
+class PumpFlowUnit(str, Enum):
+    MICROLITRE_PER_MINUTE = "ul/min"
+    MILLILITRE_PER_MINUTE = "ml/min"
+    MICROLITRE_PER_SECOND = "ul/s"
+    MILLILITRE_PER_SECOND = "ml/s"
+
+
+class PumpSyringePreset(str, Enum):
+    BD_1_ML = "BD 1ml"
+    BD_5_ML = "BD 5ml"
+    BD_10_ML = "BD 10ml"
+
+
 @dataclass(frozen=True, slots=True)
 class NoArguments:
     pass
@@ -76,13 +105,57 @@ class Ad2ConfigureScopeArgs:
 
 
 @dataclass(frozen=True, slots=True)
+class Ad2ConfigureDigitalOutputArgs:
+    channel_index: int = 0
+    enabled: bool = True
+    output_type: Ad2DigitalOutputType = Ad2DigitalOutputType.PULSE
+    clock_frequency_hz: float | None = None
+    counter_high_bits: int = 1
+    counter_low_bits: int = 1
+    start_high: bool = True
+    bits: tuple[int, ...] = ()
+    frame_count: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class CameraConfigureSnapshotArgs:
     exposure_ms: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
+class CameraConfigureExposureArgs:
+    exposure_ms: float
+
+
+@dataclass(frozen=True, slots=True)
+class CameraConfigureRoiArgs:
+    horizontal_offset: int
+    vertical_offset: int
+    horizontal_size: int
+    vertical_size: int
+
+
+@dataclass(frozen=True, slots=True)
 class PumpSetFlowArgs:
     flow_ul_min: float
+
+
+@dataclass(frozen=True, slots=True)
+class PumpSetFillLevelArgs:
+    fill_level_ml: float
+    flow_rate_ul_min: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PumpConfigureSyringeArgs:
+    preset: PumpSyringePreset | None = None
+    inner_diameter_mm: float | None = None
+    max_piston_stroke_mm: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PumpConfigureFlowUnitArgs:
+    unit: PumpFlowUnit
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +203,19 @@ class CameraTimingResult:
 
 
 @dataclass(frozen=True, slots=True)
+class CameraExposureResult:
+    exposure_ms: float
+
+
+@dataclass(frozen=True, slots=True)
+class CameraRoiResult:
+    horizontal_offset: int
+    vertical_offset: int
+    horizontal_size: int
+    vertical_size: int
+
+
+@dataclass(frozen=True, slots=True)
 class PumpFillLevelResult:
     fill_level_ml: float
 
@@ -137,6 +223,18 @@ class PumpFillLevelResult:
 @dataclass(frozen=True, slots=True)
 class PumpStatusResult:
     is_pumping: bool
+
+
+@dataclass(frozen=True, slots=True)
+class PumpConfigurationResult:
+    flow_unit: PumpFlowUnit | None
+    max_volume_ml: float | None
+    max_flow_rate_ul_min: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class PumpRecoveryResult:
+    recovered: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,14 +297,24 @@ OPERATION_SPECS: dict[DeviceOperation, OperationSpec] = {
     DeviceOperation.AD2_SOFTWARE_TRIGGER: OperationSpec(_only(DeviceId.AD2), NoArguments, _NONE_RESULT),
     DeviceOperation.AD2_SCOPE_CONFIGURE: OperationSpec(_only(DeviceId.AD2), Ad2ConfigureScopeArgs, _NONE_RESULT),
     DeviceOperation.AD2_SCOPE_READ: OperationSpec(_only(DeviceId.AD2), NoArguments, Ad2ScopeReadResult),
+    DeviceOperation.AD2_DIGITAL_OUTPUT_CONFIGURE: OperationSpec(_only(DeviceId.AD2), Ad2ConfigureDigitalOutputArgs, _NONE_RESULT),
+    DeviceOperation.AD2_DIGITAL_OUTPUT_START: OperationSpec(_only(DeviceId.AD2), NoArguments, _NONE_RESULT),
+    DeviceOperation.AD2_DIGITAL_OUTPUT_STOP: OperationSpec(_only(DeviceId.AD2), NoArguments, _NONE_RESULT),
+    DeviceOperation.AD2_DIGITAL_OUTPUT_RESET: OperationSpec(_only(DeviceId.AD2), NoArguments, _NONE_RESULT),
     DeviceOperation.CAMERA_SNAPSHOT_CONFIGURE: OperationSpec(_only(DeviceId.CAMERA), CameraConfigureSnapshotArgs, _NONE_RESULT),
     DeviceOperation.CAMERA_SNAPSHOT_CAPTURE: OperationSpec(_only(DeviceId.CAMERA), NoArguments, CameraSnapshotResult),
     DeviceOperation.CAMERA_CAPTURE_STOP: OperationSpec(_only(DeviceId.CAMERA), NoArguments, _NONE_RESULT),
     DeviceOperation.CAMERA_TIMING_READ: OperationSpec(_only(DeviceId.CAMERA), NoArguments, CameraTimingResult),
+    DeviceOperation.CAMERA_EXPOSURE_CONFIGURE: OperationSpec(_only(DeviceId.CAMERA), CameraConfigureExposureArgs, CameraExposureResult),
+    DeviceOperation.CAMERA_ROI_CONFIGURE: OperationSpec(_only(DeviceId.CAMERA), CameraConfigureRoiArgs, CameraRoiResult),
     DeviceOperation.PUMP_FLOW_SET: OperationSpec(_only(DeviceId.PUMP), PumpSetFlowArgs, _NONE_RESULT),
     DeviceOperation.PUMP_FLOW_STOP: OperationSpec(_only(DeviceId.PUMP), NoArguments, _NONE_RESULT),
     DeviceOperation.PUMP_FILL_LEVEL_READ: OperationSpec(_only(DeviceId.PUMP), NoArguments, PumpFillLevelResult),
+    DeviceOperation.PUMP_FILL_LEVEL_SET: OperationSpec(_only(DeviceId.PUMP), PumpSetFillLevelArgs, _NONE_RESULT),
     DeviceOperation.PUMP_STATUS_READ: OperationSpec(_only(DeviceId.PUMP), NoArguments, PumpStatusResult),
+    DeviceOperation.PUMP_SYRINGE_CONFIGURE: OperationSpec(_only(DeviceId.PUMP), PumpConfigureSyringeArgs, PumpConfigurationResult),
+    DeviceOperation.PUMP_FLOW_UNIT_CONFIGURE: OperationSpec(_only(DeviceId.PUMP), PumpConfigureFlowUnitArgs, PumpConfigurationResult),
+    DeviceOperation.PUMP_FAULT_RECOVER: OperationSpec(_only(DeviceId.PUMP), NoArguments, PumpRecoveryResult),
     DeviceOperation.VALVE_POSITION_SET: OperationSpec(_only(DeviceId.VALVE), ValveSetPositionArgs, _NONE_RESULT),
     DeviceOperation.VALVE_POSITION_READ: OperationSpec(_only(DeviceId.VALVE), NoArguments, ValvePositionResult),
     DeviceOperation.VALVE_WAIT_READY: OperationSpec(_only(DeviceId.VALVE), ValveWaitReadyArgs, ValveReadyResult),
