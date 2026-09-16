@@ -8,6 +8,7 @@ from ..application.commands import (
     CameraConfigureExposureArgs,
     CameraConfigureRoiArgs,
     CameraConfigureSnapshotArgs,
+    CameraConfigureSequenceArgs,
     DeviceCommand,
     DeviceOperation,
     PumpSetFlowArgs,
@@ -15,9 +16,12 @@ from ..application.commands import (
     PumpConfigureSyringeArgs,
     PumpFlowUnit,
     PumpSetFillLevelArgs,
+    PumpMoveArgs,
+    PumpReferenceMoveArgs,
     PumpSyringePreset,
     TecApplySetpointsArgs,
     TecReadStatusArgs,
+    TecWaitStableArgs,
     ValveSetPositionArgs,
     ValveWaitReadyArgs,
     ZStageSetPositionArgs,
@@ -35,16 +39,18 @@ _SYRINGE_PRESETS = {
 
 def help_text() -> str:
     return (
-        "status | devices | connect DEVICE | disconnect DEVICE | "
+        "status | devices | connect DEVICE | disconnect DEVICE | abort DEVICE | "
         "pump set-flow UL_MIN | pump stop | pump read-fill-level | pump read-status | "
         "pump set-fill-level ML [UL_MIN] | pump configure-syringe bd-1ml|bd-5ml|bd-10ml | "
         "pump configure-syringe custom DIAMETER_MM STROKE_MM | "
         "pump configure-flow-unit ul/min|ml/min|ul/s|ml/s | pump recover-fault | "
+        "pump refill [UL_MIN] | pump empty [UL_MIN] | pump reference-move | "
         "valve set-position 1|2 | valve read-position | valve wait-ready | "
         "camera configure-snapshot [EXPOSURE_MS] | camera snapshot | camera read-timing | "
+        "camera configure-sequence FRAMES [EXPOSURE_MS] | camera sequence | "
         "camera set-exposure EXPOSURE_MS | camera set-roi X Y WIDTH HEIGHT | "
         "ad2 configure-do CHANNEL FREQUENCY_HZ [BIT_PATTERN] | ad2 start-do|stop-do|reset-do | "
-        "tec set-temperature C | tec read-status | tec outputs-off | "
+        "tec set-temperature C | tec read-status | tec wait-stable C TOLERANCE SETTLE_S MAX_WAIT_S | tec outputs-off | "
         "z-stage check-closed-loop | z-stage enable-closed-loop | "
         "z-stage move UM | z-stage read-position | quit"
     )
@@ -61,6 +67,10 @@ def parse_command(line: str, *, source: str = "console") -> DeviceCommand | str 
             DeviceOperation.CONNECT if words[0] == "connect" else DeviceOperation.DISCONNECT
         )
         return DeviceCommand(_DEVICES[words[1]], operation, source=source)
+    if words[0] == "abort" and len(words) == 2 and words[1] in _DEVICES:
+        return DeviceCommand(
+            _DEVICES[words[1]], DeviceOperation.ABORT_ACTIVE, source=source
+        )
     if len(words) == 3 and words[:2] == ["pump", "set-flow"]:
         return DeviceCommand(
             DeviceId.PUMP,
@@ -111,6 +121,23 @@ def parse_command(line: str, *, source: str = "console") -> DeviceCommand | str 
         )
     if words == ["pump", "recover-fault"]:
         return DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_FAULT_RECOVER, source=source)
+    if words[:2] in (["pump", "refill"], ["pump", "empty"]) and len(words) in (2, 3):
+        flow_rate = None if len(words) == 2 else float(words[2])
+        operation = (
+            DeviceOperation.PUMP_REFILL
+            if words[1] == "refill"
+            else DeviceOperation.PUMP_EMPTY
+        )
+        return DeviceCommand(
+            DeviceId.PUMP, operation, PumpMoveArgs(flow_rate), source=source
+        )
+    if words == ["pump", "reference-move"]:
+        return DeviceCommand(
+            DeviceId.PUMP,
+            DeviceOperation.PUMP_REFERENCE_MOVE,
+            PumpReferenceMoveArgs(),
+            source=source,
+        )
     if len(words) == 3 and words[:2] == ["valve", "set-position"]:
         return DeviceCommand(
             DeviceId.VALVE,
@@ -132,6 +159,18 @@ def parse_command(line: str, *, source: str = "console") -> DeviceCommand | str 
             DeviceOperation.CAMERA_SNAPSHOT_CONFIGURE,
             CameraConfigureSnapshotArgs(exposure),
             source=source,
+        )
+    if words[:2] == ["camera", "configure-sequence"] and len(words) in (3, 4):
+        exposure = None if len(words) == 3 else float(words[3])
+        return DeviceCommand(
+            DeviceId.CAMERA,
+            DeviceOperation.CAMERA_SEQUENCE_CONFIGURE,
+            CameraConfigureSequenceArgs(int(words[2]), exposure),
+            source=source,
+        )
+    if words == ["camera", "sequence"]:
+        return DeviceCommand(
+            DeviceId.CAMERA, DeviceOperation.CAMERA_SEQUENCE_CAPTURE, source=source
         )
     if words == ["camera", "read-timing"]:
         return DeviceCommand(DeviceId.CAMERA, DeviceOperation.CAMERA_TIMING_READ, source=source)
@@ -186,6 +225,18 @@ def parse_command(line: str, *, source: str = "console") -> DeviceCommand | str 
         )
     if words == ["tec", "outputs-off"]:
         return DeviceCommand(DeviceId.TEC, DeviceOperation.TEC_OUTPUTS_OFF, source=source)
+    if words[:2] == ["tec", "wait-stable"] and len(words) == 6:
+        return DeviceCommand(
+            DeviceId.TEC,
+            DeviceOperation.TEC_WAIT_STABLE,
+            TecWaitStableArgs(
+                target_temperature_c=float(words[2]),
+                tolerance_c=float(words[3]),
+                min_settle_s=float(words[4]),
+                max_wait_s=float(words[5]),
+            ),
+            source=source,
+        )
     if words == ["z-stage", "check-closed-loop"]:
         return DeviceCommand(
             DeviceId.Z_STAGE,

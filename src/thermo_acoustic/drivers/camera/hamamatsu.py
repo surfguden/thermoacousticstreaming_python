@@ -368,6 +368,35 @@ class HamamatsuDcamDriver:
             self._stop_capture_if_active()
             result["response"] = "stopped"
 
+    def begin_buffered_sequence(self, frame_count: int) -> None:
+        self.open_camera()
+        count = max(int(frame_count), 1)
+        self.mode = CameraMode.SEQUENCE
+        self._ensure_buffer(max(count, self.buffer_frames))
+        self._check(self.dcam.cap_start(True), "Dcam.cap_start buffered sequence")
+        self.capture_active = True
+        self.last_frame_timestamps = []
+
+    def poll_buffered_sequence_frame(self, timeout_ms: int) -> object | None:
+        if not self.capture_active:
+            raise HamamatsuDcamError("Buffered sequence is not active")
+        if self.dcam.wait_capevent_frameready(max(int(timeout_ms), 1)):
+            pixel_copy, timestamp = self._last_frame_copy()
+            self.last_frame_timestamps.append(timestamp)
+            return pixel_copy
+        err = self.dcam.lasterr()
+        if hasattr(err, "is_timeout") and err.is_timeout():
+            return None
+        raise HamamatsuDcamError(f"wait frame ready failed: {err}")
+
+    def finish_buffered_sequence(self) -> tuple[str, ...]:
+        timestamps = tuple(self.last_frame_timestamps)
+        self._stop_capture_if_active()
+        if timestamps and not all(timestamp is not None for timestamp in timestamps):
+            self.last_frame_timestamps = []
+            return ()
+        return tuple(str(timestamp) for timestamp in timestamps)
+
     def capture_snapshot(self) -> object:
         self.open_camera()
         with log_call("camera", "capture_snapshot") as result:

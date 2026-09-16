@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+import math
 from typing import Any, Generic, TypeVar
 from uuid import uuid4
 
@@ -17,6 +18,7 @@ class DeviceOperation(str, Enum):
     CONNECT = "lifecycle.connect"
     DISCONNECT = "lifecycle.disconnect"
     SAFE_STOP = "lifecycle.safe_stop"
+    ABORT_ACTIVE = "lifecycle.abort_active"
     AD2_WAVEFORM_CONFIGURE = "ad2.waveform.configure"
     AD2_WAVEFORM_START = "ad2.waveform.start"
     AD2_WAVEFORM_STOP = "ad2.waveform.stop"
@@ -29,6 +31,8 @@ class DeviceOperation(str, Enum):
     AD2_DIGITAL_OUTPUT_RESET = "ad2.digital_output.reset"
     CAMERA_SNAPSHOT_CONFIGURE = "camera.snapshot.configure"
     CAMERA_SNAPSHOT_CAPTURE = "camera.snapshot.capture"
+    CAMERA_SEQUENCE_CONFIGURE = "camera.sequence.configure"
+    CAMERA_SEQUENCE_CAPTURE = "camera.sequence.capture"
     CAMERA_CAPTURE_STOP = "camera.capture.stop"
     CAMERA_TIMING_READ = "camera.timing.read"
     CAMERA_EXPOSURE_CONFIGURE = "camera.exposure.configure"
@@ -41,12 +45,16 @@ class DeviceOperation(str, Enum):
     PUMP_SYRINGE_CONFIGURE = "pump.syringe.configure"
     PUMP_FLOW_UNIT_CONFIGURE = "pump.flow_unit.configure"
     PUMP_FAULT_RECOVER = "pump.fault.recover"
+    PUMP_REFILL = "pump.refill"
+    PUMP_EMPTY = "pump.empty"
+    PUMP_REFERENCE_MOVE = "pump.reference_move"
     VALVE_POSITION_SET = "valve.position.set"
     VALVE_POSITION_READ = "valve.position.read"
     VALVE_WAIT_READY = "valve.wait_ready"
     TEC_SETPOINTS_APPLY = "tec.setpoints.apply"
     TEC_OUTPUTS_OFF = "tec.outputs.off"
     TEC_STATUS_READ = "tec.status.read"
+    TEC_WAIT_STABLE = "tec.wait_stable"
     Z_STAGE_CLOSED_LOOP_REQUIREMENT_READ = "z_stage.closed_loop.requirement.read"
     Z_STAGE_CLOSED_LOOP_ENABLE = "z_stage.closed_loop.enable"
     Z_STAGE_POSITION_SET = "z_stage.position.set"
@@ -135,6 +143,34 @@ class CameraConfigureRoiArgs:
     vertical_size: int
 
 
+def _require_finite_nonnegative(name: str, value: float) -> None:
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(f"{name} must be finite and non-negative")
+
+
+def _require_finite_positive(name: str, value: float) -> None:
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be finite and positive")
+
+
+@dataclass(frozen=True, slots=True)
+class CameraConfigureSequenceArgs:
+    frame_count: int
+    exposure_ms: float | None = None
+    frame_timeout_s: float = 30.0
+    poll_interval_s: float = 0.05
+
+    def __post_init__(self) -> None:
+        if self.frame_count <= 0:
+            raise ValueError("frame_count must be positive")
+        if self.exposure_ms is not None:
+            _require_finite_nonnegative("exposure_ms", self.exposure_ms)
+        _require_finite_positive("frame_timeout_s", self.frame_timeout_s)
+        _require_finite_positive("poll_interval_s", self.poll_interval_s)
+        if self.poll_interval_s > self.frame_timeout_s:
+            raise ValueError("poll_interval_s must not exceed frame_timeout_s")
+
+
 @dataclass(frozen=True, slots=True)
 class PumpSetFlowArgs:
     flow_ul_min: float
@@ -156,6 +192,33 @@ class PumpConfigureSyringeArgs:
 @dataclass(frozen=True, slots=True)
 class PumpConfigureFlowUnitArgs:
     unit: PumpFlowUnit
+
+
+@dataclass(frozen=True, slots=True)
+class PumpMoveArgs:
+    flow_rate_ul_min: float | None = None
+    timeout_s: float = 120.0
+    poll_interval_s: float = 0.1
+
+    def __post_init__(self) -> None:
+        if self.flow_rate_ul_min is not None and not math.isfinite(self.flow_rate_ul_min):
+            raise ValueError("flow_rate_ul_min must be finite")
+        _require_finite_positive("timeout_s", self.timeout_s)
+        _require_finite_positive("poll_interval_s", self.poll_interval_s)
+        if self.poll_interval_s > self.timeout_s:
+            raise ValueError("poll_interval_s must not exceed timeout_s")
+
+
+@dataclass(frozen=True, slots=True)
+class PumpReferenceMoveArgs:
+    timeout_s: float = 60.0
+    poll_interval_s: float = 0.1
+
+    def __post_init__(self) -> None:
+        _require_finite_positive("timeout_s", self.timeout_s)
+        _require_finite_positive("poll_interval_s", self.poll_interval_s)
+        if self.poll_interval_s > self.timeout_s:
+            raise ValueError("poll_interval_s must not exceed timeout_s")
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,6 +244,31 @@ class TecReadStatusArgs:
 
 
 @dataclass(frozen=True, slots=True)
+class TecWaitStableArgs:
+    target_temperature_c: float | dict[int, float]
+    tolerance_c: float
+    min_settle_s: float
+    max_wait_s: float
+    poll_interval_s: float = 1.0
+    channels: tuple[int, ...] | None = None
+
+    def __post_init__(self) -> None:
+        targets = tuple(
+            self.target_temperature_c.values()
+            if isinstance(self.target_temperature_c, dict)
+            else (self.target_temperature_c,)
+        )
+        if not targets or any(not math.isfinite(value) for value in targets):
+            raise ValueError("target_temperature_c values must be finite")
+        _require_finite_nonnegative("tolerance_c", self.tolerance_c)
+        _require_finite_nonnegative("min_settle_s", self.min_settle_s)
+        _require_finite_positive("max_wait_s", self.max_wait_s)
+        _require_finite_positive("poll_interval_s", self.poll_interval_s)
+        if self.poll_interval_s > self.max_wait_s:
+            raise ValueError("poll_interval_s must not exceed max_wait_s")
+
+
+@dataclass(frozen=True, slots=True)
 class ZStageSetPositionArgs:
     position_um: float
 
@@ -193,6 +281,12 @@ class Ad2ScopeReadResult:
 @dataclass(frozen=True, slots=True)
 class CameraSnapshotResult:
     frame: object
+
+
+@dataclass(frozen=True, slots=True)
+class CameraSequenceResult:
+    frames: tuple[object, ...]
+    timestamps: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,6 +329,12 @@ class PumpConfigurationResult:
 @dataclass(frozen=True, slots=True)
 class PumpRecoveryResult:
     recovered: bool
+
+
+@dataclass(frozen=True, slots=True)
+class PumpMovementResult:
+    fill_level_ml: float | None = None
+    referenced: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -291,6 +391,7 @@ OPERATION_SPECS: dict[DeviceOperation, OperationSpec] = {
     DeviceOperation.CONNECT: OperationSpec(_ALL_DEVICES, NoArguments, _NONE_RESULT),
     DeviceOperation.DISCONNECT: OperationSpec(_ALL_DEVICES, NoArguments, _NONE_RESULT),
     DeviceOperation.SAFE_STOP: OperationSpec(_ALL_DEVICES, NoArguments, _NONE_RESULT),
+    DeviceOperation.ABORT_ACTIVE: OperationSpec(_ALL_DEVICES, NoArguments, _NONE_RESULT),
     DeviceOperation.AD2_WAVEFORM_CONFIGURE: OperationSpec(_only(DeviceId.AD2), Ad2ConfigureWaveformArgs, _NONE_RESULT),
     DeviceOperation.AD2_WAVEFORM_START: OperationSpec(_only(DeviceId.AD2), NoArguments, _NONE_RESULT),
     DeviceOperation.AD2_WAVEFORM_STOP: OperationSpec(_only(DeviceId.AD2), NoArguments, _NONE_RESULT),
@@ -303,6 +404,8 @@ OPERATION_SPECS: dict[DeviceOperation, OperationSpec] = {
     DeviceOperation.AD2_DIGITAL_OUTPUT_RESET: OperationSpec(_only(DeviceId.AD2), NoArguments, _NONE_RESULT),
     DeviceOperation.CAMERA_SNAPSHOT_CONFIGURE: OperationSpec(_only(DeviceId.CAMERA), CameraConfigureSnapshotArgs, _NONE_RESULT),
     DeviceOperation.CAMERA_SNAPSHOT_CAPTURE: OperationSpec(_only(DeviceId.CAMERA), NoArguments, CameraSnapshotResult),
+    DeviceOperation.CAMERA_SEQUENCE_CONFIGURE: OperationSpec(_only(DeviceId.CAMERA), CameraConfigureSequenceArgs, _NONE_RESULT),
+    DeviceOperation.CAMERA_SEQUENCE_CAPTURE: OperationSpec(_only(DeviceId.CAMERA), NoArguments, CameraSequenceResult),
     DeviceOperation.CAMERA_CAPTURE_STOP: OperationSpec(_only(DeviceId.CAMERA), NoArguments, _NONE_RESULT),
     DeviceOperation.CAMERA_TIMING_READ: OperationSpec(_only(DeviceId.CAMERA), NoArguments, CameraTimingResult),
     DeviceOperation.CAMERA_EXPOSURE_CONFIGURE: OperationSpec(_only(DeviceId.CAMERA), CameraConfigureExposureArgs, CameraExposureResult),
@@ -315,12 +418,16 @@ OPERATION_SPECS: dict[DeviceOperation, OperationSpec] = {
     DeviceOperation.PUMP_SYRINGE_CONFIGURE: OperationSpec(_only(DeviceId.PUMP), PumpConfigureSyringeArgs, PumpConfigurationResult),
     DeviceOperation.PUMP_FLOW_UNIT_CONFIGURE: OperationSpec(_only(DeviceId.PUMP), PumpConfigureFlowUnitArgs, PumpConfigurationResult),
     DeviceOperation.PUMP_FAULT_RECOVER: OperationSpec(_only(DeviceId.PUMP), NoArguments, PumpRecoveryResult),
+    DeviceOperation.PUMP_REFILL: OperationSpec(_only(DeviceId.PUMP), PumpMoveArgs, PumpMovementResult),
+    DeviceOperation.PUMP_EMPTY: OperationSpec(_only(DeviceId.PUMP), PumpMoveArgs, PumpMovementResult),
+    DeviceOperation.PUMP_REFERENCE_MOVE: OperationSpec(_only(DeviceId.PUMP), PumpReferenceMoveArgs, PumpMovementResult),
     DeviceOperation.VALVE_POSITION_SET: OperationSpec(_only(DeviceId.VALVE), ValveSetPositionArgs, _NONE_RESULT),
     DeviceOperation.VALVE_POSITION_READ: OperationSpec(_only(DeviceId.VALVE), NoArguments, ValvePositionResult),
     DeviceOperation.VALVE_WAIT_READY: OperationSpec(_only(DeviceId.VALVE), ValveWaitReadyArgs, ValveReadyResult),
     DeviceOperation.TEC_SETPOINTS_APPLY: OperationSpec(_only(DeviceId.TEC), TecApplySetpointsArgs, TecStatusResult),
     DeviceOperation.TEC_OUTPUTS_OFF: OperationSpec(_only(DeviceId.TEC), NoArguments, TecStatusResult),
     DeviceOperation.TEC_STATUS_READ: OperationSpec(_only(DeviceId.TEC), TecReadStatusArgs, TecStatusResult),
+    DeviceOperation.TEC_WAIT_STABLE: OperationSpec(_only(DeviceId.TEC), TecWaitStableArgs, TecStatusResult),
     DeviceOperation.Z_STAGE_CLOSED_LOOP_REQUIREMENT_READ: OperationSpec(_only(DeviceId.Z_STAGE), NoArguments, ZStageClosedLoopRequirementResult),
     DeviceOperation.Z_STAGE_CLOSED_LOOP_ENABLE: OperationSpec(_only(DeviceId.Z_STAGE), NoArguments, _NONE_RESULT),
     DeviceOperation.Z_STAGE_POSITION_SET: OperationSpec(_only(DeviceId.Z_STAGE), ZStageSetPositionArgs, ZStagePositionResult),

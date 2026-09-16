@@ -63,6 +63,8 @@ class CameraReadback:
     readout_time_s: float | None = None
     minimum_trigger_interval_s: float | None = None
     roi: CameraRoiReadback | None = None
+    sequence_frame_count: int | None = None
+    captured_frame_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +80,8 @@ class PumpReadback:
     max_volume_ml: float | None = None
     max_flow_rate_ul_min: float | None = None
     last_recovery_succeeded: bool | None = None
+    movement: str | None = None
+    referenced: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -74,5 +74,11 @@ class SimulatedPump:
     def reference_move(self) -> None:
         self.referenced = True
 
+    def start_reference_move(self) -> None:
+        self.reference_move()
+
+    def reference_move_finished(self) -> bool:
+        return self.referenced
+
     def read_status(self) -> bool:
         return self.flow_ul_min != 0.0

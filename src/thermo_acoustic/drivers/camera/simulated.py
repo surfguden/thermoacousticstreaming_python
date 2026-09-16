@@ -121,6 +121,21 @@ class SimulatedCamera:
     def stop_capture(self) -> None:
         self.capture_active = False
 
+    def begin_buffered_sequence(self, frame_count: int) -> None:
+        self._require_initialized()
+        self.sequence_settings = {"frames": max(int(frame_count), 1)}
+        self.start_capture()
+
+    def poll_buffered_sequence_frame(self, timeout_ms: int) -> dict[str, int] | None:
+        del timeout_ms
+        if not self.capture_active:
+            raise RuntimeError("Buffered sequence is not active")
+        return self._next_sequence_frame()
+
+    def finish_buffered_sequence(self) -> tuple[str, ...]:
+        self.stop_capture()
+        return ()
+
     def _next_sequence_frame(self) -> dict[str, int]:
         self.frame_count += 1
         return {"frames": 1, "frame_number": self.frame_count}

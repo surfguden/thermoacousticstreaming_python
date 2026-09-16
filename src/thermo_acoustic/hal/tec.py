@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from time import monotonic
 
 from ..application.commands import (
     DeviceOperation,
@@ -9,9 +10,10 @@ from ..application.commands import (
     TecChannelStatusResult,
     TecReadStatusArgs,
     TecStatusResult,
+    TecWaitStableArgs,
 )
 from ..domain.models import DeviceId, TecChannelReadback, TecReadback
-from .base import DeviceWorker
+from .base import DeferredProgress, DeviceWorker
 
 
 class TecWorker(DeviceWorker):
@@ -20,6 +22,7 @@ class TecWorker(DeviceWorker):
         self.register(DeviceOperation.TEC_SETPOINTS_APPLY, self.apply_setpoints)
         self.register(DeviceOperation.TEC_OUTPUTS_OFF, self.outputs_off)
         self.register(DeviceOperation.TEC_STATUS_READ, self.read_status)
+        self.register(DeviceOperation.TEC_WAIT_STABLE, self.wait_until_stable)
 
     @staticmethod
     def _result(statuses: dict[int, object]) -> TecStatusResult:
@@ -70,6 +73,61 @@ class TecWorker(DeviceWorker):
         result = self._result(self.device.read_status(args.channels))
         self._update(result)
         return result
+
+    def wait_until_stable(self, args: TecWaitStableArgs) -> object:
+        channels = args.channels or tuple(self.device.channels)
+        if isinstance(args.target_temperature_c, dict):
+            if set(args.target_temperature_c) != set(channels):
+                raise ValueError(
+                    "TEC target-temperature keys must exactly match the selected channels"
+                )
+            targets = {
+                channel: float(args.target_temperature_c[channel]) for channel in channels
+            }
+        else:
+            targets = {channel: float(args.target_temperature_c) for channel in channels}
+        deadline = monotonic() + args.max_wait_s
+        stable_since: float | None = None
+
+        def cancel() -> None:
+            # Cancelling the wait does not turn regulation off. An urgent
+            # TEC_OUTPUTS_OFF request performs that distinct safety action.
+            return None
+
+        def step() -> DeferredProgress:
+            nonlocal stable_since
+            result = self._result(self.device.read_status(channels))
+            self._update(result)
+            for item in result.channels:
+                if item.fault:
+                    raise RuntimeError(
+                        f"TEC channel {item.channel} reported an error: {item.fault}"
+                    )
+            within_tolerance = all(
+                item.current_temperature_c is not None
+                and abs(item.current_temperature_c - targets[item.channel])
+                <= args.tolerance_c
+                and item.ready
+                for item in result.channels
+            )
+            now = monotonic()
+            if within_tolerance:
+                if stable_since is None:
+                    stable_since = now
+                if now - stable_since >= args.min_settle_s:
+                    return DeferredProgress(True, result)
+            else:
+                stable_since = None
+            if now >= deadline:
+                raise TimeoutError(
+                    f"TEC did not stabilize within {args.max_wait_s:.3f}s"
+                )
+            self._emit_status()
+            return DeferredProgress()
+
+        return self.defer_operation(
+            step, cancel=cancel, poll_interval_s=args.poll_interval_s
+        )
 
     def safe_stop(self) -> None:
         if self.device_constructed and self.state.connected:

@@ -2,20 +2,23 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
+from time import monotonic
 
 from ..application.commands import (
     CameraConfigureExposureArgs,
     CameraConfigureRoiArgs,
+    CameraConfigureSequenceArgs,
     CameraConfigureSnapshotArgs,
     CameraExposureResult,
     CameraRoiResult,
     CameraSnapshotResult,
+    CameraSequenceResult,
     CameraTimingResult,
     DeviceOperation,
     NoArguments,
 )
 from ..domain.models import CameraReadback, CameraRoiReadback, DeviceId
-from .base import DeviceWorker
+from .base import DeferredProgress, DeviceWorker
 
 
 class CameraWorker(DeviceWorker):
@@ -23,10 +26,13 @@ class CameraWorker(DeviceWorker):
         super().__init__(DeviceId.CAMERA, device_factory, readback_factory=CameraReadback, parent=parent)
         self.register(DeviceOperation.CAMERA_SNAPSHOT_CONFIGURE, self.configure_snapshot)
         self.register(DeviceOperation.CAMERA_SNAPSHOT_CAPTURE, self.capture_snapshot)
+        self.register(DeviceOperation.CAMERA_SEQUENCE_CONFIGURE, self.configure_sequence)
+        self.register(DeviceOperation.CAMERA_SEQUENCE_CAPTURE, self.capture_sequence)
         self.register(DeviceOperation.CAMERA_CAPTURE_STOP, self.stop_capture)
         self.register(DeviceOperation.CAMERA_TIMING_READ, self.read_timing)
         self.register(DeviceOperation.CAMERA_EXPOSURE_CONFIGURE, self.configure_exposure)
         self.register(DeviceOperation.CAMERA_ROI_CONFIGURE, self.configure_roi)
+        self._sequence_args: CameraConfigureSequenceArgs | None = None
 
     def initialize_device(self) -> None:
         self.device.open_camera()
@@ -50,6 +56,74 @@ class CameraWorker(DeviceWorker):
         finally:
             self.state.active = False
             self.state.readback = replace(self.state.readback, capture_active=False)
+
+    def configure_sequence(self, args: CameraConfigureSequenceArgs) -> None:
+        settings = {"frames": args.frame_count}
+        if args.exposure_ms is not None:
+            settings["exposure_ms"] = args.exposure_ms
+        self.device.configure_sequence(settings)
+        self._sequence_args = args
+        self.state.configured = True
+        self.state.readback = replace(
+            self.state.readback,
+            mode="sequence",
+            exposure_ms=(
+                args.exposure_ms
+                if args.exposure_ms is not None
+                else self.state.readback.exposure_ms
+            ),
+            sequence_frame_count=args.frame_count,
+            captured_frame_count=0,
+        )
+
+    def capture_sequence(self, _args: NoArguments) -> object:
+        if self._sequence_args is None:
+            raise RuntimeError("Configure the camera sequence before capture")
+        args = self._sequence_args
+        frames: list[object] = []
+        frame_deadline = monotonic() + args.frame_timeout_s
+        self.device.begin_buffered_sequence(args.frame_count)
+        self.state.active = True
+        self.state.readback = replace(
+            self.state.readback, capture_active=True, captured_frame_count=0
+        )
+
+        def cancel() -> None:
+            self.device.finish_buffered_sequence()
+            self.state.active = False
+            self.state.readback = replace(self.state.readback, capture_active=False)
+
+        def step() -> DeferredProgress:
+            nonlocal frame_deadline
+            timeout_ms = max(1, min(100, int(args.poll_interval_s * 1000)))
+            frame = self.device.poll_buffered_sequence_frame(timeout_ms)
+            if frame is None:
+                if monotonic() >= frame_deadline:
+                    raise TimeoutError(
+                        f"Camera frame {len(frames) + 1}/{args.frame_count} timed out "
+                        f"after {args.frame_timeout_s:.3f}s"
+                    )
+                return DeferredProgress()
+            frames.append(frame)
+            frame_deadline = monotonic() + args.frame_timeout_s
+            self.state.readback = replace(
+                self.state.readback, captured_frame_count=len(frames)
+            )
+            self._emit_status()
+            if len(frames) < args.frame_count:
+                return DeferredProgress()
+            timestamps = self.device.finish_buffered_sequence()
+            self.state.active = False
+            self.state.readback = replace(self.state.readback, capture_active=False)
+            return DeferredProgress(
+                True, CameraSequenceResult(tuple(frames), tuple(timestamps))
+            )
+
+        return self.defer_operation(
+            step,
+            cancel=cancel,
+            poll_interval_s=args.poll_interval_s,
+        )
 
     def stop_capture(self, _args: NoArguments) -> None:
         self.safe_stop()

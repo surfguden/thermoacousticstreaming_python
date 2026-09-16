@@ -19,11 +19,13 @@ from thermo_acoustic.application.commands import (
     Ad2ScopeReadResult,
     Ad2TriggerSource,
     CameraConfigureSnapshotArgs,
+    CameraConfigureSequenceArgs,
     CameraConfigureExposureArgs,
     CameraConfigureRoiArgs,
     CameraExposureResult,
     CameraRoiResult,
     CameraSnapshotResult,
+    CameraSequenceResult,
     CameraTimingResult,
     PumpFillLevelResult,
     PumpConfigurationResult,
@@ -31,6 +33,9 @@ from thermo_acoustic.application.commands import (
     PumpConfigureSyringeArgs,
     PumpFlowUnit,
     PumpRecoveryResult,
+    PumpMoveArgs,
+    PumpMovementResult,
+    PumpReferenceMoveArgs,
     PumpSetFillLevelArgs,
     PumpSetFlowArgs,
     PumpSyringePreset,
@@ -38,6 +43,7 @@ from thermo_acoustic.application.commands import (
     TecApplySetpointsArgs,
     TecReadStatusArgs,
     TecStatusResult,
+    TecWaitStableArgs,
     ValvePositionResult,
     ValveReadyResult,
     ValveSetPositionArgs,
@@ -575,5 +581,244 @@ def test_parser_is_a_text_to_typed_command_adapter():
     assert syringe.arguments.preset is PumpSyringePreset.BD_5_ML
     roi = parse_command("camera set-roi 100 120 512 256")
     assert roi.arguments == CameraConfigureRoiArgs(100, 120, 512, 256)
+    sequence = parse_command("camera configure-sequence 20 2.5")
+    assert sequence.arguments.frame_count == 20
+    assert parse_command("pump refill").operation is DeviceOperation.PUMP_REFILL
+    assert parse_command("pump reference-move").operation is DeviceOperation.PUMP_REFERENCE_MOVE
+    assert parse_command("abort camera").operation is DeviceOperation.ABORT_ACTIVE
+    assert parse_command("tec wait-stable 25 0.2 5 300").operation is DeviceOperation.TEC_WAIT_STABLE
     with pytest.raises(ValueError):
         parse_command("pump set-flow")
+
+
+def test_long_operations_are_typed_and_complete_in_simulation(qt_app):
+    registry = DeviceRegistry()
+    controller = ApplicationController(registry, mode=OperatingMode.SIMULATION)
+    results = []
+    controller.command_result.connect(results.append)
+    controller.start()
+    for device in (DeviceId.CAMERA, DeviceId.PUMP, DeviceId.TEC):
+        controller.submit(DeviceCommand(device, DeviceOperation.CONNECT))
+    controller.submit(
+        DeviceCommand(
+            DeviceId.CAMERA,
+            DeviceOperation.CAMERA_SEQUENCE_CONFIGURE,
+            CameraConfigureSequenceArgs(3, 2.0, poll_interval_s=0.01),
+        )
+    )
+    controller.submit(DeviceCommand(DeviceId.CAMERA, DeviceOperation.CAMERA_SEQUENCE_CAPTURE))
+    controller.submit(
+        DeviceCommand(
+            DeviceId.PUMP,
+            DeviceOperation.PUMP_REFILL,
+            PumpMoveArgs(timeout_s=1.0, poll_interval_s=0.01),
+        )
+    )
+    controller.submit(
+        DeviceCommand(
+            DeviceId.PUMP,
+            DeviceOperation.PUMP_EMPTY,
+            PumpMoveArgs(timeout_s=1.0, poll_interval_s=0.01),
+        )
+    )
+    controller.submit(
+        DeviceCommand(
+            DeviceId.PUMP,
+            DeviceOperation.PUMP_REFERENCE_MOVE,
+            PumpReferenceMoveArgs(timeout_s=1.0, poll_interval_s=0.01),
+        )
+    )
+    controller.submit(
+        DeviceCommand(
+            DeviceId.TEC,
+            DeviceOperation.TEC_SETPOINTS_APPLY,
+            TecApplySetpointsArgs(25.0),
+        )
+    )
+    controller.submit(
+        DeviceCommand(
+            DeviceId.TEC,
+            DeviceOperation.TEC_WAIT_STABLE,
+            TecWaitStableArgs(25.0, 0.1, 0.0, 1.0, poll_interval_s=0.01),
+        )
+    )
+    wait(qt_app, 500)
+
+    assert all(result.ok for result in results)
+    sequence = next(
+        result.value
+        for result in results
+        if result.operation is DeviceOperation.CAMERA_SEQUENCE_CAPTURE
+    )
+    assert isinstance(sequence, CameraSequenceResult)
+    assert len(sequence.frames) == 3
+    movements = [
+        result.value
+        for result in results
+        if result.operation
+        in {
+            DeviceOperation.PUMP_REFILL,
+            DeviceOperation.PUMP_EMPTY,
+            DeviceOperation.PUMP_REFERENCE_MOVE,
+        }
+    ]
+    assert all(isinstance(result, PumpMovementResult) for result in movements)
+    assert movements[-1].referenced
+    controller.shutdown()
+
+
+def test_urgent_pump_stop_bypasses_active_fifo_command(qt_app):
+    calls = []
+
+    class SlowPump:
+        max_volume_ml = 1.0
+        max_flow_rate_ul_min = 1000.0
+
+        def initialize(self):
+            calls.append(("initialize", QThread.currentThread()))
+
+        def cleanup(self):
+            calls.append(("cleanup", QThread.currentThread()))
+
+        def refill(self, flow_rate):
+            calls.append(("refill", QThread.currentThread()))
+            self.pumping = True
+
+        def read_status(self):
+            calls.append(("status", QThread.currentThread()))
+            return self.pumping
+
+        def read_fill_level(self):
+            return 0.0
+
+        def stop(self):
+            calls.append(("stop", QThread.currentThread()))
+            self.pumping = False
+
+    pump = SlowPump()
+    pump.pumping = False
+    registry = DeviceRegistry(OperatingMode.SIMULATION, {DeviceId.PUMP: lambda: pump})
+    controller = ApplicationController(registry, mode=OperatingMode.SIMULATION)
+    events = []
+    controller.command_event.connect(events.append)
+    controller.start()
+    controller.submit(DeviceCommand(DeviceId.PUMP, DeviceOperation.CONNECT))
+    wait(qt_app)
+    controller.submit(
+        DeviceCommand(
+            DeviceId.PUMP,
+            DeviceOperation.PUMP_REFILL,
+            PumpMoveArgs(timeout_s=2.0, poll_interval_s=0.01),
+            request_id="refill",
+        )
+    )
+    controller.submit(
+        DeviceCommand(
+            DeviceId.PUMP,
+            DeviceOperation.PUMP_STATUS_READ,
+            request_id="queued-status",
+        )
+    )
+    wait(qt_app, 60)
+    assert not any(
+        event.request_id == "queued-status" and event.state == "running"
+        for event in events
+    )
+
+    controller.submit(
+        DeviceCommand(
+            DeviceId.PUMP,
+            DeviceOperation.PUMP_FLOW_STOP,
+            request_id="urgent-stop",
+        )
+    )
+    wait(qt_app, 150)
+
+    terminal = [
+        (event.request_id, event.state)
+        for event in events
+        if event.state in {"completed", "cancelled", "failed"}
+    ]
+    assert ("urgent-stop", "completed") in terminal
+    assert ("refill", "cancelled") in terminal
+    assert ("queued-status", "completed") in terminal
+    stop_index = terminal.index(("urgent-stop", "completed"))
+    queued_index = terminal.index(("queued-status", "completed"))
+    assert stop_index < queued_index
+    worker_thread = registry.by_id(DeviceId.PUMP).thread()
+    assert all(thread is worker_thread for _, thread in calls)
+    controller.shutdown()
+
+
+def test_camera_and_tec_urgent_stops_cancel_deferred_operations(qt_app):
+    registry = DeviceRegistry()
+    controller = ApplicationController(registry, mode=OperatingMode.SIMULATION)
+    events = []
+    controller.command_event.connect(events.append)
+    controller.start()
+    controller.submit(DeviceCommand(DeviceId.CAMERA, DeviceOperation.CONNECT))
+    controller.submit(DeviceCommand(DeviceId.TEC, DeviceOperation.CONNECT))
+    controller.submit(
+        DeviceCommand(
+            DeviceId.CAMERA,
+            DeviceOperation.CAMERA_SEQUENCE_CONFIGURE,
+            CameraConfigureSequenceArgs(1000, poll_interval_s=0.01),
+        )
+    )
+    controller.submit(
+        DeviceCommand(
+            DeviceId.CAMERA,
+            DeviceOperation.CAMERA_SEQUENCE_CAPTURE,
+            request_id="camera-sequence",
+        )
+    )
+    wait(qt_app, 80)
+    assert controller.statuses()[DeviceId.CAMERA].readback.capture_active
+    controller.submit(
+        DeviceCommand(
+            DeviceId.CAMERA,
+            DeviceOperation.CAMERA_CAPTURE_STOP,
+            request_id="camera-stop",
+        )
+    )
+    wait(qt_app, 80)
+    assert not controller.statuses()[DeviceId.CAMERA].readback.capture_active
+
+    controller.submit(
+        DeviceCommand(
+            DeviceId.TEC,
+            DeviceOperation.TEC_WAIT_STABLE,
+            TecWaitStableArgs(25.0, 0.1, 0.0, 2.0, poll_interval_s=0.01),
+            request_id="tec-wait",
+        )
+    )
+    wait(qt_app, 40)
+    controller.submit(
+        DeviceCommand(
+            DeviceId.TEC,
+            DeviceOperation.TEC_OUTPUTS_OFF,
+            request_id="tec-off",
+        )
+    )
+    wait(qt_app, 80)
+
+    terminal = {
+        (event.request_id, event.state)
+        for event in events
+        if event.state in {"completed", "cancelled", "failed"}
+    }
+    assert ("camera-sequence", "cancelled") in terminal
+    assert ("camera-stop", "completed") in terminal
+    assert ("tec-wait", "cancelled") in terminal
+    assert ("tec-off", "completed") in terminal
+    assert not controller.statuses()[DeviceId.TEC].active
+    controller.shutdown()
+
+
+def test_long_operation_timeouts_must_be_finite_and_positive():
+    with pytest.raises(ValueError, match="finite and positive"):
+        PumpMoveArgs(timeout_s=float("inf"))
+    with pytest.raises(ValueError, match="finite and positive"):
+        CameraConfigureSequenceArgs(2, frame_timeout_s=0.0)
+    with pytest.raises(ValueError, match="finite and positive"):
+        TecWaitStableArgs(25.0, 0.1, 0.0, float("inf"))

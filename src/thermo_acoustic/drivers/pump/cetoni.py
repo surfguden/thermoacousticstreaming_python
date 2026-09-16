@@ -478,17 +478,23 @@ class CetoniPump:
             result["response"] = f"max_flow_rate_ul_min={self.max_flow_rate_ul_min}"
 
     def reference_move(self) -> None:
-        pump = self._require_pump()
-        self._enable_pump()
+        self.start_reference_move()
         with log_call("pump", "reference_move") as result:
-            pump.calibrate()
             deadline = time.monotonic() + max(self.reference_move_timeout_s, 0.0)
             while time.monotonic() < deadline:
-                if pump.is_calibration_finished():
+                if self.reference_move_finished():
                     result["response"] = "calibration finished"
                     return
                 time.sleep(0.1)
             raise CetoniPumpError("Qmix pump reference move timed out.")
+
+    def start_reference_move(self) -> None:
+        pump = self._require_pump()
+        self._enable_pump()
+        pump.calibrate()
+
+    def reference_move_finished(self) -> bool:
+        return bool(self._require_pump().is_calibration_finished())
 
     def read_status(self) -> bool:
         if self.pump is None:

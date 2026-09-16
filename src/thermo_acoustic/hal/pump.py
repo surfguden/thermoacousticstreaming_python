@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import replace
 import math
+from time import monotonic
 
 from ..application.commands import (
     DeviceOperation,
@@ -13,12 +14,15 @@ from ..application.commands import (
     PumpFillLevelResult,
     PumpFlowUnit,
     PumpRecoveryResult,
+    PumpMoveArgs,
+    PumpMovementResult,
+    PumpReferenceMoveArgs,
     PumpSetFillLevelArgs,
     PumpSetFlowArgs,
     PumpStatusResult,
 )
 from ..domain.models import DeviceId, PumpReadback
-from .base import DeviceWorker
+from .base import DeferredProgress, DeviceWorker
 
 
 class PumpWorker(DeviceWorker):
@@ -32,6 +36,9 @@ class PumpWorker(DeviceWorker):
         self.register(DeviceOperation.PUMP_SYRINGE_CONFIGURE, self.configure_syringe)
         self.register(DeviceOperation.PUMP_FLOW_UNIT_CONFIGURE, self.configure_flow_unit)
         self.register(DeviceOperation.PUMP_FAULT_RECOVER, self.recover_fault)
+        self.register(DeviceOperation.PUMP_REFILL, self.refill)
+        self.register(DeviceOperation.PUMP_EMPTY, self.empty)
+        self.register(DeviceOperation.PUMP_REFERENCE_MOVE, self.reference_move)
 
     def set_flow(self, args: PumpSetFlowArgs) -> None:
         self.device.generate_flow(args.flow_ul_min)
@@ -145,10 +152,91 @@ class PumpWorker(DeviceWorker):
         )
         return PumpRecoveryResult(True)
 
+    def _defer_fill_movement(
+        self, movement: str, args: PumpMoveArgs
+    ) -> object:
+        if movement == "refill":
+            self.device.refill(args.flow_rate_ul_min)
+            target_fill_level = float(self.device.max_volume_ml)
+        else:
+            self.device.empty(args.flow_rate_ul_min)
+            target_fill_level = 0.0
+        deadline = monotonic() + args.timeout_s
+        self.state.active = True
+        self.state.readback = replace(
+            self.state.readback, is_pumping=True, movement=movement
+        )
+
+        def cancel() -> None:
+            self.safe_stop()
+            self.state.readback = replace(self.state.readback, movement=None)
+
+        def step() -> DeferredProgress:
+            pumping = bool(self.device.read_status())
+            self.state.active = pumping
+            self.state.readback = replace(self.state.readback, is_pumping=pumping)
+            fill_level = float(self.device.read_fill_level())
+            if pumping or not math.isclose(
+                fill_level, target_fill_level, rel_tol=1e-6, abs_tol=1e-9
+            ):
+                if monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"Pump {movement} timed out after {args.timeout_s:.3f}s "
+                        f"at {fill_level:.6g} mL"
+                    )
+                return DeferredProgress()
+            self.state.readback = replace(
+                self.state.readback,
+                fill_level_ml=fill_level,
+                requested_fill_level_ml=fill_level,
+                movement=None,
+            )
+            return DeferredProgress(True, PumpMovementResult(fill_level_ml=fill_level))
+
+        return self.defer_operation(
+            step, cancel=cancel, poll_interval_s=args.poll_interval_s
+        )
+
+    def refill(self, args: PumpMoveArgs) -> object:
+        return self._defer_fill_movement("refill", args)
+
+    def empty(self, args: PumpMoveArgs) -> object:
+        return self._defer_fill_movement("empty", args)
+
+    def reference_move(self, args: PumpReferenceMoveArgs) -> object:
+        self.device.start_reference_move()
+        deadline = monotonic() + args.timeout_s
+        self.state.active = True
+        self.state.readback = replace(self.state.readback, movement="reference")
+
+        def cancel() -> None:
+            self.safe_stop()
+            self.state.readback = replace(self.state.readback, movement=None)
+
+        def step() -> DeferredProgress:
+            if self.device.reference_move_finished():
+                self.state.active = False
+                self.state.readback = replace(
+                    self.state.readback, movement=None, referenced=True
+                )
+                return DeferredProgress(True, PumpMovementResult(referenced=True))
+            if monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Pump reference movement timed out after {args.timeout_s:.3f}s"
+                )
+            return DeferredProgress()
+
+        return self.defer_operation(
+            step, cancel=cancel, poll_interval_s=args.poll_interval_s
+        )
+
     def safe_stop(self) -> None:
         if self.device_constructed and self.state.connected:
             self.device.stop()
         self.state.active = False
         self.state.readback = replace(
-            self.state.readback, requested_flow_ul_min=0.0, is_pumping=False
+            self.state.readback,
+            requested_flow_ul_min=0.0,
+            is_pumping=False,
+            movement=None,
         )

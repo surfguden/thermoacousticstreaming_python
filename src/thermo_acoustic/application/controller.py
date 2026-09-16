@@ -16,6 +16,7 @@ from .commands import (
     ConfirmationRequest,
     DeviceCommand,
     DeviceOperation,
+    NoArguments,
     OPERATION_SPECS,
     validate_command,
 )
@@ -51,11 +52,13 @@ class ApplicationController(QObject):
         self.confirm_operation = confirm_operation or (lambda _: False)
         self._queue: deque[_Pending] = deque()
         self._active: _Pending | None = None
+        self._urgent: dict[str, DeviceCommand[Any]] = {}
         self._closing = False
         self._statuses = {worker.device_id: worker.status() for worker in registry.all()}
         for worker in registry.all():
             worker.command_succeeded.connect(self._worker_succeeded)
             worker.command_failed.connect(self._worker_failed)
+            worker.command_cancelled.connect(self._worker_cancelled)
             worker.status_changed.connect(self._status_received)
 
     def start(self) -> None:
@@ -91,10 +94,36 @@ class ApplicationController(QObject):
             ):
                 self._emit(command, "failed", "Z-stage closed-loop switch requires operator confirmation")
                 return command.request_id
+        if self._is_urgent(command.operation):
+            self._urgent[command.request_id] = command
+            self._emit(command, "queued")
+            self._emit(command, "running")
+            self.audit.write(
+                "execution_start",
+                request_id=command.request_id,
+                source=command.source,
+                device=command.device.value,
+                operation=command.operation.value,
+                urgent=True,
+            )
+            self.registry.by_id(command.device).urgent_command_requested.emit(
+                command.request_id, command.operation, command.arguments
+            )
+            return command.request_id
         self._queue.append(_Pending(command, monotonic()))
         self._emit(command, "queued")
         self._dispatch_next()
         return command.request_id
+
+    @staticmethod
+    def _is_urgent(operation: DeviceOperation) -> bool:
+        return operation in {
+            DeviceOperation.ABORT_ACTIVE,
+            DeviceOperation.SAFE_STOP,
+            DeviceOperation.CAMERA_CAPTURE_STOP,
+            DeviceOperation.PUMP_FLOW_STOP,
+            DeviceOperation.TEC_OUTPUTS_OFF,
+        }
 
     def _dispatch_next(self) -> None:
         if self._closing or self._active or not self._queue:
@@ -171,13 +200,54 @@ class ApplicationController(QObject):
         self._active = None
         self._dispatch_next()
 
+    def _finish_urgent(
+        self,
+        request_id: str,
+        ok: bool,
+        value: object = None,
+        error: str | None = None,
+    ) -> bool:
+        command = self._urgent.pop(request_id, None)
+        if command is None:
+            return False
+        if ok:
+            expected = OPERATION_SPECS[command.operation].result_type
+            if not isinstance(value, expected):
+                ok = False
+                error = (
+                    f"{command.operation.value} returned {type(value).__name__}; "
+                    f"expected {getattr(expected, '__name__', expected)}"
+                )
+                value = None
+        self.command_result.emit(
+            CommandResult(request_id, command.device, command.operation, ok, value, error)
+        )
+        self._emit(command, "completed" if ok else "failed", error or "", value)
+        return True
+
     @Slot(str, object)
     def _worker_succeeded(self, request_id: str, value: object) -> None:
+        if self._finish_urgent(request_id, True, value):
+            return
         self._finish(request_id, True, value)
 
     @Slot(str, str)
     def _worker_failed(self, request_id: str, error: str) -> None:
+        if self._finish_urgent(request_id, False, error=error):
+            return
         self._finish(request_id, False, error=error)
+
+    @Slot(str, str)
+    def _worker_cancelled(self, request_id: str, reason: str) -> None:
+        if not self._active or self._active.command.request_id != request_id:
+            return
+        command = self._active.command
+        self.command_result.emit(
+            CommandResult(request_id, command.device, command.operation, False, error=reason)
+        )
+        self._emit(command, "cancelled", reason)
+        self._active = None
+        self._dispatch_next()
 
     def statuses(self) -> dict:
         return dict(self._statuses)
@@ -188,6 +258,11 @@ class ApplicationController(QObject):
         while self._queue:
             self._emit(self._queue.popleft().command, "cancelled", "Shutdown started")
         for worker in self.registry.all():
+            worker.urgent_command_requested.emit(
+                f"shutdown-{worker.device_id.value}",
+                DeviceOperation.SAFE_STOP,
+                NoArguments(),
+            )
             worker.shutdown_requested.emit()
             if not worker._thread.wait(2000):
                 errors.append(f"{worker.device_id.value}: thread did not terminate")

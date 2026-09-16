@@ -13,6 +13,15 @@ stdin both create the same typed `DeviceCommand` objects. The console parser is
 only a text-to-command adapter; operation enums, argument models, validation,
 request IDs, lifecycle events, and audit records are shared.
 
+Long-running camera, pump, and TEC commands remain the one active FIFO command,
+but advance through short `QTimer`-driven steps on their existing device worker
+thread. This leaves the worker event loop responsive. Abort, safe-stop, camera
+capture-stop, pump stop, and TEC outputs-off commands use a separate urgent
+control path and therefore never wait behind the active FIFO command. Hardware
+calls still run only on the target device worker thread; an urgent request first
+terminates the deferred operation, performs its stop action, and only then lets
+the controller dispatch the next normal command.
+
 The `hal/` package is the application-facing Hardware Abstraction Layer. Each
 `DeviceWorker` is a `QObject` moved to its own persistent `QThread`.
 `AD2Worker`, `PumpWorker`, `ValveWorker`, `CameraWorker`, `TecWorker`, and
@@ -55,16 +64,23 @@ pump stop
 pump read-fill-level
 pump configure-syringe bd-5ml
 pump configure-flow-unit ul/min
+pump refill
+pump empty 500
+pump reference-move
 camera set-exposure 2.5
 camera set-roi 100 120 512 256
 valve wait-ready
 camera snapshot
+camera configure-sequence 100 2.5
+camera sequence
 camera read-timing
 ad2 configure-do 0 500 1100
 ad2 start-do
 ad2 stop-do
 tec set-temperature 25
+tec wait-stable 25 0.2 5 300
 tec read-status
+abort tec
 z-stage check-closed-loop
 z-stage enable-closed-loop
 z-stage move 50
