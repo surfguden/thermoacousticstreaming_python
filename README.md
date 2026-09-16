@@ -9,8 +9,9 @@ commands; experiments, recipes, and multi-device sequencing are deferred.
 `main.py` creates one `QApplication`, one `ApplicationController`, one Qt
 window, one console reader, and one device registry. The controller owns a
 global FIFO queue and dispatches exactly one command at a time. UI buttons and
-stdin both create the same `DeviceCommand` objects, so they have identical
-validation, request IDs, lifecycle events, and audit records.
+stdin both create the same typed `DeviceCommand` objects. The console parser is
+only a text-to-command adapter; operation enums, argument models, validation,
+request IDs, lifecycle events, and audit records are shared.
 
 The `hal/` package is the application-facing Hardware Abstraction Layer. Each
 `DeviceWorker` is a `QObject` moved to its own persistent `QThread`.
@@ -51,8 +52,13 @@ help
 connect pump
 pump set-flow 100
 pump stop
+pump read-fill-level
+valve wait-ready
 camera snapshot
+camera read-timing
 tec set-temperature 25
+tec read-status
+z-stage check-closed-loop
 z-stage enable-closed-loop
 z-stage move 50
 status
@@ -63,6 +69,12 @@ The console prints accepted, queued, running, completed, and failed events with
 request IDs. EOF is treated as a quiet end of console input; it does not close
 the UI. `quit` requests coordinated safe-stop, disconnection, and worker-thread
 shutdown.
+
+The application command surface exposes stable direct operations only. Driver
+coercion helpers, SDK handles, discovery functions, raw protocol methods, and
+camera persistence helpers are not HAL commands. Discovery and hardware probes
+remain manual-only under `hardware_tests/`. Device status uses typed per-device
+readback models rather than free-form key/value dictionaries.
 
 ## Real mode safeguards
 

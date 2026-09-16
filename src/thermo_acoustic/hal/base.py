@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable
 
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
 from ..domain.models import ConnectionState, DeviceId, DeviceStatus
+from ..application.commands import DeviceOperation, NoArguments
 
 
 @dataclass(slots=True)
@@ -15,11 +16,11 @@ class WorkerState:
     configured: bool = False
     active: bool = False
     fault: str | None = None
-    readings: dict[str, Any] = field(default_factory=dict)
+    readback: object | None = None
 
 
 class DeviceWorker(QObject):
-    command_requested = Signal(str, str, object)
+    command_requested = Signal(str, object, object)
     shutdown_requested = Signal()
     command_succeeded = Signal(str, object)
     command_failed = Signal(str, str)
@@ -31,6 +32,7 @@ class DeviceWorker(QObject):
         device_id: DeviceId,
         device_factory: Callable[[], object],
         *,
+        readback_factory: Callable[[], object] | None = None,
         poll_interval_s: float = 0.0,
         parent: QObject | None = None,
     ) -> None:
@@ -39,21 +41,30 @@ class DeviceWorker(QObject):
         self._device_factory = device_factory
         self._device: object | None = None
         self.poll_interval_s = poll_interval_s
-        self.state = WorkerState()
-        self._operations: dict[str, Callable[..., Any]] = {}
+        self._readback_factory = readback_factory or (lambda: None)
+        self.state = WorkerState(readback=self._readback_factory())
+        self._operations: dict[DeviceOperation, Callable[[object], Any]] = {}
         self._timer: QTimer | None = None
         self.command_requested.connect(self.execute)
         self.shutdown_requested.connect(self.shutdown_in_thread)
 
-    def register(self, name: str, handler: Callable[..., Any]) -> None:
+    def register(self, name: DeviceOperation, handler: Callable[[object], Any]) -> None:
         self._operations[name] = handler
 
     def status(self) -> DeviceStatus:
         connection = ConnectionState.CONNECTED if self.state.connected else ConnectionState.DISCONNECTED
         if self.state.fault:
             connection = ConnectionState.ERROR
-        return DeviceStatus(self.device_id, connection, self.state.busy, self.state.configured,
-                            self.state.active, self._summary(), dict(self.state.readings), self.state.fault)
+        return DeviceStatus(
+            self.device_id,
+            connection,
+            self.state.busy,
+            self.state.configured,
+            self.state.active,
+            self._summary(),
+            self.state.readback,
+            self.state.fault,
+        )
 
     def _summary(self) -> str:
         if self.state.fault:
@@ -108,7 +119,7 @@ class DeviceWorker(QObject):
 
     def disconnect_device(self) -> None:
         if self._device is None:
-            self.state = WorkerState()
+            self.state = WorkerState(readback=self._readback_factory())
             self._emit_status()
             return
         try:
@@ -116,27 +127,34 @@ class DeviceWorker(QObject):
         except Exception as exc:
             raise RuntimeError(f"device cleanup failed: {exc}") from exc
         self._device = None
-        self.state = WorkerState()
+        self.state = WorkerState(readback=self._readback_factory())
         self._emit_status()
 
     def safe_stop(self) -> None:
         self.state.active = False
 
-    @Slot(str, object)
-    def execute(self, request_id: str, operation: str, args: object = ()) -> None:
+    @Slot(str, object, object)
+    def execute(
+        self,
+        request_id: str,
+        operation: DeviceOperation,
+        arguments: object = NoArguments(),
+    ) -> None:
         try:
-            if operation == "connect":
+            if operation is DeviceOperation.CONNECT:
                 value = self.connect_device()
-            elif operation == "disconnect":
+            elif operation is DeviceOperation.DISCONNECT:
                 value = self.disconnect_device()
-            elif operation == "safe_stop":
+            elif operation is DeviceOperation.SAFE_STOP:
                 value = self.safe_stop()
             else:
                 self._require_connected()
                 handler = self._operations.get(operation)
                 if handler is None:
-                    raise ValueError(f"Unsupported {self.device_id.value} operation: {operation}")
-                value = handler(*tuple(args))
+                    raise ValueError(
+                        f"Unsupported {self.device_id.value} operation: {operation.value}"
+                    )
+                value = handler(arguments)
             self.state.fault = None
             self._emit_status()
             self.command_succeeded.emit(request_id, value)

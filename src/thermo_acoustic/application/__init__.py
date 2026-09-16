@@ -1,7 +1,27 @@
 """Single-process application services."""
 from .audit import AuditLogger
-from .commands import CommandEvent, CommandResult, DeviceCommand
+from .commands import (
+    CommandEvent,
+    CommandResult,
+    DeviceCommand,
+    DeviceOperation,
+)
 from .configuration import ApplicationConfiguration
-from .controller import ApplicationController
 
-__all__ = ["ApplicationConfiguration", "ApplicationController", "AuditLogger", "CommandEvent", "CommandResult", "DeviceCommand"]
+__all__ = [
+    "ApplicationConfiguration",
+    "ApplicationController",
+    "AuditLogger",
+    "CommandEvent",
+    "CommandResult",
+    "DeviceCommand",
+    "DeviceOperation",
+]
+
+
+def __getattr__(name: str):
+    if name == "ApplicationController":
+        from .controller import ApplicationController
+
+        return ApplicationController
+    raise AttributeError(name)

@@ -15,6 +15,8 @@ class SimulatedCamera:
         self.sequence_settings: dict[str, Any] | None = None
         self.exposure_ms = 0.0
         self.roi: SubRegion | None = None
+        self.readout_time_s = 0.001
+        self.minimum_trigger_interval_s = 0.002
 
     def open_camera(self) -> object:
         self.initialized = True
@@ -89,6 +91,14 @@ class SimulatedCamera:
 
     def get_camera_buffer_size(self) -> int:
         return self.buffer_frames
+
+    def read_readout_time(self) -> float:
+        self._require_initialized()
+        return self.readout_time_s
+
+    def read_min_trigger_interval(self) -> float:
+        self._require_initialized()
+        return self.minimum_trigger_interval_s
 
     def stop_capture(self) -> None:
         self.capture_active = False

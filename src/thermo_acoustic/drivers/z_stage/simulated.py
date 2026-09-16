@@ -15,6 +15,11 @@ class SimulatedZStage:
     def disconnect(self) -> None:
         self.connected = False
 
+    def needs_closed_loop_confirmation(self) -> bool:
+        if not self.connected:
+            raise RuntimeError("Z-stage is not connected")
+        return not self.closed_loop
+
     def switch_to_closed_loop(self) -> None:
         self.closed_loop = True
 
