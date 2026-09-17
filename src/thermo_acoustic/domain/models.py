@@ -19,7 +19,7 @@ class DeviceId(str, Enum):
 
 
 DEVICE_LABELS = {
-    DeviceId.AD2: "Waveform generator",
+    DeviceId.AD2: "Analog Discovery 2",
     DeviceId.PUMP: "CETONI pump",
     DeviceId.VALVE: "Selector valve",
     DeviceId.CAMERA: "Hamamatsu camera",
@@ -35,10 +35,36 @@ class ConnectionState(str, Enum):
 
 
 @dataclass(frozen=True, slots=True)
+class Ad2WaveformChannelReadback:
+    channel_index: int
+    enabled: bool
+    function: str
+    frequency_hz: float
+    amplitude_v: float
+    offset_v: float
+    symmetry_percent: float
+    phase_deg: float
+    fm_enabled: bool
+    fm_function: str
+    fm_frequency_hz: float
+    fm_modulation_index_percent: float
+    fm_offset_percent: float
+    fm_symmetry_percent: float
+    fm_phase_deg: float
+    idle_state: str
+    trigger_source: str
+    trigger_wait_s: float
+    trigger_run_s: float
+    trigger_repeat_count: int
+    trigger_repeat: bool
+
+
+@dataclass(frozen=True, slots=True)
 class Ad2Readback:
     waveform_frequency_hz: float | None = None
     waveform_amplitude_v: float | None = None
     waveform_running: bool = False
+    waveform_channels: tuple[Ad2WaveformChannelReadback, ...] = ()
     scope_state: str = "idle"
     digital_output_configured: bool = False
     digital_output_running: bool = False

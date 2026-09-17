@@ -57,7 +57,9 @@ class MainWindow(QMainWindow):
         )
 
         splitter = QSplitter(Qt.Orientation.Vertical)
+        self.splitter = splitter
         self.tabs = QTabWidget()
+        self.tabs.setMinimumWidth(0)
         self.panels: dict[DeviceId, DevicePanel] = {}
         for device in DeviceId:
             panel = PANEL_TYPES[device]()
@@ -70,10 +72,12 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self.tabs)
         self.log = QTextEdit()
         self.log.setReadOnly(True)
+        self.log.setMinimumHeight(80)
         self.log.setPlaceholderText("Command activity")
         splitter.addWidget(self.log)
         splitter.setStretchFactor(0, 4)
         splitter.setStretchFactor(1, 1)
+        splitter.setSizes([900, 120])
         root_layout.addWidget(splitter)
         self._create_file_menu()
 

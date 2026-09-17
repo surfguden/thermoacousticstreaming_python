@@ -10,7 +10,11 @@ from PySide6.QtWidgets import QApplication
 from thermo_acoustic.application import ApplicationController
 from thermo_acoustic.application.commands import (
     Ad2ScopeReadResult,
+    Ad2AnalogOutputIdle,
     Ad2TriggerSource,
+    Ad2WaveformAppliedResult,
+    Ad2WaveformChannelArgs,
+    Ad2WaveformFunction,
     CameraMasterPulseMode,
     CameraMasterPulseSource,
     CameraSnapshotResult,
@@ -121,6 +125,27 @@ def test_main_window_routes_panel_commands_and_terminal_events(qt_app):
     window.close()
 
 
+def test_main_window_routes_waveform_sdk_readback_to_both_channels(qt_app):
+    controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
+    window = MainWindow(controller)
+    controller.start()
+    ad2 = window.panels[DeviceId.AD2]
+
+    ad2._buttons["connect"].click()
+    wait(qt_app)
+    ad2.wave_channels[1].enabled.setChecked(True)
+    ad2.wave_channels[1].single_frequency.setValue(2500.0)
+    ad2._buttons["wave_config"].click()
+    wait(qt_app)
+
+    readback = controller.statuses()[DeviceId.AD2].readback
+    assert len(readback.waveform_channels) == 2
+    assert readback.waveform_channels[1].frequency_hz == 2500.0
+    assert "SDK applied" in ad2.wave_channels[0].applied_label.text()
+    assert "SDK applied" in ad2.wave_channels[1].applied_label.text()
+    window.close()
+
+
 def test_status_readback_and_result_widgets_update(qt_app):
     del qt_app
     camera = CameraPanel()
@@ -147,19 +172,21 @@ def test_ad2_uses_separate_instrument_tabs_and_builds_trigger_arguments(qt_app):
         "Oscilloscope",
         "Digital output",
     ]
-    panel.wave_trigger["source"].setCurrentIndex(
-        panel.wave_trigger["source"].findData(Ad2TriggerSource.PC.value)
+    channel = panel.wave_channels[0]
+    channel.trigger["source"].setCurrentIndex(
+        channel.trigger["source"].findData(Ad2TriggerSource.PC.value)
     )
-    panel.wave_trigger["wait"].setValue(0.25)
-    panel.wave_trigger["run"].setValue(0.5)
-    panel.wave_trigger["repeat"].setValue(4)
-    panel.wave_trigger["retrigger"].setChecked(True)
+    channel.trigger["wait"].setValue(0.25)
+    channel.trigger["run"].setValue(0.5)
+    channel.trigger["repeat"].setValue(4)
+    channel.trigger["retrigger"].setChecked(True)
     args = panel._wave_args()
-    assert args.trigger.source is Ad2TriggerSource.PC
-    assert args.trigger.wait_s == 0.25
-    assert args.trigger.run_s == 0.5
-    assert args.trigger.repeat_count == 4
-    assert args.trigger.repeat_trigger
+    assert len(args.channels) == 2
+    assert args.channels[0].trigger.source is Ad2TriggerSource.PC
+    assert args.channels[0].trigger.wait_s == 0.25
+    assert args.channels[0].trigger.run_s == 0.5
+    assert args.channels[0].trigger.repeat_count == 4
+    assert args.channels[0].trigger.repeat_trigger
 
 
 def test_camera_builds_complete_sequence_trigger_arguments(qt_app):
@@ -202,16 +229,71 @@ def test_camera_builds_complete_sequence_trigger_arguments(qt_app):
     assert trigger.global_exposure is True
 
 
-def test_panels_do_not_need_vertical_scrolling_at_1920_by_1080(qt_app):
+def test_waveform_modes_share_the_advanced_configuration(qt_app):
+    del qt_app
+    panel = Ad2Panel()
+    channel = panel.wave_channels[0]
+    channel.mode.setCurrentIndex(1)
+    channel.sweep_start.setValue(900.0)
+    channel.sweep_stop.setValue(1100.0)
+    channel.sweep_time.setValue(2.0)
+    channel.sweep_direction.setCurrentIndex(
+        channel.sweep_direction.findData("RampUp")
+    )
+    channel.sweep_offset.setValue(0.25)
+
+    args = channel.arguments()
+    assert args.frequency_hz == 1000.0
+    assert args.offset_v == 0.25
+    assert args.fm_enabled
+    assert args.fm_function is Ad2WaveformFunction.RAMP_UP
+    assert args.fm_frequency_hz == 500.0
+    assert args.fm_modulation_index_percent == 10.0
+
+    channel.mode.setCurrentIndex(2)
+    assert channel.adv_frequency.value() == 1000.0
+    assert channel.fm_index.value() == 10.0
+
+
+def test_waveform_sdk_readback_populates_channel_controls(qt_app):
+    del qt_app
+    panel = Ad2Panel()
+    applied = Ad2WaveformChannelArgs(
+        0,
+        function=Ad2WaveformFunction.SQUARE,
+        frequency_hz=1234.0,
+        amplitude_v=0.75,
+        offset_v=0.1,
+        idle_state=Ad2AnalogOutputIdle.OFFSET,
+    )
+    panel.handle_result(Ad2WaveformAppliedResult((applied, Ad2WaveformChannelArgs(1))))
+
+    channel = panel.wave_channels[0]
+    assert channel.adv_frequency.value() == 1234.0
+    assert channel.single_frequency.value() == 1234.0
+    assert channel.idle.currentData() == Ad2AnalogOutputIdle.OFFSET.value
+    assert "SDK applied" in channel.applied_label.text()
+
+
+def test_panels_fit_half_of_a_1920_by_1200_screen(qt_app):
     controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
     window = MainWindow(controller)
-    window.resize(1920, 1080)
+    window.resize(960, 1080)
     window.show()
     qt_app.processEvents()
     for index, panel in enumerate(window.panels.values()):
         window.tabs.setCurrentIndex(index)
         qt_app.processEvents()
+        assert panel.horizontalScrollBar().maximum() == 0
         assert panel.verticalScrollBar().maximum() == 0
+    ad2 = window.panels[DeviceId.AD2]
+    window.tabs.setCurrentIndex(0)
+    for mode in range(3):
+        for channel in ad2.wave_channels:
+            channel.mode.setCurrentIndex(mode)
+        qt_app.processEvents()
+        assert ad2.horizontalScrollBar().maximum() == 0
+        assert ad2.verticalScrollBar().maximum() == 0
     window.close()
 
 
@@ -267,3 +349,36 @@ def test_profile_load_is_atomic_and_rejects_invalid_data(qt_app, tmp_path):
     )
     with pytest.raises(ValueError, match="Non-finite"):
         window.load_profile(path)
+
+
+def test_previous_waveform_profile_keys_still_load(qt_app, tmp_path):
+    del qt_app
+    controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
+    window = MainWindow(controller)
+    path = tmp_path / "legacy-waveform.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "devices": {
+                    "ad2": {
+                        "wave_frequency_hz": 4321.0,
+                        "wave_amplitude_v": 0.4,
+                        "wave_trigger_source": Ad2TriggerSource.PC.value,
+                        "wave_trigger_wait_s": 0.2,
+                        "wave_trigger_run_s": 0.3,
+                        "wave_trigger_repeat_count": 2,
+                        "wave_trigger_repeat": True,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    window.load_profile(path)
+    channel = window.panels[DeviceId.AD2].wave_channels[0]
+    assert channel.single_frequency.value() == 4321.0
+    assert channel.single_amplitude.value() == 0.4
+    assert channel.trigger["source"].currentData() == Ad2TriggerSource.PC.value
+    window.close()

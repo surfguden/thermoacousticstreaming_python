@@ -12,12 +12,13 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGridLayout,
     QGroupBox,
-    QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -29,8 +30,12 @@ from ..application.commands import (
     Ad2ConfigureDigitalOutputArgs,
     Ad2ConfigureScopeArgs,
     Ad2ConfigureWaveformArgs,
+    Ad2AnalogOutputIdle,
     Ad2DigitalOutputType,
     Ad2ScopeReadResult,
+    Ad2WaveformAppliedResult,
+    Ad2WaveformChannelArgs,
+    Ad2WaveformFunction,
     Ad2TriggerSettingsArgs,
     Ad2TriggerSource,
     CameraMasterPulseMode,
@@ -89,17 +94,34 @@ def int_spin(value: int = 0, minimum: int = 0, maximum: int = 10_000_000) -> QSp
 
 def button_row(*buttons: QPushButton) -> QWidget:
     widget = QWidget()
-    layout = QHBoxLayout(widget)
+    layout = QGridLayout(widget)
     layout.setContentsMargins(0, 0, 0, 0)
-    for button in buttons:
-        layout.addWidget(button)
-    layout.addStretch(1)
+    layout.setHorizontalSpacing(4)
+    layout.setVerticalSpacing(4)
+    for index, button in enumerate(buttons):
+        layout.addWidget(button, index // 3, index % 3)
     return widget
 
 
 def form_group(title: str) -> tuple[QGroupBox, QFormLayout]:
     group = QGroupBox(title)
-    return group, QFormLayout(group)
+    form = QFormLayout(group)
+    form.setContentsMargins(6, 6, 6, 6)
+    form.setVerticalSpacing(3)
+    form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+    return group, form
+
+
+class CurrentPageStack(QStackedWidget):
+    """Let responsive layouts size to the exposed mode, not hidden pages."""
+
+    def sizeHint(self):
+        current = self.currentWidget()
+        return current.sizeHint() if current is not None else super().sizeHint()
+
+    def minimumSizeHint(self):
+        current = self.currentWidget()
+        return current.minimumSizeHint() if current is not None else super().minimumSizeHint()
 
 
 class DevicePanel(QScrollArea):
@@ -323,32 +345,342 @@ class DevicePanel(QScrollArea):
                 widget.setText(str(value))
 
 
+class WaveformChannelEditor(QGroupBox):
+    _MODES = ("single", "sweep", "advanced")
+
+    def __init__(self, panel: "Ad2Panel", channel_index: int) -> None:
+        super().__init__(f"CH{channel_index + 1}")
+        self.panel = panel
+        self.channel_index = channel_index
+        self.prefix = f"wave_ch{channel_index + 1}"
+        self._loading = False
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(4)
+
+        common, common_form = form_group("Channel")
+        self.mode = panel.register_profile(f"{self.prefix}_mode", QComboBox())
+        self.mode.addItem("Single Freq", "single")
+        self.mode.addItem("Sweep", "sweep")
+        self.mode.addItem("Advanced", "advanced")
+        self.enabled = panel.register_profile(f"{self.prefix}_enabled", QCheckBox())
+        self.enabled.setChecked(channel_index == 0)
+        self.idle = panel.register_profile(f"{self.prefix}_idle", QComboBox())
+        for idle in Ad2AnalogOutputIdle:
+            self.idle.addItem(idle.value, idle.value)
+        self.idle.setCurrentIndex(self.idle.findData(Ad2AnalogOutputIdle.INITIAL.value))
+        common_form.addRow("Mode", self.mode)
+        common_form.addRow("Output enabled", self.enabled)
+        common_form.addRow("Idle output", self.idle)
+        layout.addWidget(common)
+
+        self.pages = CurrentPageStack()
+        self.pages.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        layout.addWidget(self.pages, 1)
+        self._build_single_page()
+        self._build_sweep_page()
+        self._build_advanced_page()
+
+        trigger_group, trigger_form = form_group("Trigger")
+        trigger_prefix = "wave" if channel_index == 0 else self.prefix
+        self.trigger = panel._add_trigger_controls(trigger_prefix, trigger_form)
+        layout.addWidget(trigger_group)
+        self.applied_label = QLabel("Not configured")
+        self.applied_label.setWordWrap(True)
+        layout.addWidget(self.applied_label)
+
+        self.mode.currentIndexChanged.connect(self._mode_changed)
+        for widget in self.single_widgets + self.sweep_widgets:
+            if isinstance(widget, QComboBox):
+                widget.currentIndexChanged.connect(self._sync_current_to_advanced)
+            elif isinstance(widget, QDoubleSpinBox):
+                widget.valueChanged.connect(self._sync_current_to_advanced)
+
+    def _profile(self, name: str, widget: QWidget) -> QWidget:
+        return self.panel.register_profile(name, widget)
+
+    @staticmethod
+    def _function_combo() -> QComboBox:
+        combo = QComboBox()
+        for function in Ad2WaveformFunction:
+            combo.addItem(function.value, function.value)
+        return combo
+
+    def _build_single_page(self) -> None:
+        page = QWidget()
+        form = QFormLayout(page)
+        form.setContentsMargins(4, 4, 4, 4)
+        form.setVerticalSpacing(3)
+        self.single_function = self._profile(
+            f"{self.prefix}_single_function", self._function_combo()
+        )
+        frequency_name = "wave_frequency_hz" if self.channel_index == 0 else f"{self.prefix}_single_frequency_hz"
+        amplitude_name = "wave_amplitude_v" if self.channel_index == 0 else f"{self.prefix}_single_amplitude_v"
+        self.single_frequency = self._profile(frequency_name, double_spin(1000, 0.001))
+        self.single_amplitude = self._profile(amplitude_name, double_spin(1, 0, 5, 4))
+        self.single_offset = self._profile(
+            f"{self.prefix}_single_offset_v", double_spin(0, -5, 5, 4)
+        )
+        for label, widget in (
+            ("Type", self.single_function),
+            ("Frequency (Hz)", self.single_frequency),
+            ("Amplitude (V peak)", self.single_amplitude),
+            ("Offset (V)", self.single_offset),
+        ):
+            form.addRow(label, widget)
+        self.single_widgets = (
+            self.single_function,
+            self.single_frequency,
+            self.single_amplitude,
+            self.single_offset,
+        )
+        self.pages.addWidget(page)
+
+    def _build_sweep_page(self) -> None:
+        page = QWidget()
+        form = QFormLayout(page)
+        form.setContentsMargins(4, 4, 4, 4)
+        form.setVerticalSpacing(3)
+        self.sweep_start = self._profile(
+            f"{self.prefix}_sweep_start_hz", double_spin(900, 0, 100_000_000, 3)
+        )
+        self.sweep_stop = self._profile(
+            f"{self.prefix}_sweep_stop_hz", double_spin(1100, 0.001, 100_000_000, 3)
+        )
+        self.sweep_time = self._profile(
+            f"{self.prefix}_sweep_time_ms", double_spin(1, 0.001, 1_000_000, 4)
+        )
+        self.sweep_direction = self._profile(f"{self.prefix}_sweep_direction", QComboBox())
+        self.sweep_direction.addItem("Bidirectional", "Symmetric")
+        self.sweep_direction.addItem("Unidirectional up", "RampUp")
+        self.sweep_direction.addItem("Unidirectional down", "RampDown")
+        self.sweep_offset = self._profile(
+            f"{self.prefix}_sweep_offset_v", double_spin(0, -5, 5, 4)
+        )
+        for label, widget in (
+            ("Frequency start (Hz)", self.sweep_start),
+            ("Frequency stop (Hz)", self.sweep_stop),
+            ("Sweep time (ms)", self.sweep_time),
+            ("Direction", self.sweep_direction),
+            ("Offset (V)", self.sweep_offset),
+        ):
+            form.addRow(label, widget)
+        self.sweep_widgets = (
+            self.sweep_start,
+            self.sweep_stop,
+            self.sweep_time,
+            self.sweep_direction,
+            self.sweep_offset,
+        )
+        self.pages.addWidget(page)
+
+    def _build_advanced_page(self) -> None:
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.setSpacing(3)
+        advanced_tabs = QTabWidget()
+        page_layout.addWidget(advanced_tabs)
+        carrier, carrier_form = form_group("Carrier")
+        self.adv_function = self._profile(f"{self.prefix}_function", self._function_combo())
+        self.adv_frequency = self._profile(
+            f"{self.prefix}_frequency_hz", double_spin(1000, 0.001, 100_000_000, 3)
+        )
+        self.adv_amplitude = self._profile(
+            f"{self.prefix}_amplitude_v", double_spin(1, 0, 5, 4)
+        )
+        self.adv_offset = self._profile(f"{self.prefix}_offset_v", double_spin(0, -5, 5, 4))
+        self.adv_symmetry = self._profile(
+            f"{self.prefix}_symmetry_percent", double_spin(50, 0, 100, 3)
+        )
+        self.adv_phase = self._profile(
+            f"{self.prefix}_phase_deg", double_spin(0, -360, 360, 3)
+        )
+        for label, widget in (
+            ("Type", self.adv_function),
+            ("Frequency (Hz)", self.adv_frequency),
+            ("Amplitude (V peak)", self.adv_amplitude),
+            ("Offset (V)", self.adv_offset),
+            ("Symmetry (%)", self.adv_symmetry),
+            ("Phase (°)", self.adv_phase),
+        ):
+            carrier_form.addRow(label, widget)
+        advanced_tabs.addTab(carrier, "Carrier")
+
+        modulation, modulation_form = form_group("FM modulation node")
+        self.fm_enabled = self._profile(f"{self.prefix}_fm_enabled", QCheckBox())
+        self.fm_function = self._profile(f"{self.prefix}_fm_function", self._function_combo())
+        self.fm_frequency = self._profile(
+            f"{self.prefix}_fm_frequency_hz", double_spin(1000, 0.001, 100_000_000, 3)
+        )
+        self.fm_index = self._profile(
+            f"{self.prefix}_fm_index_percent", double_spin(0, 0, 100, 6)
+        )
+        self.fm_offset = self._profile(
+            f"{self.prefix}_fm_offset_percent", double_spin(0, -100, 100, 4)
+        )
+        self.fm_symmetry = self._profile(
+            f"{self.prefix}_fm_symmetry_percent", double_spin(50, 0, 100, 3)
+        )
+        self.fm_phase = self._profile(
+            f"{self.prefix}_fm_phase_deg", double_spin(0, -360, 360, 3)
+        )
+        for label, widget in (
+            ("Enabled", self.fm_enabled),
+            ("Type", self.fm_function),
+            ("Frequency (Hz)", self.fm_frequency),
+            ("Modulation index (%)", self.fm_index),
+            ("Offset (%)", self.fm_offset),
+            ("Symmetry (%)", self.fm_symmetry),
+            ("Phase (°)", self.fm_phase),
+        ):
+            modulation_form.addRow(label, widget)
+        advanced_tabs.addTab(modulation, "FM modulation")
+        self.pages.addWidget(page)
+
+    def _mode_changed(self, index: int) -> None:
+        self.pages.setCurrentIndex(index)
+        self.pages.updateGeometry()
+        self._sync_current_to_advanced()
+
+    def _sync_current_to_advanced(self, *_args: object) -> None:
+        if self._loading:
+            return
+        mode = self.mode.currentData()
+        if mode == "single":
+            self.adv_function.setCurrentIndex(
+                self.adv_function.findData(self.single_function.currentData())
+            )
+            self.adv_frequency.setValue(self.single_frequency.value())
+            self.adv_amplitude.setValue(self.single_amplitude.value())
+            self.adv_offset.setValue(self.single_offset.value())
+            self.fm_enabled.setChecked(False)
+        elif mode == "sweep":
+            start = self.sweep_start.value()
+            stop = self.sweep_stop.value()
+            if stop <= start:
+                return
+            center = (start + stop) / 2.0
+            self.adv_frequency.setValue(center)
+            self.adv_offset.setValue(self.sweep_offset.value())
+            self.fm_enabled.setChecked(True)
+            self.fm_function.setCurrentIndex(
+                self.fm_function.findData(self.sweep_direction.currentData())
+            )
+            self.fm_frequency.setValue(1000.0 / self.sweep_time.value())
+            self.fm_index.setValue(((stop - start) / 2.0) / center * 100.0)
+            self.fm_offset.setValue(0.0)
+            self.fm_symmetry.setValue(
+                50.0 if self.sweep_direction.currentData() == "Symmetric" else 100.0
+            )
+            self.fm_phase.setValue(0.0)
+
+    def arguments(self) -> Ad2WaveformChannelArgs:
+        if self.mode.currentData() == "sweep" and self.sweep_stop.value() <= self.sweep_start.value():
+            raise ValueError(f"CH{self.channel_index + 1} sweep stop must exceed sweep start")
+        self._sync_current_to_advanced()
+        return Ad2WaveformChannelArgs(
+            channel_index=self.channel_index,
+            enabled=self.enabled.isChecked(),
+            function=Ad2WaveformFunction(self.adv_function.currentData()),
+            frequency_hz=self.adv_frequency.value(),
+            amplitude_v=self.adv_amplitude.value(),
+            offset_v=self.adv_offset.value(),
+            symmetry_percent=self.adv_symmetry.value(),
+            phase_deg=self.adv_phase.value(),
+            fm_enabled=self.fm_enabled.isChecked(),
+            fm_function=Ad2WaveformFunction(self.fm_function.currentData()),
+            fm_frequency_hz=self.fm_frequency.value(),
+            fm_modulation_index_percent=self.fm_index.value(),
+            fm_offset_percent=self.fm_offset.value(),
+            fm_symmetry_percent=self.fm_symmetry.value(),
+            fm_phase_deg=self.fm_phase.value(),
+            idle_state=Ad2AnalogOutputIdle(self.idle.currentData()),
+            trigger=self.panel._trigger_args(self.trigger),
+        )
+
+    def apply_readback(self, channel: Ad2WaveformChannelArgs) -> None:
+        self._loading = True
+        try:
+            self.enabled.setChecked(channel.enabled)
+            self.idle.setCurrentIndex(self.idle.findData(channel.idle_state.value))
+            for combo, value in (
+                (self.adv_function, channel.function.value),
+                (self.single_function, channel.function.value),
+                (self.fm_function, channel.fm_function.value),
+            ):
+                combo.setCurrentIndex(combo.findData(value))
+            for widget, value in (
+                (self.adv_frequency, channel.frequency_hz),
+                (self.single_frequency, channel.frequency_hz),
+                (self.adv_amplitude, channel.amplitude_v),
+                (self.single_amplitude, channel.amplitude_v),
+                (self.adv_offset, channel.offset_v),
+                (self.single_offset, channel.offset_v),
+                (self.sweep_offset, channel.offset_v),
+                (self.adv_symmetry, channel.symmetry_percent),
+                (self.adv_phase, channel.phase_deg),
+                (self.fm_frequency, channel.fm_frequency_hz),
+                (self.fm_index, channel.fm_modulation_index_percent),
+                (self.fm_offset, channel.fm_offset_percent),
+                (self.fm_symmetry, channel.fm_symmetry_percent),
+                (self.fm_phase, channel.fm_phase_deg),
+            ):
+                widget.setValue(value)
+            self.fm_enabled.setChecked(channel.fm_enabled)
+            if channel.fm_enabled and channel.fm_frequency_hz > 0:
+                deviation = channel.frequency_hz * channel.fm_modulation_index_percent / 100.0
+                self.sweep_start.setValue(max(0.0, channel.frequency_hz - deviation))
+                self.sweep_stop.setValue(channel.frequency_hz + deviation)
+                self.sweep_time.setValue(1000.0 / channel.fm_frequency_hz)
+                direction = (
+                    channel.fm_function.value
+                    if channel.fm_function in {
+                        Ad2WaveformFunction.TRIANGLE,
+                        Ad2WaveformFunction.RAMP_UP,
+                        Ad2WaveformFunction.RAMP_DOWN,
+                    }
+                    else "Symmetric"
+                )
+                if direction == Ad2WaveformFunction.TRIANGLE.value:
+                    direction = "Symmetric"
+                self.sweep_direction.setCurrentIndex(self.sweep_direction.findData(direction))
+            self.applied_label.setText(
+                f"SDK applied: {channel.function.value}, {channel.frequency_hz:g} Hz, "
+                f"{channel.amplitude_v:g} V peak, offset {channel.offset_v:g} V"
+            )
+        finally:
+            self._loading = False
+
+
 class Ad2Panel(DevicePanel):
     def __init__(self, parent=None) -> None:
         super().__init__(DeviceId.AD2, parent)
         self.instrument_tabs = QTabWidget()
+        self.instrument_tabs.setMinimumWidth(0)
+        self.instrument_tabs.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding
+        )
         self.layout.addWidget(self.instrument_tabs, 1)
 
         waveform_tab = QWidget()
         waveform_layout = QGridLayout(waveform_tab)
-        group, form = form_group("Waveform")
-        self.wave_frequency = self.register_profile("wave_frequency_hz", double_spin(1000, 0.001))
-        self.wave_amplitude = self.register_profile("wave_amplitude_v", double_spin(1, 0, 1000))
-        form.addRow("Frequency (Hz)", self.wave_frequency)
-        form.addRow("Amplitude (V)", self.wave_amplitude)
-        waveform_layout.addWidget(group, 0, 0)
-        trigger_group, trigger_form = form_group("Trigger")
-        self.wave_trigger = self._add_trigger_controls("wave", trigger_form)
-        waveform_layout.addWidget(trigger_group, 0, 1)
+        waveform_layout.setContentsMargins(4, 4, 4, 4)
+        waveform_layout.setSpacing(4)
+        self.wave_channels = (
+            WaveformChannelEditor(self, 0),
+            WaveformChannelEditor(self, 1),
+        )
+        waveform_layout.addWidget(self.wave_channels[0], 0, 0)
+        waveform_layout.addWidget(self.wave_channels[1], 0, 1)
         waveform_layout.setColumnStretch(0, 1)
         waveform_layout.setColumnStretch(1, 1)
-        form.addRow(button_row(
+        waveform_layout.addWidget(button_row(
             self.action_button("wave_config", "Configure", DeviceOperation.AD2_WAVEFORM_CONFIGURE, self._wave_args),
             self.action_button("wave_start", "Start", DeviceOperation.AD2_WAVEFORM_START),
             self.action_button("wave_stop", "Stop", DeviceOperation.AD2_WAVEFORM_STOP),
             self.action_button("wave_trigger_pc", "PC trigger", DeviceOperation.AD2_SOFTWARE_TRIGGER),
-        ))
-        waveform_layout.setRowStretch(1, 1)
+        ), 1, 0, 1, 2)
         self.instrument_tabs.addTab(waveform_tab, "Waveform generator")
 
         scope_tab = QWidget()
@@ -417,6 +749,10 @@ class Ad2Panel(DevicePanel):
         self.instrument_tabs.addTab(digital_tab, "Digital output")
 
         self.readback_label = QLabel("No readback")
+        self.readback_label.setWordWrap(True)
+        self.readback_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
         self.layout.addWidget(self.readback_label)
         self.finish_layout()
 
@@ -467,9 +803,7 @@ class Ad2Panel(DevicePanel):
 
     def _wave_args(self) -> Ad2ConfigureWaveformArgs:
         return Ad2ConfigureWaveformArgs(
-            self.wave_frequency.value(),
-            self.wave_amplitude.value(),
-            self._trigger_args(self.wave_trigger),
+            channels=tuple(editor.arguments() for editor in self.wave_channels)
         )
 
     def _scope_args(self) -> Ad2ConfigureScopeArgs:
@@ -506,14 +840,37 @@ class Ad2Panel(DevicePanel):
                 repeat_count=int(values[f"{prefix}_trigger_repeat_count"]),
                 repeat_trigger=bool(values[f"{prefix}_trigger_repeat"]),
             )
+        for channel in (1, 2):
+            prefix = f"wave_ch{channel}"
+            if values[f"{prefix}_mode"] == "sweep":
+                if float(values[f"{prefix}_sweep_stop_hz"]) <= float(
+                    values[f"{prefix}_sweep_start_hz"]
+                ):
+                    raise ValueError(f"CH{channel} sweep stop must exceed sweep start")
 
     def update_readback(self, readback: object) -> None:
         if readback is not None:
-            self.readback_label.setText(str(readback))
+            channels = getattr(readback, "waveform_channels", ())
+            channel_text = ", ".join(
+                f"CH{channel.channel_index + 1} "
+                f"{'on' if channel.enabled else 'off'} "
+                f"{channel.frequency_hz:g} Hz/{channel.amplitude_v:g} V"
+                for channel in channels
+            ) or "not configured"
+            self.readback_label.setText(
+                f"Waveform: {channel_text} · "
+                f"{'running' if getattr(readback, 'waveform_running', False) else 'stopped'} · "
+                f"Scope: {getattr(readback, 'scope_state', 'idle')} · "
+                f"Digital output: "
+                f"{'running' if getattr(readback, 'digital_output_running', False) else 'stopped'}"
+            )
 
     def handle_result(self, result: object) -> None:
         if isinstance(result, Ad2ScopeReadResult):
             self.scope_plot.set_samples(result.samples_by_channel)
+        elif isinstance(result, Ad2WaveformAppliedResult):
+            for channel in result.channels:
+                self.wave_channels[channel.channel_index].apply_readback(channel)
 
 
 class PumpPanel(DevicePanel):
@@ -582,11 +939,14 @@ class PumpPanel(DevicePanel):
             self.action_button("unit", "Configure unit", DeviceOperation.PUMP_FLOW_UNIT_CONFIGURE, lambda: PumpConfigureFlowUnitArgs(PumpFlowUnit(self.flow_unit.currentData()))),
             self.action_button("recover", "Recover fault", DeviceOperation.PUMP_FAULT_RECOVER),
         ))
-        controls_layout.addWidget(group, 0, 2)
-        for column in range(3):
+        controls_layout.addWidget(group, 1, 0, 1, 2)
+        for column in range(2):
             controls_layout.setColumnStretch(column, 1)
         self.readback_label = QLabel("No readback")
         self.readback_label.setWordWrap(True)
+        self.readback_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
         self.layout.addWidget(self.readback_label)
         self.finish_layout()
 
@@ -642,6 +1002,10 @@ class ValvePanel(DevicePanel):
         form.addRow(button_row(self.action_button("wait", "Wait until ready", DeviceOperation.VALVE_WAIT_READY, self._wait_args)))
         self.layout.addWidget(group)
         self.readback_label = QLabel("No readback")
+        self.readback_label.setWordWrap(True)
+        self.readback_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
         self.layout.addWidget(self.readback_label)
         self.finish_layout()
 
@@ -739,7 +1103,7 @@ class CameraPanel(DevicePanel):
             ("Delay (s)", self.trigger_delay),
         ):
             form.addRow(label, widget)
-        controls_layout.addWidget(group, 0, 1, 2, 1)
+        controls_layout.addWidget(group, 0, 1)
 
         group, form = form_group("Master pulse")
         self.masterpulse_mode = self.register_profile("masterpulse_mode", QComboBox())
@@ -767,15 +1131,17 @@ class CameraPanel(DevicePanel):
             ("Global exposure", self.global_exposure),
         ):
             form.addRow(label, widget)
-        controls_layout.addWidget(group, 2, 1)
+        controls_layout.addWidget(group, 1, 1)
 
         self.preview = CameraPreview()
-        controls_layout.addWidget(self.preview, 0, 2, 3, 1)
+        controls_layout.addWidget(self.preview, 2, 1)
         controls_layout.setColumnStretch(0, 1)
         controls_layout.setColumnStretch(1, 1)
-        controls_layout.setColumnStretch(2, 2)
         self.readback_label = QLabel("No readback")
         self.readback_label.setWordWrap(True)
+        self.readback_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
         self.layout.addWidget(self.readback_label)
         self.finish_layout()
 
@@ -969,6 +1335,10 @@ class ZStagePanel(DevicePanel):
         ))
         self.layout.addWidget(group)
         self.readback_label = QLabel("No readback")
+        self.readback_label.setWordWrap(True)
+        self.readback_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
         self.layout.addWidget(self.readback_label)
         self.finish_layout()
 

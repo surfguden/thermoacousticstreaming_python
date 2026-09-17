@@ -11,14 +11,18 @@ import time
 from typing import Iterable
 
 from .configuration import (
+    AnalogOutputIdleState,
+    CarrierSettings,
     DigitalOutIdleState,
     DigitalOutType,
     DoConfig,
     ScopeChannelConfig,
     ScopeConfig,
     TriggerSource,
+    TriggerSettings,
     WaveformFunction,
     WfgConfig,
+    WfgChannelConfig,
     coerce_do_config,
     coerce_scope_config,
     coerce_wfg_config,
@@ -52,6 +56,11 @@ class AnalogDiscovery2:
         DigitalOutType.PULSE: 0,
         DigitalOutType.CUSTOM: 1,
         DigitalOutType.RANDOM: 2,
+    }
+    _ANALOG_OUT_IDLE = {
+        AnalogOutputIdleState.DISABLED: 0,
+        AnalogOutputIdleState.OFFSET: 1,
+        AnalogOutputIdleState.INITIAL: 2,
     }
     _DO_IDLE = {
         DigitalOutIdleState.INITIAL: 0,
@@ -185,6 +194,16 @@ class AnalogDiscovery2:
 
     def wfg_configure(self, config: WfgConfig | dict | None) -> None:
         self._apply_wfg_config(config, "wfg_configure()")
+
+    def wfg_readback(self) -> WfgConfig:
+        handle = self._require_handle("wfg_readback()")
+        configured = self._get_wfg_config()
+        channels = tuple(sorted(configured.channels, key=lambda item: item.channel_index))
+        return WfgConfig(
+            running=configured.running,
+            channels=[self._read_wfg_channel(handle, channel.channel_index) for channel in channels],
+            synchronize_state=configured.synchronize_state,
+        )
 
     def wfg_start_stop_all_ch(self, running: bool) -> None:
         new_config = deepcopy(self._get_wfg_config())
@@ -369,7 +388,9 @@ class AnalogDiscovery2:
             "FDwfAnalogOutRepeatTriggerGet": ([c_int, c_int, ctypes.POINTER(c_int)], c_int),
             "FDwfAnalogOutTriggerSourceSet": ([c_int, c_int, c_int], c_int),
             "FDwfAnalogOutTriggerSourceGet": ([c_int, c_int, ctypes.POINTER(c_int)], c_int),
+            "FDwfAnalogOutIdleInfo": ([c_int, c_int, ctypes.POINTER(c_int)], c_int),
             "FDwfAnalogOutIdleSet": ([c_int, c_int, c_int], c_int),
+            "FDwfAnalogOutIdleGet": ([c_int, c_int, ctypes.POINTER(c_int)], c_int),
             "FDwfAnalogOutMasterSet": ([c_int, c_int, c_int], c_int),
             "FDwfAnalogOutConfigure": ([c_int, c_int, c_int], c_int),
             "FDwfAnalogOutReset": ([c_int, c_int], c_int),
@@ -527,8 +548,24 @@ class AnalogDiscovery2:
             "ad2", "configure_wfg", command=config, response_stage="EFFECTIVE"
         ) as result:
             h = c_int(handle)
+            idle_values: dict[int, int] = {}
             for channel in config.channels:
                 idx = c_int(channel.channel_index)
+                supported_idle = c_int()
+                self._check(
+                    self._dwf.FDwfAnalogOutIdleInfo(h, idx, byref(supported_idle)),
+                    "FDwfAnalogOutIdleInfo",
+                )
+                idle_value = self._enum_value(self._ANALOG_OUT_IDLE, channel.idle_state)
+                if not supported_idle.value & (1 << idle_value):
+                    raise AnalogDiscoveryError(
+                        f"Analog-output idle state {channel.idle_state.value} is not "
+                        f"supported on channel {channel.channel_index + 1}"
+                    )
+                idle_values[channel.channel_index] = idle_value
+            for channel in config.channels:
+                idx = c_int(channel.channel_index)
+                idle_value = idle_values[channel.channel_index]
                 carrier_out_of_range, effective_carrier = self._configure_analog_node(h, idx, 0, channel.carrier)
                 fm_out_of_range = False
                 effective_fm: dict[str, object] | None = None
@@ -577,6 +614,10 @@ class AnalogDiscovery2:
                     "FDwfAnalogOutTriggerSourceSet",
                 )
                 self._check(
+                    self._dwf.FDwfAnalogOutIdleSet(h, idx, c_int(idle_value)),
+                    "FDwfAnalogOutIdleSet",
+                )
+                self._check(
                     self._dwf.FDwfAnalogOutConfigure(h, idx, c_int(int(config.running))),
                     "FDwfAnalogOutConfigure",
                 )
@@ -599,6 +640,87 @@ class AnalogDiscovery2:
                 f"out_of_range={[c.out_of_range for c in config.channels]}"
             )
             result["effective"] = config.effective_evidence()
+
+    def _read_wfg_channel(self, handle: int, channel_index: int) -> WfgChannelConfig:
+        h = c_int(handle)
+        idx = c_int(channel_index)
+
+        def read_node(node: int) -> CarrierSettings:
+            node_id = c_int(node)
+            enabled = c_int()
+            function = c_int()
+            frequency = c_double()
+            amplitude = c_double()
+            offset = c_double()
+            symmetry = c_double()
+            phase = c_double()
+            calls = (
+                ("FDwfAnalogOutNodeEnableGet", enabled),
+                ("FDwfAnalogOutNodeFunctionGet", function),
+                ("FDwfAnalogOutNodeFrequencyGet", frequency),
+                ("FDwfAnalogOutNodeAmplitudeGet", amplitude),
+                ("FDwfAnalogOutNodeOffsetGet", offset),
+                ("FDwfAnalogOutNodeSymmetryGet", symmetry),
+                ("FDwfAnalogOutNodePhaseGet", phase),
+            )
+            for name, value in calls:
+                self._check(
+                    getattr(self._dwf, name)(h, idx, node_id, byref(value)),
+                    name,
+                )
+            return CarrierSettings(
+                frequency_hz=frequency.value,
+                amplitude_v=amplitude.value,
+                offset_v=offset.value,
+                symmetry_percent=symmetry.value,
+                phase_deg=phase.value,
+                function=self._reverse_enum(self._FUNCTIONS, function.value, "waveform function"),
+                enable=bool(enabled.value),
+            )
+
+        wait = c_double()
+        run = c_double()
+        repeat = c_int()
+        repeat_trigger = c_int()
+        trigger_source = c_int()
+        idle = c_int()
+        for name, value in (
+            ("FDwfAnalogOutWaitGet", wait),
+            ("FDwfAnalogOutRunGet", run),
+            ("FDwfAnalogOutRepeatGet", repeat),
+            ("FDwfAnalogOutRepeatTriggerGet", repeat_trigger),
+            ("FDwfAnalogOutTriggerSourceGet", trigger_source),
+            ("FDwfAnalogOutIdleGet", idle),
+        ):
+            self._check(getattr(self._dwf, name)(h, idx, byref(value)), name)
+        carrier = read_node(0)
+        fm_mod = read_node(1)
+        return WfgChannelConfig(
+            channel_index=channel_index,
+            carrier=carrier,
+            fm_mod=fm_mod,
+            idle_state=self._reverse_enum(
+                self._ANALOG_OUT_IDLE, idle.value, "analog-output idle state"
+            ),
+            trigger=TriggerSettings(
+                sec_wait=wait.value,
+                sec_run=run.value,
+                repeat_count=repeat.value,
+                repeat_trigger=bool(repeat_trigger.value),
+                source=self._reverse_enum(
+                    self._TRIGGER_SOURCES, trigger_source.value, "trigger source"
+                ),
+            ),
+            effective_carrier=carrier,
+            effective_fm_mod=fm_mod if fm_mod.enable else None,
+        )
+
+    @staticmethod
+    def _reverse_enum(mapping: dict, raw_value: int, label: str) -> object:
+        for enum_value, numeric_value in mapping.items():
+            if numeric_value == raw_value:
+                return enum_value
+        raise AnalogDiscoveryError(f"Unsupported {label} value returned by SDK: {raw_value}")
 
     def _configure_analog_node(
         self, handle: c_int, channel_index: c_int, node: int, settings: object

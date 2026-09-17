@@ -81,6 +81,21 @@ class Ad2DigitalOutputType(str, Enum):
     RANDOM = "Random"
 
 
+class Ad2WaveformFunction(str, Enum):
+    SINE = "Sine"
+    SQUARE = "Square"
+    TRIANGLE = "Triangle"
+    RAMP_UP = "RampUp"
+    RAMP_DOWN = "RampDown"
+    DC = "DC"
+
+
+class Ad2AnalogOutputIdle(str, Enum):
+    DISABLED = "Disabled"
+    OFFSET = "Offset"
+    INITIAL = "Initial"
+
+
 class CameraMasterPulseMode(str, Enum):
     CONTINUOUS = "continuous"
     START = "start"
@@ -143,10 +158,69 @@ class Ad2TriggerSettingsArgs:
 
 
 @dataclass(frozen=True, slots=True)
+class Ad2WaveformChannelArgs:
+    channel_index: int
+    enabled: bool = True
+    function: Ad2WaveformFunction = Ad2WaveformFunction.SINE
+    frequency_hz: float = 1000.0
+    amplitude_v: float = 1.0
+    offset_v: float = 0.0
+    symmetry_percent: float = 50.0
+    phase_deg: float = 0.0
+    fm_enabled: bool = False
+    fm_function: Ad2WaveformFunction = Ad2WaveformFunction.SINE
+    fm_frequency_hz: float = 1000.0
+    fm_modulation_index_percent: float = 0.0
+    fm_offset_percent: float = 0.0
+    fm_symmetry_percent: float = 50.0
+    fm_phase_deg: float = 0.0
+    idle_state: Ad2AnalogOutputIdle = Ad2AnalogOutputIdle.INITIAL
+    trigger: Ad2TriggerSettingsArgs = field(default_factory=Ad2TriggerSettingsArgs)
+
+    def __post_init__(self) -> None:
+        if self.channel_index not in (0, 1):
+            raise ValueError("AD2 waveform channel_index must be 0 or 1")
+        _require_finite_positive("frequency_hz", self.frequency_hz)
+        _require_finite_nonnegative("amplitude_v", self.amplitude_v)
+        _require_finite_value("offset_v", self.offset_v)
+        _require_percentage("symmetry_percent", self.symmetry_percent)
+        _require_finite_value("phase_deg", self.phase_deg)
+        _require_finite_positive("fm_frequency_hz", self.fm_frequency_hz)
+        _require_finite_nonnegative(
+            "fm_modulation_index_percent", self.fm_modulation_index_percent
+        )
+        _require_finite_value("fm_offset_percent", self.fm_offset_percent)
+        _require_percentage("fm_symmetry_percent", self.fm_symmetry_percent)
+        _require_finite_value("fm_phase_deg", self.fm_phase_deg)
+
+
+@dataclass(frozen=True, slots=True)
 class Ad2ConfigureWaveformArgs:
     frequency_hz: float = 1000.0
     amplitude_v: float = 1.0
     trigger: Ad2TriggerSettingsArgs = field(default_factory=Ad2TriggerSettingsArgs)
+    channels: tuple[Ad2WaveformChannelArgs, ...] = ()
+
+    def __post_init__(self) -> None:
+        _require_finite_positive("frequency_hz", self.frequency_hz)
+        _require_finite_nonnegative("amplitude_v", self.amplitude_v)
+        if self.channels:
+            indices = tuple(channel.channel_index for channel in self.channels)
+            if len(indices) != 2 or set(indices) != {0, 1}:
+                raise ValueError("waveform configuration requires channels 0 and 1 exactly once")
+
+    def resolved_channels(self) -> tuple[Ad2WaveformChannelArgs, ...]:
+        if self.channels:
+            return tuple(sorted(self.channels, key=lambda channel: channel.channel_index))
+        return (
+            Ad2WaveformChannelArgs(
+                0,
+                frequency_hz=self.frequency_hz,
+                amplitude_v=self.amplitude_v,
+                trigger=self.trigger,
+            ),
+            Ad2WaveformChannelArgs(1, enabled=False),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +265,16 @@ class CameraConfigureRoiArgs:
 def _require_finite_nonnegative(name: str, value: float) -> None:
     if not math.isfinite(value) or value < 0:
         raise ValueError(f"{name} must be finite and non-negative")
+
+
+def _require_finite_value(name: str, value: float) -> None:
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be finite")
+
+
+def _require_percentage(name: str, value: float) -> None:
+    if not math.isfinite(value) or not 0 <= value <= 100:
+        raise ValueError(f"{name} must be finite and within 0..100")
 
 
 def _require_finite_positive(name: str, value: float) -> None:
@@ -349,6 +433,13 @@ class Ad2ScopeReadResult:
 
 
 @dataclass(frozen=True, slots=True)
+class Ad2WaveformAppliedResult:
+    channels: tuple[Ad2WaveformChannelArgs, ...]
+    running: bool = False
+    evidence_scope: str = "SDK_REPORTED_CONFIGURATION_NOT_MEASURED_OUTPUT"
+
+
+@dataclass(frozen=True, slots=True)
 class CameraSnapshotResult:
     frame: object
 
@@ -462,7 +553,7 @@ OPERATION_SPECS: dict[DeviceOperation, OperationSpec] = {
     DeviceOperation.DISCONNECT: OperationSpec(_ALL_DEVICES, NoArguments, _NONE_RESULT),
     DeviceOperation.SAFE_STOP: OperationSpec(_ALL_DEVICES, NoArguments, _NONE_RESULT),
     DeviceOperation.ABORT_ACTIVE: OperationSpec(_ALL_DEVICES, NoArguments, _NONE_RESULT),
-    DeviceOperation.AD2_WAVEFORM_CONFIGURE: OperationSpec(_only(DeviceId.AD2), Ad2ConfigureWaveformArgs, _NONE_RESULT),
+    DeviceOperation.AD2_WAVEFORM_CONFIGURE: OperationSpec(_only(DeviceId.AD2), Ad2ConfigureWaveformArgs, Ad2WaveformAppliedResult),
     DeviceOperation.AD2_WAVEFORM_START: OperationSpec(_only(DeviceId.AD2), NoArguments, _NONE_RESULT),
     DeviceOperation.AD2_WAVEFORM_STOP: OperationSpec(_only(DeviceId.AD2), NoArguments, _NONE_RESULT),
     DeviceOperation.AD2_SOFTWARE_TRIGGER: OperationSpec(_only(DeviceId.AD2), NoArguments, _NONE_RESULT),

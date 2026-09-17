@@ -15,6 +15,7 @@ from thermo_acoustic.application.commands import (
 )
 from thermo_acoustic.hal.ad2 import AD2Worker
 from thermo_acoustic.hal.camera import CameraWorker
+from thermo_acoustic.drivers.ad2.configuration import coerce_wfg_config
 
 
 def test_ad2_hal_forwards_waveform_and_digital_trigger_settings() -> None:
@@ -26,6 +27,9 @@ def test_ad2_hal_forwards_waveform_and_digital_trigger_settings() -> None:
 
         def wfg_configure(self, settings: dict[str, object]) -> None:
             calls.append(("wave", settings))
+
+        def wfg_readback(self):
+            return coerce_wfg_config(calls[-1][1])
 
         def do_configure(self, settings: dict[str, object]) -> None:
             calls.append(("digital", settings))
@@ -49,7 +53,7 @@ def test_ad2_hal_forwards_waveform_and_digital_trigger_settings() -> None:
         "repeat_count": 5,
         "repeat_trigger": True,
     }
-    assert calls[0][1]["trigger"] == expected
+    assert calls[0][1]["channels"][0]["trigger"] == expected
     assert calls[1][1]["trigger"] == expected
 
 

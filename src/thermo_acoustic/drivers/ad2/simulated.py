@@ -1,6 +1,15 @@
 from __future__ import annotations
 
-from .configuration import DoConfig, ScopeConfig, coerce_do_config, coerce_scope_config
+from copy import deepcopy
+
+from .configuration import (
+    DoConfig,
+    ScopeConfig,
+    WfgConfig,
+    coerce_do_config,
+    coerce_scope_config,
+    coerce_wfg_config,
+)
 
 
 class SimulatedAD2:
@@ -9,7 +18,7 @@ class SimulatedAD2:
         self.configured = False
         self.running = False
         self.triggered = False
-        self.configuration: object | None = None
+        self.configuration: WfgConfig | None = None
         self.scope_config: ScopeConfig | None = None
         self.scope_armed = False
         self.do_config: DoConfig | None = None
@@ -27,13 +36,25 @@ class SimulatedAD2:
         self.initialized = False
 
     def wfg_configure(self, configuration: object) -> None:
-        self.configuration = configuration
+        self.configuration = coerce_wfg_config(configuration)
+        for channel in self.configuration.channels:
+            channel.effective_carrier = deepcopy(channel.carrier)
+            channel.effective_fm_mod = (
+                deepcopy(channel.fm_mod) if channel.fm_mod.enable else None
+            )
         self.configured = True
+
+    def wfg_readback(self) -> WfgConfig:
+        if self.configuration is None:
+            raise RuntimeError("Configure AD2 before reading waveform settings")
+        return deepcopy(self.configuration)
 
     def wfg_start_stop_all_ch(self, running: bool) -> None:
         if running and not self.configured:
             raise RuntimeError("Configure AD2 before starting")
         self.running = running
+        if self.configuration is not None:
+            self.configuration.running = running
 
     def pc_trigger(self) -> None:
         self.triggered = True

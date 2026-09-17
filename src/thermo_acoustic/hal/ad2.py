@@ -7,12 +7,17 @@ from ..application.commands import (
     Ad2ConfigureDigitalOutputArgs,
     Ad2ConfigureScopeArgs,
     Ad2ConfigureWaveformArgs,
+    Ad2AnalogOutputIdle,
+    Ad2WaveformAppliedResult,
+    Ad2WaveformChannelArgs,
+    Ad2WaveformFunction,
     Ad2TriggerSettingsArgs,
+    Ad2TriggerSource,
     Ad2ScopeReadResult,
     DeviceOperation,
     NoArguments,
 )
-from ..domain.models import Ad2Readback, DeviceId
+from ..domain.models import Ad2Readback, Ad2WaveformChannelReadback, DeviceId
 from .base import DeviceWorker
 
 
@@ -33,22 +38,38 @@ class AD2Worker(DeviceWorker):
         self.register(DeviceOperation.AD2_DIGITAL_OUTPUT_STOP, self.stop_digital_output)
         self.register(DeviceOperation.AD2_DIGITAL_OUTPUT_RESET, self.reset_digital_output)
 
-    def configure_waveform(self, args: Ad2ConfigureWaveformArgs) -> None:
-        if args.frequency_hz <= 0 or not 0 <= args.amplitude_v <= 5:
-            raise ValueError("frequency_hz must be positive and amplitude_v must be 0..5")
+    def configure_waveform(
+        self, args: Ad2ConfigureWaveformArgs
+    ) -> Ad2WaveformAppliedResult:
+        channels = args.resolved_channels()
+        if any(not 0 <= channel.amplitude_v <= 5 for channel in channels):
+            raise ValueError("waveform amplitude_v must be within 0..5")
         self.device.wfg_configure(
             {
-                "frequency_hz": args.frequency_hz,
-                "amplitude_v": args.amplitude_v,
-                "trigger": self._trigger_settings(args.trigger),
+                "channels": [self._waveform_channel_settings(channel) for channel in channels]
             }
         )
         self.state.configured = True
         self.state.readback = replace(
             self.state.readback,
-            waveform_frequency_hz=args.frequency_hz,
-            waveform_amplitude_v=args.amplitude_v,
+            waveform_frequency_hz=channels[0].frequency_hz,
+            waveform_amplitude_v=channels[0].amplitude_v,
         )
+        try:
+            applied = self._waveform_result(self.device.wfg_readback())
+        except Exception as exc:
+            raise RuntimeError(
+                f"waveform configuration was applied, but SDK readback failed: {exc}"
+            ) from exc
+        channel_readbacks = tuple(self._waveform_readback(item) for item in applied.channels)
+        first = applied.channels[0]
+        self.state.readback = replace(
+            self.state.readback,
+            waveform_frequency_hz=first.frequency_hz,
+            waveform_amplitude_v=first.amplitude_v,
+            waveform_channels=channel_readbacks,
+        )
+        return applied
 
     def start_waveform(self, _args: NoArguments) -> None:
         if not self.state.configured:
@@ -163,3 +184,95 @@ class AD2Worker(DeviceWorker):
             "repeat_count": args.repeat_count,
             "repeat_trigger": args.repeat_trigger,
         }
+
+    @classmethod
+    def _waveform_channel_settings(
+        cls, args: Ad2WaveformChannelArgs
+    ) -> dict[str, object]:
+        return {
+            "channel_index": args.channel_index,
+            "carrier": {
+                "enable": args.enabled,
+                "function": args.function.value,
+                "frequency_hz": args.frequency_hz,
+                "amplitude_v": args.amplitude_v,
+                "offset_v": args.offset_v,
+                "symmetry_percent": args.symmetry_percent,
+                "phase_deg": args.phase_deg,
+            },
+            "fm_mod": {
+                "enable": args.fm_enabled,
+                "function": args.fm_function.value,
+                "frequency_hz": args.fm_frequency_hz,
+                "amplitude_v": args.fm_modulation_index_percent,
+                "offset_v": args.fm_offset_percent,
+                "symmetry_percent": args.fm_symmetry_percent,
+                "phase_deg": args.fm_phase_deg,
+            },
+            "idle_state": args.idle_state.value,
+            "trigger": cls._trigger_settings(args.trigger),
+        }
+
+    @staticmethod
+    def _waveform_result(config: object) -> Ad2WaveformAppliedResult:
+        channels = []
+        for channel in sorted(config.channels, key=lambda item: item.channel_index):
+            carrier = channel.carrier
+            fm = channel.fm_mod
+            trigger = channel.trigger
+            channels.append(
+                Ad2WaveformChannelArgs(
+                    channel_index=channel.channel_index,
+                    enabled=carrier.enable,
+                    function=Ad2WaveformFunction(carrier.function.value),
+                    frequency_hz=carrier.frequency_hz,
+                    amplitude_v=carrier.amplitude_v,
+                    offset_v=carrier.offset_v,
+                    symmetry_percent=carrier.symmetry_percent,
+                    phase_deg=carrier.phase_deg,
+                    fm_enabled=fm.enable,
+                    fm_function=Ad2WaveformFunction(fm.function.value),
+                    fm_frequency_hz=fm.frequency_hz,
+                    fm_modulation_index_percent=fm.amplitude_v,
+                    fm_offset_percent=fm.offset_v,
+                    fm_symmetry_percent=fm.symmetry_percent,
+                    fm_phase_deg=fm.phase_deg,
+                    idle_state=Ad2AnalogOutputIdle(channel.idle_state.value),
+                    trigger=Ad2TriggerSettingsArgs(
+                        source=Ad2TriggerSource(trigger.source.value),
+                        wait_s=trigger.sec_wait,
+                        run_s=trigger.sec_run,
+                        repeat_count=trigger.repeat_count,
+                        repeat_trigger=trigger.repeat_trigger,
+                    ),
+                )
+            )
+        return Ad2WaveformAppliedResult(tuple(channels), bool(config.running))
+
+    @staticmethod
+    def _waveform_readback(
+        channel: Ad2WaveformChannelArgs,
+    ) -> Ad2WaveformChannelReadback:
+        return Ad2WaveformChannelReadback(
+            channel_index=channel.channel_index,
+            enabled=channel.enabled,
+            function=channel.function.value,
+            frequency_hz=channel.frequency_hz,
+            amplitude_v=channel.amplitude_v,
+            offset_v=channel.offset_v,
+            symmetry_percent=channel.symmetry_percent,
+            phase_deg=channel.phase_deg,
+            fm_enabled=channel.fm_enabled,
+            fm_function=channel.fm_function.value,
+            fm_frequency_hz=channel.fm_frequency_hz,
+            fm_modulation_index_percent=channel.fm_modulation_index_percent,
+            fm_offset_percent=channel.fm_offset_percent,
+            fm_symmetry_percent=channel.fm_symmetry_percent,
+            fm_phase_deg=channel.fm_phase_deg,
+            idle_state=channel.idle_state.value,
+            trigger_source=channel.trigger.source.value,
+            trigger_wait_s=channel.trigger.wait_s,
+            trigger_run_s=channel.trigger.run_s,
+            trigger_repeat_count=channel.trigger.repeat_count,
+            trigger_repeat=channel.trigger.repeat_trigger,
+        )

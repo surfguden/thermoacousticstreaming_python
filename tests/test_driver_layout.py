@@ -9,7 +9,11 @@ from thermo_acoustic.drivers.ad2 import (
     ScopeState,
     SimulatedAD2,
 )
-from thermo_acoustic.drivers.ad2.configuration import TriggerSource
+from thermo_acoustic.drivers.ad2.configuration import (
+    AnalogOutputIdleState,
+    TriggerSource,
+    coerce_wfg_config,
+)
 from thermo_acoustic.drivers.camera import (
     CameraMode,
     HamamatsuDcamDriver,
@@ -201,6 +205,78 @@ def test_analog_discovery_do_config_keeps_custom_pattern_and_clock_settings() ->
     assert (channel.trigger.sec_wait, channel.trigger.sec_run) == (0.3, 0.4)
     assert channel.trigger.repeat_count == 2
     assert channel.trigger.repeat_trigger
+
+
+def test_analog_discovery_applies_idle_and_reads_waveform_settings_from_sdk() -> None:
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class FakeDwf:
+        def __getattr__(self, name):
+            def call(*args):
+                calls.append((name, args))
+                if name.endswith("FrequencyInfo"):
+                    args[-2]._obj.value = 0.001
+                    args[-1]._obj.value = 100_000_000.0
+                elif name.endswith("AmplitudeInfo"):
+                    args[-2]._obj.value = 0.0
+                    args[-1]._obj.value = 5.0
+                elif name == "FDwfAnalogOutIdleInfo":
+                    args[-1]._obj.value = 0b111
+                return 1
+
+            return call
+
+    device = AnalogDiscovery2(enabled=False, dwf=FakeDwf())
+    config = coerce_wfg_config(
+        {
+            "channels": [
+                {
+                    "channel_index": 0,
+                    "idle_state": "Offset",
+                    "carrier": {"frequency_hz": 1234.0, "amplitude_v": 0.75},
+                }
+            ]
+        }
+    )
+    device._configure_wfg(7, config)
+    idle_call = next(args for name, args in calls if name == "FDwfAnalogOutIdleSet")
+    assert idle_call[-1].value == 1
+
+    class FakeReadDwf:
+        def __getattr__(self, name):
+            def call(*args):
+                node = args[2].value if len(args) == 4 else None
+                values = {
+                    "FDwfAnalogOutNodeEnableGet": 1,
+                    "FDwfAnalogOutNodeFunctionGet": 2 if node == 0 else 3,
+                    "FDwfAnalogOutNodeFrequencyGet": 1234.0 if node == 0 else 500.0,
+                    "FDwfAnalogOutNodeAmplitudeGet": 0.75 if node == 0 else 10.0,
+                    "FDwfAnalogOutNodeOffsetGet": 0.1 if node == 0 else 0.0,
+                    "FDwfAnalogOutNodeSymmetryGet": 50.0,
+                    "FDwfAnalogOutNodePhaseGet": 0.0,
+                    "FDwfAnalogOutWaitGet": 0.2,
+                    "FDwfAnalogOutRunGet": 0.4,
+                    "FDwfAnalogOutRepeatGet": 3,
+                    "FDwfAnalogOutRepeatTriggerGet": 1,
+                    "FDwfAnalogOutTriggerSourceGet": 5,
+                    "FDwfAnalogOutIdleGet": 1,
+                }
+                args[-1]._obj.value = values[name]
+                return 1
+
+            return call
+
+    device._dwf = FakeReadDwf()
+    device.enabled = True
+    device.device_handle = 7
+    device.wfg_config = config
+    channel = device.wfg_readback().channels[0]
+    assert channel.carrier.frequency_hz == 1234.0
+    assert channel.carrier.function.value == "Square"
+    assert channel.fm_mod.frequency_hz == 500.0
+    assert channel.fm_mod.amplitude_v == 10.0
+    assert channel.idle_state is AnalogOutputIdleState.OFFSET
+    assert channel.trigger.source is TriggerSource.DIGITAL_IN
 
 
 def test_analog_discovery_cleanup_stops_resets_and_closes_directly() -> None:

@@ -146,6 +146,12 @@ class DigitalOutIdleState(str, Enum):
     ZET = "Zet"
 
 
+class AnalogOutputIdleState(str, Enum):
+    DISABLED = "Disabled"
+    OFFSET = "Offset"
+    INITIAL = "Initial"
+
+
 class TriggerSource(str, Enum):
     NONE = "trigsrcNone"
     PC = "trigsrcPC"
@@ -187,6 +193,7 @@ class WfgChannelConfig:
     carrier: CarrierSettings = field(default_factory=CarrierSettings)
     trigger: TriggerSettings = field(default_factory=TriggerSettings)
     fm_mod: CarrierSettings = field(default_factory=lambda: CarrierSettings(enable=False))
+    idle_state: AnalogOutputIdleState = AnalogOutputIdleState.INITIAL
     # Populated only after _configure_wfg() has successfully sent this
     # channel's SDK configuration.  The requested carrier/fm_mod objects stay
     # unchanged so durable records can preserve request and software-effective
@@ -239,6 +246,7 @@ class WfgConfig:
                     "carrier": asdict(carrier) if carrier is not None else None,
                     "fm_mod": fm_evidence,
                     "trigger": asdict(channel.trigger),
+                    "idle_state": channel.idle_state.value,
                     "running": self.running,
                     "out_of_range": channel.out_of_range,
                 }
@@ -630,6 +638,17 @@ def coerce_wfg_channel_config(config: WfgChannelConfig | dict[str, Any] | None, 
         carrier=coerce_carrier_settings(carrier_data, enable=True),
         trigger=coerce_trigger_settings(_first_present(config, "trigger", "trigger_settings", default=None)),
         fm_mod=coerce_carrier_settings(fm_data, enable=False),
+        idle_state=_coerce_enum(
+            AnalogOutputIdleState,
+            _first_present(
+                config,
+                "idle_state",
+                "idleState",
+                "idle",
+                default=AnalogOutputIdleState.INITIAL,
+            ),
+            AnalogOutputIdleState.INITIAL,
+        ),
         effective_carrier=(
             coerce_carrier_settings(effective_carrier_data)
             if effective_carrier_data is not None

@@ -79,7 +79,7 @@ class CameraPreview(QLabel):
         super().__init__("No image")
         self._image: QImage | None = None
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setMinimumSize(320, 220)
+        self.setMinimumSize(260, 180)
         self.setFrameShape(QLabel.Shape.Box)
 
     @property
