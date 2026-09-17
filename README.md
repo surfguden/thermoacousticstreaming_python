@@ -93,6 +93,18 @@ request IDs. EOF is treated as a quiet end of console input; it does not close
 the UI. `quit` requests coordinated safe-stop, disconnection, and worker-thread
 shutdown.
 
+The desktop UI provides one independent control tab for each device. Every tab
+shows connection, activity, fault, and typed readback state; normal actions use
+the same global FIFO as the console, while abort and stop controls retain their
+urgent path. Duplicate clicks for an already-pending action are rejected with a
+visible notice. Camera results include an image preview, and AD2 scope reads are
+drawn in an inline dependency-free plot.
+
+Use **File > Save settings** and **File > Load settings** to manage explicit
+JSON input profiles. Profiles contain editable control values only. Loading a
+profile never connects hardware, submits commands, restores stale readback, or
+replays a previous log.
+
 The application command surface exposes stable direct operations only. Driver
 coercion helpers, SDK handles, discovery functions, raw protocol methods, and
 camera persistence helpers are not HAL commands. Discovery and hardware probes
