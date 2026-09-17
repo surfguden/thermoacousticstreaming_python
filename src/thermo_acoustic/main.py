@@ -18,6 +18,6 @@ def main(argv: list[str] | None = None) -> int:
         elif item is not None:
             try: controller.submit(item)
             except Exception as exc: print(f"validation error: {exc}", flush=True)
-    reader.command.connect(handle); reader.output.connect(lambda text: print(text, flush=True)); controller.command_event.connect(lambda e: print(f"[{e.request_id}] {e.state} {e.message}", flush=True)); controller.start(); reader.start(); window.show(); return qt_app.exec()
+    reader.command.connect(handle); reader.output.connect(lambda text: print(text, flush=True)); controller.command_event.connect(lambda e: print(f"[{e.request_id}] {e.state} {e.message}", flush=True)); controller.start(); reader.start(); window.showMaximized(); return qt_app.exec()
 
 if __name__ == "__main__": raise SystemExit(main())

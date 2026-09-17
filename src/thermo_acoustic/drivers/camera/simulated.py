@@ -17,6 +17,7 @@ class SimulatedCamera:
         self.roi: SubRegion | None = None
         self.readout_time_s = 0.001
         self.minimum_trigger_interval_s = 0.002
+        self.trigger_global_exposure: bool | None = None
         self.sensor_width = 2048
         self.sensor_height = 1024
 
@@ -59,6 +60,10 @@ class SimulatedCamera:
         if "exposure_ms" in self.sequence_settings:
             self.configure_exposure_time(float(self.sequence_settings["exposure_ms"]))
         self.mode = CameraMode.SEQUENCE
+
+    def configure_trigger_global_exposure(self, enabled: bool) -> None:
+        self._require_initialized()
+        self.trigger_global_exposure = bool(enabled)
 
     def start_capture(self) -> None:
         self._require_initialized()

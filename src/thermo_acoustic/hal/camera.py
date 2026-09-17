@@ -61,6 +61,22 @@ class CameraWorker(DeviceWorker):
         settings = {"frames": args.frame_count}
         if args.exposure_ms is not None:
             settings["exposure_ms"] = args.exposure_ms
+        if args.trigger is not None:
+            trigger = args.trigger
+            settings.update(
+                trigger_source=trigger.source.value,
+                trigger_polarity=trigger.polarity.value,
+                trigger_active=trigger.active.value,
+                trigger_mode="normal",
+                trigger_times=trigger.trigger_times,
+                trigger_delay_s=trigger.delay_s,
+                masterpulse_mode=trigger.masterpulse_mode.value,
+                masterpulse_source=trigger.masterpulse_source.value,
+                masterpulse_interval_s=trigger.masterpulse_interval_s,
+                masterpulse_burst_times=trigger.masterpulse_burst_times,
+            )
+            if trigger.global_exposure is not None:
+                self.device.configure_trigger_global_exposure(trigger.global_exposure)
         self.device.configure_sequence(settings)
         self._sequence_args = args
         self.state.configured = True

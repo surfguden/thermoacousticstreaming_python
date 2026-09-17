@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -30,13 +31,20 @@ from ..application.commands import (
     Ad2ConfigureWaveformArgs,
     Ad2DigitalOutputType,
     Ad2ScopeReadResult,
+    Ad2TriggerSettingsArgs,
     Ad2TriggerSource,
+    CameraMasterPulseMode,
+    CameraMasterPulseSource,
     CameraConfigureExposureArgs,
     CameraConfigureRoiArgs,
     CameraConfigureSequenceArgs,
     CameraConfigureSnapshotArgs,
+    CameraSequenceTriggerArgs,
     CameraSequenceResult,
     CameraSnapshotResult,
+    CameraTriggerActive,
+    CameraTriggerPolarity,
+    CameraTriggerSource,
     DeviceCommand,
     DeviceOperation,
     PumpConfigureFlowUnitArgs,
@@ -104,6 +112,7 @@ class DevicePanel(QScrollArea):
         self._pending: dict[str, str] = {}
         self._buttons: dict[str, QPushButton] = {}
         self._button_labels: dict[str, str] = {}
+        self._action_operations: dict[str, DeviceOperation] = {}
         self._requires_connection: set[str] = set()
         self._profile_widgets: dict[str, QWidget] = {}
         self._connected = False
@@ -111,6 +120,8 @@ class DevicePanel(QScrollArea):
         self.setWidgetResizable(True)
         body = QWidget()
         self.layout = QVBoxLayout(body)
+        self.layout.setContentsMargins(6, 6, 6, 6)
+        self.layout.setSpacing(4)
         self.setWidget(body)
 
         header = QGroupBox(DEVICE_LABELS[device_id])
@@ -155,6 +166,7 @@ class DevicePanel(QScrollArea):
         button = QPushButton(label)
         self._buttons[action] = button
         self._button_labels[action] = label
+        self._action_operations[action] = operation
         if requires_connection:
             self._requires_connection.add(action)
         button.clicked.connect(
@@ -168,10 +180,18 @@ class DevicePanel(QScrollArea):
         operation: DeviceOperation,
         arguments: Callable[[], object] | None,
     ) -> None:
-        if action in self._pending:
+        duplicate_action = next(
+            (
+                pending_action
+                for pending_action in self._pending
+                if self._action_operations[pending_action] is operation
+            ),
+            None,
+        )
+        if duplicate_action is not None:
             self.show_notice(
                 f"{self._button_labels[action]} was not queued again; request "
-                f"{self._pending[action]} is still pending."
+                f"{self._pending[duplicate_action]} is still pending."
             )
             return
         try:
@@ -306,18 +326,33 @@ class DevicePanel(QScrollArea):
 class Ad2Panel(DevicePanel):
     def __init__(self, parent=None) -> None:
         super().__init__(DeviceId.AD2, parent)
-        group, form = form_group("Waveform generator")
+        self.instrument_tabs = QTabWidget()
+        self.layout.addWidget(self.instrument_tabs, 1)
+
+        waveform_tab = QWidget()
+        waveform_layout = QGridLayout(waveform_tab)
+        group, form = form_group("Waveform")
         self.wave_frequency = self.register_profile("wave_frequency_hz", double_spin(1000, 0.001))
         self.wave_amplitude = self.register_profile("wave_amplitude_v", double_spin(1, 0, 1000))
         form.addRow("Frequency (Hz)", self.wave_frequency)
         form.addRow("Amplitude (V)", self.wave_amplitude)
+        waveform_layout.addWidget(group, 0, 0)
+        trigger_group, trigger_form = form_group("Trigger")
+        self.wave_trigger = self._add_trigger_controls("wave", trigger_form)
+        waveform_layout.addWidget(trigger_group, 0, 1)
+        waveform_layout.setColumnStretch(0, 1)
+        waveform_layout.setColumnStretch(1, 1)
         form.addRow(button_row(
             self.action_button("wave_config", "Configure", DeviceOperation.AD2_WAVEFORM_CONFIGURE, self._wave_args),
             self.action_button("wave_start", "Start", DeviceOperation.AD2_WAVEFORM_START),
             self.action_button("wave_stop", "Stop", DeviceOperation.AD2_WAVEFORM_STOP),
+            self.action_button("wave_trigger_pc", "PC trigger", DeviceOperation.AD2_SOFTWARE_TRIGGER),
         ))
-        self.layout.addWidget(group)
+        waveform_layout.setRowStretch(1, 1)
+        self.instrument_tabs.addTab(waveform_tab, "Waveform generator")
 
+        scope_tab = QWidget()
+        scope_layout = QGridLayout(scope_tab)
         group, form = form_group("Oscilloscope")
         self.scope_count = self.register_profile("scope_sample_count", int_spin(1000, 1))
         self.scope_channels = self.register_profile("scope_channels", QLineEdit("0"))
@@ -333,9 +368,13 @@ class Ad2Panel(DevicePanel):
             self.action_button("scope_read", "Read", DeviceOperation.AD2_SCOPE_READ),
         ))
         self.scope_plot = ScopePlot()
-        form.addRow(self.scope_plot)
-        self.layout.addWidget(group)
+        scope_layout.addWidget(group, 0, 0)
+        scope_layout.addWidget(self.scope_plot, 0, 1)
+        scope_layout.setColumnStretch(1, 2)
+        self.instrument_tabs.addTab(scope_tab, "Oscilloscope")
 
+        digital_tab = QWidget()
+        digital_layout = QGridLayout(digital_tab)
         group, form = form_group("Digital output")
         self.do_channel = self.register_profile("do_channel", int_spin(0, 0, 31))
         self.do_enabled = self.register_profile("do_enabled", QCheckBox())
@@ -366,11 +405,56 @@ class Ad2Panel(DevicePanel):
             self.action_button("do_start", "Start", DeviceOperation.AD2_DIGITAL_OUTPUT_START),
             self.action_button("do_stop", "Stop", DeviceOperation.AD2_DIGITAL_OUTPUT_STOP),
             self.action_button("do_reset", "Reset", DeviceOperation.AD2_DIGITAL_OUTPUT_RESET),
+            self.action_button("do_trigger_pc", "PC trigger", DeviceOperation.AD2_SOFTWARE_TRIGGER),
         ))
-        self.layout.addWidget(group)
+        digital_layout.addWidget(group, 0, 0)
+        trigger_group, trigger_form = form_group("Trigger")
+        self.do_trigger = self._add_trigger_controls("do", trigger_form)
+        digital_layout.addWidget(trigger_group, 0, 1)
+        digital_layout.setColumnStretch(0, 1)
+        digital_layout.setColumnStretch(1, 1)
+        digital_layout.setRowStretch(1, 1)
+        self.instrument_tabs.addTab(digital_tab, "Digital output")
+
         self.readback_label = QLabel("No readback")
         self.layout.addWidget(self.readback_label)
         self.finish_layout()
+
+    def _add_trigger_controls(
+        self, prefix: str, form: QFormLayout
+    ) -> dict[str, QWidget]:
+        source = self.register_profile(f"{prefix}_trigger_source", QComboBox())
+        for trigger_source in Ad2TriggerSource:
+            source.addItem(trigger_source.value, trigger_source.value)
+        wait = self.register_profile(f"{prefix}_trigger_wait_s", double_spin(0, 0, 1_000_000))
+        run = self.register_profile(f"{prefix}_trigger_run_s", double_spin(0, 0, 1_000_000))
+        repeat = self.register_profile(f"{prefix}_trigger_repeat_count", int_spin(0, 0, 1_000_000))
+        retrigger = self.register_profile(f"{prefix}_trigger_repeat", QCheckBox())
+        for label, widget in (
+            ("Source", source),
+            ("Wait (s)", wait),
+            ("Run (s)", run),
+            ("Repeat count", repeat),
+            ("Retrigger each repeat", retrigger),
+        ):
+            form.addRow(label, widget)
+        return {
+            "source": source,
+            "wait": wait,
+            "run": run,
+            "repeat": repeat,
+            "retrigger": retrigger,
+        }
+
+    @staticmethod
+    def _trigger_args(controls: dict[str, QWidget]) -> Ad2TriggerSettingsArgs:
+        return Ad2TriggerSettingsArgs(
+            source=Ad2TriggerSource(controls["source"].currentData()),
+            wait_s=controls["wait"].value(),
+            run_s=controls["run"].value(),
+            repeat_count=controls["repeat"].value(),
+            repeat_trigger=controls["retrigger"].isChecked(),
+        )
 
     def _channels(self, text: str | None = None) -> tuple[int, ...]:
         raw = self.scope_channels.text() if text is None else text
@@ -382,7 +466,11 @@ class Ad2Panel(DevicePanel):
         return values
 
     def _wave_args(self) -> Ad2ConfigureWaveformArgs:
-        return Ad2ConfigureWaveformArgs(self.wave_frequency.value(), self.wave_amplitude.value())
+        return Ad2ConfigureWaveformArgs(
+            self.wave_frequency.value(),
+            self.wave_amplitude.value(),
+            self._trigger_args(self.wave_trigger),
+        )
 
     def _scope_args(self) -> Ad2ConfigureScopeArgs:
         return Ad2ConfigureScopeArgs(
@@ -400,6 +488,7 @@ class Ad2Panel(DevicePanel):
             counter_high_bits=self.do_high.value(), counter_low_bits=self.do_low.value(),
             start_high=self.do_start_high.isChecked(), bits=tuple(int(bit) for bit in text),
             frame_count=self.do_frames.value() if self.do_frames_enabled.isChecked() else None,
+            trigger=self._trigger_args(self.do_trigger),
         )
 
     def _validate_profile_values(self, values: dict[str, object]) -> None:
@@ -409,6 +498,14 @@ class Ad2Panel(DevicePanel):
             raise ValueError("do_bits may contain only 0 and 1")
         if values["do_type"] == Ad2DigitalOutputType.CUSTOM.value and not bits:
             raise ValueError("do_bits must not be empty for custom digital output")
+        for prefix in ("wave", "do"):
+            Ad2TriggerSettingsArgs(
+                source=Ad2TriggerSource(values[f"{prefix}_trigger_source"]),
+                wait_s=float(values[f"{prefix}_trigger_wait_s"]),
+                run_s=float(values[f"{prefix}_trigger_run_s"]),
+                repeat_count=int(values[f"{prefix}_trigger_repeat_count"]),
+                repeat_trigger=bool(values[f"{prefix}_trigger_repeat"]),
+            )
 
     def update_readback(self, readback: object) -> None:
         if readback is not None:
@@ -422,6 +519,9 @@ class Ad2Panel(DevicePanel):
 class PumpPanel(DevicePanel):
     def __init__(self, parent=None) -> None:
         super().__init__(DeviceId.PUMP, parent)
+        controls = QWidget()
+        controls_layout = QGridLayout(controls)
+        self.layout.addWidget(controls)
         group, form = form_group("Flow and fill level")
         self.flow = self.register_profile("flow_ul_min", double_spin(100))
         self.fill_level = self.register_profile("fill_level_ml", double_spin(0, 0))
@@ -440,7 +540,7 @@ class PumpPanel(DevicePanel):
             self.action_button("set_fill", "Set fill level", DeviceOperation.PUMP_FILL_LEVEL_SET, self._fill_args),
             self.action_button("read_fill", "Read fill level", DeviceOperation.PUMP_FILL_LEVEL_READ),
         ))
-        self.layout.addWidget(group)
+        controls_layout.addWidget(group, 0, 0)
 
         group, form = form_group("Refill, empty, and reference")
         self.move_flow_enabled = self.register_profile("move_flow_enabled", QCheckBox())
@@ -460,7 +560,7 @@ class PumpPanel(DevicePanel):
             self.action_button("empty", "Empty", DeviceOperation.PUMP_EMPTY, self._move_args),
             self.action_button("reference", "Reference move", DeviceOperation.PUMP_REFERENCE_MOVE, self._reference_args),
         ))
-        self.layout.addWidget(group)
+        controls_layout.addWidget(group, 0, 1)
 
         group, form = form_group("Configuration and recovery")
         self.syringe_mode = self.register_profile("syringe_mode", QComboBox())
@@ -482,7 +582,9 @@ class PumpPanel(DevicePanel):
             self.action_button("unit", "Configure unit", DeviceOperation.PUMP_FLOW_UNIT_CONFIGURE, lambda: PumpConfigureFlowUnitArgs(PumpFlowUnit(self.flow_unit.currentData()))),
             self.action_button("recover", "Recover fault", DeviceOperation.PUMP_FAULT_RECOVER),
         ))
-        self.layout.addWidget(group)
+        controls_layout.addWidget(group, 0, 2)
+        for column in range(3):
+            controls_layout.setColumnStretch(column, 1)
         self.readback_label = QLabel("No readback")
         self.readback_label.setWordWrap(True)
         self.layout.addWidget(self.readback_label)
@@ -560,6 +662,11 @@ class ValvePanel(DevicePanel):
 class CameraPanel(DevicePanel):
     def __init__(self, parent=None) -> None:
         super().__init__(DeviceId.CAMERA, parent)
+        controls = QWidget()
+        controls_layout = QGridLayout(controls)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setVerticalSpacing(2)
+        self.layout.addWidget(controls, 1)
         group, form = form_group("Snapshot and exposure")
         self.snapshot_exposure_enabled = self.register_profile("snapshot_exposure_enabled", QCheckBox())
         self.snapshot_exposure = self.register_profile("snapshot_exposure_ms", double_spin(2.5, 0, 1_000_000))
@@ -572,7 +679,7 @@ class CameraPanel(DevicePanel):
         ))
         form.addRow("Exposure (ms)", self.exposure)
         form.addRow(button_row(self.action_button("exposure", "Set exposure", DeviceOperation.CAMERA_EXPOSURE_CONFIGURE, lambda: CameraConfigureExposureArgs(self.exposure.value()))))
-        self.layout.addWidget(group)
+        controls_layout.addWidget(group, 0, 0)
 
         group, form = form_group("Buffered sequence")
         self.sequence_frames = self.register_profile("sequence_frames", int_spin(10, 1, 1_000_000))
@@ -593,7 +700,7 @@ class CameraPanel(DevicePanel):
         ))
         self.sequence_status = QLabel("No sequence")
         form.addRow("Progress", self.sequence_status)
-        self.layout.addWidget(group)
+        controls_layout.addWidget(group, 1, 0)
 
         group, form = form_group("ROI and timing")
         self.roi_x = self.register_profile("roi_x", int_spin(0, 0, 100_000))
@@ -606,9 +713,67 @@ class CameraPanel(DevicePanel):
             self.action_button("roi", "Set ROI", DeviceOperation.CAMERA_ROI_CONFIGURE, self._roi_args),
             self.action_button("timing", "Read timing", DeviceOperation.CAMERA_TIMING_READ),
         ))
-        self.layout.addWidget(group)
+        controls_layout.addWidget(group, 2, 0)
+
+        group, form = form_group("Sequence trigger")
+        self.trigger_enabled = self.register_profile("trigger_enabled", QCheckBox())
+        self.trigger_source = self.register_profile("trigger_source", QComboBox())
+        for value in CameraTriggerSource:
+            self.trigger_source.addItem(value.value, value.value)
+        self.trigger_polarity = self.register_profile("trigger_polarity", QComboBox())
+        for value in CameraTriggerPolarity:
+            self.trigger_polarity.addItem(value.value, value.value)
+        self.trigger_active = self.register_profile("trigger_active", QComboBox())
+        for value in CameraTriggerActive:
+            self.trigger_active.addItem(value.value, value.value)
+        self.trigger_times = self.register_profile("trigger_times", int_spin(1, 1, 10_000))
+        self.trigger_delay = self.register_profile(
+            "trigger_delay_s", double_spin(0, 0, 10.000002, 6)
+        )
+        for label, widget in (
+            ("Apply trigger settings", self.trigger_enabled),
+            ("Source", self.trigger_source),
+            ("Polarity", self.trigger_polarity),
+            ("Active", self.trigger_active),
+            ("Times", self.trigger_times),
+            ("Delay (s)", self.trigger_delay),
+        ):
+            form.addRow(label, widget)
+        controls_layout.addWidget(group, 0, 1, 2, 1)
+
+        group, form = form_group("Master pulse")
+        self.masterpulse_mode = self.register_profile("masterpulse_mode", QComboBox())
+        for value in CameraMasterPulseMode:
+            self.masterpulse_mode.addItem(value.value, value.value)
+        self.masterpulse_source = self.register_profile("masterpulse_source", QComboBox())
+        for value in CameraMasterPulseSource:
+            self.masterpulse_source.addItem(value.value, value.value)
+        self.masterpulse_interval = self.register_profile(
+            "masterpulse_interval_s", double_spin(0.01, 0.000005, 10, 6)
+        )
+        self.masterpulse_burst = self.register_profile(
+            "masterpulse_burst_times", int_spin(1, 1, 65_535)
+        )
+        self.global_exposure_enabled = self.register_profile(
+            "global_exposure_enabled", QCheckBox()
+        )
+        self.global_exposure = self.register_profile("global_exposure", QCheckBox())
+        for label, widget in (
+            ("Mode", self.masterpulse_mode),
+            ("Source", self.masterpulse_source),
+            ("Interval (s)", self.masterpulse_interval),
+            ("Burst times", self.masterpulse_burst),
+            ("Set global exposure", self.global_exposure_enabled),
+            ("Global exposure", self.global_exposure),
+        ):
+            form.addRow(label, widget)
+        controls_layout.addWidget(group, 2, 1)
+
         self.preview = CameraPreview()
-        self.layout.addWidget(self.preview)
+        controls_layout.addWidget(self.preview, 0, 2, 3, 1)
+        controls_layout.setColumnStretch(0, 1)
+        controls_layout.setColumnStretch(1, 1)
+        controls_layout.setColumnStretch(2, 2)
         self.readback_label = QLabel("No readback")
         self.readback_label.setWordWrap(True)
         self.layout.addWidget(self.readback_label)
@@ -620,10 +785,31 @@ class CameraPanel(DevicePanel):
         )
 
     def _sequence_args(self) -> CameraConfigureSequenceArgs:
+        trigger = None
+        if self.trigger_enabled.isChecked():
+            trigger = CameraSequenceTriggerArgs(
+                source=CameraTriggerSource(self.trigger_source.currentData()),
+                polarity=CameraTriggerPolarity(self.trigger_polarity.currentData()),
+                active=CameraTriggerActive(self.trigger_active.currentData()),
+                trigger_times=self.trigger_times.value(),
+                delay_s=self.trigger_delay.value(),
+                masterpulse_mode=CameraMasterPulseMode(self.masterpulse_mode.currentData()),
+                masterpulse_source=CameraMasterPulseSource(
+                    self.masterpulse_source.currentData()
+                ),
+                masterpulse_interval_s=self.masterpulse_interval.value(),
+                masterpulse_burst_times=self.masterpulse_burst.value(),
+                global_exposure=(
+                    self.global_exposure.isChecked()
+                    if self.global_exposure_enabled.isChecked()
+                    else None
+                ),
+            )
         return CameraConfigureSequenceArgs(
             self.sequence_frames.value(),
             self.sequence_exposure.value() if self.sequence_exposure_enabled.isChecked() else None,
             self.frame_timeout.value(), self.frame_poll.value(),
+            trigger,
         )
 
     def _roi_args(self) -> CameraConfigureRoiArgs:
@@ -632,10 +818,29 @@ class CameraPanel(DevicePanel):
         )
 
     def _validate_profile_values(self, values: dict[str, object]) -> None:
+        trigger = None
+        if values["trigger_enabled"]:
+            trigger = CameraSequenceTriggerArgs(
+                source=CameraTriggerSource(values["trigger_source"]),
+                polarity=CameraTriggerPolarity(values["trigger_polarity"]),
+                active=CameraTriggerActive(values["trigger_active"]),
+                trigger_times=int(values["trigger_times"]),
+                delay_s=float(values["trigger_delay_s"]),
+                masterpulse_mode=CameraMasterPulseMode(values["masterpulse_mode"]),
+                masterpulse_source=CameraMasterPulseSource(values["masterpulse_source"]),
+                masterpulse_interval_s=float(values["masterpulse_interval_s"]),
+                masterpulse_burst_times=int(values["masterpulse_burst_times"]),
+                global_exposure=(
+                    bool(values["global_exposure"])
+                    if values["global_exposure_enabled"]
+                    else None
+                ),
+            )
         CameraConfigureSequenceArgs(
             int(values["sequence_frames"]),
             float(values["sequence_exposure_ms"]) if values["sequence_exposure_enabled"] else None,
             float(values["frame_timeout_s"]), float(values["frame_poll_s"]),
+            trigger,
         )
         CameraConfigureRoiArgs(
             int(values["roi_x"]), int(values["roi_y"]), int(values["roi_width"]), int(values["roi_height"])
@@ -663,6 +868,9 @@ class CameraPanel(DevicePanel):
 class TecPanel(DevicePanel):
     def __init__(self, parent=None) -> None:
         super().__init__(DeviceId.TEC, parent)
+        controls = QWidget()
+        controls_layout = QGridLayout(controls)
+        self.layout.addWidget(controls)
         group, form = form_group("Setpoints and stabilization")
         self.target_mode = self.register_profile("target_mode", QComboBox())
         self.target_mode.addItem("Broadcast to both channels", "broadcast")
@@ -687,11 +895,13 @@ class TecPanel(DevicePanel):
             self.action_button("read", "Read status", DeviceOperation.TEC_STATUS_READ, TecReadStatusArgs),
             self.action_button("off", "Outputs off", DeviceOperation.TEC_OUTPUTS_OFF),
         ))
-        self.layout.addWidget(group)
+        controls_layout.addWidget(group, 0, 0)
         self.table = QTableWidget(2, 6)
         self.table.setHorizontalHeaderLabels(("Channel", "Current °C", "Target °C", "Output", "Ready", "Fault"))
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.layout.addWidget(self.table)
+        controls_layout.addWidget(self.table, 0, 1)
+        controls_layout.setColumnStretch(0, 1)
+        controls_layout.setColumnStretch(1, 2)
         self.finish_layout()
 
     def _targets(self) -> float | dict[int, float]:

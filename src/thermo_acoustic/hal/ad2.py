@@ -7,6 +7,7 @@ from ..application.commands import (
     Ad2ConfigureDigitalOutputArgs,
     Ad2ConfigureScopeArgs,
     Ad2ConfigureWaveformArgs,
+    Ad2TriggerSettingsArgs,
     Ad2ScopeReadResult,
     DeviceOperation,
     NoArguments,
@@ -36,7 +37,11 @@ class AD2Worker(DeviceWorker):
         if args.frequency_hz <= 0 or not 0 <= args.amplitude_v <= 5:
             raise ValueError("frequency_hz must be positive and amplitude_v must be 0..5")
         self.device.wfg_configure(
-            {"frequency_hz": args.frequency_hz, "amplitude_v": args.amplitude_v}
+            {
+                "frequency_hz": args.frequency_hz,
+                "amplitude_v": args.amplitude_v,
+                "trigger": self._trigger_settings(args.trigger),
+            }
         )
         self.state.configured = True
         self.state.readback = replace(
@@ -111,6 +116,7 @@ class AD2Worker(DeviceWorker):
                 "start_high": args.start_high,
                 "bits": list(args.bits),
                 "frame_count": args.frame_count,
+                "trigger": self._trigger_settings(args.trigger),
             }
         )
         self.state.readback = replace(
@@ -147,3 +153,13 @@ class AD2Worker(DeviceWorker):
         self.state.active = (
             self.state.readback.waveform_running or self.state.readback.scope_state == "armed"
         )
+
+    @staticmethod
+    def _trigger_settings(args: Ad2TriggerSettingsArgs) -> dict[str, object]:
+        return {
+            "source": args.source.value,
+            "sec_wait": args.wait_s,
+            "sec_run": args.run_s,
+            "repeat_count": args.repeat_count,
+            "repeat_trigger": args.repeat_trigger,
+        }

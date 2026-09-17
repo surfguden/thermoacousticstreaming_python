@@ -148,10 +148,26 @@ def test_analog_discovery_configures_directly_without_an_inner_driver() -> None:
     device._open_device = lambda _index: 7
     device._configure_wfg = lambda handle, config: configured.append((handle, config))
 
-    device.wfg_configure({"frequency_hz": 2500.0, "amplitude_v": 0.5})
+    device.wfg_configure(
+        {
+            "frequency_hz": 2500.0,
+            "amplitude_v": 0.5,
+            "trigger": {
+                "source": "trigsrcPC",
+                "sec_wait": 0.1,
+                "sec_run": 0.2,
+                "repeat_count": 3,
+                "repeat_trigger": True,
+            },
+        }
+    )
 
     assert device.device_handle == 7
     assert configured == [(7, device.wfg_config)]
+    trigger = device.wfg_config.channels[0].trigger
+    assert trigger.source is TriggerSource.PC
+    assert (trigger.sec_wait, trigger.sec_run, trigger.repeat_count) == (0.1, 0.2, 3)
+    assert trigger.repeat_trigger
 
 
 def test_analog_discovery_do_config_keeps_custom_pattern_and_clock_settings() -> None:
@@ -167,6 +183,13 @@ def test_analog_discovery_do_config_keeps_custom_pattern_and_clock_settings() ->
             "output_type": "Custom",
             "clock_frequency_hz": 500.0,
             "bits": [1, 1, 0, 0],
+            "trigger": {
+                "source": "trigsrcDigitalIn",
+                "sec_wait": 0.3,
+                "sec_run": 0.4,
+                "repeat_count": 2,
+                "repeat_trigger": True,
+            },
         }
     )
 
@@ -174,6 +197,10 @@ def test_analog_discovery_do_config_keeps_custom_pattern_and_clock_settings() ->
     assert configured == [(11, device.do_config)]
     assert channel.clock_frequency_hz == 500.0
     assert channel.custom_data.bits == [1, 1, 0, 0]
+    assert channel.trigger.source is TriggerSource.DIGITAL_IN
+    assert (channel.trigger.sec_wait, channel.trigger.sec_run) == (0.3, 0.4)
+    assert channel.trigger.repeat_count == 2
+    assert channel.trigger.repeat_trigger
 
 
 def test_analog_discovery_cleanup_stops_resets_and_closes_directly() -> None:

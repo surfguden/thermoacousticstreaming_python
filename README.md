@@ -97,7 +97,12 @@ The desktop UI provides one independent control tab for each device. Every tab
 shows connection, activity, fault, and typed readback state; normal actions use
 the same global FIFO as the console, while abort and stop controls retain their
 urgent path. Duplicate clicks for an already-pending action are rejected with a
-visible notice. Camera results include an image preview, and AD2 scope reads are
+visible notice. The controls use grouped multi-column layouts sized for a
+maximized 1920 × 1080 display, with scrolling retained only as a fallback for
+smaller windows. AD2 has separate Oscilloscope, Waveform generator, and Digital
+output sub-tabs. Scope, waveform, and digital-output triggers are typed through
+the HAL to the driver; camera sequence trigger and master-pulse settings follow
+the same route. Camera results include an image preview, and AD2 scope reads are
 drawn in an inline dependency-free plot.
 
 Use **File > Save settings** and **File > Load settings** to manage explicit

@@ -81,6 +81,34 @@ class Ad2DigitalOutputType(str, Enum):
     RANDOM = "Random"
 
 
+class CameraMasterPulseMode(str, Enum):
+    CONTINUOUS = "continuous"
+    START = "start"
+    BURST = "burst"
+
+
+class CameraMasterPulseSource(str, Enum):
+    EXTERNAL = "external"
+    SOFTWARE = "software"
+
+
+class CameraTriggerSource(str, Enum):
+    INTERNAL = "internal"
+    EXTERNAL = "external"
+    SOFTWARE = "software"
+    MASTERPULSE = "masterpulse"
+
+
+class CameraTriggerPolarity(str, Enum):
+    NEGATIVE = "negative"
+    POSITIVE = "positive"
+
+
+class CameraTriggerActive(str, Enum):
+    EDGE = "edge"
+    LEVEL = "level"
+
+
 class PumpFlowUnit(str, Enum):
     MICROLITRE_PER_MINUTE = "ul/min"
     MILLILITRE_PER_MINUTE = "ml/min"
@@ -100,9 +128,25 @@ class NoArguments:
 
 
 @dataclass(frozen=True, slots=True)
+class Ad2TriggerSettingsArgs:
+    source: Ad2TriggerSource = Ad2TriggerSource.NONE
+    wait_s: float = 0.0
+    run_s: float = 0.0
+    repeat_count: int = 0
+    repeat_trigger: bool = False
+
+    def __post_init__(self) -> None:
+        _require_finite_nonnegative("wait_s", self.wait_s)
+        _require_finite_nonnegative("run_s", self.run_s)
+        if self.repeat_count < 0:
+            raise ValueError("repeat_count must be non-negative")
+
+
+@dataclass(frozen=True, slots=True)
 class Ad2ConfigureWaveformArgs:
     frequency_hz: float = 1000.0
     amplitude_v: float = 1.0
+    trigger: Ad2TriggerSettingsArgs = field(default_factory=Ad2TriggerSettingsArgs)
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +167,7 @@ class Ad2ConfigureDigitalOutputArgs:
     start_high: bool = True
     bits: tuple[int, ...] = ()
     frame_count: int | None = None
+    trigger: Ad2TriggerSettingsArgs = field(default_factory=Ad2TriggerSettingsArgs)
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,11 +199,36 @@ def _require_finite_positive(name: str, value: float) -> None:
 
 
 @dataclass(frozen=True, slots=True)
+class CameraSequenceTriggerArgs:
+    source: CameraTriggerSource = CameraTriggerSource.INTERNAL
+    polarity: CameraTriggerPolarity = CameraTriggerPolarity.POSITIVE
+    active: CameraTriggerActive = CameraTriggerActive.EDGE
+    trigger_times: int = 1
+    delay_s: float = 0.0
+    masterpulse_mode: CameraMasterPulseMode = CameraMasterPulseMode.CONTINUOUS
+    masterpulse_source: CameraMasterPulseSource = CameraMasterPulseSource.SOFTWARE
+    masterpulse_interval_s: float = 0.01
+    masterpulse_burst_times: int = 1
+    global_exposure: bool | None = None
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.trigger_times <= 10_000:
+            raise ValueError("trigger_times must be within 1..10000")
+        if not math.isfinite(self.delay_s) or not 0 <= self.delay_s <= 10.000002:
+            raise ValueError("delay_s must be finite and within 0..10.000002")
+        if not math.isfinite(self.masterpulse_interval_s) or not 0.000005 <= self.masterpulse_interval_s <= 10:
+            raise ValueError("masterpulse_interval_s must be finite and within 0.000005..10")
+        if not 1 <= self.masterpulse_burst_times <= 65_535:
+            raise ValueError("masterpulse_burst_times must be within 1..65535")
+
+
+@dataclass(frozen=True, slots=True)
 class CameraConfigureSequenceArgs:
     frame_count: int
     exposure_ms: float | None = None
     frame_timeout_s: float = 30.0
     poll_interval_s: float = 0.05
+    trigger: CameraSequenceTriggerArgs | None = None
 
     def __post_init__(self) -> None:
         if self.frame_count <= 0:
