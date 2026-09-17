@@ -4,9 +4,9 @@ import math
 
 import numpy as np
 from PIL import Image
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import QLabel, QSizePolicy, QWidget
+from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 
 class ScopePlot(QWidget):
@@ -17,15 +17,45 @@ class ScopePlot(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.samples_by_channel: dict[int, list[float]] = {}
+        self.sample_frequency_hz = 1.0
+        self._x_view: tuple[float, float] | None = None
+        self._y_view: tuple[float, float] | None = None
+        self._drag_origin: QPoint | None = None
+        self._drag_views: tuple[tuple[float, float], tuple[float, float]] | None = None
         self.setMinimumHeight(180)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-    def set_samples(self, samples_by_channel: dict[int, list[float]]) -> None:
+    def set_samples(
+        self, samples_by_channel: dict[int, list[float]], sample_frequency_hz: float | None = None
+    ) -> None:
         self.samples_by_channel = {
             int(channel): [float(value) for value in samples]
             for channel, samples in samples_by_channel.items()
         }
+        if sample_frequency_hz is not None and sample_frequency_hz > 0:
+            self.sample_frequency_hz = float(sample_frequency_hz)
+        self.reset_view()
+
+    def reset_view(self) -> None:
+        self._x_view = None
+        self._y_view = None
         self.update()
+
+    def _data_bounds(self) -> tuple[tuple[float, float], tuple[float, float]] | None:
+        finite = [
+            value
+            for samples in self.samples_by_channel.values()
+            for value in samples
+            if math.isfinite(value)
+        ]
+        if not finite:
+            return None
+        low, high = min(finite), max(finite)
+        if math.isclose(low, high):
+            low -= 0.5
+            high += 0.5
+        count = max((len(samples) for samples in self.samples_by_channel.values()), default=1)
+        return (0.0, max((count - 1) / self.sample_frequency_hz, 1 / self.sample_frequency_hz)), (low, high)
 
     def paintEvent(self, event) -> None:
         del event
@@ -35,26 +65,22 @@ class ScopePlot(QWidget):
         area = QRectF(42, 16, max(1, self.width() - 58), max(1, self.height() - 48))
         painter.setPen(QPen(self.palette().mid().color(), 1))
         painter.drawRect(area)
-        finite = [
-            value
-            for samples in self.samples_by_channel.values()
-            for value in samples
-            if math.isfinite(value)
-        ]
-        if not finite:
+        bounds = self._data_bounds()
+        if bounds is None:
             painter.drawText(area, Qt.AlignmentFlag.AlignCenter, "No scope data")
             return
-        low, high = min(finite), max(finite)
-        if math.isclose(low, high):
-            low -= 0.5
-            high += 0.5
-        max_count = max((len(samples) for samples in self.samples_by_channel.values()), default=1)
+        (data_x0, data_x1), (data_y0, data_y1) = bounds
+        x0, x1 = self._x_view or (data_x0, data_x1)
+        low, high = self._y_view or (data_y0, data_y1)
         for color_index, (channel, samples) in enumerate(sorted(self.samples_by_channel.items())):
             points = []
             for index, value in enumerate(samples):
                 if not math.isfinite(value):
                     continue
-                x = area.left() + area.width() * index / max(max_count - 1, 1)
+                time_s = index / self.sample_frequency_hz
+                if not x0 <= time_s <= x1:
+                    continue
+                x = area.left() + area.width() * (time_s - x0) / (x1 - x0)
                 y = area.bottom() - area.height() * (value - low) / (high - low)
                 points.append(QPointF(x, y))
             painter.setPen(QPen(self._COLORS[color_index % len(self._COLORS)], 1.5))
@@ -64,12 +90,84 @@ class ScopePlot(QWidget):
                 painter.drawPolyline(points)
             painter.drawText(
                 QPointF(area.left() + color_index * 72, self.height() - 10),
-                f"Channel {channel}",
+                f"CH{channel + 1}",
             )
         painter.setPen(self.palette().text().color())
         painter.drawText(2, 22, f"{high:.4g}")
         painter.drawText(2, int(area.bottom()), f"{low:.4g}")
-        painter.drawText(area, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight, "sample")
+        painter.drawText(area, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight, "time (s)")
+        painter.drawText(int(area.left()), self.height() - 10, f"{x0:.5g}")
+        painter.drawText(int(area.right()) - 70, self.height() - 10, f"{x1:.5g}")
+
+    def wheelEvent(self, event) -> None:
+        bounds = self._data_bounds()
+        if bounds is None:
+            return
+        x_view = self._x_view or bounds[0]
+        y_view = self._y_view or bounds[1]
+        factor = 0.8 if event.angleDelta().y() > 0 else 1.25
+        cursor_x = min(max((event.position().x() - 42) / max(self.width() - 58, 1), 0.0), 1.0)
+        cursor_y = min(max((event.position().y() - 16) / max(self.height() - 48, 1), 0.0), 1.0)
+        x_anchor = x_view[0] + cursor_x * (x_view[1] - x_view[0])
+        y_anchor = y_view[1] - cursor_y * (y_view[1] - y_view[0])
+        self._x_view = (
+            x_anchor - (x_anchor - x_view[0]) * factor,
+            x_anchor + (x_view[1] - x_anchor) * factor,
+        )
+        self._y_view = (
+            y_anchor - (y_anchor - y_view[0]) * factor,
+            y_anchor + (y_view[1] - y_anchor) * factor,
+        )
+        self.update()
+        event.accept()
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self._data_bounds() is not None:
+            bounds = self._data_bounds()
+            self._drag_origin = event.position().toPoint()
+            self._drag_views = (self._x_view or bounds[0], self._y_view or bounds[1])
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._drag_origin is None or self._drag_views is None:
+            return
+        dx = event.position().x() - self._drag_origin.x()
+        dy = event.position().y() - self._drag_origin.y()
+        x_view, y_view = self._drag_views
+        x_shift = -dx / max(self.width() - 58, 1) * (x_view[1] - x_view[0])
+        y_shift = dy / max(self.height() - 48, 1) * (y_view[1] - y_view[0])
+        self._x_view = (x_view[0] + x_shift, x_view[1] + x_shift)
+        self._y_view = (y_view[0] + y_shift, y_view[1] + y_shift)
+        self.update()
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_origin = None
+            self._drag_views = None
+            self.unsetCursor()
+
+
+class ScopePlotWindow(QDialog):
+    """Reusable, non-modal scope viewer with Qt-native zoom and pan."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("AD2 oscilloscope capture")
+        self.resize(1000, 650)
+        layout = QVBoxLayout(self)
+        self.plot = ScopePlot()
+        layout.addWidget(self.plot, 1)
+        hint = QLabel("Mouse wheel: zoom · left drag: pan")
+        reset = QPushButton("Autoscale / reset")
+        reset.clicked.connect(self.plot.reset_view)
+        actions = QHBoxLayout()
+        actions.addWidget(hint)
+        actions.addStretch(1)
+        actions.addWidget(reset)
+        layout.addLayout(actions)
+
+    def set_samples(self, samples: dict[int, list[float]], sample_frequency_hz: float) -> None:
+        self.plot.set_samples(samples, sample_frequency_hz)
 
 
 class CameraPreview(QLabel):

@@ -80,6 +80,17 @@ class SimulatedAD2:
         self.scope_config = coerce_scope_config(configuration)
         self.scope_armed = True
 
+    def scope_readback(self) -> ScopeConfig:
+        if self.scope_config is None:
+            raise RuntimeError("Configure scope before reading its settings")
+        return deepcopy(self.scope_config)
+
+    def scope_poll(self) -> dict[int, list[float]] | None:
+        return self.scope_read()
+
+    def scope_abort(self) -> None:
+        self.scope_armed = False
+
     def scope_read(self) -> dict[int, list[float]]:
         if not self.scope_armed or self.scope_config is None:
             raise RuntimeError("scope_read() requires an armed scope")

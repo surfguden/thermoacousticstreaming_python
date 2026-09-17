@@ -11,7 +11,12 @@ from thermo_acoustic.drivers.ad2 import (
 )
 from thermo_acoustic.drivers.ad2.configuration import (
     AnalogOutputIdleState,
+    ScopeTriggerCondition,
+    ScopeTriggerFilter,
+    ScopeTriggerLengthCondition,
+    ScopeTriggerType,
     TriggerSource,
+    coerce_scope_config,
     coerce_wfg_config,
 )
 from thermo_acoustic.drivers.camera import (
@@ -358,4 +363,181 @@ def test_simulated_scope_uses_the_same_arm_and_read_lifecycle() -> None:
 
     assert samples == {0: [0.0, 0.0, 0.0], 1: [0.0, 0.0, 0.0]}
     assert device.triggered
+    assert not device.scope_armed
+
+
+def test_scope_configuration_models_shared_timing_and_detector_trigger() -> None:
+    config = coerce_scope_config(
+        {
+            "sample_count": 4000,
+            "sample_frequency_hz": 2_000_000,
+            "pretrigger_samples": 1000,
+            "channels": [
+                {"channel_index": 0, "range_v": 2.0, "offset_v": 0.1},
+                {"channel_index": 1, "range_v": 5.0, "offset_v": -0.2},
+            ],
+            "trigger": {
+                "source": "trigsrcDetectorAnalogIn",
+                "channel_index": 1,
+                "trigger_type": "Pulse",
+                "condition": "Falling/Negative",
+                "filter": "Average",
+                "level_v": 0.4,
+                "hysteresis_v": 0.05,
+                "length_condition": "Less",
+                "length_s": 0.001,
+                "holdoff_s": 0.002,
+                "auto_timeout_s": 1.0,
+            },
+        }
+    )
+
+    assert config.trigger_position_s == pytest.approx(0.0005)
+    assert config.trigger.source is TriggerSource.DETECTOR_ANALOG_IN
+    assert config.trigger.channel_index == 1
+    assert config.trigger.trigger_type is ScopeTriggerType.PULSE
+    assert config.trigger.condition is ScopeTriggerCondition.FALLING_NEGATIVE
+    assert config.trigger.filter is ScopeTriggerFilter.AVERAGE
+    assert config.trigger.length_condition is ScopeTriggerLengthCondition.LESS
+    assert [channel.channel_index for channel in config.channels] == [0, 1]
+    assert ScopeConfig(trigger_source=TriggerSource.PC).trigger.source is TriggerSource.PC
+
+
+def test_scope_configuration_reaches_each_waveforms_trigger_setter() -> None:
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class RecordingDwf:
+        def __getattr__(self, name):
+            def call(*arguments):
+                calls.append(
+                    (
+                        name,
+                        tuple(
+                            argument.value if hasattr(argument, "value") else argument
+                            for argument in arguments
+                        ),
+                    )
+                )
+                return 1
+
+            return call
+
+    device = AnalogDiscovery2(enabled=False)
+    device._dwf = RecordingDwf()
+    config = coerce_scope_config(
+        {
+            "sample_count": 4000,
+            "sample_frequency_hz": 2_000_000,
+            "pretrigger_samples": 1000,
+            "channels": [0, 1],
+            "trigger": {
+                "source": "trigsrcDetectorAnalogIn",
+                "channel_index": 1,
+                "trigger_type": "Pulse",
+                "condition": "Falling/Negative",
+                "filter": "Average",
+                "level_v": 0.4,
+                "hysteresis_v": 0.05,
+                "length_condition": "Less",
+                "length_s": 0.001,
+                "holdoff_s": 0.002,
+                "auto_timeout_s": 1.0,
+            },
+        }
+    )
+    device._configure_scope(7, config)
+
+    by_name = {name: arguments for name, arguments in calls}
+    assert by_name["FDwfAnalogInFrequencySet"] == (7, 2_000_000.0)
+    assert by_name["FDwfAnalogInBufferSizeSet"] == (7, 4000)
+    assert by_name["FDwfAnalogInTriggerSourceSet"] == (7, 2)
+    assert by_name["FDwfAnalogInTriggerPositionSet"] == (7, pytest.approx(0.0005))
+    assert by_name["FDwfAnalogInTriggerChannelSet"] == (7, 1)
+    assert by_name["FDwfAnalogInTriggerTypeSet"] == (7, 1)
+    assert by_name["FDwfAnalogInTriggerConditionSet"] == (7, 1)
+    assert by_name["FDwfAnalogInTriggerFilterSet"] == (7, 1)
+    assert by_name["FDwfAnalogInTriggerLevelSet"] == (7, 0.4)
+    assert by_name["FDwfAnalogInTriggerHysteresisSet"] == (7, 0.05)
+    assert by_name["FDwfAnalogInTriggerLengthConditionSet"] == (7, 0)
+    assert by_name["FDwfAnalogInTriggerLengthSet"] == (7, 0.001)
+    assert by_name["FDwfAnalogInTriggerHoldOffSet"] == (7, 0.002)
+    assert by_name["FDwfAnalogInTriggerAutoTimeoutSet"] == (7, 1.0)
+
+
+def test_scope_sdk_readback_reports_actual_applied_values() -> None:
+    scalar_values = {
+        "FDwfAnalogInFrequencyGet": 1_999_999.0,
+        "FDwfAnalogInBufferSizeGet": 3999,
+        "FDwfAnalogInTriggerPositionGet": 0.0005,
+        "FDwfAnalogInTriggerSourceGet": 2,
+        "FDwfAnalogInTriggerChannelGet": 1,
+        "FDwfAnalogInTriggerTypeGet": 1,
+        "FDwfAnalogInTriggerConditionGet": 1,
+        "FDwfAnalogInTriggerFilterGet": 1,
+        "FDwfAnalogInTriggerLevelGet": 0.4,
+        "FDwfAnalogInTriggerHysteresisGet": 0.05,
+        "FDwfAnalogInTriggerLengthConditionGet": 0,
+        "FDwfAnalogInTriggerLengthGet": 0.001,
+        "FDwfAnalogInTriggerHoldOffGet": 0.002,
+        "FDwfAnalogInTriggerAutoTimeoutGet": 1.0,
+    }
+
+    class ReadbackDwf:
+        def __getattr__(self, name):
+            def call(*arguments):
+                pointer = arguments[-1]
+                if name == "FDwfAnalogInChannelRangeGet":
+                    pointer._obj.value = 2.0 if arguments[1].value == 0 else 5.0
+                elif name == "FDwfAnalogInChannelOffsetGet":
+                    pointer._obj.value = 0.1 if arguments[1].value == 0 else -0.2
+                else:
+                    pointer._obj.value = scalar_values[name]
+                return 1
+
+            return call
+
+    device = AnalogDiscovery2(enabled=False)
+    device._dwf = ReadbackDwf()
+    requested = coerce_scope_config(
+        {
+            "sample_count": 4000,
+            "sample_frequency_hz": 2_000_000,
+            "pretrigger_samples": 1000,
+            "channels": [0, 1],
+            "trigger": {"source": "trigsrcDetectorAnalogIn"},
+        }
+    )
+    applied = device._read_scope_configuration(7, requested)
+
+    assert applied.sample_frequency_hz == 1_999_999.0
+    assert applied.sample_count == 3999
+    assert applied.pretrigger_samples == 1000
+    assert [(item.range_v, item.offset_v) for item in applied.channels] == [
+        (2.0, 0.1),
+        (5.0, -0.2),
+    ]
+    assert applied.trigger.channel_index == 1
+    assert applied.trigger.trigger_type is ScopeTriggerType.PULSE
+    assert applied.trigger.condition is ScopeTriggerCondition.FALLING_NEGATIVE
+
+
+def test_simulated_scope_supports_readback_poll_and_abort() -> None:
+    device = SimulatedAD2()
+    device.initialize()
+    device.scope_configure(
+        {
+            "sample_count": 8,
+            "sample_frequency_hz": 1000,
+            "pretrigger_samples": 3,
+            "trigger": {"source": "trigsrcPC"},
+        }
+    )
+    readback = device.scope_readback()
+    assert readback.sample_count == 8
+    assert readback.pretrigger_samples == 3
+    assert device.scope_poll() == {0: [0.0] * 8}
+    assert not device.scope_armed
+
+    device.scope_configure({"sample_count": 4})
+    device.scope_abort()
     assert not device.scope_armed

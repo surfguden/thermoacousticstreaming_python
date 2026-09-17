@@ -18,6 +18,11 @@ from .configuration import (
     DoConfig,
     ScopeChannelConfig,
     ScopeConfig,
+    ScopeTriggerCondition,
+    ScopeTriggerConfig,
+    ScopeTriggerFilter,
+    ScopeTriggerLengthCondition,
+    ScopeTriggerType,
     TriggerSource,
     TriggerSettings,
     WaveformFunction,
@@ -80,6 +85,24 @@ class AnalogDiscovery2:
         TriggerSource.ANALOG_OUT_2: 8,
         TriggerSource.ANALOG_OUT_3: 9,
         TriggerSource.ANALOG_OUT_4: 10,
+    }
+    _SCOPE_TRIGGER_TYPES = {
+        ScopeTriggerType.EDGE: 0,
+        ScopeTriggerType.PULSE: 1,
+        ScopeTriggerType.TRANSITION: 2,
+    }
+    _SCOPE_TRIGGER_CONDITIONS = {
+        ScopeTriggerCondition.RISING_POSITIVE: 0,
+        ScopeTriggerCondition.FALLING_NEGATIVE: 1,
+    }
+    _SCOPE_TRIGGER_FILTERS = {
+        ScopeTriggerFilter.DECIMATE: 0,
+        ScopeTriggerFilter.AVERAGE: 1,
+    }
+    _SCOPE_TRIGGER_LENGTH_CONDITIONS = {
+        ScopeTriggerLengthCondition.LESS: 0,
+        ScopeTriggerLengthCondition.TIMEOUT: 1,
+        ScopeTriggerLengthCondition.MORE: 2,
     }
     _OUTPUT_MODES = {
         "pushpull": 0,
@@ -295,6 +318,42 @@ class AnalogDiscovery2:
         self.scope_config = new_config
         self.scope_state = ScopeState.ARMED
 
+    def scope_readback(self) -> ScopeConfig:
+        if self.scope_config is None:
+            raise AnalogDiscoveryError("Configure scope before reading its settings")
+        handle = self._require_handle("scope_readback()")
+        return self._read_scope_configuration(handle, self.scope_config)
+
+    def scope_poll(self) -> dict[int, list[float]] | None:
+        if self.scope_state is not ScopeState.ARMED or self.scope_config is None:
+            raise AnalogDiscoveryError("scope_poll() requires an armed scope")
+        handle = self._require_handle("scope_poll()")
+        status = c_int()
+        self._check(
+            self._dwf.FDwfAnalogInStatus(c_int(handle), c_int(1), byref(status)),
+            "FDwfAnalogInStatus",
+        )
+        if status.value != 2:
+            return None
+        try:
+            return self._read_scope_data(handle, self.scope_config)
+        except Exception as primary_error:
+            try:
+                self._reset_scope(handle)
+            except Exception as cleanup_error:
+                raise AnalogDiscoveryError(
+                    f"Scope read failed: {primary_error}; scope reset also failed: {cleanup_error}"
+                ) from primary_error
+            raise
+        finally:
+            self.scope_state = ScopeState.IDLE
+
+    def scope_abort(self) -> None:
+        if self.scope_state is ScopeState.IDLE:
+            return
+        self._reset_scope(self._require_handle("scope_abort()"))
+        self.scope_state = ScopeState.IDLE
+
     def scope_read(self) -> dict[int, list[float]]:
         if self.scope_state is not ScopeState.ARMED or self.scope_config is None:
             raise AnalogDiscoveryError("scope_read() requires an armed scope")
@@ -395,11 +454,38 @@ class AnalogDiscovery2:
             "FDwfAnalogOutConfigure": ([c_int, c_int, c_int], c_int),
             "FDwfAnalogOutReset": ([c_int, c_int], c_int),
             "FDwfAnalogInChannelEnableSet": ([c_int, c_int, c_int], c_int),
+            "FDwfAnalogInChannelRangeGet": ([c_int, c_int, ctypes.POINTER(c_double)], c_int),
             "FDwfAnalogInChannelRangeSet": ([c_int, c_int, c_double], c_int),
+            "FDwfAnalogInChannelOffsetGet": ([c_int, c_int, ctypes.POINTER(c_double)], c_int),
             "FDwfAnalogInChannelOffsetSet": ([c_int, c_int, c_double], c_int),
+            "FDwfAnalogInFrequencyGet": ([c_int, ctypes.POINTER(c_double)], c_int),
             "FDwfAnalogInFrequencySet": ([c_int, c_double], c_int),
+            "FDwfAnalogInBufferSizeGet": ([c_int, ctypes.POINTER(c_int)], c_int),
             "FDwfAnalogInBufferSizeSet": ([c_int, c_int], c_int),
+            "FDwfAnalogInTriggerSourceGet": ([c_int, ctypes.POINTER(c_int)], c_int),
             "FDwfAnalogInTriggerSourceSet": ([c_int, c_int], c_int),
+            "FDwfAnalogInTriggerPositionSet": ([c_int, c_double], c_int),
+            "FDwfAnalogInTriggerPositionGet": ([c_int, ctypes.POINTER(c_double)], c_int),
+            "FDwfAnalogInTriggerAutoTimeoutSet": ([c_int, c_double], c_int),
+            "FDwfAnalogInTriggerAutoTimeoutGet": ([c_int, ctypes.POINTER(c_double)], c_int),
+            "FDwfAnalogInTriggerHoldOffSet": ([c_int, c_double], c_int),
+            "FDwfAnalogInTriggerHoldOffGet": ([c_int, ctypes.POINTER(c_double)], c_int),
+            "FDwfAnalogInTriggerTypeSet": ([c_int, c_int], c_int),
+            "FDwfAnalogInTriggerTypeGet": ([c_int, ctypes.POINTER(c_int)], c_int),
+            "FDwfAnalogInTriggerChannelSet": ([c_int, c_int], c_int),
+            "FDwfAnalogInTriggerChannelGet": ([c_int, ctypes.POINTER(c_int)], c_int),
+            "FDwfAnalogInTriggerFilterSet": ([c_int, c_int], c_int),
+            "FDwfAnalogInTriggerFilterGet": ([c_int, ctypes.POINTER(c_int)], c_int),
+            "FDwfAnalogInTriggerConditionSet": ([c_int, c_int], c_int),
+            "FDwfAnalogInTriggerConditionGet": ([c_int, ctypes.POINTER(c_int)], c_int),
+            "FDwfAnalogInTriggerLevelSet": ([c_int, c_double], c_int),
+            "FDwfAnalogInTriggerLevelGet": ([c_int, ctypes.POINTER(c_double)], c_int),
+            "FDwfAnalogInTriggerHysteresisSet": ([c_int, c_double], c_int),
+            "FDwfAnalogInTriggerHysteresisGet": ([c_int, ctypes.POINTER(c_double)], c_int),
+            "FDwfAnalogInTriggerLengthSet": ([c_int, c_double], c_int),
+            "FDwfAnalogInTriggerLengthGet": ([c_int, ctypes.POINTER(c_double)], c_int),
+            "FDwfAnalogInTriggerLengthConditionSet": ([c_int, c_int], c_int),
+            "FDwfAnalogInTriggerLengthConditionGet": ([c_int, ctypes.POINTER(c_int)], c_int),
             "FDwfAnalogInReset": ([c_int], c_int),
             "FDwfAnalogInConfigure": ([c_int, c_int, c_int], c_int),
             "FDwfAnalogInStatus": ([c_int, c_int, ctypes.POINTER(c_int)], c_int),
@@ -1001,7 +1087,30 @@ class AnalogDiscovery2:
                 self._dwf.FDwfAnalogInBufferSizeSet(h, c_int(config.sample_count)),
                 "FDwfAnalogInBufferSizeSet",
             )
-            self._set_analog_input_trigger_source(handle, config.trigger_source)
+            trigger = config.trigger
+            self._set_analog_input_trigger_source(handle, trigger.source)
+            self._check(
+                self._dwf.FDwfAnalogInTriggerPositionSet(
+                    h, c_double(config.trigger_position_s)
+                ),
+                "FDwfAnalogInTriggerPositionSet",
+            )
+            for function, value, name in (
+                (self._dwf.FDwfAnalogInTriggerChannelSet, trigger.channel_index, "FDwfAnalogInTriggerChannelSet"),
+                (self._dwf.FDwfAnalogInTriggerTypeSet, self._enum_value(self._SCOPE_TRIGGER_TYPES, trigger.trigger_type), "FDwfAnalogInTriggerTypeSet"),
+                (self._dwf.FDwfAnalogInTriggerFilterSet, self._enum_value(self._SCOPE_TRIGGER_FILTERS, trigger.filter), "FDwfAnalogInTriggerFilterSet"),
+                (self._dwf.FDwfAnalogInTriggerConditionSet, self._enum_value(self._SCOPE_TRIGGER_CONDITIONS, trigger.condition), "FDwfAnalogInTriggerConditionSet"),
+                (self._dwf.FDwfAnalogInTriggerLengthConditionSet, self._enum_value(self._SCOPE_TRIGGER_LENGTH_CONDITIONS, trigger.length_condition), "FDwfAnalogInTriggerLengthConditionSet"),
+            ):
+                self._check(function(h, c_int(value)), name)
+            for function, value, name in (
+                (self._dwf.FDwfAnalogInTriggerLevelSet, trigger.level_v, "FDwfAnalogInTriggerLevelSet"),
+                (self._dwf.FDwfAnalogInTriggerHysteresisSet, trigger.hysteresis_v, "FDwfAnalogInTriggerHysteresisSet"),
+                (self._dwf.FDwfAnalogInTriggerLengthSet, trigger.length_s, "FDwfAnalogInTriggerLengthSet"),
+                (self._dwf.FDwfAnalogInTriggerHoldOffSet, trigger.holdoff_s, "FDwfAnalogInTriggerHoldOffSet"),
+                (self._dwf.FDwfAnalogInTriggerAutoTimeoutSet, trigger.auto_timeout_s, "FDwfAnalogInTriggerAutoTimeoutSet"),
+            ):
+                self._check(function(h, c_double(value)), name)
             self._check(
                 self._dwf.FDwfAnalogInConfigure(h, c_int(1), c_int(1)),
                 "FDwfAnalogInConfigure",
@@ -1030,23 +1139,129 @@ class AnalogDiscovery2:
                     "AnalogIn capture timed out before acquisition completed."
                 )
 
-            captured: dict[int, list[float]] = {}
-            for channel in config.channels:
-                samples = (c_double * config.sample_count)()
-                self._check(
-                    self._dwf.FDwfAnalogInStatusData(
-                        h,
-                        c_int(channel.channel_index),
-                        samples,
-                        c_int(config.sample_count),
-                    ),
-                    "FDwfAnalogInStatusData",
-                )
-                captured[channel.channel_index] = list(samples)
+            captured = self._read_scope_data(handle, config)
             result["response"] = (
                 f"channels={list(captured)}, {config.sample_count} samples each"
             )
         return captured
+
+    def _read_scope_data(self, handle: int, config: ScopeConfig) -> dict[int, list[float]]:
+        captured: dict[int, list[float]] = {}
+        for channel in config.channels:
+            samples = (c_double * config.sample_count)()
+            self._check(
+                self._dwf.FDwfAnalogInStatusData(
+                    c_int(handle),
+                    c_int(channel.channel_index),
+                    samples,
+                    c_int(config.sample_count),
+                ),
+                "FDwfAnalogInStatusData",
+            )
+            captured[channel.channel_index] = list(samples)
+        return captured
+
+    @staticmethod
+    def _enum_from_value(mapping: dict, value: int, label: str):
+        for item, mapped in mapping.items():
+            if mapped == value:
+                return item
+        raise AnalogDiscoveryError(f"Unsupported {label} value reported by SDK: {value}")
+
+    def _read_scope_configuration(self, handle: int, configured: ScopeConfig) -> ScopeConfig:
+        h = c_int(handle)
+
+        def read_double(function, name: str, *prefix: c_int) -> float:
+            value = c_double()
+            self._check(function(h, *prefix, byref(value)), name)
+            return value.value
+
+        def read_int(function, name: str, *prefix: c_int) -> int:
+            value = c_int()
+            self._check(function(h, *prefix, byref(value)), name)
+            return value.value
+
+        frequency = read_double(self._dwf.FDwfAnalogInFrequencyGet, "FDwfAnalogInFrequencyGet")
+        sample_count = read_int(self._dwf.FDwfAnalogInBufferSizeGet, "FDwfAnalogInBufferSizeGet")
+        position_s = read_double(
+            self._dwf.FDwfAnalogInTriggerPositionGet, "FDwfAnalogInTriggerPositionGet"
+        )
+        pretrigger = round(sample_count / 2.0 - position_s * frequency)
+        pretrigger = min(max(pretrigger, 0), max(sample_count - 1, 0))
+        channels = tuple(
+            ScopeChannelConfig(
+                channel.channel_index,
+                read_double(
+                    self._dwf.FDwfAnalogInChannelRangeGet,
+                    "FDwfAnalogInChannelRangeGet",
+                    c_int(channel.channel_index),
+                ),
+                read_double(
+                    self._dwf.FDwfAnalogInChannelOffsetGet,
+                    "FDwfAnalogInChannelOffsetGet",
+                    c_int(channel.channel_index),
+                ),
+            )
+            for channel in configured.channels
+        )
+        source = self._enum_from_value(
+            self._TRIGGER_SOURCES,
+            read_int(self._dwf.FDwfAnalogInTriggerSourceGet, "FDwfAnalogInTriggerSourceGet"),
+            "trigger source",
+        )
+        trigger = ScopeTriggerConfig(
+            source=source,
+            channel_index=read_int(
+                self._dwf.FDwfAnalogInTriggerChannelGet, "FDwfAnalogInTriggerChannelGet"
+            ),
+            trigger_type=self._enum_from_value(
+                self._SCOPE_TRIGGER_TYPES,
+                read_int(self._dwf.FDwfAnalogInTriggerTypeGet, "FDwfAnalogInTriggerTypeGet"),
+                "scope trigger type",
+            ),
+            condition=self._enum_from_value(
+                self._SCOPE_TRIGGER_CONDITIONS,
+                read_int(
+                    self._dwf.FDwfAnalogInTriggerConditionGet,
+                    "FDwfAnalogInTriggerConditionGet",
+                ),
+                "scope trigger condition",
+            ),
+            filter=self._enum_from_value(
+                self._SCOPE_TRIGGER_FILTERS,
+                read_int(self._dwf.FDwfAnalogInTriggerFilterGet, "FDwfAnalogInTriggerFilterGet"),
+                "scope trigger filter",
+            ),
+            level_v=read_double(self._dwf.FDwfAnalogInTriggerLevelGet, "FDwfAnalogInTriggerLevelGet"),
+            hysteresis_v=read_double(
+                self._dwf.FDwfAnalogInTriggerHysteresisGet,
+                "FDwfAnalogInTriggerHysteresisGet",
+            ),
+            length_condition=self._enum_from_value(
+                self._SCOPE_TRIGGER_LENGTH_CONDITIONS,
+                read_int(
+                    self._dwf.FDwfAnalogInTriggerLengthConditionGet,
+                    "FDwfAnalogInTriggerLengthConditionGet",
+                ),
+                "scope trigger length condition",
+            ),
+            length_s=read_double(self._dwf.FDwfAnalogInTriggerLengthGet, "FDwfAnalogInTriggerLengthGet"),
+            holdoff_s=read_double(self._dwf.FDwfAnalogInTriggerHoldOffGet, "FDwfAnalogInTriggerHoldOffGet"),
+            auto_timeout_s=read_double(
+                self._dwf.FDwfAnalogInTriggerAutoTimeoutGet,
+                "FDwfAnalogInTriggerAutoTimeoutGet",
+            ),
+        )
+        return ScopeConfig(
+            channels=channels,
+            sample_frequency_hz=frequency,
+            sample_count=sample_count,
+            trigger_source=source,
+            pretrigger_samples=pretrigger,
+            trigger=trigger,
+            timeout_s=configured.timeout_s,
+            poll_interval_s=configured.poll_interval_s,
+        )
 
     def _reset_scope(self, handle: int) -> None:
         with log_call("ad2", "reset_scope", command=handle) as result:

@@ -10,6 +10,13 @@ from PySide6.QtWidgets import QApplication
 from thermo_acoustic.application import ApplicationController
 from thermo_acoustic.application.commands import (
     Ad2ScopeReadResult,
+    Ad2ScopeAppliedResult,
+    Ad2ScopeChannelArgs,
+    Ad2ScopeTriggerArgs,
+    Ad2ScopeTriggerCondition,
+    Ad2ScopeTriggerFilter,
+    Ad2ScopeTriggerLengthCondition,
+    Ad2ScopeTriggerType,
     Ad2AnalogOutputIdle,
     Ad2TriggerSource,
     Ad2WaveformAppliedResult,
@@ -189,6 +196,95 @@ def test_ad2_uses_separate_instrument_tabs_and_builds_trigger_arguments(qt_app):
     assert args.channels[0].trigger.repeat_trigger
 
 
+def test_scope_builds_shared_acquisition_and_detector_trigger_arguments(qt_app):
+    del qt_app
+    panel = Ad2Panel()
+    scope = panel.scope_controls
+    scope.sample_count.setValue(4096)
+    scope.sample_rate.setValue(2_000_000)
+    scope.pretrigger_samples.setValue(1024)
+    scope.timeout.setValue(3.0)
+    scope.poll_interval.setValue(0.02)
+    scope.channel_enabled[0].setChecked(True)
+    scope.channel_enabled[1].setChecked(True)
+    scope.channel_range[0].setValue(2.0)
+    scope.channel_offset[1].setValue(-0.25)
+    scope.trigger_source.setCurrentIndex(
+        scope.trigger_source.findData(Ad2TriggerSource.DETECTOR_ANALOG_IN.value)
+    )
+    scope.trigger_channel.setCurrentIndex(scope.trigger_channel.findData("1"))
+    scope.trigger_type.setCurrentIndex(
+        scope.trigger_type.findData(Ad2ScopeTriggerType.PULSE.value)
+    )
+    scope.trigger_condition.setCurrentIndex(
+        scope.trigger_condition.findData(Ad2ScopeTriggerCondition.FALLING_NEGATIVE.value)
+    )
+    scope.trigger_filter.setCurrentIndex(
+        scope.trigger_filter.findData(Ad2ScopeTriggerFilter.AVERAGE.value)
+    )
+    scope.trigger_level.setValue(0.4)
+    scope.trigger_hysteresis.setValue(0.05)
+    scope.trigger_length_condition.setCurrentIndex(
+        scope.trigger_length_condition.findData(Ad2ScopeTriggerLengthCondition.LESS.value)
+    )
+    scope.trigger_length.setValue(0.001)
+    scope.trigger_holdoff.setValue(0.002)
+    scope.trigger_auto_timeout.setValue(1.5)
+
+    args = panel._scope_args()
+    assert args.sample_count == 4096
+    assert args.sample_frequency_hz == 2_000_000
+    assert args.pretrigger_samples == 1024
+    assert args.poll_interval_s == 0.02
+    assert args.channels == (
+        Ad2ScopeChannelArgs(0, 2.0, 0.0),
+        Ad2ScopeChannelArgs(1, 5.0, -0.25),
+    )
+    assert args.trigger == Ad2ScopeTriggerArgs(
+        source=Ad2TriggerSource.DETECTOR_ANALOG_IN,
+        channel_index=1,
+        trigger_type=Ad2ScopeTriggerType.PULSE,
+        condition=Ad2ScopeTriggerCondition.FALLING_NEGATIVE,
+        filter=Ad2ScopeTriggerFilter.AVERAGE,
+        level_v=0.4,
+        hysteresis_v=0.05,
+        length_condition=Ad2ScopeTriggerLengthCondition.LESS,
+        length_s=0.001,
+        holdoff_s=0.002,
+        auto_timeout_s=1.5,
+    )
+
+
+def test_scope_applied_readback_updates_controls_and_capture_opens_plot(qt_app):
+    panel = Ad2Panel()
+    applied = Ad2ScopeAppliedResult(
+        sample_count=2048,
+        sample_frequency_hz=500_000,
+        pretrigger_samples=512,
+        channels=(Ad2ScopeChannelArgs(1, 1.0, 0.1),),
+        trigger=Ad2ScopeTriggerArgs(
+            source=Ad2TriggerSource.DETECTOR_ANALOG_IN,
+            channel_index=1,
+            level_v=0.2,
+        ),
+    )
+    panel.handle_result(applied)
+    scope = panel.scope_controls
+    assert scope.sample_count.value() == 2048
+    assert scope.sample_rate.value() == 500_000
+    assert scope.pretrigger_samples.value() == 512
+    assert not scope.channel_enabled[0].isChecked()
+    assert scope.channel_enabled[1].isChecked()
+    assert "SDK applied" in scope.applied_label.text()
+
+    panel.handle_result(Ad2ScopeReadResult({1: [0.0, 0.5, -0.5]}))
+    qt_app.processEvents()
+    assert scope.plot_window.isVisible()
+    assert scope.plot.sample_frequency_hz == 500_000
+    assert scope.plot.samples_by_channel == {1: [0.0, 0.5, -0.5]}
+    scope.plot_window.close()
+
+
 def test_camera_builds_complete_sequence_trigger_arguments(qt_app):
     del qt_app
     panel = CameraPanel()
@@ -294,6 +390,11 @@ def test_panels_fit_half_of_a_1920_by_1200_screen(qt_app):
         qt_app.processEvents()
         assert ad2.horizontalScrollBar().maximum() == 0
         assert ad2.verticalScrollBar().maximum() == 0
+    ad2.instrument_tabs.setCurrentIndex(1)
+    qt_app.processEvents()
+    assert ad2.horizontalScrollBar().maximum() == 0
+    assert ad2.verticalScrollBar().maximum() == 0
+    assert ad2.scope_controls.geometry().right() <= ad2.instrument_tabs.contentsRect().right()
     window.close()
 
 

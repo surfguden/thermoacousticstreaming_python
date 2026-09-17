@@ -32,7 +32,6 @@ from ..application.commands import (
     Ad2ConfigureWaveformArgs,
     Ad2AnalogOutputIdle,
     Ad2DigitalOutputType,
-    Ad2ScopeReadResult,
     Ad2WaveformAppliedResult,
     Ad2WaveformChannelArgs,
     Ad2WaveformFunction,
@@ -69,7 +68,8 @@ from ..application.commands import (
     ZStageSetPositionArgs,
 )
 from ..domain.models import ConnectionState, DEVICE_LABELS, DeviceId, DeviceStatus
-from .widgets import CameraPreview, ScopePlot
+from .ad2_scope import OscilloscopePanel
+from .widgets import CameraPreview
 
 
 def double_spin(
@@ -659,8 +659,12 @@ class Ad2Panel(DevicePanel):
         self.instrument_tabs = QTabWidget()
         self.instrument_tabs.setMinimumWidth(0)
         self.instrument_tabs.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored
         )
+        # Keep the shared header/readback visible in a 960 px half-screen
+        # window. Each instrument page is deliberately laid out within this
+        # height; scope traces use their own resizable viewer.
+        self.instrument_tabs.setMaximumHeight(636)
         self.layout.addWidget(self.instrument_tabs, 1)
 
         waveform_tab = QWidget()
@@ -683,27 +687,9 @@ class Ad2Panel(DevicePanel):
         ), 1, 0, 1, 2)
         self.instrument_tabs.addTab(waveform_tab, "Waveform generator")
 
-        scope_tab = QWidget()
-        scope_layout = QGridLayout(scope_tab)
-        group, form = form_group("Oscilloscope")
-        self.scope_count = self.register_profile("scope_sample_count", int_spin(1000, 1))
-        self.scope_channels = self.register_profile("scope_channels", QLineEdit("0"))
-        self.scope_trigger = self.register_profile("scope_trigger", QComboBox())
-        for source in Ad2TriggerSource:
-            self.scope_trigger.addItem(source.value, source.value)
-        form.addRow("Sample count", self.scope_count)
-        form.addRow("Channels (comma separated)", self.scope_channels)
-        form.addRow("Trigger", self.scope_trigger)
-        form.addRow(button_row(
-            self.action_button("scope_config", "Configure", DeviceOperation.AD2_SCOPE_CONFIGURE, self._scope_args),
-            self.action_button("scope_trigger_pc", "PC trigger", DeviceOperation.AD2_SOFTWARE_TRIGGER),
-            self.action_button("scope_read", "Read", DeviceOperation.AD2_SCOPE_READ),
-        ))
-        self.scope_plot = ScopePlot()
-        scope_layout.addWidget(group, 0, 0)
-        scope_layout.addWidget(self.scope_plot, 0, 1)
-        scope_layout.setColumnStretch(1, 2)
-        self.instrument_tabs.addTab(scope_tab, "Oscilloscope")
+        self.scope_controls = OscilloscopePanel(self)
+        self.scope_plot = self.scope_controls.plot
+        self.instrument_tabs.addTab(self.scope_controls, "Oscilloscope")
 
         digital_tab = QWidget()
         digital_layout = QGridLayout(digital_tab)
@@ -792,24 +778,13 @@ class Ad2Panel(DevicePanel):
             repeat_trigger=controls["retrigger"].isChecked(),
         )
 
-    def _channels(self, text: str | None = None) -> tuple[int, ...]:
-        raw = self.scope_channels.text() if text is None else text
-        values = tuple(
-            int(value.strip()) for value in raw.split(",") if value.strip()
-        )
-        if not values:
-            raise ValueError("Choose at least one scope channel")
-        return values
-
     def _wave_args(self) -> Ad2ConfigureWaveformArgs:
         return Ad2ConfigureWaveformArgs(
             channels=tuple(editor.arguments() for editor in self.wave_channels)
         )
 
     def _scope_args(self) -> Ad2ConfigureScopeArgs:
-        return Ad2ConfigureScopeArgs(
-            self.scope_count.value(), self._channels(), Ad2TriggerSource(self.scope_trigger.currentData())
-        )
+        return self.scope_controls.arguments()
 
     def _do_args(self) -> Ad2ConfigureDigitalOutputArgs:
         text = "".join(self.do_bits.text().split())
@@ -826,7 +801,7 @@ class Ad2Panel(DevicePanel):
         )
 
     def _validate_profile_values(self, values: dict[str, object]) -> None:
-        self._channels(str(values["scope_channels"]))
+        self.scope_controls.validate_profile_values(values)
         bits = "".join(str(values["do_bits"]).split())
         if any(bit not in "01" for bit in bits):
             raise ValueError("do_bits may contain only 0 and 1")
@@ -866,9 +841,9 @@ class Ad2Panel(DevicePanel):
             )
 
     def handle_result(self, result: object) -> None:
-        if isinstance(result, Ad2ScopeReadResult):
-            self.scope_plot.set_samples(result.samples_by_channel)
-        elif isinstance(result, Ad2WaveformAppliedResult):
+        if self.scope_controls.handle_result(result):
+            return
+        if isinstance(result, Ad2WaveformAppliedResult):
             for channel in result.channels:
                 self.wave_channels[channel.channel_index].apply_readback(channel)
 

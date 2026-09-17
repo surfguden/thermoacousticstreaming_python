@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
+import math
 from typing import Any
 
 
@@ -164,6 +165,28 @@ class TriggerSource(str, Enum):
     ANALOG_OUT_2 = "trigsrcAnalogOut2"
     ANALOG_OUT_3 = "trigsrcAnalogOut3"
     ANALOG_OUT_4 = "trigsrcAnalogOut4"
+
+
+class ScopeTriggerType(str, Enum):
+    EDGE = "Edge"
+    PULSE = "Pulse"
+    TRANSITION = "Transition"
+
+
+class ScopeTriggerCondition(str, Enum):
+    RISING_POSITIVE = "Rising/Positive"
+    FALLING_NEGATIVE = "Falling/Negative"
+
+
+class ScopeTriggerFilter(str, Enum):
+    DECIMATE = "Decimate"
+    AVERAGE = "Average"
+
+
+class ScopeTriggerLengthCondition(str, Enum):
+    LESS = "Less"
+    TIMEOUT = "Timeout"
+    MORE = "More"
 
 
 @dataclass(slots=True)
@@ -464,14 +487,53 @@ class ScopeChannelConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ScopeTriggerConfig:
+    source: TriggerSource | str = TriggerSource.NONE
+    channel_index: int = 0
+    trigger_type: ScopeTriggerType | str = ScopeTriggerType.EDGE
+    condition: ScopeTriggerCondition | str = ScopeTriggerCondition.RISING_POSITIVE
+    filter: ScopeTriggerFilter | str = ScopeTriggerFilter.DECIMATE
+    level_v: float = 0.0
+    hysteresis_v: float = 0.01
+    length_condition: ScopeTriggerLengthCondition | str = ScopeTriggerLengthCondition.MORE
+    length_s: float = 0.0
+    holdoff_s: float = 0.0
+    auto_timeout_s: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.channel_index not in (0, 1):
+            raise ValueError("Scope trigger channel must be 0 or 1.")
+        numeric = (
+            self.level_v,
+            self.hysteresis_v,
+            self.length_s,
+            self.holdoff_s,
+            self.auto_timeout_s,
+        )
+        if any(not math.isfinite(value) for value in numeric):
+            raise ValueError("Scope trigger values must be finite.")
+        if any(value < 0 for value in numeric[1:]):
+            raise ValueError("Scope trigger timing and hysteresis values must be non-negative.")
+
+
+@dataclass(frozen=True, slots=True)
 class ScopeConfig:
     channels: tuple[ScopeChannelConfig, ...] = (ScopeChannelConfig(),)
     sample_frequency_hz: float = 10_000.0
     sample_count: int = 4096
     trigger_source: TriggerSource | str = TriggerSource.NONE
+    pretrigger_samples: int = 0
+    trigger: ScopeTriggerConfig = field(default_factory=ScopeTriggerConfig)
     timeout_s: float = 5.0
+    poll_interval_s: float = 0.01
 
     def __post_init__(self) -> None:
+        source = TriggerSource(self.trigger_source)
+        trigger_source = TriggerSource(self.trigger.source)
+        if trigger_source is TriggerSource.NONE and source is not TriggerSource.NONE:
+            object.__setattr__(self, "trigger", replace(self.trigger, source=source))
+        else:
+            object.__setattr__(self, "trigger_source", trigger_source)
         indices = [channel.channel_index for channel in self.channels]
         if not indices:
             raise ValueError("Scope configuration requires at least one channel.")
@@ -479,14 +541,32 @@ class ScopeConfig:
             raise ValueError("Scope channels must be unique.")
         if any(index not in (0, 1) for index in indices):
             raise ValueError("Analog Discovery 2 scope channels must be 0 or 1.")
-        if any(channel.range_v <= 0 for channel in self.channels):
+        if any(
+            not math.isfinite(channel.range_v) or channel.range_v <= 0
+            for channel in self.channels
+        ):
             raise ValueError("Scope channel range must be greater than 0 V.")
-        if self.sample_frequency_hz <= 0:
+        if any(not math.isfinite(channel.offset_v) for channel in self.channels):
+            raise ValueError("Scope channel offsets must be finite.")
+        if not math.isfinite(self.sample_frequency_hz) or self.sample_frequency_hz <= 0:
             raise ValueError("Scope sample frequency must be greater than 0 Hz.")
         if self.sample_count < 1:
             raise ValueError("Scope sample count must be at least one.")
-        if self.timeout_s <= 0:
+        if not 0 <= self.pretrigger_samples < self.sample_count:
+            raise ValueError("Scope pretrigger samples must be within the capture buffer.")
+        if not math.isfinite(self.timeout_s) or self.timeout_s <= 0:
             raise ValueError("Scope timeout must be greater than 0 seconds.")
+        if (
+            not math.isfinite(self.poll_interval_s)
+            or self.poll_interval_s <= 0
+            or self.poll_interval_s > self.timeout_s
+        ):
+            raise ValueError("Scope poll interval must be positive and not exceed timeout.")
+
+    @property
+    def trigger_position_s(self) -> float:
+        """WaveForms position is seconds relative to the capture-buffer midpoint."""
+        return (self.sample_count / 2.0 - self.pretrigger_samples) / self.sample_frequency_hz
 
 
 def _first_present(data: dict[str, Any], *names: str, default: Any = None) -> Any:
@@ -553,6 +633,51 @@ def coerce_scope_channel_config(
     )
 
 
+def coerce_scope_trigger_config(
+    config: ScopeTriggerConfig | dict[str, Any] | None,
+    *,
+    default_source: TriggerSource | str = TriggerSource.NONE,
+) -> ScopeTriggerConfig:
+    if isinstance(config, ScopeTriggerConfig):
+        return config
+    data = config or {}
+    return ScopeTriggerConfig(
+        source=_coerce_enum(
+            TriggerSource,
+            _first_present(data, "source", "trigger_source", default=default_source),
+            TriggerSource.NONE,
+        ),
+        channel_index=int(_first_present(data, "channel_index", "channel", default=0)),
+        trigger_type=_coerce_enum(
+            ScopeTriggerType,
+            _first_present(data, "trigger_type", "type", default=ScopeTriggerType.EDGE),
+            ScopeTriggerType.EDGE,
+        ),
+        condition=_coerce_enum(
+            ScopeTriggerCondition,
+            _first_present(data, "condition", default=ScopeTriggerCondition.RISING_POSITIVE),
+            ScopeTriggerCondition.RISING_POSITIVE,
+        ),
+        filter=_coerce_enum(
+            ScopeTriggerFilter,
+            _first_present(data, "filter", default=ScopeTriggerFilter.DECIMATE),
+            ScopeTriggerFilter.DECIMATE,
+        ),
+        level_v=float(_first_present(data, "level_v", "level", default=0.0)),
+        hysteresis_v=float(_first_present(data, "hysteresis_v", "hysteresis", default=0.01)),
+        length_condition=_coerce_enum(
+            ScopeTriggerLengthCondition,
+            _first_present(data, "length_condition", default=ScopeTriggerLengthCondition.MORE),
+            ScopeTriggerLengthCondition.MORE,
+        ),
+        length_s=float(_first_present(data, "length_s", "length", default=0.0)),
+        holdoff_s=float(_first_present(data, "holdoff_s", "holdoff", default=0.0)),
+        auto_timeout_s=float(
+            _first_present(data, "auto_timeout_s", "auto_timeout", default=0.0)
+        ),
+    )
+
+
 def coerce_scope_config(config: ScopeConfig | dict[str, Any] | None) -> ScopeConfig:
     if isinstance(config, ScopeConfig):
         return config
@@ -573,6 +698,20 @@ def coerce_scope_config(config: ScopeConfig | dict[str, Any] | None) -> ScopeCon
         )
         for index, channel in enumerate(raw_channels)
     )
+    trigger_source = _coerce_enum(
+        TriggerSource,
+        _first_present(
+            config,
+            "trigger_source",
+            "triggerSource",
+            default=TriggerSource.NONE,
+        ),
+        TriggerSource.NONE,
+    )
+    trigger = coerce_scope_trigger_config(
+        _first_present(config, "trigger", default=None),
+        default_source=trigger_source,
+    )
     return ScopeConfig(
         channels=channels,
         sample_frequency_hz=float(
@@ -585,17 +724,15 @@ def coerce_scope_config(config: ScopeConfig | dict[str, Any] | None) -> ScopeCon
             )
         ),
         sample_count=int(_first_present(config, "sample_count", "sampleCount", default=4096)),
-        trigger_source=_coerce_enum(
-            TriggerSource,
-            _first_present(
-                config,
-                "trigger_source",
-                "triggerSource",
-                default=TriggerSource.NONE,
-            ),
-            TriggerSource.NONE,
+        trigger_source=trigger.source,
+        pretrigger_samples=int(
+            _first_present(config, "pretrigger_samples", "pretriggerSamples", default=0)
         ),
+        trigger=trigger,
         timeout_s=float(_first_present(config, "timeout_s", "timeoutS", "timeout", default=5.0)),
+        poll_interval_s=float(
+            _first_present(config, "poll_interval_s", "pollIntervalS", default=0.01)
+        ),
     )
 
 

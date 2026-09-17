@@ -75,6 +75,28 @@ class Ad2TriggerSource(str, Enum):
     ANALOG_OUT_4 = "trigsrcAnalogOut4"
 
 
+class Ad2ScopeTriggerType(str, Enum):
+    EDGE = "Edge"
+    PULSE = "Pulse"
+    TRANSITION = "Transition"
+
+
+class Ad2ScopeTriggerCondition(str, Enum):
+    RISING_POSITIVE = "Rising/Positive"
+    FALLING_NEGATIVE = "Falling/Negative"
+
+
+class Ad2ScopeTriggerFilter(str, Enum):
+    DECIMATE = "Decimate"
+    AVERAGE = "Average"
+
+
+class Ad2ScopeTriggerLengthCondition(str, Enum):
+    LESS = "Less"
+    TIMEOUT = "Timeout"
+    MORE = "More"
+
+
 class Ad2DigitalOutputType(str, Enum):
     PULSE = "Pulse"
     CUSTOM = "Custom"
@@ -224,10 +246,95 @@ class Ad2ConfigureWaveformArgs:
 
 
 @dataclass(frozen=True, slots=True)
+class Ad2ScopeChannelArgs:
+    channel_index: int
+    range_v: float = 5.0
+    offset_v: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.channel_index not in (0, 1):
+            raise ValueError("scope channel_index must be 0 or 1")
+        _require_finite_positive("range_v", self.range_v)
+        _require_finite_value("offset_v", self.offset_v)
+
+
+@dataclass(frozen=True, slots=True)
+class Ad2ScopeTriggerArgs:
+    source: Ad2TriggerSource = Ad2TriggerSource.NONE
+    channel_index: int = 0
+    trigger_type: Ad2ScopeTriggerType = Ad2ScopeTriggerType.EDGE
+    condition: Ad2ScopeTriggerCondition = Ad2ScopeTriggerCondition.RISING_POSITIVE
+    filter: Ad2ScopeTriggerFilter = Ad2ScopeTriggerFilter.DECIMATE
+    level_v: float = 0.0
+    hysteresis_v: float = 0.01
+    length_condition: Ad2ScopeTriggerLengthCondition = Ad2ScopeTriggerLengthCondition.MORE
+    length_s: float = 0.0
+    holdoff_s: float = 0.0
+    auto_timeout_s: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.channel_index not in (0, 1):
+            raise ValueError("scope trigger channel_index must be 0 or 1")
+        _require_finite_value("level_v", self.level_v)
+        for name, value in (
+            ("hysteresis_v", self.hysteresis_v),
+            ("length_s", self.length_s),
+            ("holdoff_s", self.holdoff_s),
+            ("auto_timeout_s", self.auto_timeout_s),
+        ):
+            _require_finite_nonnegative(name, value)
+
+
+@dataclass(frozen=True, slots=True)
 class Ad2ConfigureScopeArgs:
     sample_count: int
-    channels: tuple[int, ...] = (0,)
+    channels: tuple[Ad2ScopeChannelArgs | int, ...] = field(
+        default_factory=lambda: (Ad2ScopeChannelArgs(0),)
+    )
     trigger_source: Ad2TriggerSource = Ad2TriggerSource.NONE
+    sample_frequency_hz: float = 10_000.0
+    pretrigger_samples: int = 0
+    timeout_s: float = 5.0
+    poll_interval_s: float = 0.01
+    trigger: Ad2ScopeTriggerArgs | None = None
+
+    def __post_init__(self) -> None:
+        if self.sample_count < 1:
+            raise ValueError("sample_count must be at least one")
+        _require_finite_positive("sample_frequency_hz", self.sample_frequency_hz)
+        _require_finite_positive("timeout_s", self.timeout_s)
+        _require_finite_positive("poll_interval_s", self.poll_interval_s)
+        if self.poll_interval_s > self.timeout_s:
+            raise ValueError("poll_interval_s must not exceed timeout_s")
+        if not 0 <= self.pretrigger_samples < self.sample_count:
+            raise ValueError("pretrigger_samples must be within 0..sample_count-1")
+        normalized = tuple(
+            item if isinstance(item, Ad2ScopeChannelArgs) else Ad2ScopeChannelArgs(item)
+            for item in self.channels
+        )
+        indices = tuple(item.channel_index for item in normalized)
+        if not indices:
+            raise ValueError("choose at least one scope channel")
+        if len(indices) != len(set(indices)):
+            raise ValueError("scope channels must be unique")
+        object.__setattr__(self, "channels", normalized)
+        trigger = self.trigger or Ad2ScopeTriggerArgs(source=self.trigger_source)
+        if self.trigger is not None and self.trigger_source is not Ad2TriggerSource.NONE:
+            trigger = Ad2ScopeTriggerArgs(
+                source=self.trigger_source,
+                channel_index=trigger.channel_index,
+                trigger_type=trigger.trigger_type,
+                condition=trigger.condition,
+                filter=trigger.filter,
+                level_v=trigger.level_v,
+                hysteresis_v=trigger.hysteresis_v,
+                length_condition=trigger.length_condition,
+                length_s=trigger.length_s,
+                holdoff_s=trigger.holdoff_s,
+                auto_timeout_s=trigger.auto_timeout_s,
+            )
+        object.__setattr__(self, "trigger", trigger)
+        object.__setattr__(self, "trigger_source", trigger.source)
 
 
 @dataclass(frozen=True, slots=True)
@@ -433,6 +540,16 @@ class Ad2ScopeReadResult:
 
 
 @dataclass(frozen=True, slots=True)
+class Ad2ScopeAppliedResult:
+    sample_count: int
+    sample_frequency_hz: float
+    pretrigger_samples: int
+    channels: tuple[Ad2ScopeChannelArgs, ...]
+    trigger: Ad2ScopeTriggerArgs
+    evidence_scope: str = "SDK_REPORTED_CONFIGURATION_NOT_MEASURED_INPUT"
+
+
+@dataclass(frozen=True, slots=True)
 class Ad2WaveformAppliedResult:
     channels: tuple[Ad2WaveformChannelArgs, ...]
     running: bool = False
@@ -557,7 +674,7 @@ OPERATION_SPECS: dict[DeviceOperation, OperationSpec] = {
     DeviceOperation.AD2_WAVEFORM_START: OperationSpec(_only(DeviceId.AD2), NoArguments, _NONE_RESULT),
     DeviceOperation.AD2_WAVEFORM_STOP: OperationSpec(_only(DeviceId.AD2), NoArguments, _NONE_RESULT),
     DeviceOperation.AD2_SOFTWARE_TRIGGER: OperationSpec(_only(DeviceId.AD2), NoArguments, _NONE_RESULT),
-    DeviceOperation.AD2_SCOPE_CONFIGURE: OperationSpec(_only(DeviceId.AD2), Ad2ConfigureScopeArgs, _NONE_RESULT),
+    DeviceOperation.AD2_SCOPE_CONFIGURE: OperationSpec(_only(DeviceId.AD2), Ad2ConfigureScopeArgs, Ad2ScopeAppliedResult),
     DeviceOperation.AD2_SCOPE_READ: OperationSpec(_only(DeviceId.AD2), NoArguments, Ad2ScopeReadResult),
     DeviceOperation.AD2_DIGITAL_OUTPUT_CONFIGURE: OperationSpec(_only(DeviceId.AD2), Ad2ConfigureDigitalOutputArgs, _NONE_RESULT),
     DeviceOperation.AD2_DIGITAL_OUTPUT_START: OperationSpec(_only(DeviceId.AD2), NoArguments, _NONE_RESULT),

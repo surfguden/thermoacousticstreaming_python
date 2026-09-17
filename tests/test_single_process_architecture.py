@@ -60,6 +60,7 @@ from thermo_acoustic.domain.models import (
     PumpReadback,
     ZStageReadback,
 )
+from thermo_acoustic.drivers.ad2 import SimulatedAD2
 from thermo_acoustic.hal.registry import DeviceRegistry
 from thermo_acoustic.ui.main_window import MainWindow
 
@@ -324,6 +325,50 @@ def test_ad2_scope_arm_trigger_and_read_share_one_worker(qt_app):
     readback = controller.statuses()[DeviceId.AD2].readback
     assert isinstance(readback, Ad2Readback)
     assert readback.scope_state == "idle"
+    controller.shutdown()
+
+
+def test_ad2_scope_wait_is_deferred_and_abort_bypasses_global_fifo(qt_app):
+    class WaitingScope(SimulatedAD2):
+        def __init__(self):
+            super().__init__()
+            self.abort_called = False
+
+        def scope_poll(self):
+            return None
+
+        def scope_abort(self):
+            self.abort_called = True
+            super().scope_abort()
+
+    device = WaitingScope()
+    registry = DeviceRegistry(factories={DeviceId.AD2: lambda: device})
+    controller = ApplicationController(registry, mode=OperatingMode.SIMULATION)
+    events = []
+    controller.command_event.connect(events.append)
+    controller.start()
+    controller.submit(DeviceCommand(DeviceId.AD2, DeviceOperation.CONNECT))
+    controller.submit(
+        DeviceCommand(
+            DeviceId.AD2,
+            DeviceOperation.AD2_SCOPE_CONFIGURE,
+            Ad2ConfigureScopeArgs(sample_count=16, timeout_s=5, poll_interval_s=0.01),
+        )
+    )
+    read = DeviceCommand(DeviceId.AD2, DeviceOperation.AD2_SCOPE_READ)
+    controller.submit(read)
+    wait(qt_app, 80)
+    assert controller.statuses()[DeviceId.AD2].busy
+
+    abort = DeviceCommand(DeviceId.AD2, DeviceOperation.ABORT_ACTIVE)
+    controller.submit(abort)
+    wait(qt_app, 80)
+
+    assert device.abort_called
+    states = {(event.request_id, event.state) for event in events}
+    assert (abort.request_id, "completed") in states
+    assert (read.request_id, "cancelled") in states
+    assert not controller.statuses()[DeviceId.AD2].busy
     controller.shutdown()
 
 

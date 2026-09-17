@@ -2,10 +2,18 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
+import time
 
 from ..application.commands import (
     Ad2ConfigureDigitalOutputArgs,
     Ad2ConfigureScopeArgs,
+    Ad2ScopeAppliedResult,
+    Ad2ScopeChannelArgs,
+    Ad2ScopeTriggerArgs,
+    Ad2ScopeTriggerCondition,
+    Ad2ScopeTriggerFilter,
+    Ad2ScopeTriggerLengthCondition,
+    Ad2ScopeTriggerType,
     Ad2ConfigureWaveformArgs,
     Ad2AnalogOutputIdle,
     Ad2WaveformAppliedResult,
@@ -18,7 +26,7 @@ from ..application.commands import (
     NoArguments,
 )
 from ..domain.models import Ad2Readback, Ad2WaveformChannelReadback, DeviceId
-from .base import DeviceWorker
+from .base import DeferredProgress, DeviceWorker
 
 
 class AD2Worker(DeviceWorker):
@@ -87,33 +95,105 @@ class AD2Worker(DeviceWorker):
         if self.device_constructed and self.state.connected:
             self.device.wfg_start_stop_all_ch(False)
             self.device.start_stop_do(False)
+            self.device.scope_abort()
         self.state.active = False
         self.state.readback = replace(
             self.state.readback,
             waveform_running=False,
             digital_output_running=False,
+            scope_state="idle",
         )
 
     def software_trigger(self, _args: NoArguments) -> None:
         self.device.pc_trigger()
 
-    def configure_scope(self, args: Ad2ConfigureScopeArgs) -> None:
+    def configure_scope(self, args: Ad2ConfigureScopeArgs) -> Ad2ScopeAppliedResult:
+        trigger = args.trigger
         self.device.scope_configure(
             {
                 "sample_count": args.sample_count,
-                "channels": list(args.channels),
-                "trigger_source": args.trigger_source.value,
+                "sample_frequency_hz": args.sample_frequency_hz,
+                "pretrigger_samples": args.pretrigger_samples,
+                "timeout_s": args.timeout_s,
+                "poll_interval_s": args.poll_interval_s,
+                "channels": [
+                    {
+                        "channel_index": channel.channel_index,
+                        "range_v": channel.range_v,
+                        "offset_v": channel.offset_v,
+                    }
+                    for channel in args.channels
+                ],
+                "trigger": {
+                    "source": trigger.source.value,
+                    "channel_index": trigger.channel_index,
+                    "trigger_type": trigger.trigger_type.value,
+                    "condition": trigger.condition.value,
+                    "filter": trigger.filter.value,
+                    "level_v": trigger.level_v,
+                    "hysteresis_v": trigger.hysteresis_v,
+                    "length_condition": trigger.length_condition.value,
+                    "length_s": trigger.length_s,
+                    "holdoff_s": trigger.holdoff_s,
+                    "auto_timeout_s": trigger.auto_timeout_s,
+                },
             }
         )
+        self.state.configured = True
         self.state.active = True
         self.state.readback = replace(self.state.readback, scope_state="armed")
+        applied = self.device.scope_readback()
+        return Ad2ScopeAppliedResult(
+            sample_count=applied.sample_count,
+            sample_frequency_hz=applied.sample_frequency_hz,
+            pretrigger_samples=applied.pretrigger_samples,
+            channels=tuple(
+                Ad2ScopeChannelArgs(channel.channel_index, channel.range_v, channel.offset_v)
+                for channel in applied.channels
+            ),
+            trigger=Ad2ScopeTriggerArgs(
+                source=Ad2TriggerSource(applied.trigger.source),
+                channel_index=applied.trigger.channel_index,
+                trigger_type=Ad2ScopeTriggerType(applied.trigger.trigger_type),
+                condition=Ad2ScopeTriggerCondition(applied.trigger.condition),
+                filter=Ad2ScopeTriggerFilter(applied.trigger.filter),
+                level_v=applied.trigger.level_v,
+                hysteresis_v=applied.trigger.hysteresis_v,
+                length_condition=Ad2ScopeTriggerLengthCondition(applied.trigger.length_condition),
+                length_s=applied.trigger.length_s,
+                holdoff_s=applied.trigger.holdoff_s,
+                auto_timeout_s=applied.trigger.auto_timeout_s,
+            ),
+        )
 
-    def read_scope(self, _args: NoArguments) -> Ad2ScopeReadResult:
-        try:
-            return Ad2ScopeReadResult(self.device.scope_read())
-        finally:
+    def read_scope(self, _args: NoArguments):
+        if self.state.readback.scope_state != "armed":
+            raise RuntimeError("Configure the scope before reading")
+        config = self.device.scope_config
+        deadline = time.monotonic() + config.timeout_s
+
+        def finish() -> None:
             self.state.active = self.state.readback.waveform_running
             self.state.readback = replace(self.state.readback, scope_state="idle")
+
+        def step() -> DeferredProgress:
+            samples = self.device.scope_poll()
+            if samples is not None:
+                finish()
+                return DeferredProgress(True, Ad2ScopeReadResult(samples))
+            if time.monotonic() >= deadline:
+                raise TimeoutError("AnalogIn capture timed out before acquisition completed")
+            return DeferredProgress(False)
+
+        def cancel() -> None:
+            try:
+                self.device.scope_abort()
+            finally:
+                finish()
+
+        return self.defer_operation(
+            step, cancel=cancel, poll_interval_s=config.poll_interval_s
+        )
 
     def configure_digital_output(self, args: Ad2ConfigureDigitalOutputArgs) -> None:
         if args.channel_index < 0:
