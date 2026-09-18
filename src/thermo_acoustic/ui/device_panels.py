@@ -470,6 +470,9 @@ class WaveformChannelEditor(QGroupBox):
         form = QFormLayout(page)
         form.setContentsMargins(4, 4, 4, 4)
         form.setVerticalSpacing(3)
+        self.sweep_function = self._profile(
+            f"{self.prefix}_sweep_function", self._function_combo()
+        )
         self.sweep_start = self._profile(
             f"{self.prefix}_sweep_start_hz", double_spin(900, 0, 100_000_000, 3)
         )
@@ -487,6 +490,7 @@ class WaveformChannelEditor(QGroupBox):
             f"{self.prefix}_sweep_offset_v", double_spin(0, -5, 5, 4)
         )
         for label, widget in (
+            ("Carrier type", self.sweep_function),
             ("Frequency start (Hz)", self.sweep_start),
             ("Frequency stop (Hz)", self.sweep_stop),
             ("Sweep time (ms)", self.sweep_time),
@@ -495,6 +499,7 @@ class WaveformChannelEditor(QGroupBox):
         ):
             form.addRow(label, widget)
         self.sweep_widgets = (
+            self.sweep_function,
             self.sweep_start,
             self.sweep_stop,
             self.sweep_time,
@@ -590,6 +595,9 @@ class WaveformChannelEditor(QGroupBox):
             if stop <= start:
                 return
             center = (start + stop) / 2.0
+            self.adv_function.setCurrentIndex(
+                self.adv_function.findData(self.sweep_function.currentData())
+            )
             self.adv_frequency.setValue(center)
             self.adv_offset.setValue(self.sweep_offset.value())
             self.fm_enabled.setChecked(True)
@@ -636,6 +644,7 @@ class WaveformChannelEditor(QGroupBox):
             for combo, value in (
                 (self.adv_function, channel.function.value),
                 (self.single_function, channel.function.value),
+                (self.sweep_function, channel.function.value),
                 (self.fm_function, channel.fm_function.value),
             ):
                 combo.setCurrentIndex(combo.findData(value))
