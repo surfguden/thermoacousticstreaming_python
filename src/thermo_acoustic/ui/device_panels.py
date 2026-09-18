@@ -750,6 +750,14 @@ class Ad2Panel(DevicePanel):
     def __init__(self, parent=None) -> None:
         super().__init__(DeviceId.AD2, parent)
         self._applied_capabilities: Ad2Capabilities | None = None
+        self.instrument_status_label = QLabel(
+            "WFG: idle · Oscilloscope: idle · Digital output: idle"
+        )
+        self.instrument_status_label.setWordWrap(True)
+        self.instrument_status_label.setStyleSheet("font-weight: 600;")
+        # Place per-instrument state directly beneath the common AD2 header,
+        # before transient notices and the instrument controls.
+        self.layout.insertWidget(1, self.instrument_status_label)
         self.instrument_tabs = QTabWidget()
         self.instrument_tabs.setMinimumWidth(0)
         self.instrument_tabs.setSizePolicy(
@@ -933,13 +941,26 @@ class Ad2Panel(DevicePanel):
                 f"{channel.frequency_hz:g} Hz/{channel.amplitude_v:g} V"
                 for channel in channels
             ) or "not configured"
-            self.readback_label.setText(
-                f"Waveform: {channel_text} · "
-                f"{'running' if getattr(readback, 'waveform_running', False) else 'stopped'} · "
-                f"Scope: {getattr(readback, 'scope_state', 'idle')} · "
-                f"Digital output: "
-                f"{'running' if getattr(readback, 'digital_output_running', False) else 'stopped'}"
+            wfg_state = (
+                "running"
+                if getattr(readback, "waveform_running", False)
+                else "configured"
+                if channels
+                else "idle"
             )
+            digital_state = (
+                "running"
+                if getattr(readback, "digital_output_running", False)
+                else "configured"
+                if getattr(readback, "digital_output_configured", False)
+                else "idle"
+            )
+            self.instrument_status_label.setText(
+                f"WFG: {wfg_state} · "
+                f"Oscilloscope: {getattr(readback, 'scope_state', 'idle')} · "
+                f"Digital output: {digital_state}"
+            )
+            self.readback_label.setText(f"WFG configuration: {channel_text}")
 
     def _apply_capabilities(self, capabilities: Ad2Capabilities) -> None:
         by_channel = {

@@ -37,7 +37,13 @@ from thermo_acoustic.application.commands import (
 )
 from thermo_acoustic.console.parser import parse_command
 from thermo_acoustic.application.event_formatting import detailed_event_text
-from thermo_acoustic.domain.models import ConnectionState, DeviceId, DeviceStatus, OperatingMode
+from thermo_acoustic.domain.models import (
+    Ad2Readback,
+    ConnectionState,
+    DeviceId,
+    DeviceStatus,
+    OperatingMode,
+)
 from thermo_acoustic.hal.registry import DeviceRegistry
 from thermo_acoustic.ui.device_panels import Ad2Panel, CameraPanel, PANEL_TYPES, PumpPanel
 from thermo_acoustic.ui.main_window import MainWindow
@@ -256,6 +262,21 @@ def test_ad2_connect_populates_sdk_capabilities_and_scope_limits(qt_app):
     ) == capabilities.waveform_channels[0].carrier.functions
     assert ad2.wave_channels[0].sweep_direction.itemData(0) == "Triangle"
     window.close()
+
+
+def test_ad2_header_shows_each_instrument_state(qt_app):
+    del qt_app
+    panel = Ad2Panel()
+    panel.update_readback(
+        Ad2Readback(
+            waveform_running=True,
+            scope_state="armed",
+            digital_output_configured=True,
+        )
+    )
+    assert panel.instrument_status_label.text() == (
+        "WFG: running · Oscilloscope: armed · Digital output: configured"
+    )
 
 
 def test_status_readback_and_result_widgets_update(qt_app):
