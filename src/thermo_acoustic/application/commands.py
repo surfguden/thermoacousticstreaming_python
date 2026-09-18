@@ -749,6 +749,7 @@ class CommandResult(Generic[ResultT]):
     ok: bool
     value: ResultT | None = None
     error: str | None = None
+    command: DeviceCommand[Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)

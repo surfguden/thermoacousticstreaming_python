@@ -154,7 +154,9 @@ class MainWindow(QMainWindow):
 
     def _result(self, result: CommandResult) -> None:
         if result.ok and result.device is not None:
-            self.panels[result.device].handle_result(result.value)
+            panel = self.panels[result.device]
+            panel.apply_successful_command(result.command)
+            panel.handle_result(result.value)
 
     @staticmethod
     def _result_summary(value: object) -> str:

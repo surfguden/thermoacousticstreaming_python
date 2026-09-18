@@ -301,6 +301,10 @@ class DevicePanel(QScrollArea):
     def handle_result(self, result: object) -> None:
         del result
 
+    def apply_successful_command(self, command: DeviceCommand | None) -> None:
+        """Synchronize editable controls after any successful command source."""
+        del command
+
     def register_profile(self, name: str, widget: QWidget) -> QWidget:
         self._profile_widgets[name] = widget
         return widget
@@ -945,6 +949,37 @@ class Ad2Panel(DevicePanel):
         if isinstance(result, Ad2WaveformAppliedResult):
             for channel in result.channels:
                 self.wave_channels[channel.channel_index].apply_readback(channel)
+                self._apply_trigger(self.wave_channels[channel.channel_index].trigger, channel.trigger)
+
+    def apply_successful_command(self, command: DeviceCommand | None) -> None:
+        if command is None:
+            return
+        args = command.arguments
+        if isinstance(args, Ad2ConfigureScopeArgs):
+            self.scope_controls.timeout.setValue(args.timeout_s)
+        elif isinstance(args, Ad2ConfigureDigitalOutputArgs):
+            self.do_channel.setValue(args.channel_index)
+            self.do_enabled.setChecked(args.enabled)
+            self.do_type.setCurrentIndex(self.do_type.findData(args.output_type.value))
+            self.do_clock_enabled.setChecked(args.clock_frequency_hz is not None)
+            if args.clock_frequency_hz is not None:
+                self.do_clock.setValue(args.clock_frequency_hz)
+            self.do_high.setValue(args.counter_high_bits)
+            self.do_low.setValue(args.counter_low_bits)
+            self.do_start_high.setChecked(args.start_high)
+            self.do_bits.setText("".join(str(bit) for bit in args.bits))
+            self.do_frames_enabled.setChecked(args.frame_count is not None)
+            if args.frame_count is not None:
+                self.do_frames.setValue(args.frame_count)
+            self._apply_trigger(self.do_trigger, args.trigger)
+
+    @staticmethod
+    def _apply_trigger(controls: dict[str, QWidget], trigger: Ad2TriggerSettingsArgs) -> None:
+        controls["source"].setCurrentIndex(controls["source"].findData(trigger.source.value))
+        controls["wait"].setValue(trigger.wait_s)
+        controls["run"].setValue(trigger.run_s)
+        controls["repeat"].setValue(trigger.repeat_count)
+        controls["retrigger"].setChecked(trigger.repeat_trigger)
 
 
 class PumpPanel(DevicePanel):
@@ -1058,6 +1093,38 @@ class PumpPanel(DevicePanel):
         if readback is not None:
             self.readback_label.setText(str(readback))
 
+    def apply_successful_command(self, command: DeviceCommand | None) -> None:
+        if command is None:
+            return
+        args = command.arguments
+        if isinstance(args, PumpSetFlowArgs):
+            self.flow.setValue(args.flow_ul_min)
+        elif isinstance(args, PumpSetFillLevelArgs):
+            self.fill_level.setValue(args.fill_level_ml)
+            self.fill_flow_enabled.setChecked(args.flow_rate_ul_min is not None)
+            if args.flow_rate_ul_min is not None:
+                self.fill_flow.setValue(args.flow_rate_ul_min)
+        elif isinstance(args, PumpMoveArgs):
+            self.move_flow_enabled.setChecked(args.flow_rate_ul_min is not None)
+            if args.flow_rate_ul_min is not None:
+                self.move_flow.setValue(args.flow_rate_ul_min)
+            self.move_timeout.setValue(args.timeout_s)
+            self.move_poll.setValue(args.poll_interval_s)
+        elif isinstance(args, PumpReferenceMoveArgs):
+            self.reference_timeout.setValue(args.timeout_s)
+            self.reference_poll.setValue(args.poll_interval_s)
+        elif isinstance(args, PumpConfigureFlowUnitArgs):
+            self.flow_unit.setCurrentIndex(self.flow_unit.findData(args.unit.value))
+        elif isinstance(args, PumpConfigureSyringeArgs):
+            if args.preset is not None:
+                self.syringe_mode.setCurrentIndex(self.syringe_mode.findData(args.preset.value))
+            else:
+                self.syringe_mode.setCurrentIndex(self.syringe_mode.findData("custom"))
+                if args.inner_diameter_mm is not None:
+                    self.syringe_diameter.setValue(args.inner_diameter_mm)
+                if args.max_piston_stroke_mm is not None:
+                    self.syringe_stroke.setValue(args.max_piston_stroke_mm)
+
 
 class ValvePanel(DevicePanel):
     def __init__(self, parent=None) -> None:
@@ -1095,6 +1162,16 @@ class ValvePanel(DevicePanel):
     def update_readback(self, readback: object) -> None:
         if readback is not None:
             self.readback_label.setText(str(readback))
+
+    def apply_successful_command(self, command: DeviceCommand | None) -> None:
+        if command is None:
+            return
+        args = command.arguments
+        if isinstance(args, ValveSetPositionArgs):
+            self.position.setValue(args.position)
+        elif isinstance(args, ValveWaitReadyArgs):
+            self.wait_timeout.setValue(args.timeout_s)
+            self.wait_poll.setValue(args.poll_interval_s)
 
 
 class CameraPanel(DevicePanel):
@@ -1304,6 +1381,44 @@ class CameraPanel(DevicePanel):
             timestamp = result.timestamps[-1] if result.timestamps else "no timestamp"
             self.sequence_status.setText(f"{len(result.frames)} frames · last: {timestamp}")
 
+    def apply_successful_command(self, command: DeviceCommand | None) -> None:
+        if command is None:
+            return
+        args = command.arguments
+        if isinstance(args, CameraConfigureSnapshotArgs):
+            self.snapshot_exposure_enabled.setChecked(args.exposure_ms is not None)
+            if args.exposure_ms is not None:
+                self.snapshot_exposure.setValue(args.exposure_ms)
+        elif isinstance(args, CameraConfigureExposureArgs):
+            self.exposure.setValue(args.exposure_ms)
+        elif isinstance(args, CameraConfigureRoiArgs):
+            self.roi_x.setValue(args.horizontal_offset)
+            self.roi_y.setValue(args.vertical_offset)
+            self.roi_width.setValue(args.horizontal_size)
+            self.roi_height.setValue(args.vertical_size)
+        elif isinstance(args, CameraConfigureSequenceArgs):
+            self.sequence_frames.setValue(args.frame_count)
+            self.sequence_exposure_enabled.setChecked(args.exposure_ms is not None)
+            if args.exposure_ms is not None:
+                self.sequence_exposure.setValue(args.exposure_ms)
+            self.frame_timeout.setValue(args.frame_timeout_s)
+            self.frame_poll.setValue(args.poll_interval_s)
+            trigger = args.trigger
+            self.trigger_enabled.setChecked(trigger is not None)
+            if trigger is not None:
+                self.trigger_source.setCurrentIndex(self.trigger_source.findData(trigger.source.value))
+                self.trigger_polarity.setCurrentIndex(self.trigger_polarity.findData(trigger.polarity.value))
+                self.trigger_active.setCurrentIndex(self.trigger_active.findData(trigger.active.value))
+                self.trigger_times.setValue(trigger.trigger_times)
+                self.trigger_delay.setValue(trigger.delay_s)
+                self.masterpulse_mode.setCurrentIndex(self.masterpulse_mode.findData(trigger.masterpulse_mode.value))
+                self.masterpulse_source.setCurrentIndex(self.masterpulse_source.findData(trigger.masterpulse_source.value))
+                self.masterpulse_interval.setValue(trigger.masterpulse_interval_s)
+                self.masterpulse_burst.setValue(trigger.masterpulse_burst_times)
+                self.global_exposure_enabled.setChecked(trigger.global_exposure is not None)
+                if trigger.global_exposure is not None:
+                    self.global_exposure.setChecked(trigger.global_exposure)
+
 
 class TecPanel(DevicePanel):
     def __init__(self, parent=None) -> None:
@@ -1377,6 +1492,27 @@ class TecPanel(DevicePanel):
         if isinstance(result, TecStatusResult):
             self._set_channels(result.channels)
 
+    def apply_successful_command(self, command: DeviceCommand | None) -> None:
+        if command is None:
+            return
+        args = command.arguments
+        if isinstance(args, (TecApplySetpointsArgs, TecWaitStableArgs)):
+            targets = args.target_temperature_c
+            if isinstance(targets, dict):
+                self.target_mode.setCurrentIndex(self.target_mode.findData("per_channel"))
+                if 1 in targets:
+                    self.target_1.setValue(targets[1])
+                if 2 in targets:
+                    self.target_2.setValue(targets[2])
+            else:
+                self.target_mode.setCurrentIndex(self.target_mode.findData("broadcast"))
+                self.target.setValue(targets)
+            if isinstance(args, TecWaitStableArgs):
+                self.tolerance.setValue(args.tolerance_c)
+                self.settle.setValue(args.min_settle_s)
+                self.max_wait.setValue(args.max_wait_s)
+                self.poll.setValue(args.poll_interval_s)
+
     def _set_channels(self, channels: object) -> None:
         for row, channel in enumerate(channels):
             if row >= self.table.rowCount():
@@ -1419,6 +1555,10 @@ class ZStagePanel(DevicePanel):
     def update_readback(self, readback: object) -> None:
         if readback is not None:
             self.readback_label.setText(str(readback))
+
+    def apply_successful_command(self, command: DeviceCommand | None) -> None:
+        if command is not None and isinstance(command.arguments, ZStageSetPositionArgs):
+            self.position.setValue(command.arguments.position_um)
 
 
 PANEL_TYPES = {

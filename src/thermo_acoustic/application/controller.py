@@ -195,7 +195,7 @@ class ApplicationController(QObject):
                 )
                 value = None
         self.command_result.emit(
-            CommandResult(request_id, command.device, command.operation, ok, value, error)
+            CommandResult(request_id, command.device, command.operation, ok, value, error, command)
         )
         self._emit(command, "completed" if ok else "failed", error or "", value)
         self._active = None
@@ -221,7 +221,7 @@ class ApplicationController(QObject):
                 )
                 value = None
         self.command_result.emit(
-            CommandResult(request_id, command.device, command.operation, ok, value, error)
+            CommandResult(request_id, command.device, command.operation, ok, value, error, command)
         )
         self._emit(command, "completed" if ok else "failed", error or "", value)
         return True
@@ -244,7 +244,7 @@ class ApplicationController(QObject):
             return
         command = self._active.command
         self.command_result.emit(
-            CommandResult(request_id, command.device, command.operation, False, error=reason)
+            CommandResult(request_id, command.device, command.operation, False, error=reason, command=command)
         )
         self._emit(command, "cancelled", reason)
         self._active = None

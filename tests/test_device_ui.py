@@ -28,11 +28,14 @@ from thermo_acoustic.application.commands import (
     CameraTriggerActive,
     CameraTriggerPolarity,
     CameraTriggerSource,
+    CommandResult,
+    DeviceCommand,
     CommandEvent,
     DeviceOperation,
     OPERATION_SPECS,
     PumpSetFlowArgs,
 )
+from thermo_acoustic.console.parser import parse_command
 from thermo_acoustic.application.event_formatting import detailed_event_text
 from thermo_acoustic.domain.models import ConnectionState, DeviceId, DeviceStatus, OperatingMode
 from thermo_acoustic.hal.registry import DeviceRegistry
@@ -190,6 +193,45 @@ def test_main_window_routes_waveform_sdk_readback_to_both_channels(qt_app):
     assert "SDK applied" in ad2.wave_channels[0].applied_label.text()
     assert "SDK applied" in ad2.wave_channels[1].applied_label.text()
     window.close()
+
+
+def test_console_waveform_configuration_updates_visible_ad2_controls(qt_app):
+    controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
+    window = MainWindow(controller)
+    command = parse_command(
+        "ad2 waveform configure --ch1-frequency-hz 2000 --ch1-amplitude-v 2 "
+        "--ch2-enabled false"
+    )
+    window._result(
+        CommandResult(
+            command.request_id,
+            DeviceId.AD2,
+            command.operation,
+            True,
+            Ad2WaveformAppliedResult(command.arguments.resolved_channels()),
+            command=command,
+        )
+    )
+    channel = window.panels[DeviceId.AD2].wave_channels[0]
+    assert channel.single_frequency.value() == 2000.0
+    assert channel.single_amplitude.value() == 2.0
+    assert not window.panels[DeviceId.AD2].wave_channels[1].enabled.isChecked()
+    window.close()
+
+
+def test_successful_console_commands_synchronize_other_panel_editors(qt_app):
+    del qt_app
+    pump = PumpPanel()
+    pump.apply_successful_command(parse_command("pump refill --flow-ul-min 42 --timeout-s 30 --poll-interval-s 0.2"))
+    assert pump.move_flow.value() == 42.0
+    assert pump.move_timeout.value() == 30.0
+    assert pump.move_poll.value() == 0.2
+
+    camera = CameraPanel()
+    camera.apply_successful_command(parse_command("camera sequence configure --frames 7 --exposure-ms 3 --timeout-s 5 --poll-interval-s 0.1"))
+    assert camera.sequence_frames.value() == 7
+    assert camera.sequence_exposure.value() == 3.0
+    assert camera.frame_timeout.value() == 5.0
 
 
 def test_ad2_connect_populates_sdk_capabilities_and_scope_limits(qt_app):
