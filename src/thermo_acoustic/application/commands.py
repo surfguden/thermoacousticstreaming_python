@@ -208,9 +208,7 @@ class Ad2WaveformChannelArgs:
         _require_percentage("symmetry_percent", self.symmetry_percent)
         _require_finite_value("phase_deg", self.phase_deg)
         _require_finite_positive("fm_frequency_hz", self.fm_frequency_hz)
-        _require_finite_nonnegative(
-            "fm_modulation_index_percent", self.fm_modulation_index_percent
-        )
+        _require_finite_value("fm_modulation_index_percent", self.fm_modulation_index_percent)
         _require_finite_value("fm_offset_percent", self.fm_offset_percent)
         _require_percentage("fm_symmetry_percent", self.fm_symmetry_percent)
         _require_finite_value("fm_phase_deg", self.fm_phase_deg)
@@ -266,7 +264,7 @@ class Ad2ScopeTriggerArgs:
     condition: Ad2ScopeTriggerCondition = Ad2ScopeTriggerCondition.RISING_POSITIVE
     filter: Ad2ScopeTriggerFilter = Ad2ScopeTriggerFilter.DECIMATE
     level_v: float = 0.0
-    hysteresis_v: float = 0.01
+    hysteresis_v: float = 0.1
     length_condition: Ad2ScopeTriggerLengthCondition = Ad2ScopeTriggerLengthCondition.MORE
     length_s: float = 0.0
     holdoff_s: float = 0.0
@@ -762,6 +760,8 @@ class CommandEvent:
     source: str
     message: str = ""
     result: Any = None
+    arguments: Any = None
+    timestamp: datetime = field(default_factory=utc_now)
 
 
 @dataclass(frozen=True, slots=True)

@@ -60,6 +60,69 @@ class Ad2WaveformChannelReadback:
 
 
 @dataclass(frozen=True, slots=True)
+class FloatRange:
+    minimum: float
+    maximum: float
+    step: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class IntegerRange:
+    minimum: int
+    maximum: int
+
+
+@dataclass(frozen=True, slots=True)
+class Ad2WaveformNodeCapabilities:
+    frequency_hz: FloatRange
+    amplitude: FloatRange
+    offset: FloatRange
+    symmetry_percent: FloatRange
+    phase_deg: FloatRange
+
+
+@dataclass(frozen=True, slots=True)
+class Ad2WaveformChannelCapabilities:
+    channel_index: int
+    carrier: Ad2WaveformNodeCapabilities
+    fm: Ad2WaveformNodeCapabilities
+    wait_s: FloatRange
+    run_s: FloatRange
+    repeat_count: IntegerRange
+
+
+@dataclass(frozen=True, slots=True)
+class Ad2ScopeCapabilities:
+    sample_frequency_hz: FloatRange
+    sample_count: IntegerRange
+    input_ranges_v: tuple[float, ...]
+    input_offset_v: FloatRange
+    trigger_channel: IntegerRange
+    trigger_level_v: FloatRange
+    trigger_hysteresis_v: FloatRange
+    trigger_holdoff_s: FloatRange
+    trigger_auto_timeout_s: FloatRange
+
+
+@dataclass(frozen=True, slots=True)
+class Ad2DigitalOutputCapabilities:
+    channel_count: int
+    clock_frequency_hz: FloatRange
+    counter_bits: IntegerRange
+    custom_data_bits_max: int
+    wait_s: FloatRange
+    run_s: FloatRange
+    repeat_count: IntegerRange
+
+
+@dataclass(frozen=True, slots=True)
+class Ad2Capabilities:
+    waveform_channels: tuple[Ad2WaveformChannelCapabilities, ...]
+    scope: Ad2ScopeCapabilities
+    digital_output: Ad2DigitalOutputCapabilities
+
+
+@dataclass(frozen=True, slots=True)
 class Ad2Readback:
     waveform_frequency_hz: float | None = None
     waveform_amplitude_v: float | None = None
@@ -70,6 +133,7 @@ class Ad2Readback:
     digital_output_running: bool = False
     digital_output_channel: int | None = None
     digital_output_clock_frequency_hz: float | None = None
+    capabilities: Ad2Capabilities | None = None
 
 
 @dataclass(frozen=True, slots=True)

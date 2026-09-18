@@ -7,6 +7,7 @@ from .hal.registry import DeviceRegistry
 from .domain.models import OperatingMode
 from .ui.main_window import MainWindow, configure_palette
 from .console.parser import help_text
+from .application.event_formatting import detailed_event_text
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(); parser.add_argument("--mode", choices=["simulation", "real"], default="simulation"); parser.add_argument("--audit-log", default=None); args = parser.parse_args(argv)
@@ -18,6 +19,6 @@ def main(argv: list[str] | None = None) -> int:
         elif item is not None:
             try: controller.submit(item)
             except Exception as exc: print(f"validation error: {exc}", flush=True)
-    reader.command.connect(handle); reader.output.connect(lambda text: print(text, flush=True)); controller.command_event.connect(lambda e: print(f"[{e.request_id}] {e.state} {e.message}", flush=True)); controller.start(); reader.start(); window.showMaximized(); return qt_app.exec()
+    reader.command.connect(handle); reader.output.connect(lambda text: print(text, flush=True)); controller.command_event.connect(lambda event: print(detailed_event_text(event), flush=True)); controller.start(); reader.start(); window.showMaximized(); return qt_app.exec()
 
 if __name__ == "__main__": raise SystemExit(main())

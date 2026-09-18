@@ -151,13 +151,14 @@ class ApplicationController(QObject):
     ) -> None:
         self.command_event.emit(
             CommandEvent(
-                command.request_id,
-                state,
-                command.device,
-                command.operation,
-                command.source,
-                message,
-                result,
+                request_id=command.request_id,
+                state=state,
+                device=command.device,
+                operation=command.operation,
+                source=command.source,
+                message=message,
+                result=result,
+                arguments=command.arguments,
             )
         )
         self.audit.write(

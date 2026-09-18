@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
     QApplication,
+    QComboBox,
+    QDialog,
     QFileDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
-    QSplitter,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
@@ -26,6 +29,7 @@ from ..application.commands import (
     CommandResult,
     ConfirmationRequest,
 )
+from ..application.event_formatting import detailed_event_text, event_summary
 from ..domain.models import DEVICE_LABELS, DeviceId, DeviceStatus
 from .device_panels import DevicePanel, PANEL_TYPES
 
@@ -48,7 +52,8 @@ class MainWindow(QMainWindow):
         self.controller = controller
         self._requests: dict[str, tuple[DevicePanel, str]] = {}
         self.setWindowTitle("Thermo-acoustic control")
-        self.resize(1100, 760)
+        self.setMinimumSize(960, 1080)
+        self.resize(1100, 1080)
         root = QWidget()
         root_layout = QVBoxLayout(root)
         self.setCentralWidget(root)
@@ -56,8 +61,6 @@ class MainWindow(QMainWindow):
             QLabel(f"Mode: {controller.mode.value} (simulation is the safe default)")
         )
 
-        splitter = QSplitter(Qt.Orientation.Vertical)
-        self.splitter = splitter
         self.tabs = QTabWidget()
         self.tabs.setMinimumWidth(0)
         self.panels: dict[DeviceId, DevicePanel] = {}
@@ -69,17 +72,12 @@ class MainWindow(QMainWindow):
             panel.notice.connect(self._ui_notice)
             self.panels[device] = panel
             self.tabs.addTab(panel, _TAB_LABELS[device])
-        splitter.addWidget(self.tabs)
-        self.log = QTextEdit()
-        self.log.setReadOnly(True)
-        self.log.setMinimumHeight(80)
-        self.log.setPlaceholderText("Command activity")
-        splitter.addWidget(self.log)
-        splitter.setStretchFactor(0, 4)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([900, 120])
-        root_layout.addWidget(splitter)
+        root_layout.addWidget(self.tabs)
+        self.log_window = DetailedLogWindow(self)
+        self.log = self.log_window.log
         self._create_file_menu()
+        self._create_log_menu()
+        self._configure_editor_controls()
 
         controller.command_event.connect(self._event)
         controller.command_result.connect(self._result)
@@ -94,6 +92,32 @@ class MainWindow(QMainWindow):
         load_action.triggered.connect(self._choose_load_profile)
         menu.addAction(save_action)
         menu.addAction(load_action)
+
+    def _create_log_menu(self) -> None:
+        menu = self.menuBar().addMenu("&Log")
+        show_action = QAction("Show detailed log…", self)
+        show_action.triggered.connect(self._show_log)
+        menu.addAction(show_action)
+
+    def _show_log(self) -> None:
+        self.log_window.show()
+        self.log_window.raise_()
+        self.log_window.activateWindow()
+
+    def _configure_editor_controls(self) -> None:
+        for widget in self.findChildren(QAbstractSpinBox):
+            widget.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+            widget.installEventFilter(self)
+        for widget in self.findChildren(QComboBox):
+            widget.installEventFilter(self)
+
+    def eventFilter(self, watched, event) -> bool:
+        if event.type() is QEvent.Type.Wheel and isinstance(
+            watched, (QAbstractSpinBox, QComboBox)
+        ):
+            event.ignore()
+            return True
+        return super().eventFilter(watched, event)
 
     def _submit(self, panel: DevicePanel, action: str, command) -> None:
         panel.mark_pending(action, command.request_id)
@@ -118,14 +142,10 @@ class MainWindow(QMainWindow):
         return answer is QMessageBox.StandardButton.Yes
 
     def _event(self, event: CommandEvent) -> None:
-        device = event.device.value if event.device else "application"
-        suffix = f" — {event.message}" if event.message else ""
-        if event.result is not None:
-            suffix += f" — {self._result_summary(event.result)}"
-        self.log.append(
-            f"[{event.request_id}] {event.source} · {event.state} · "
-            f"{device} · {event.operation.value}{suffix}"
-        )
+        self.log.append(detailed_event_text(event))
+        summary = event_summary(event)
+        if summary is not None:
+            self.statusBar().showMessage(summary, 7000)
         if event.state in _TERMINAL_STATES:
             pending = self._requests.pop(event.request_id, None)
             if pending is not None:
@@ -153,7 +173,8 @@ class MainWindow(QMainWindow):
         return text if len(text) <= 240 else text[:237] + "…"
 
     def _ui_notice(self, text: str) -> None:
-        self.log.append(f"[ui] {text}")
+        timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        self.log.append(f"{timestamp} · UI · {text}")
         self.statusBar().showMessage(text, 5000)
 
     def _status(self, statuses: dict[DeviceId, DeviceStatus]) -> None:
@@ -239,3 +260,15 @@ class MainWindow(QMainWindow):
 
 def configure_palette(application: QApplication) -> None:
     del application
+
+
+class DetailedLogWindow(QDialog):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Detailed command log")
+        self.resize(960, 540)
+        layout = QVBoxLayout(self)
+        self.log = QTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setPlaceholderText("Detailed command activity will appear here")
+        layout.addWidget(self.log)

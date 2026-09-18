@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from thermo_acoustic.application.commands import (
     Ad2ConfigureDigitalOutputArgs,
+    Ad2ConfigureScopeArgs,
     Ad2ConfigureWaveformArgs,
+    Ad2ScopeChannelArgs,
     Ad2TriggerSettingsArgs,
     Ad2TriggerSource,
     CameraConfigureSequenceArgs,
@@ -13,6 +15,9 @@ from thermo_acoustic.application.commands import (
     CameraTriggerPolarity,
     CameraTriggerSource,
 )
+import pytest
+
+from thermo_acoustic.drivers.ad2 import SimulatedAD2
 from thermo_acoustic.hal.ad2 import AD2Worker
 from thermo_acoustic.hal.camera import CameraWorker
 from thermo_acoustic.drivers.ad2.configuration import coerce_wfg_config
@@ -55,6 +60,24 @@ def test_ad2_hal_forwards_waveform_and_digital_trigger_settings() -> None:
     }
     assert calls[0][1]["channels"][0]["trigger"] == expected
     assert calls[1][1]["trigger"] == expected
+
+
+def test_ad2_hal_rejects_values_outside_live_capabilities_without_disconnect() -> None:
+    device = SimulatedAD2()
+    worker = AD2Worker(lambda: device)
+    worker.connect_device()
+
+    with pytest.raises(ValueError, match=r"sample_frequency_hz.*0\.001\.\.1e\+08"):
+        worker.configure_scope(
+            Ad2ConfigureScopeArgs(
+                sample_count=1000,
+                sample_frequency_hz=200_000_000,
+                channels=(Ad2ScopeChannelArgs(0, 5.0),),
+            )
+        )
+
+    assert worker.state.connected
+    assert device.scope_config is None
 
 
 def test_camera_hal_forwards_sequence_trigger_and_global_exposure() -> None:

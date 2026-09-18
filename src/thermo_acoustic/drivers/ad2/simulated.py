@@ -27,6 +27,49 @@ class SimulatedAD2:
     def initialize(self) -> None:
         self.initialized = True
 
+    def capabilities(self) -> dict[str, object]:
+        node = {
+            "frequency_hz": (0.001, 100_000_000.0),
+            "amplitude": (0.0, 5.0),
+            "offset": (-5.0, 5.0),
+            "symmetry_percent": (0.0, 100.0),
+            "phase_deg": (-360.0, 360.0),
+        }
+        waveform_channels = tuple(
+            {
+                "channel_index": index,
+                "carrier": dict(node),
+                "fm": dict(node),
+                "wait_s": (0.0, 1_000_000.0),
+                "run_s": (0.0, 1_000_000.0),
+                "repeat_count": (0, 1_000_000),
+            }
+            for index in (0, 1)
+        )
+        return {
+            "waveform_channels": waveform_channels,
+            "scope": {
+                "sample_frequency_hz": (0.001, 100_000_000.0),
+                "sample_count": (1, 16_384),
+                "input_ranges_v": (0.5, 1.0, 2.0, 5.0, 10.0, 25.0, 50.0),
+                "input_offset_v": (-50.0, 50.0, 0.001),
+                "trigger_channel": (0, 1),
+                "trigger_level_v": (-50.0, 50.0, 0.001),
+                "trigger_hysteresis_v": (0.0, 50.0, 0.001),
+                "trigger_holdoff_s": (0.0, 3600.0, 0.000001),
+                "trigger_auto_timeout_s": (0.0, 3600.0, 0.001),
+            },
+            "digital_output": {
+                "channel_count": 16,
+                "clock_frequency_hz": (0.001, 50_000_000.0),
+                "counter_bits": (1, 65_535),
+                "custom_data_bits_max": 16_384,
+                "wait_s": (0.0, 1_000_000.0),
+                "run_s": (0.0, 1_000_000.0),
+                "repeat_count": (0, 1_000_000),
+            },
+        }
+
     def cleanup(self) -> None:
         self.running = False
         self.scope_armed = False

@@ -34,6 +34,8 @@ bench confirmation.
 | `manual_capture_ad2_wavegen_scope.py` | Real W1 output and scope capture; exact token documented by `--confirm` |
 | `manual_capture_ad2_wavegen_scope_matplotlib.py` | Capture with Matplotlib display; same AD2 gate |
 | `manual_release_ad2.py` | Enumerate and release WaveForms device handles; `CONFIRM_REAL_AD2_RELEASE` |
+| `manual_ad2_capabilities.py` | Open one AD2 and read SDK limits only; `CONFIRM_REAL_AD2_CAPABILITIES` |
+| `manual_ad2_ui_connect.py` | Exercise the Qt/controller/HAL AD2 Connect path; `CONFIRM_REAL_AD2_UI_CONNECT` |
 | `test_valve_command_probe.py`, `test_valve_command_probe_v2.py` | Manual valve command probes; `--confirm SEND` |
 
 Capture output paths are unchanged. No bundled waveform amplitude is established

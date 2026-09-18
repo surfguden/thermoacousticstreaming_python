@@ -494,7 +494,7 @@ class ScopeTriggerConfig:
     condition: ScopeTriggerCondition | str = ScopeTriggerCondition.RISING_POSITIVE
     filter: ScopeTriggerFilter | str = ScopeTriggerFilter.DECIMATE
     level_v: float = 0.0
-    hysteresis_v: float = 0.01
+    hysteresis_v: float = 0.1
     length_condition: ScopeTriggerLengthCondition | str = ScopeTriggerLengthCondition.MORE
     length_s: float = 0.0
     holdoff_s: float = 0.0
@@ -664,7 +664,7 @@ def coerce_scope_trigger_config(
             ScopeTriggerFilter.DECIMATE,
         ),
         level_v=float(_first_present(data, "level_v", "level", default=0.0)),
-        hysteresis_v=float(_first_present(data, "hysteresis_v", "hysteresis", default=0.01)),
+        hysteresis_v=float(_first_present(data, "hysteresis_v", "hysteresis", default=0.1)),
         length_condition=_coerce_enum(
             ScopeTriggerLengthCondition,
             _first_present(data, "length_condition", default=ScopeTriggerLengthCondition.MORE),

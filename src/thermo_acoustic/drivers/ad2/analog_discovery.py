@@ -201,6 +201,224 @@ class AnalogDiscovery2:
             )
         return handle
 
+    def capabilities(self) -> dict[str, object]:
+        """Read the limits exposed by WaveForms for the connected device."""
+        handle = self._require_handle("capabilities()")
+        waveform_channels = []
+        for channel_index in (0, 1):
+            waveform_channels.append(
+                {
+                    "channel_index": channel_index,
+                    "carrier": self._analog_out_node_capabilities(handle, channel_index, 0),
+                    "fm": self._analog_out_node_capabilities(handle, channel_index, 1),
+                    "wait_s": self._float_info(
+                        self._dwf.FDwfAnalogOutWaitInfo,
+                        "FDwfAnalogOutWaitInfo",
+                        c_int(handle),
+                        c_int(channel_index),
+                    ),
+                    "run_s": self._float_info(
+                        self._dwf.FDwfAnalogOutRunInfo,
+                        "FDwfAnalogOutRunInfo",
+                        c_int(handle),
+                        c_int(channel_index),
+                    ),
+                    "repeat_count": self._int_info(
+                        self._dwf.FDwfAnalogOutRepeatInfo,
+                        "FDwfAnalogOutRepeatInfo",
+                        c_int(handle),
+                        c_int(channel_index),
+                    ),
+                }
+            )
+
+        scope_frequency = self._float_info(
+            self._dwf.FDwfAnalogInFrequencyInfo,
+            "FDwfAnalogInFrequencyInfo",
+            c_int(handle),
+        )
+        scope_buffer = self._int_info(
+            self._dwf.FDwfAnalogInBufferSizeInfo,
+            "FDwfAnalogInBufferSizeInfo",
+            c_int(handle),
+        )
+        range_min = c_double()
+        range_max = c_double()
+        range_step_count = c_double()
+        self._check(
+            self._dwf.FDwfAnalogInChannelRangeInfo(
+                c_int(handle), byref(range_min), byref(range_max), byref(range_step_count)
+            ),
+            "FDwfAnalogInChannelRangeInfo",
+        )
+        ranges = (c_double * 32)()
+        range_count = c_int(32)
+        self._check(
+            self._dwf.FDwfAnalogInChannelRangeSteps(
+                c_int(handle), ranges, byref(range_count)
+            ),
+            "FDwfAnalogInChannelRangeSteps",
+        )
+        input_ranges = tuple(
+            float(ranges[index])
+            for index in range(max(0, min(range_count.value, len(ranges))))
+        )
+        if not input_ranges:
+            input_ranges = (range_min.value, range_max.value)
+
+        scope = {
+            "sample_frequency_hz": scope_frequency,
+            "sample_count": scope_buffer,
+            "input_ranges_v": input_ranges,
+            "input_offset_v": self._float_info_with_step(
+                self._dwf.FDwfAnalogInChannelOffsetInfo,
+                "FDwfAnalogInChannelOffsetInfo",
+                c_int(handle),
+            ),
+            "trigger_channel": self._int_info(
+                self._dwf.FDwfAnalogInTriggerChannelInfo,
+                "FDwfAnalogInTriggerChannelInfo",
+                c_int(handle),
+            ),
+            "trigger_level_v": self._float_info_with_step(
+                self._dwf.FDwfAnalogInTriggerLevelInfo,
+                "FDwfAnalogInTriggerLevelInfo",
+                c_int(handle),
+            ),
+            "trigger_hysteresis_v": self._float_info_with_step(
+                self._dwf.FDwfAnalogInTriggerHysteresisInfo,
+                "FDwfAnalogInTriggerHysteresisInfo",
+                c_int(handle),
+            ),
+            "trigger_holdoff_s": self._float_info_with_step(
+                self._dwf.FDwfAnalogInTriggerHoldOffInfo,
+                "FDwfAnalogInTriggerHoldOffInfo",
+                c_int(handle),
+            ),
+            "trigger_auto_timeout_s": self._float_info_with_step(
+                self._dwf.FDwfAnalogInTriggerAutoTimeoutInfo,
+                "FDwfAnalogInTriggerAutoTimeoutInfo",
+                c_int(handle),
+            ),
+        }
+
+        channel_count = c_int()
+        self._check(
+            self._dwf.FDwfDigitalOutCount(c_int(handle), byref(channel_count)),
+            "FDwfDigitalOutCount",
+        )
+        digital_clock_hz = self._digital_out_internal_clock_info(handle)
+        minimum_divider, maximum_divider = self._digital_out_divider_info(handle, 0)
+        counter_bits = self._uint_info(
+            self._dwf.FDwfDigitalOutCounterInfo,
+            "FDwfDigitalOutCounterInfo",
+            c_int(handle),
+            c_int(0),
+        )
+        data_bits_max = c_uint()
+        self._check(
+            self._dwf.FDwfDigitalOutDataInfo(
+                c_int(handle), c_int(0), byref(data_bits_max)
+            ),
+            "FDwfDigitalOutDataInfo",
+        )
+        digital_output = {
+            "channel_count": channel_count.value,
+            "clock_frequency_hz": (
+                digital_clock_hz / (2.0 * maximum_divider),
+                digital_clock_hz / (2.0 * minimum_divider),
+            ),
+            "counter_bits": counter_bits,
+            "custom_data_bits_max": data_bits_max.value,
+            "wait_s": self._float_info(
+                self._dwf.FDwfDigitalOutWaitInfo,
+                "FDwfDigitalOutWaitInfo",
+                c_int(handle),
+            ),
+            "run_s": self._float_info(
+                self._dwf.FDwfDigitalOutRunInfo,
+                "FDwfDigitalOutRunInfo",
+                c_int(handle),
+            ),
+            "repeat_count": self._uint_info(
+                self._dwf.FDwfDigitalOutRepeatInfo,
+                "FDwfDigitalOutRepeatInfo",
+                c_int(handle),
+            ),
+        }
+        return {
+            "waveform_channels": tuple(waveform_channels),
+            "scope": scope,
+            "digital_output": digital_output,
+        }
+
+    def _analog_out_node_capabilities(
+        self, handle: int, channel_index: int, node_id: int
+    ) -> dict[str, tuple[float, float]]:
+        prefix = (c_int(handle), c_int(channel_index), c_int(node_id))
+        return {
+            "frequency_hz": self._float_info(
+                self._dwf.FDwfAnalogOutNodeFrequencyInfo,
+                "FDwfAnalogOutNodeFrequencyInfo",
+                *prefix,
+            ),
+            "amplitude": self._float_info(
+                self._dwf.FDwfAnalogOutNodeAmplitudeInfo,
+                "FDwfAnalogOutNodeAmplitudeInfo",
+                *prefix,
+            ),
+            "offset": self._float_info(
+                self._dwf.FDwfAnalogOutNodeOffsetInfo,
+                "FDwfAnalogOutNodeOffsetInfo",
+                *prefix,
+            ),
+            "symmetry_percent": self._float_info(
+                self._dwf.FDwfAnalogOutNodeSymmetryInfo,
+                "FDwfAnalogOutNodeSymmetryInfo",
+                *prefix,
+            ),
+            "phase_deg": self._float_info(
+                self._dwf.FDwfAnalogOutNodePhaseInfo,
+                "FDwfAnalogOutNodePhaseInfo",
+                *prefix,
+            ),
+        }
+
+    def _float_info(self, function, name: str, *prefix) -> tuple[float, float]:
+        minimum = c_double()
+        maximum = c_double()
+        self._check(function(*prefix, byref(minimum), byref(maximum)), name)
+        return minimum.value, maximum.value
+
+    def _float_info_with_step(
+        self, function, name: str, *prefix
+    ) -> tuple[float, float, float]:
+        minimum = c_double()
+        maximum = c_double()
+        step_count = c_double()
+        self._check(
+            function(*prefix, byref(minimum), byref(maximum), byref(step_count)),
+            name,
+        )
+        increment = (
+            (maximum.value - minimum.value) / step_count.value
+            if step_count.value > 0
+            else 0.0
+        )
+        return minimum.value, maximum.value, increment
+
+    def _int_info(self, function, name: str, *prefix) -> tuple[int, int]:
+        minimum = c_int()
+        maximum = c_int()
+        self._check(function(*prefix, byref(minimum), byref(maximum)), name)
+        return minimum.value, maximum.value
+
+    def _uint_info(self, function, name: str, *prefix) -> tuple[int, int]:
+        minimum = c_uint()
+        maximum = c_uint()
+        self._check(function(*prefix, byref(minimum), byref(maximum)), name)
+        return minimum.value, maximum.value
+
     def pc_trigger(self) -> None:
         self._trigger_pc(self._require_handle("pc_trigger()"))
         self.triggered = True
@@ -437,11 +655,14 @@ class AnalogDiscovery2:
             "FDwfAnalogOutNodePhaseSet": ([c_int, c_int, c_int, c_double], c_int),
             "FDwfAnalogOutNodePhaseGet": ([c_int, c_int, c_int, ctypes.POINTER(c_double)], c_int),
             "FDwfAnalogOutNodePhaseInfo": ([c_int, c_int, c_int, ctypes.POINTER(c_double), ctypes.POINTER(c_double)], c_int),
+            "FDwfAnalogOutRunInfo": ([c_int, c_int, ctypes.POINTER(c_double), ctypes.POINTER(c_double)], c_int),
             "FDwfAnalogOutRunSet": ([c_int, c_int, c_double], c_int),
             "FDwfAnalogOutRunGet": ([c_int, c_int, ctypes.POINTER(c_double)], c_int),
             "FDwfAnalogOutWaitSet": ([c_int, c_int, c_double], c_int),
+            "FDwfAnalogOutWaitInfo": ([c_int, c_int, ctypes.POINTER(c_double), ctypes.POINTER(c_double)], c_int),
             "FDwfAnalogOutWaitGet": ([c_int, c_int, ctypes.POINTER(c_double)], c_int),
             "FDwfAnalogOutRepeatSet": ([c_int, c_int, c_int], c_int),
+            "FDwfAnalogOutRepeatInfo": ([c_int, c_int, ctypes.POINTER(c_int), ctypes.POINTER(c_int)], c_int),
             "FDwfAnalogOutRepeatGet": ([c_int, c_int, ctypes.POINTER(c_int)], c_int),
             "FDwfAnalogOutRepeatTriggerSet": ([c_int, c_int, c_int], c_int),
             "FDwfAnalogOutRepeatTriggerGet": ([c_int, c_int, ctypes.POINTER(c_int)], c_int),
@@ -454,6 +675,12 @@ class AnalogDiscovery2:
             "FDwfAnalogOutConfigure": ([c_int, c_int, c_int], c_int),
             "FDwfAnalogOutReset": ([c_int, c_int], c_int),
             "FDwfAnalogInChannelEnableSet": ([c_int, c_int, c_int], c_int),
+            "FDwfAnalogInAcquisitionModeSet": ([c_int, c_int], c_int),
+            "FDwfAnalogInFrequencyInfo": ([c_int, ctypes.POINTER(c_double), ctypes.POINTER(c_double)], c_int),
+            "FDwfAnalogInBufferSizeInfo": ([c_int, ctypes.POINTER(c_int), ctypes.POINTER(c_int)], c_int),
+            "FDwfAnalogInChannelRangeInfo": ([c_int, ctypes.POINTER(c_double), ctypes.POINTER(c_double), ctypes.POINTER(c_double)], c_int),
+            "FDwfAnalogInChannelRangeSteps": ([c_int, ctypes.POINTER(c_double), ctypes.POINTER(c_int)], c_int),
+            "FDwfAnalogInChannelOffsetInfo": ([c_int, ctypes.POINTER(c_double), ctypes.POINTER(c_double), ctypes.POINTER(c_double)], c_int),
             "FDwfAnalogInChannelRangeGet": ([c_int, c_int, ctypes.POINTER(c_double)], c_int),
             "FDwfAnalogInChannelRangeSet": ([c_int, c_int, c_double], c_int),
             "FDwfAnalogInChannelOffsetGet": ([c_int, c_int, ctypes.POINTER(c_double)], c_int),
@@ -467,20 +694,25 @@ class AnalogDiscovery2:
             "FDwfAnalogInTriggerPositionSet": ([c_int, c_double], c_int),
             "FDwfAnalogInTriggerPositionGet": ([c_int, ctypes.POINTER(c_double)], c_int),
             "FDwfAnalogInTriggerAutoTimeoutSet": ([c_int, c_double], c_int),
+            "FDwfAnalogInTriggerAutoTimeoutInfo": ([c_int, ctypes.POINTER(c_double), ctypes.POINTER(c_double), ctypes.POINTER(c_double)], c_int),
             "FDwfAnalogInTriggerAutoTimeoutGet": ([c_int, ctypes.POINTER(c_double)], c_int),
             "FDwfAnalogInTriggerHoldOffSet": ([c_int, c_double], c_int),
+            "FDwfAnalogInTriggerHoldOffInfo": ([c_int, ctypes.POINTER(c_double), ctypes.POINTER(c_double), ctypes.POINTER(c_double)], c_int),
             "FDwfAnalogInTriggerHoldOffGet": ([c_int, ctypes.POINTER(c_double)], c_int),
             "FDwfAnalogInTriggerTypeSet": ([c_int, c_int], c_int),
             "FDwfAnalogInTriggerTypeGet": ([c_int, ctypes.POINTER(c_int)], c_int),
             "FDwfAnalogInTriggerChannelSet": ([c_int, c_int], c_int),
+            "FDwfAnalogInTriggerChannelInfo": ([c_int, ctypes.POINTER(c_int), ctypes.POINTER(c_int)], c_int),
             "FDwfAnalogInTriggerChannelGet": ([c_int, ctypes.POINTER(c_int)], c_int),
             "FDwfAnalogInTriggerFilterSet": ([c_int, c_int], c_int),
             "FDwfAnalogInTriggerFilterGet": ([c_int, ctypes.POINTER(c_int)], c_int),
             "FDwfAnalogInTriggerConditionSet": ([c_int, c_int], c_int),
             "FDwfAnalogInTriggerConditionGet": ([c_int, ctypes.POINTER(c_int)], c_int),
             "FDwfAnalogInTriggerLevelSet": ([c_int, c_double], c_int),
+            "FDwfAnalogInTriggerLevelInfo": ([c_int, ctypes.POINTER(c_double), ctypes.POINTER(c_double), ctypes.POINTER(c_double)], c_int),
             "FDwfAnalogInTriggerLevelGet": ([c_int, ctypes.POINTER(c_double)], c_int),
             "FDwfAnalogInTriggerHysteresisSet": ([c_int, c_double], c_int),
+            "FDwfAnalogInTriggerHysteresisInfo": ([c_int, ctypes.POINTER(c_double), ctypes.POINTER(c_double), ctypes.POINTER(c_double)], c_int),
             "FDwfAnalogInTriggerHysteresisGet": ([c_int, ctypes.POINTER(c_double)], c_int),
             "FDwfAnalogInTriggerLengthSet": ([c_int, c_double], c_int),
             "FDwfAnalogInTriggerLengthGet": ([c_int, ctypes.POINTER(c_double)], c_int),
@@ -503,8 +735,12 @@ class AnalogDiscovery2:
             "FDwfDigitalOutOutputSet": ([c_int, c_int, c_int], c_int),
             "FDwfDigitalOutDataSet": ([c_int, c_int, ctypes.POINTER(c_ubyte), c_int], c_int),
             "FDwfDigitalOutDataInfo": ([c_int, c_int, ctypes.POINTER(c_uint)], c_int),
+            "FDwfDigitalOutCounterInfo": ([c_int, c_int, ctypes.POINTER(c_uint), ctypes.POINTER(c_uint)], c_int),
+            "FDwfDigitalOutWaitInfo": ([c_int, ctypes.POINTER(c_double), ctypes.POINTER(c_double)], c_int),
             "FDwfDigitalOutWaitSet": ([c_int, c_double], c_int),
+            "FDwfDigitalOutRunInfo": ([c_int, ctypes.POINTER(c_double), ctypes.POINTER(c_double)], c_int),
             "FDwfDigitalOutRunSet": ([c_int, c_double], c_int),
+            "FDwfDigitalOutRepeatInfo": ([c_int, ctypes.POINTER(c_uint), ctypes.POINTER(c_uint)], c_int),
             "FDwfDigitalOutRepeatSet": ([c_int, c_int], c_int),
             "FDwfDigitalOutRepeatTriggerSet": ([c_int, c_int], c_int),
             "FDwfDigitalOutTriggerSourceSet": ([c_int, c_int], c_int),
@@ -836,32 +1072,43 @@ class AnalogDiscovery2:
             "FDwfAnalogOutNodeFunctionSet",
         )
 
-        # Session 51: the WaveForms SDK's own *Set functions never fail or
-        # reject an out-of-range value -- they silently clamp to whatever the
-        # device can actually do and still report success (confirmed against
-        # Digilent's own WaveForms SDK reference manual). So validate/clamp
-        # against the device's own live-read AnalogOutNode*Info() range
-        # ourselves, before the Set calls below, rather than trusting the SDK
-        # to reject anything or relying on a later Get-based readback to
-        # notice the substitution after the fact.
-        out_of_range = False
-        if policy.is_effective("frequency") or policy.is_effective("amplitude"):
-            frequency_min = c_double()
-            frequency_max = c_double()
-            self._check(self._dwf.FDwfAnalogOutNodeFrequencyInfo(handle, channel_index, node_id, byref(frequency_min), byref(frequency_max)), "FDwfAnalogOutNodeFrequencyInfo")
-            amplitude_min = c_double()
-            amplitude_max = c_double()
-            self._check(self._dwf.FDwfAnalogOutNodeAmplitudeInfo(handle, channel_index, node_id, byref(amplitude_min), byref(amplitude_max)), "FDwfAnalogOutNodeAmplitudeInfo")
-            if policy.is_effective("frequency"):
-                clamped_frequency_hz = min(max(settings.frequency_hz, frequency_min.value), frequency_max.value)
-                out_of_range |= clamped_frequency_hz != settings.frequency_hz
-                self._check(self._dwf.FDwfAnalogOutNodeFrequencySet(handle, channel_index, node_id, c_double(clamped_frequency_hz)), "FDwfAnalogOutNodeFrequencySet")
-                effective["frequency_hz"] = clamped_frequency_hz
-            if policy.is_effective("amplitude"):
-                clamped_amplitude_v = min(max(settings.amplitude_v, amplitude_min.value), amplitude_max.value)
-                out_of_range |= clamped_amplitude_v != settings.amplitude_v
-                self._check(self._dwf.FDwfAnalogOutNodeAmplitudeSet(handle, channel_index, node_id, c_double(clamped_amplitude_v)), "FDwfAnalogOutNodeAmplitudeSet")
-                effective["amplitude_v"] = clamped_amplitude_v
+        # WaveForms silently clamps many out-of-range values. Reject them
+        # explicitly so callers receive a useful validation error instead of
+        # believing the requested value was applied.
+        capability_functions = {
+            "frequency_hz": self._dwf.FDwfAnalogOutNodeFrequencyInfo,
+            "amplitude_v": self._dwf.FDwfAnalogOutNodeAmplitudeInfo,
+            "offset_v": self._dwf.FDwfAnalogOutNodeOffsetInfo,
+            "symmetry_percent": self._dwf.FDwfAnalogOutNodeSymmetryInfo,
+            "phase_deg": self._dwf.FDwfAnalogOutNodePhaseInfo,
+        }
+        policy_names = {
+            "frequency_hz": "frequency",
+            "amplitude_v": "amplitude",
+            "offset_v": "offset",
+            "symmetry_percent": "symmetry",
+            "phase_deg": "phase",
+        }
+        for attribute, function in capability_functions.items():
+            if not policy.is_effective(policy_names[attribute]):
+                continue
+            minimum, maximum = self._float_info(
+                function,
+                function.__name__,
+                handle,
+                channel_index,
+                node_id,
+            )
+            value = float(getattr(settings, attribute))
+            if not minimum <= value <= maximum:
+                raise AnalogDiscoveryError(
+                    f"{attribute} must be within {minimum:g}..{maximum:g}; "
+                    f"received {value:g}"
+                )
+        if policy.is_effective("frequency"):
+            self._check(self._dwf.FDwfAnalogOutNodeFrequencySet(handle, channel_index, node_id, c_double(settings.frequency_hz)), "FDwfAnalogOutNodeFrequencySet")
+        if policy.is_effective("amplitude"):
+            self._check(self._dwf.FDwfAnalogOutNodeAmplitudeSet(handle, channel_index, node_id, c_double(settings.amplitude_v)), "FDwfAnalogOutNodeAmplitudeSet")
         self._check(
             self._dwf.FDwfAnalogOutNodeOffsetSet(handle, channel_index, node_id, c_double(settings.offset_v)),
             "FDwfAnalogOutNodeOffsetSet",
@@ -870,7 +1117,7 @@ class AnalogDiscovery2:
             self._check(self._dwf.FDwfAnalogOutNodeSymmetrySet(handle, channel_index, node_id, c_double(settings.symmetry_percent)), "FDwfAnalogOutNodeSymmetrySet")
         if policy.is_effective("phase"):
             self._check(self._dwf.FDwfAnalogOutNodePhaseSet(handle, channel_index, node_id, c_double(settings.phase_deg)), "FDwfAnalogOutNodePhaseSet")
-        return out_of_range, effective
+        return False, effective
 
     def _configure_do(self, handle: int, config: DoConfig) -> None:
         with log_call("ad2", "configure_do", command=f"{len(config.channels)} channel(s), running={config.running}") as result:
@@ -1056,6 +1303,10 @@ class AnalogDiscovery2:
             ),
         ) as result:
             h = c_int(handle)
+            self._check(
+                self._dwf.FDwfAnalogInAcquisitionModeSet(h, c_int(0)),
+                "FDwfAnalogInAcquisitionModeSet",
+            )
             for index in (0, 1):
                 self._check(
                     self._dwf.FDwfAnalogInChannelEnableSet(

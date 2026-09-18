@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from typing import Callable
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -67,7 +67,14 @@ from ..application.commands import (
     ValveWaitReadyArgs,
     ZStageSetPositionArgs,
 )
-from ..domain.models import ConnectionState, DEVICE_LABELS, DeviceId, DeviceStatus
+from ..domain.models import (
+    Ad2Capabilities,
+    Ad2WaveformChannelCapabilities,
+    ConnectionState,
+    DEVICE_LABELS,
+    DeviceId,
+    DeviceStatus,
+)
 from .ad2_scope import OscilloscopePanel
 from .widgets import CameraPreview
 
@@ -231,22 +238,32 @@ class DevicePanel(QScrollArea):
     def mark_pending(self, action: str, request_id: str) -> None:
         self._pending[action] = request_id
         self._buttons[action].setText(f"{self._button_labels[action]} · pending")
-        self.show_notice(
-            f"{self._button_labels[action]} queued as {request_id}; duplicate submissions are blocked."
-        )
+        self._update_controls()
 
     def clear_pending(self, request_id: str) -> None:
         for action, pending_id in tuple(self._pending.items()):
             if pending_id == request_id:
                 del self._pending[action]
                 self._buttons[action].setText(self._button_labels[action])
+        self._update_controls()
 
     def show_notice(self, message: str) -> None:
         self.notice_label.setText(message)
         self.notice.emit(f"{self.device_id.value}: {message}")
+        QTimer.singleShot(
+            5000,
+            lambda expected=message: self.notice_label.setText("")
+            if self.notice_label.text() == expected
+            else None,
+        )
 
     def set_status(self, status: DeviceStatus) -> None:
-        self._connected = status.connection is ConnectionState.CONNECTED
+        # ERROR represents a connected device with an operation fault; it is
+        # not a physical disconnect. Keep recovery and disconnect controls usable.
+        self._connected = status.connection in {
+            ConnectionState.CONNECTED,
+            ConnectionState.ERROR,
+        }
         self._busy = status.busy
         self.connection_label.setText(status.connection.value.replace("_", " ").title())
         flags = ["busy" if status.busy else "idle"]
@@ -260,15 +277,23 @@ class DevicePanel(QScrollArea):
         self._update_controls()
 
     def _update_controls(self) -> None:
+        pending_operations = {
+            self._action_operations[action] for action in self._pending
+        }
         for action, button in self._buttons.items():
             if action == "connect":
-                button.setEnabled(not self._connected)
+                enabled = not self._connected
             elif action == "disconnect":
-                button.setEnabled(self._connected)
+                enabled = self._connected
             elif action == "abort":
-                button.setEnabled(self._connected and self._busy)
+                enabled = self._connected and self._busy
             elif action in self._requires_connection:
-                button.setEnabled(self._connected)
+                enabled = self._connected
+            else:
+                enabled = True
+            if self._action_operations[action] in pending_operations:
+                enabled = False
+            button.setEnabled(enabled)
 
     def update_readback(self, readback: object) -> None:
         del readback
@@ -319,7 +344,7 @@ class DevicePanel(QScrollArea):
                 if not isinstance(value, bool):
                     raise ValueError(f"{name} must be true or false")
             elif isinstance(widget, QComboBox):
-                if not isinstance(value, str) or widget.findData(value) < 0:
+                if widget.findData(value) < 0:
                     raise ValueError(f"{name} has an unsupported choice")
             elif isinstance(widget, QLineEdit) and not isinstance(value, str):
                 raise ValueError(f"{name} must be text")
@@ -652,10 +677,46 @@ class WaveformChannelEditor(QGroupBox):
         finally:
             self._loading = False
 
+    def apply_capabilities(self, capabilities: Ad2WaveformChannelCapabilities) -> None:
+        carrier = capabilities.carrier
+        fm = capabilities.fm
+        for widget in (self.single_frequency, self.adv_frequency, self.sweep_start, self.sweep_stop):
+            widget.setRange(carrier.frequency_hz.minimum, carrier.frequency_hz.maximum)
+        for widget in (self.single_amplitude, self.adv_amplitude):
+            widget.setRange(carrier.amplitude.minimum, carrier.amplitude.maximum)
+        for widget in (self.single_offset, self.sweep_offset, self.adv_offset):
+            widget.setRange(carrier.offset.minimum, carrier.offset.maximum)
+        self.adv_symmetry.setRange(
+            carrier.symmetry_percent.minimum, carrier.symmetry_percent.maximum
+        )
+        self.adv_phase.setRange(carrier.phase_deg.minimum, carrier.phase_deg.maximum)
+        self.fm_frequency.setRange(fm.frequency_hz.minimum, fm.frequency_hz.maximum)
+        self.fm_index.setRange(fm.amplitude.minimum, fm.amplitude.maximum)
+        self.fm_offset.setRange(fm.offset.minimum, fm.offset.maximum)
+        self.fm_symmetry.setRange(
+            fm.symmetry_percent.minimum, fm.symmetry_percent.maximum
+        )
+        self.fm_phase.setRange(fm.phase_deg.minimum, fm.phase_deg.maximum)
+        if fm.frequency_hz.minimum > 0 and fm.frequency_hz.maximum > 0:
+            self.sweep_time.setRange(
+                1000.0 / fm.frequency_hz.maximum,
+                1000.0 / fm.frequency_hz.minimum,
+            )
+        self.trigger["wait"].setRange(
+            capabilities.wait_s.minimum, capabilities.wait_s.maximum
+        )
+        self.trigger["run"].setRange(
+            capabilities.run_s.minimum, capabilities.run_s.maximum
+        )
+        self.trigger["repeat"].setRange(
+            capabilities.repeat_count.minimum, capabilities.repeat_count.maximum
+        )
+
 
 class Ad2Panel(DevicePanel):
     def __init__(self, parent=None) -> None:
         super().__init__(DeviceId.AD2, parent)
+        self._applied_capabilities: Ad2Capabilities | None = None
         self.instrument_tabs = QTabWidget()
         self.instrument_tabs.setMinimumWidth(0)
         self.instrument_tabs.setSizePolicy(
@@ -825,6 +886,13 @@ class Ad2Panel(DevicePanel):
 
     def update_readback(self, readback: object) -> None:
         if readback is not None:
+            capabilities = getattr(readback, "capabilities", None)
+            if (
+                isinstance(capabilities, Ad2Capabilities)
+                and capabilities is not self._applied_capabilities
+            ):
+                self._apply_capabilities(capabilities)
+                self._applied_capabilities = capabilities
             channels = getattr(readback, "waveform_channels", ())
             channel_text = ", ".join(
                 f"CH{channel.channel_index + 1} "
@@ -839,6 +907,37 @@ class Ad2Panel(DevicePanel):
                 f"Digital output: "
                 f"{'running' if getattr(readback, 'digital_output_running', False) else 'stopped'}"
             )
+
+    def _apply_capabilities(self, capabilities: Ad2Capabilities) -> None:
+        by_channel = {
+            channel.channel_index: channel
+            for channel in capabilities.waveform_channels
+        }
+        for editor in self.wave_channels:
+            editor.apply_capabilities(by_channel[editor.channel_index])
+        self.scope_controls.apply_capabilities(capabilities.scope)
+        digital = capabilities.digital_output
+        self.do_channel.setRange(0, max(0, digital.channel_count - 1))
+        self.do_clock.setRange(
+            digital.clock_frequency_hz.minimum,
+            digital.clock_frequency_hz.maximum,
+        )
+        self.do_high.setRange(
+            digital.counter_bits.minimum, digital.counter_bits.maximum
+        )
+        self.do_low.setRange(
+            digital.counter_bits.minimum, digital.counter_bits.maximum
+        )
+        self.do_bits.setMaxLength(digital.custom_data_bits_max)
+        self.do_trigger["wait"].setRange(
+            digital.wait_s.minimum, digital.wait_s.maximum
+        )
+        self.do_trigger["run"].setRange(
+            digital.run_s.minimum, digital.run_s.maximum
+        )
+        self.do_trigger["repeat"].setRange(
+            digital.repeat_count.minimum, digital.repeat_count.maximum
+        )
 
     def handle_result(self, result: object) -> None:
         if self.scope_controls.handle_result(result):

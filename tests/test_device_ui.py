@@ -4,8 +4,8 @@ import json
 
 import numpy as np
 import pytest
-from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QEvent, QTimer
+from PySide6.QtWidgets import QAbstractSpinBox, QApplication
 
 from thermo_acoustic.application import ApplicationController
 from thermo_acoustic.application.commands import (
@@ -28,9 +28,12 @@ from thermo_acoustic.application.commands import (
     CameraTriggerActive,
     CameraTriggerPolarity,
     CameraTriggerSource,
+    CommandEvent,
     DeviceOperation,
     OPERATION_SPECS,
+    PumpSetFlowArgs,
 )
+from thermo_acoustic.application.event_formatting import detailed_event_text
 from thermo_acoustic.domain.models import ConnectionState, DeviceId, DeviceStatus, OperatingMode
 from thermo_acoustic.hal.registry import DeviceRegistry
 from thermo_acoustic.ui.device_panels import Ad2Panel, CameraPanel, PANEL_TYPES, PumpPanel
@@ -72,25 +75,25 @@ def test_each_panel_builds_every_typed_device_operation(qt_app, device):
     assert operations == expected
 
 
-def test_duplicate_action_is_prevented_with_visible_notice(qt_app):
+def test_duplicate_action_is_prevented_by_disabling_pending_button(qt_app):
     del qt_app
     panel = PumpPanel()
     commands = []
-    notices = []
     panel.command_requested.connect(lambda action, command: commands.append((action, command)))
-    panel.notice.connect(notices.append)
     panel.set_status(DeviceStatus(DeviceId.PUMP, ConnectionState.CONNECTED))
 
     panel._buttons["status"].click()
     action, command = commands[-1]
     panel.mark_pending(action, command.request_id)
+    assert not panel._buttons["status"].isEnabled()
     panel._buttons["status"].click()
 
     assert len(commands) == 1
-    assert "not queued again" in notices[-1]
+    assert panel.notice_label.text() == ""
     assert "pending" in panel._buttons["status"].text().lower()
     panel.clear_pending(command.request_id)
     assert panel._buttons["status"].text() == "Read status"
+    assert panel._buttons["status"].isEnabled()
 
 
 def test_duplicate_operation_is_blocked_across_ad2_subtabs(qt_app):
@@ -103,10 +106,12 @@ def test_duplicate_operation_is_blocked_across_ad2_subtabs(qt_app):
     panel._buttons["wave_trigger_pc"].click()
     action, command = commands[-1]
     panel.mark_pending(action, command.request_id)
+    assert not panel._buttons["wave_trigger_pc"].isEnabled()
+    assert not panel._buttons["do_trigger_pc"].isEnabled()
     panel._buttons["do_trigger_pc"].click()
 
     assert len(commands) == 1
-    assert "not queued again" in panel.notice_label.text()
+    assert panel.notice_label.text() == ""
     assert panel._buttons["abort"].isEnabled() is False
     panel.set_status(DeviceStatus(DeviceId.AD2, ConnectionState.CONNECTED, busy=True))
     assert panel._buttons["abort"].isEnabled()
@@ -132,6 +137,40 @@ def test_main_window_routes_panel_commands_and_terminal_events(qt_app):
     window.close()
 
 
+def test_main_window_uses_fixed_minimum_and_separate_detailed_log(qt_app):
+    controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
+    window = MainWindow(controller)
+
+    assert window.minimumWidth() == 960
+    assert window.minimumHeight() == 1080
+    assert window.log.parent() is window.log_window
+    assert [action.text() for action in window.menuBar().actions()] == ["&File", "&Log"]
+    for spin in window.findChildren(QAbstractSpinBox):
+        assert spin.buttonSymbols() is QAbstractSpinBox.ButtonSymbols.NoButtons
+        value = spin.value()
+        assert window.eventFilter(spin, QEvent(QEvent.Type.Wheel))
+        assert spin.value() == value
+    window.close()
+
+
+def test_human_readable_event_log_includes_time_call_and_arguments():
+    event = CommandEvent(
+        request_id="abc123",
+        state="queued",
+        device=DeviceId.PUMP,
+        operation=DeviceOperation.PUMP_FLOW_SET,
+        source="console",
+        arguments=PumpSetFlowArgs(12.5),
+    )
+
+    text = detailed_event_text(event)
+
+    assert "abc123" in text
+    assert "CETONI pump" in text
+    assert "flow set" in text
+    assert '"flow_ul_min": 12.5' in text
+
+
 def test_main_window_routes_waveform_sdk_readback_to_both_channels(qt_app):
     controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
     window = MainWindow(controller)
@@ -150,6 +189,25 @@ def test_main_window_routes_waveform_sdk_readback_to_both_channels(qt_app):
     assert readback.waveform_channels[1].frequency_hz == 2500.0
     assert "SDK applied" in ad2.wave_channels[0].applied_label.text()
     assert "SDK applied" in ad2.wave_channels[1].applied_label.text()
+    window.close()
+
+
+def test_ad2_connect_populates_sdk_capabilities_and_scope_limits(qt_app):
+    controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
+    window = MainWindow(controller)
+    controller.start()
+    ad2 = window.panels[DeviceId.AD2]
+
+    ad2._buttons["connect"].click()
+    wait(qt_app)
+
+    capabilities = controller.statuses()[DeviceId.AD2].readback.capabilities
+    assert capabilities is not None
+    assert ad2.scope_controls.sample_rate.value() == capabilities.scope.sample_frequency_hz.maximum
+    assert tuple(
+        ad2.scope_controls.channel_range[0].itemData(index)
+        for index in range(ad2.scope_controls.channel_range[0].count())
+    ) == capabilities.scope.input_ranges_v
     window.close()
 
 
@@ -204,18 +262,14 @@ def test_scope_builds_shared_acquisition_and_detector_trigger_arguments(qt_app):
     scope.sample_rate.setValue(2_000_000)
     scope.pretrigger_samples.setValue(1024)
     scope.timeout.setValue(3.0)
-    scope.poll_interval.setValue(0.02)
     scope.channel_enabled[0].setChecked(True)
     scope.channel_enabled[1].setChecked(True)
-    scope.channel_range[0].setValue(2.0)
+    scope.channel_range[0].setCurrentIndex(scope.channel_range[0].findData(2.0))
     scope.channel_offset[1].setValue(-0.25)
     scope.trigger_source.setCurrentIndex(
         scope.trigger_source.findData(Ad2TriggerSource.DETECTOR_ANALOG_IN.value)
     )
     scope.trigger_channel.setCurrentIndex(scope.trigger_channel.findData("1"))
-    scope.trigger_type.setCurrentIndex(
-        scope.trigger_type.findData(Ad2ScopeTriggerType.PULSE.value)
-    )
     scope.trigger_condition.setCurrentIndex(
         scope.trigger_condition.findData(Ad2ScopeTriggerCondition.FALLING_NEGATIVE.value)
     )
@@ -224,10 +278,6 @@ def test_scope_builds_shared_acquisition_and_detector_trigger_arguments(qt_app):
     )
     scope.trigger_level.setValue(0.4)
     scope.trigger_hysteresis.setValue(0.05)
-    scope.trigger_length_condition.setCurrentIndex(
-        scope.trigger_length_condition.findData(Ad2ScopeTriggerLengthCondition.LESS.value)
-    )
-    scope.trigger_length.setValue(0.001)
     scope.trigger_holdoff.setValue(0.002)
     scope.trigger_auto_timeout.setValue(1.5)
 
@@ -235,7 +285,7 @@ def test_scope_builds_shared_acquisition_and_detector_trigger_arguments(qt_app):
     assert args.sample_count == 4096
     assert args.sample_frequency_hz == 2_000_000
     assert args.pretrigger_samples == 1024
-    assert args.poll_interval_s == 0.02
+    assert args.poll_interval_s == 0.01
     assert args.channels == (
         Ad2ScopeChannelArgs(0, 2.0, 0.0),
         Ad2ScopeChannelArgs(1, 5.0, -0.25),
@@ -243,13 +293,13 @@ def test_scope_builds_shared_acquisition_and_detector_trigger_arguments(qt_app):
     assert args.trigger == Ad2ScopeTriggerArgs(
         source=Ad2TriggerSource.DETECTOR_ANALOG_IN,
         channel_index=1,
-        trigger_type=Ad2ScopeTriggerType.PULSE,
+        trigger_type=Ad2ScopeTriggerType.EDGE,
         condition=Ad2ScopeTriggerCondition.FALLING_NEGATIVE,
         filter=Ad2ScopeTriggerFilter.AVERAGE,
         level_v=0.4,
         hysteresis_v=0.05,
-        length_condition=Ad2ScopeTriggerLengthCondition.LESS,
-        length_s=0.001,
+        length_condition=Ad2ScopeTriggerLengthCondition.MORE,
+        length_s=0.0,
         holdoff_s=0.002,
         auto_timeout_s=1.5,
     )

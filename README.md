@@ -88,28 +88,34 @@ status
 quit
 ```
 
-The console prints accepted, queued, running, completed, and failed events with
-request IDs. EOF is treated as a quiet end of console input; it does not close
-the UI. `quit` requests coordinated safe-stop, disconnection, and worker-thread
-shutdown.
+The console prints timestamped, human-readable queued, running, completed, and
+failed events with request IDs, call arguments, results, and errors. EOF is
+treated as a quiet end of console input; it does not close the UI. `quit`
+requests coordinated safe-stop, disconnection, and worker-thread shutdown.
 
 The desktop UI provides one independent control tab for each device. Every tab
 shows connection, activity, fault, and typed readback state; normal actions use
 the same global FIFO as the console, while abort and stop controls retain their
-urgent path. Duplicate clicks for an already-pending action are rejected with a
-visible notice. The responsive controls fit a 960 × 1080 client area (a
-conservative half-screen target for a 1920 × 1200 monitor); the activity log
-retains its own scrollbar. AD2 has separate Oscilloscope, Waveform generator,
-and Digital output sub-tabs. Its waveform generator presents CH1 and CH2 side
-by side with Single Frequency, Sweep, and Advanced views over one canonical
-two-channel configuration. Each channel includes trigger and idle-output
-settings. A successful configure is followed by SDK getter readback, and the
-SDK-reported configuration repopulates the controls; this is configuration
-evidence, not a measurement of physical output. Scope, waveform, and
-digital-output triggers are typed through the HAL to the driver; camera
-sequence trigger and master-pulse settings follow the same route. Camera
-results include an image preview, and AD2 scope reads are drawn in an inline
-dependency-free plot.
+urgent path. Buttons for an already-pending operation are disabled until that
+operation finishes. Numeric controls have no increment/decrement buttons, and
+mouse-wheel changes are disabled for editors and dropdowns. The main window has
+a 960 × 1080 minimum client size. Concise command progress appears in the status
+bar; **Log > Show detailed log** opens a timestamped, scrollable event log. AD2
+has separate Oscilloscope, Waveform generator, and Digital output sub-tabs. Its
+waveform generator presents CH1 and CH2 side by side with Single Frequency,
+Sweep, and Advanced views over one canonical two-channel configuration. Each
+channel includes trigger and idle-output settings. AD2 Connect reads WaveForms
+capabilities and applies the device limits to the editors. Scope input range is
+selected from the exact SDK-reported range steps, and scope sampling defaults
+to the device-reported maximum. The HAL rejects out-of-range UI or console
+commands before configuration reaches the SDK. A successful configure is
+followed by SDK getter readback, and the SDK-reported configuration repopulates
+the controls; this is configuration evidence, not a measurement of physical
+output. Scope uses single acquisition with an internal 10 ms completion poll;
+analog detector triggering is edge-only. Scope, waveform, and digital-output
+triggers are typed through the HAL to the driver; camera sequence trigger and
+master-pulse settings follow the same route. Camera results include an image
+preview, and AD2 scope reads are drawn in a dependency-free plot.
 
 Use **File > Save settings** and **File > Load settings** to manage explicit
 JSON input profiles. Profiles contain editable control values only. Loading a

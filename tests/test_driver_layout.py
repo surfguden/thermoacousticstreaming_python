@@ -225,6 +225,15 @@ def test_analog_discovery_applies_idle_and_reads_waveform_settings_from_sdk() ->
                 elif name.endswith("AmplitudeInfo"):
                     args[-2]._obj.value = 0.0
                     args[-1]._obj.value = 5.0
+                elif name.endswith("OffsetInfo"):
+                    args[-2]._obj.value = -5.0
+                    args[-1]._obj.value = 5.0
+                elif name.endswith("SymmetryInfo"):
+                    args[-2]._obj.value = 0.0
+                    args[-1]._obj.value = 100.0
+                elif name.endswith("PhaseInfo"):
+                    args[-2]._obj.value = -360.0
+                    args[-1]._obj.value = 360.0
                 elif name == "FDwfAnalogOutIdleInfo":
                     args[-1]._obj.value = 0b111
                 return 1
