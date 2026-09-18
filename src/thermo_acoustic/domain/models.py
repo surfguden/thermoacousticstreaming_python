@@ -74,6 +74,7 @@ class IntegerRange:
 
 @dataclass(frozen=True, slots=True)
 class Ad2WaveformNodeCapabilities:
+    functions: tuple[str, ...]
     frequency_hz: FloatRange
     amplitude: FloatRange
     offset: FloatRange

@@ -286,6 +286,7 @@ class AD2Worker(DeviceWorker):
     @classmethod
     def _node_capabilities(cls, values: dict[str, object]) -> Ad2WaveformNodeCapabilities:
         return Ad2WaveformNodeCapabilities(
+            functions=tuple(str(value) for value in values["functions"]),
             frequency_hz=cls._float_range(values["frequency_hz"]),
             amplitude=cls._float_range(values["amplitude"]),
             offset=cls._float_range(values["offset"]),

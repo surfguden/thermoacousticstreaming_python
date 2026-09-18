@@ -354,9 +354,10 @@ class AnalogDiscovery2:
 
     def _analog_out_node_capabilities(
         self, handle: int, channel_index: int, node_id: int
-    ) -> dict[str, tuple[float, float]]:
+    ) -> dict[str, object]:
         prefix = (c_int(handle), c_int(channel_index), c_int(node_id))
         return {
+            "functions": self._analog_out_node_functions(*prefix),
             "frequency_hz": self._float_info(
                 self._dwf.FDwfAnalogOutNodeFrequencyInfo,
                 "FDwfAnalogOutNodeFrequencyInfo",
@@ -383,6 +384,27 @@ class AnalogDiscovery2:
                 *prefix,
             ),
         }
+
+    def _analog_out_node_functions(
+        self, handle: c_int, channel_index: c_int, node_id: c_int
+    ) -> tuple[str, ...]:
+        supported_mask = c_int()
+        self._check(
+            self._dwf.FDwfAnalogOutNodeFunctionInfo(
+                handle, channel_index, node_id, byref(supported_mask)
+            ),
+            "FDwfAnalogOutNodeFunctionInfo",
+        )
+        functions = tuple(
+            function.value
+            for function, value in self._FUNCTIONS.items()
+            if supported_mask.value & (1 << value)
+        )
+        if not functions:
+            raise AnalogDiscoveryError(
+                "FDwfAnalogOutNodeFunctionInfo reported no functions supported by this application"
+            )
+        return functions
 
     def _float_info(self, function, name: str, *prefix) -> tuple[float, float]:
         minimum = c_double()
@@ -640,6 +662,7 @@ class AnalogDiscovery2:
             "FDwfAnalogOutNodeEnableGet": ([c_int, c_int, c_int, ctypes.POINTER(c_int)], c_int),
             "FDwfAnalogOutNodeFunctionSet": ([c_int, c_int, c_int, c_int], c_int),
             "FDwfAnalogOutNodeFunctionGet": ([c_int, c_int, c_int, ctypes.POINTER(c_int)], c_int),
+            "FDwfAnalogOutNodeFunctionInfo": ([c_int, c_int, c_int, ctypes.POINTER(c_int)], c_int),
             "FDwfAnalogOutNodeFrequencySet": ([c_int, c_int, c_int, c_double], c_int),
             "FDwfAnalogOutNodeFrequencyGet": ([c_int, c_int, c_int, ctypes.POINTER(c_double)], c_int),
             "FDwfAnalogOutNodeFrequencyInfo": ([c_int, c_int, c_int, ctypes.POINTER(c_double), ctypes.POINTER(c_double)], c_int),

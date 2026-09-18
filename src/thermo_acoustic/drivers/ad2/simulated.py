@@ -5,6 +5,7 @@ from copy import deepcopy
 from .configuration import (
     DoConfig,
     ScopeConfig,
+    WaveformFunction,
     WfgConfig,
     coerce_do_config,
     coerce_scope_config,
@@ -29,6 +30,7 @@ class SimulatedAD2:
 
     def capabilities(self) -> dict[str, object]:
         node = {
+            "functions": tuple(function.value for function in WaveformFunction),
             "frequency_hz": (0.001, 100_000_000.0),
             "amplitude": (0.0, 5.0),
             "offset": (-5.0, 5.0),

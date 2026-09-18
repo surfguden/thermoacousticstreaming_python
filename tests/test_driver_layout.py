@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ctypes import c_int
+
 import pytest
 
 from thermo_acoustic.drivers.ad2 import (
@@ -291,6 +293,20 @@ def test_analog_discovery_applies_idle_and_reads_waveform_settings_from_sdk() ->
     assert channel.fm_mod.amplitude_v == 10.0
     assert channel.idle_state is AnalogOutputIdleState.OFFSET
     assert channel.trigger.source is TriggerSource.DIGITAL_IN
+
+
+def test_analog_discovery_reads_supported_node_functions_from_sdk() -> None:
+    class FakeDwf:
+        def FDwfAnalogOutNodeFunctionInfo(self, _handle, _channel, _node, value):
+            value._obj.value = (1 << 1) | (1 << 3) | (1 << 5)
+            return 1
+
+    device = AnalogDiscovery2(enabled=False, dwf=FakeDwf())
+    assert device._analog_out_node_functions(c_int(7), c_int(0), c_int(0)) == (
+        "Sine",
+        "Triangle",
+        "RampDown",
+    )
 
 
 def test_analog_discovery_cleanup_stops_resets_and_closes_directly() -> None:

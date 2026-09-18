@@ -435,6 +435,19 @@ class WaveformChannelEditor(QGroupBox):
             combo.addItem(function.value, function.value)
         return combo
 
+    @staticmethod
+    def _set_function_options(combo: QComboBox, values: tuple[str, ...]) -> None:
+        """Replace options with the exact functions reported by the connected device."""
+        selected = combo.currentData()
+        combo.blockSignals(True)
+        try:
+            combo.clear()
+            for value in values:
+                combo.addItem(value, value)
+            combo.setCurrentIndex(combo.findData(selected) if selected in values else 0)
+        finally:
+            combo.blockSignals(False)
+
     def _build_single_page(self) -> None:
         page = QWidget()
         form = QFormLayout(page)
@@ -483,7 +496,7 @@ class WaveformChannelEditor(QGroupBox):
             f"{self.prefix}_sweep_time_ms", double_spin(1, 0.001, 1_000_000, 4)
         )
         self.sweep_direction = self._profile(f"{self.prefix}_sweep_direction", QComboBox())
-        self.sweep_direction.addItem("Bidirectional", "Symmetric")
+        self.sweep_direction.addItem("Bidirectional (Triangle)", "Triangle")
         self.sweep_direction.addItem("Unidirectional up", "RampUp")
         self.sweep_direction.addItem("Unidirectional down", "RampDown")
         self.sweep_offset = self._profile(
@@ -608,7 +621,9 @@ class WaveformChannelEditor(QGroupBox):
             self.fm_index.setValue(((stop - start) / 2.0) / center * 100.0)
             self.fm_offset.setValue(0.0)
             self.fm_symmetry.setValue(
-                50.0 if self.sweep_direction.currentData() == "Symmetric" else 100.0
+                50.0
+                if self.sweep_direction.currentData() == Ad2WaveformFunction.TRIANGLE.value
+                else 100.0
             )
             self.fm_phase.setValue(0.0)
 
@@ -671,18 +686,9 @@ class WaveformChannelEditor(QGroupBox):
                 self.sweep_start.setValue(max(0.0, channel.frequency_hz - deviation))
                 self.sweep_stop.setValue(channel.frequency_hz + deviation)
                 self.sweep_time.setValue(1000.0 / channel.fm_frequency_hz)
-                direction = (
-                    channel.fm_function.value
-                    if channel.fm_function in {
-                        Ad2WaveformFunction.TRIANGLE,
-                        Ad2WaveformFunction.RAMP_UP,
-                        Ad2WaveformFunction.RAMP_DOWN,
-                    }
-                    else "Symmetric"
+                self.sweep_direction.setCurrentIndex(
+                    self.sweep_direction.findData(channel.fm_function.value)
                 )
-                if direction == Ad2WaveformFunction.TRIANGLE.value:
-                    direction = "Symmetric"
-                self.sweep_direction.setCurrentIndex(self.sweep_direction.findData(direction))
             self.applied_label.setText(
                 f"SDK applied: {channel.function.value}, {channel.frequency_hz:g} Hz, "
                 f"{channel.amplitude_v:g} V peak, offset {channel.offset_v:g} V"
@@ -693,6 +699,20 @@ class WaveformChannelEditor(QGroupBox):
     def apply_capabilities(self, capabilities: Ad2WaveformChannelCapabilities) -> None:
         carrier = capabilities.carrier
         fm = capabilities.fm
+        for combo in (self.single_function, self.sweep_function, self.adv_function):
+            self._set_function_options(combo, carrier.functions)
+        self._set_function_options(self.fm_function, fm.functions)
+        sweep_functions = tuple(
+            value
+            for value in fm.functions
+            if value
+            in {
+                Ad2WaveformFunction.TRIANGLE.value,
+                Ad2WaveformFunction.RAMP_UP.value,
+                Ad2WaveformFunction.RAMP_DOWN.value,
+            }
+        )
+        self._set_function_options(self.sweep_direction, sweep_functions)
         for widget in (self.single_frequency, self.adv_frequency, self.sweep_start, self.sweep_stop):
             widget.setRange(carrier.frequency_hz.minimum, carrier.frequency_hz.maximum)
         for widget in (self.single_amplitude, self.adv_amplitude):

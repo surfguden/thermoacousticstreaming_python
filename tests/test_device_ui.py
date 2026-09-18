@@ -250,6 +250,11 @@ def test_ad2_connect_populates_sdk_capabilities_and_scope_limits(qt_app):
         ad2.scope_controls.channel_range[0].itemData(index)
         for index in range(ad2.scope_controls.channel_range[0].count())
     ) == capabilities.scope.input_ranges_v
+    assert tuple(
+        ad2.wave_channels[0].single_function.itemData(index)
+        for index in range(ad2.wave_channels[0].single_function.count())
+    ) == capabilities.waveform_channels[0].carrier.functions
+    assert ad2.wave_channels[0].sweep_direction.itemData(0) == "Triangle"
     window.close()
 
 
