@@ -159,7 +159,19 @@ class CameraReadback:
 
 
 @dataclass(frozen=True, slots=True)
+class PumpUnitReadback:
+    unit_index: int
+    fill_level_ml: float | None = None
+    current_flow_ul_min: float = 0.0
+    is_pumping: bool | None = None
+    max_volume_ml: float | None = None
+    max_flow_rate_ul_min: float | None = None
+    syringe_name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class PumpReadback:
+    units: tuple[PumpUnitReadback, ...] = ()
     requested_flow_ul_min: float = 0.0
     fill_level_ml: float | None = None
     requested_fill_level_ml: float | None = None

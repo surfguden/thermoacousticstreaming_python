@@ -24,9 +24,9 @@ def _create_ad2_driver() -> object:
 
 
 def _create_pump_driver() -> object:
-    from ..drivers.pump import CetoniPump
+    from ..drivers.pump import CetoniPumpBank
 
-    return CetoniPump()
+    return CetoniPumpBank()
 
 
 def _create_valve_driver() -> object:
@@ -60,9 +60,9 @@ def _create_simulated_ad2() -> object:
 
 
 def _create_simulated_pump() -> object:
-    from ..drivers.pump import SimulatedPump
+    from ..drivers.pump import SimulatedPumpBank
 
-    return SimulatedPump()
+    return SimulatedPumpBank()
 
 
 def _create_simulated_valve() -> object:

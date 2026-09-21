@@ -36,6 +36,7 @@ from ..application.commands import (
     PumpMoveArgs,
     PumpReferenceMoveArgs,
     PumpSyringePreset,
+    PumpUnitArgs,
     TecApplySetpointsArgs,
     TecReadStatusArgs,
     TecWaitStableArgs,
@@ -364,11 +365,11 @@ def parse_command(line: str, *, source: str = "console") -> DeviceCommand | str 
             source=source,
         )
     if words == ["pump", "stop"]:
-        return DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_FLOW_STOP, source=source)
+        return DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_FLOW_STOP, PumpUnitArgs(), source=source)
     if words == ["pump", "read-fill-level"]:
-        return DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_FILL_LEVEL_READ, source=source)
+        return DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_FILL_LEVEL_READ, PumpUnitArgs(), source=source)
     if words == ["pump", "read-status"]:
-        return DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_STATUS_READ, source=source)
+        return DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_STATUS_READ, PumpUnitArgs(), source=source)
     if words[:2] == ["pump", "set-fill-level"] and len(words) in (3, 4):
         flow_rate = None if len(words) == 3 else float(words[3])
         return DeviceCommand(
@@ -405,7 +406,7 @@ def parse_command(line: str, *, source: str = "console") -> DeviceCommand | str 
             source=source,
         )
     if words == ["pump", "recover-fault"]:
-        return DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_FAULT_RECOVER, source=source)
+        return DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_FAULT_RECOVER, PumpUnitArgs(), source=source)
     if words[:2] in (["pump", "refill"], ["pump", "empty"]) and len(words) in (2, 3):
         flow_rate = None if len(words) == 2 else float(words[2])
         operation = (

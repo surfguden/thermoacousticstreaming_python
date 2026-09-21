@@ -9,6 +9,8 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QDialog,
+    QDialogButtonBox,
     QFormLayout,
     QGridLayout,
     QGroupBox,
@@ -59,6 +61,7 @@ from ..application.commands import (
     PumpSetFillLevelArgs,
     PumpSetFlowArgs,
     PumpSyringePreset,
+    PumpUnitArgs,
     TecApplySetpointsArgs,
     TecReadStatusArgs,
     TecStatusResult,
@@ -74,6 +77,7 @@ from ..domain.models import (
     DEVICE_LABELS,
     DeviceId,
     DeviceStatus,
+    PumpReadback,
 )
 from .ad2_scope import OscilloscopePanel
 from .widgets import CameraPreview
@@ -209,18 +213,10 @@ class DevicePanel(QScrollArea):
         operation: DeviceOperation,
         arguments: Callable[[], object] | None,
     ) -> None:
-        duplicate_action = next(
-            (
-                pending_action
-                for pending_action in self._pending
-                if self._action_operations[pending_action] is operation
-            ),
-            None,
-        )
-        if duplicate_action is not None:
+        if action in self._pending:
             self.show_notice(
                 f"{self._button_labels[action]} was not queued again; request "
-                f"{self._pending[duplicate_action]} is still pending."
+                f"{self._pending[action]} is still pending."
             )
             return
         try:
@@ -277,9 +273,6 @@ class DevicePanel(QScrollArea):
         self._update_controls()
 
     def _update_controls(self) -> None:
-        pending_operations = {
-            self._action_operations[action] for action in self._pending
-        }
         for action, button in self._buttons.items():
             if action == "connect":
                 enabled = not self._connected
@@ -291,7 +284,7 @@ class DevicePanel(QScrollArea):
                 enabled = self._connected
             else:
                 enabled = True
-            if self._action_operations[action] in pending_operations:
+            if action in self._pending:
                 enabled = False
             button.setEnabled(enabled)
 
@@ -1032,7 +1025,7 @@ class Ad2Panel(DevicePanel):
         controls["retrigger"].setChecked(trigger.repeat_trigger)
 
 
-class PumpPanel(DevicePanel):
+class LegacyPumpPanel(DevicePanel):
     def __init__(self, parent=None) -> None:
         super().__init__(DeviceId.PUMP, parent)
         controls = QWidget()
@@ -1174,6 +1167,76 @@ class PumpPanel(DevicePanel):
                     self.syringe_diameter.setValue(args.inner_diameter_mm)
                 if args.max_piston_stroke_mm is not None:
                     self.syringe_stroke.setValue(args.max_piston_stroke_mm)
+
+
+class PumpPanel(DevicePanel):
+    """Dynamic tiles for the pump units declared by the Qmix Elements project."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(DeviceId.PUMP, parent)
+        self.tiles = QWidget()
+        self.tiles_layout = QGridLayout(self.tiles)
+        self.tiles_layout.setContentsMargins(0, 0, 0, 0)
+        self.empty_label = QLabel("Connect to discover pump units in the Qmix Elements configuration.")
+        self.layout.addWidget(self.empty_label)
+        self.layout.addWidget(self.tiles)
+        self.finish_layout()
+
+    def _build_tiles(self, count: int) -> None:
+        while self.tiles_layout.count():
+            item = self.tiles_layout.takeAt(0)
+            if item.widget(): item.widget().deleteLater()
+        self._buttons = {key: value for key, value in self._buttons.items() if key in {"connect", "disconnect", "abort", "safe_stop"}}
+        self._button_labels = {key: value for key, value in self._button_labels.items() if key in self._buttons}
+        self._action_operations = {key: value for key, value in self._action_operations.items() if key in self._buttons}
+        self._requires_connection = {key for key in self._requires_connection if key in self._buttons}
+        for index in range(count):
+            group, form = form_group(f"Pump {index + 1}")
+            volume = QLabel("—")
+            flow = QLabel("—")
+            form.addRow("Volume (mL)", volume)
+            form.addRow("Current flow (µL/min)", flow)
+            form.addRow(button_row(
+                self.action_button(f"refill_{index}", "Refill", DeviceOperation.PUMP_REFILL, lambda i=index: PumpMoveArgs(unit_index=i)),
+                self.action_button(f"empty_{index}", "Empty", DeviceOperation.PUMP_EMPTY, lambda i=index: PumpMoveArgs(unit_index=i)),
+                self.action_button(f"stop_{index}", "Stop", DeviceOperation.PUMP_FLOW_STOP, lambda i=index: PumpUnitArgs(i)),
+            ))
+            syringe = QPushButton("Configure syringe…")
+            syringe.clicked.connect(lambda checked=False, i=index: self._configure_syringe(i))
+            self._buttons[f"syringe_{index}"] = syringe
+            self._button_labels[f"syringe_{index}"] = "Configure syringe…"
+            self._action_operations[f"syringe_{index}"] = DeviceOperation.PUMP_SYRINGE_CONFIGURE
+            self._requires_connection.add(f"syringe_{index}")
+            form.addRow(syringe)
+            group.volume_label = volume
+            group.flow_label = flow
+            self.tiles_layout.addWidget(group, 0, index)
+            self.tiles_layout.setColumnStretch(index, 1)
+        self.empty_label.setVisible(count == 0)
+        self._update_controls()
+
+    def _configure_syringe(self, index: int) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Configure syringe · Pump {index + 1}")
+        layout = QVBoxLayout(dialog)
+        preset = QComboBox(); preset.addItem("BD 1 mL", PumpSyringePreset.BD_1_ML); preset.addItem("BD 5 mL", PumpSyringePreset.BD_5_ML); preset.addItem("BD 10 mL", PumpSyringePreset.BD_10_ML); preset.addItem("Custom", None)
+        diameter, stroke = double_spin(4.7, 0.001, 35), double_spin(57, 0.001, 65)
+        form = QFormLayout(); form.addRow("Syringe", preset); form.addRow("Custom diameter (mm)", diameter); form.addRow("Custom stroke (mm)", stroke); layout.addLayout(form)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok); buttons.rejected.connect(dialog.reject); buttons.accepted.connect(dialog.accept); layout.addWidget(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted: return
+        value = preset.currentData()
+        args = PumpConfigureSyringeArgs(preset=value, unit_index=index) if value is not None else PumpConfigureSyringeArgs(inner_diameter_mm=diameter.value(), max_piston_stroke_mm=stroke.value(), unit_index=index)
+        self.command_requested.emit(f"syringe_{index}", DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_SYRINGE_CONFIGURE, args, source="ui"))
+
+    def update_readback(self, readback: object) -> None:
+        if not isinstance(readback, PumpReadback): return
+        if self.tiles_layout.count() != len(readback.units): self._build_tiles(len(readback.units))
+        for unit in readback.units:
+            item = self.tiles_layout.itemAtPosition(0, unit.unit_index)
+            if item is None or item.widget() is None: continue
+            group = item.widget()
+            group.volume_label.setText("—" if unit.fill_level_ml is None or unit.max_volume_ml is None else f"{unit.fill_level_ml:.4g} / {unit.max_volume_ml:.4g}")
+            group.flow_label.setText(f"{unit.current_flow_ul_min:.4g}")
 
 
 class ValvePanel(DevicePanel):

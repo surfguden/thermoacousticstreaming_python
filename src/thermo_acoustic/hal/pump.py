@@ -5,238 +5,96 @@ from dataclasses import replace
 import math
 from time import monotonic
 
-from ..application.commands import (
-    DeviceOperation,
-    NoArguments,
-    PumpConfigurationResult,
-    PumpConfigureFlowUnitArgs,
-    PumpConfigureSyringeArgs,
-    PumpFillLevelResult,
-    PumpFlowUnit,
-    PumpRecoveryResult,
-    PumpMoveArgs,
-    PumpMovementResult,
-    PumpReferenceMoveArgs,
-    PumpSetFillLevelArgs,
-    PumpSetFlowArgs,
-    PumpStatusResult,
-)
-from ..domain.models import DeviceId, PumpReadback
+from ..application.commands import DeviceOperation, PumpConfigurationResult, PumpConfigureFlowUnitArgs, PumpConfigureSyringeArgs, PumpFillLevelResult, PumpFlowUnit, PumpMoveArgs, PumpMovementResult, PumpRecoveryResult, PumpReferenceMoveArgs, PumpSetFillLevelArgs, PumpSetFlowArgs, PumpStatusResult, PumpUnitArgs
+from ..domain.models import DeviceId, PumpReadback, PumpUnitReadback
 from .base import DeferredProgress, DeviceWorker
 
 
 class PumpWorker(DeviceWorker):
+    """Serialize commands for the Qmix pump bank and publish per-unit readback."""
     def __init__(self, device_factory: Callable[[], object], parent=None) -> None:
-        super().__init__(DeviceId.PUMP, device_factory, readback_factory=PumpReadback, parent=parent)
-        self.register(DeviceOperation.PUMP_FLOW_SET, self.set_flow)
-        self.register(DeviceOperation.PUMP_FLOW_STOP, self.stop_flow)
-        self.register(DeviceOperation.PUMP_FILL_LEVEL_READ, self.read_fill_level)
-        self.register(DeviceOperation.PUMP_STATUS_READ, self.read_status)
-        self.register(DeviceOperation.PUMP_FILL_LEVEL_SET, self.set_fill_level)
-        self.register(DeviceOperation.PUMP_SYRINGE_CONFIGURE, self.configure_syringe)
-        self.register(DeviceOperation.PUMP_FLOW_UNIT_CONFIGURE, self.configure_flow_unit)
-        self.register(DeviceOperation.PUMP_FAULT_RECOVER, self.recover_fault)
-        self.register(DeviceOperation.PUMP_REFILL, self.refill)
-        self.register(DeviceOperation.PUMP_EMPTY, self.empty)
-        self.register(DeviceOperation.PUMP_REFERENCE_MOVE, self.reference_move)
+        super().__init__(DeviceId.PUMP, device_factory, readback_factory=PumpReadback, poll_interval_s=0.5, parent=parent)
+        for operation, handler in ((DeviceOperation.PUMP_FLOW_SET, self.set_flow), (DeviceOperation.PUMP_FLOW_STOP, self.stop_flow), (DeviceOperation.PUMP_FILL_LEVEL_READ, self.read_fill_level), (DeviceOperation.PUMP_STATUS_READ, self.read_status), (DeviceOperation.PUMP_FILL_LEVEL_SET, self.set_fill_level), (DeviceOperation.PUMP_SYRINGE_CONFIGURE, self.configure_syringe), (DeviceOperation.PUMP_FLOW_UNIT_CONFIGURE, self.configure_flow_unit), (DeviceOperation.PUMP_FAULT_RECOVER, self.recover_fault), (DeviceOperation.PUMP_REFILL, self.refill), (DeviceOperation.PUMP_EMPTY, self.empty), (DeviceOperation.PUMP_REFERENCE_MOVE, self.reference_move)):
+            self.register(operation, handler)
 
+    def _count(self) -> int: return int(getattr(self.device, "unit_count", 1))
+    @staticmethod
+    def _index(args: object) -> int: return getattr(args, "unit_index", 0)
+    def _check(self, index: int) -> None:
+        if not isinstance(index, int) or not 0 <= index < self._count(): raise ValueError(f"Pump unit must be within 1..{self._count()}")
+    def _call(self, index: int, name: str, *args):
+        self._check(index); method = getattr(self.device, name)
+        return method(index, *args) if hasattr(self.device, "unit_count") else method(*args)
+    def _unit(self, index: int, *, flow: float | None = None) -> PumpUnitReadback:
+        self._check(index)
+        previous = self.state.readback.units[index] if index < len(self.state.readback.units) else PumpUnitReadback(index)
+        volume, maximum_flow = getattr(self.device, "max_volume_ml", None), getattr(self.device, "max_flow_rate_ul_min", None)
+        if hasattr(self.device, "capabilities"): volume, maximum_flow = self.device.capabilities(index)
+        return replace(previous, max_volume_ml=volume, max_flow_rate_ul_min=maximum_flow, current_flow_ul_min=previous.current_flow_ul_min if flow is None else flow)
+    def _replace_unit(self, unit: PumpUnitReadback) -> None:
+        units = list(self.state.readback.units)
+        while len(units) <= unit.unit_index: units.append(PumpUnitReadback(len(units)))
+        units[unit.unit_index] = unit
+        self.state.readback = replace(self.state.readback, units=tuple(units), fill_level_ml=units[0].fill_level_ml if units else None, max_volume_ml=units[0].max_volume_ml if units else None, max_flow_rate_ul_min=units[0].max_flow_rate_ul_min if units else None)
+        self.state.active = any(item.is_pumping for item in units)
+    def _refresh(self) -> None:
+        if not hasattr(self.device, "unit_count") and not (hasattr(self.device, "read_fill_level") and hasattr(self.device, "read_status")):
+            return
+        for index in range(self._count()):
+            unit = self._unit(index)
+            self._replace_unit(replace(unit, fill_level_ml=float(self._call(index, "read_fill_level")), is_pumping=bool(self._call(index, "read_status"))))
+    def connect_device(self) -> None:
+        super().connect_device(); self._refresh()
+    def poll_once(self) -> None:
+        if self.state.connected and not self.state.busy:
+            try: self._refresh()
+            except Exception as exc: self.state.fault = str(exc)
+            self._emit_status()
     def set_flow(self, args: PumpSetFlowArgs) -> None:
-        self.device.generate_flow(args.flow_ul_min)
-        self.state.active = args.flow_ul_min != 0
-        self.state.readback = replace(
-            self.state.readback,
-            requested_flow_ul_min=args.flow_ul_min,
-            is_pumping=self.state.active,
-        )
-
-    def stop_flow(self, _args: NoArguments) -> None:
-        self.safe_stop()
-
-    def read_fill_level(self, _args: NoArguments) -> PumpFillLevelResult:
-        result = PumpFillLevelResult(float(self.device.read_fill_level()))
-        self.state.readback = replace(self.state.readback, fill_level_ml=result.fill_level_ml)
-        return result
-
-    def read_status(self, _args: NoArguments) -> PumpStatusResult:
-        result = PumpStatusResult(bool(self.device.read_status()))
-        self.state.active = result.is_pumping
-        self.state.readback = replace(self.state.readback, is_pumping=result.is_pumping)
-        return result
-
+        self._call(args.unit_index, "generate_flow", args.flow_ul_min); self._replace_unit(replace(self._unit(args.unit_index, flow=args.flow_ul_min), is_pumping=args.flow_ul_min != 0))
+    def stop_flow(self, args: PumpUnitArgs) -> None:
+        index = self._index(args); self._call(index, "stop"); self._replace_unit(replace(self._unit(index, flow=0.0), is_pumping=False))
+    def read_fill_level(self, args: PumpUnitArgs) -> PumpFillLevelResult:
+        index = self._index(args); level = float(self._call(index, "read_fill_level")); self._replace_unit(replace(self._unit(index), fill_level_ml=level)); return PumpFillLevelResult(level)
+    def read_status(self, args: PumpUnitArgs) -> PumpStatusResult:
+        index = self._index(args); pumping = bool(self._call(index, "read_status")); current = self._unit(index); self._replace_unit(replace(current, is_pumping=pumping, current_flow_ul_min=current.current_flow_ul_min if pumping else 0.0)); return PumpStatusResult(pumping)
     def set_fill_level(self, args: PumpSetFillLevelArgs) -> None:
-        if not math.isfinite(args.fill_level_ml):
-            raise ValueError("fill_level_ml must be finite")
-        maximum = getattr(self.device, "max_volume_ml", None)
-        if args.fill_level_ml < 0 or (
-            maximum is not None and args.fill_level_ml > float(maximum)
-        ):
-            raise ValueError(
-                f"fill_level_ml must be within 0..{maximum} mL for the configured syringe"
-            )
-        self.device.set_fill_level(args.fill_level_ml, args.flow_rate_ul_min)
-        self.state.active = True
-        self.state.readback = replace(
-            self.state.readback,
-            requested_fill_level_ml=args.fill_level_ml,
-            is_pumping=True,
-        )
-
-    def _configuration_result(
-        self, flow_unit: PumpFlowUnit | None = None
-    ) -> PumpConfigurationResult:
-        return PumpConfigurationResult(
-            flow_unit=flow_unit,
-            max_volume_ml=getattr(self.device, "max_volume_ml", None),
-            max_flow_rate_ul_min=getattr(self.device, "max_flow_rate_ul_min", None),
-        )
-
-    def configure_syringe(
-        self, args: PumpConfigureSyringeArgs
-    ) -> PumpConfigurationResult:
-        if args.preset is None and (
-            args.inner_diameter_mm is None or args.max_piston_stroke_mm is None
-        ):
-            raise ValueError("Choose a syringe preset or provide diameter and piston stroke")
-        if args.preset is not None and (
-            args.inner_diameter_mm is not None or args.max_piston_stroke_mm is not None
-        ):
-            raise ValueError("Choose either a syringe preset or custom geometry, not both")
-        if args.preset is None and (
-            args.inner_diameter_mm <= 0 or args.max_piston_stroke_mm <= 0
-        ):
-            raise ValueError("Custom syringe diameter and piston stroke must be positive")
-        config = {
-            "name": args.preset.value if args.preset is not None else None,
-            "inner_diameter_mm": args.inner_diameter_mm,
-            "max_piston_stroke_mm": args.max_piston_stroke_mm,
-        }
-        self.device.configure_syringe(config)
-        result = self._configuration_result()
-        self.state.configured = True
-        self.state.readback = replace(
-            self.state.readback,
-            syringe_name=args.preset.value if args.preset is not None else None,
-            syringe_inner_diameter_mm=args.inner_diameter_mm,
-            syringe_max_piston_stroke_mm=args.max_piston_stroke_mm,
-            max_volume_ml=result.max_volume_ml,
-            max_flow_rate_ul_min=result.max_flow_rate_ul_min,
-        )
-        return result
-
-    def configure_flow_unit(
-        self, args: PumpConfigureFlowUnitArgs
-    ) -> PumpConfigurationResult:
-        self.device.configure_flow_unit(args.unit.value)
-        result = self._configuration_result(args.unit)
-        self.state.readback = replace(
-            self.state.readback,
-            flow_unit=args.unit.value,
-            max_flow_rate_ul_min=result.max_flow_rate_ul_min,
-        )
-        return result
-
-    def recover_fault(self, _args: NoArguments) -> PumpRecoveryResult:
-        try:
-            self.device.clear_fault_and_reinitialize()
-        except Exception:
-            self.state.readback = replace(
-                self.state.readback, last_recovery_succeeded=False
-            )
-            raise
-        self.state.active = False
-        self.state.readback = replace(
-            self.state.readback,
-            requested_flow_ul_min=0.0,
-            is_pumping=False,
-            last_recovery_succeeded=True,
-        )
-        return PumpRecoveryResult(True)
-
-    def _defer_fill_movement(
-        self, movement: str, args: PumpMoveArgs
-    ) -> object:
-        if movement == "refill":
-            self.device.refill(args.flow_rate_ul_min)
-            target_fill_level = float(self.device.max_volume_ml)
+        unit = self._unit(args.unit_index)
+        if not math.isfinite(args.fill_level_ml) or args.fill_level_ml < 0 or (unit.max_volume_ml is not None and args.fill_level_ml > unit.max_volume_ml): raise ValueError(f"fill_level_ml must be within 0..{unit.max_volume_ml} mL for the configured syringe")
+        self._call(args.unit_index, "set_fill_level", args.fill_level_ml, args.flow_rate_ul_min); self._replace_unit(replace(unit, fill_level_ml=args.fill_level_ml, current_flow_ul_min=args.flow_rate_ul_min or 0.0, is_pumping=True))
+    def configure_syringe(self, args: PumpConfigureSyringeArgs) -> PumpConfigurationResult:
+        if args.preset is None and (args.inner_diameter_mm is None or args.max_piston_stroke_mm is None): raise ValueError("Choose a syringe preset or provide diameter and piston stroke")
+        config = {"name": args.preset.value if args.preset else None, "inner_diameter_mm": args.inner_diameter_mm, "max_piston_stroke_mm": args.max_piston_stroke_mm}
+        self._call(args.unit_index, "configure_syringe", config); unit = replace(self._unit(args.unit_index), syringe_name=config["name"]); self._replace_unit(unit); return PumpConfigurationResult(flow_unit=PumpFlowUnit.MICROLITRE_PER_MINUTE, max_volume_ml=unit.max_volume_ml, max_flow_rate_ul_min=unit.max_flow_rate_ul_min)
+    def configure_flow_unit(self, args: PumpConfigureFlowUnitArgs) -> PumpConfigurationResult:
+        if args.unit is not PumpFlowUnit.MICROLITRE_PER_MINUTE: raise ValueError("Pump flow units are fixed to ul/min")
+        self._call(args.unit_index, "configure_flow_unit", PumpFlowUnit.MICROLITRE_PER_MINUTE.value)
+        unit = self._unit(args.unit_index); self._replace_unit(unit)
+        return PumpConfigurationResult(flow_unit=PumpFlowUnit.MICROLITRE_PER_MINUTE, max_volume_ml=unit.max_volume_ml, max_flow_rate_ul_min=unit.max_flow_rate_ul_min)
+    def recover_fault(self, args: PumpUnitArgs) -> PumpRecoveryResult:
+        if hasattr(self.device, "clear_fault_and_reinitialize"): self.device.clear_fault_and_reinitialize()
         else:
-            self.device.empty(args.flow_rate_ul_min)
-            target_fill_level = 0.0
-        deadline = monotonic() + args.timeout_s
-        self.state.active = True
-        self.state.readback = replace(
-            self.state.readback, is_pumping=True, movement=movement
-        )
-
-        def cancel() -> None:
-            self.safe_stop()
-            self.state.readback = replace(self.state.readback, movement=None)
-
+            self.device.cleanup(); self.device.initialize()
+        self._refresh(); self.state.readback = replace(self.state.readback, last_recovery_succeeded=True); return PumpRecoveryResult(True)
+    def _move(self, movement: str, args: PumpMoveArgs) -> object:
+        unit = self._unit(args.unit_index)
+        if unit.max_flow_rate_ul_min is None: raise RuntimeError("Pump maximum flow is unavailable")
+        flow = abs(float(unit.max_flow_rate_ul_min)) / 2.0; self._call(args.unit_index, movement, flow); target = unit.max_volume_ml if movement == "refill" else 0.0; deadline = monotonic() + args.timeout_s
+        self._replace_unit(replace(unit, current_flow_ul_min=flow, is_pumping=True))
+        def cancel() -> None: self.stop_flow(PumpUnitArgs(args.unit_index))
         def step() -> DeferredProgress:
-            pumping = bool(self.device.read_status())
-            self.state.active = pumping
-            self.state.readback = replace(self.state.readback, is_pumping=pumping)
-            fill_level = float(self.device.read_fill_level())
-            if pumping or not math.isclose(
-                fill_level, target_fill_level, rel_tol=1e-6, abs_tol=1e-9
-            ):
-                if monotonic() >= deadline:
-                    raise TimeoutError(
-                        f"Pump {movement} timed out after {args.timeout_s:.3f}s "
-                        f"at {fill_level:.6g} mL"
-                    )
+            pumping, level = bool(self._call(args.unit_index, "read_status")), float(self._call(args.unit_index, "read_fill_level")); self._replace_unit(replace(self._unit(args.unit_index), fill_level_ml=level, is_pumping=pumping, current_flow_ul_min=flow if pumping else 0.0))
+            if pumping or not math.isclose(level, float(target), rel_tol=1e-6, abs_tol=1e-9):
+                if monotonic() >= deadline: raise TimeoutError(f"Pump {args.unit_index + 1} {movement} timed out")
                 return DeferredProgress()
-            self.state.readback = replace(
-                self.state.readback,
-                fill_level_ml=fill_level,
-                requested_fill_level_ml=fill_level,
-                movement=None,
-            )
-            return DeferredProgress(True, PumpMovementResult(fill_level_ml=fill_level))
-
-        return self.defer_operation(
-            step, cancel=cancel, poll_interval_s=args.poll_interval_s
-        )
-
-    def refill(self, args: PumpMoveArgs) -> object:
-        return self._defer_fill_movement("refill", args)
-
-    def empty(self, args: PumpMoveArgs) -> object:
-        return self._defer_fill_movement("empty", args)
-
+            return DeferredProgress(True, PumpMovementResult(fill_level_ml=level))
+        return self.defer_operation(step, cancel=cancel, poll_interval_s=args.poll_interval_s)
+    def refill(self, args: PumpMoveArgs) -> object: return self._move("refill", args)
+    def empty(self, args: PumpMoveArgs) -> object: return self._move("empty", args)
     def reference_move(self, args: PumpReferenceMoveArgs) -> object:
-        self.device.start_reference_move()
-        deadline = monotonic() + args.timeout_s
-        self.state.active = True
-        self.state.readback = replace(self.state.readback, movement="reference")
-
-        def cancel() -> None:
-            self.safe_stop()
-            self.state.readback = replace(self.state.readback, movement=None)
-
-        def step() -> DeferredProgress:
-            if self.device.reference_move_finished():
-                self.state.active = False
-                self.state.readback = replace(
-                    self.state.readback, movement=None, referenced=True
-                )
-                return DeferredProgress(True, PumpMovementResult(referenced=True))
-            if monotonic() >= deadline:
-                raise TimeoutError(
-                    f"Pump reference movement timed out after {args.timeout_s:.3f}s"
-                )
-            return DeferredProgress()
-
-        return self.defer_operation(
-            step, cancel=cancel, poll_interval_s=args.poll_interval_s
-        )
-
+        self._call(args.unit_index, "start_reference_move")
+        return self.defer_operation(lambda: DeferredProgress(True, PumpMovementResult(referenced=True)) if self._call(args.unit_index, "reference_move_finished") else DeferredProgress(), cancel=lambda: self.stop_flow(PumpUnitArgs(args.unit_index)), poll_interval_s=args.poll_interval_s)
     def safe_stop(self) -> None:
         if self.device_constructed and self.state.connected:
-            self.device.stop()
-        self.state.active = False
-        self.state.readback = replace(
-            self.state.readback,
-            requested_flow_ul_min=0.0,
-            is_pumping=False,
-            movement=None,
-        )
+            for index in range(self._count()): self._call(index, "stop")
+            self._refresh()

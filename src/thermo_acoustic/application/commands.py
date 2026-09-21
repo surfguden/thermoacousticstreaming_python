@@ -433,12 +433,14 @@ class CameraConfigureSequenceArgs:
 @dataclass(frozen=True, slots=True)
 class PumpSetFlowArgs:
     flow_ul_min: float
+    unit_index: int = 0
 
 
 @dataclass(frozen=True, slots=True)
 class PumpSetFillLevelArgs:
     fill_level_ml: float
     flow_rate_ul_min: float | None = None
+    unit_index: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -446,11 +448,18 @@ class PumpConfigureSyringeArgs:
     preset: PumpSyringePreset | None = None
     inner_diameter_mm: float | None = None
     max_piston_stroke_mm: float | None = None
+    unit_index: int = 0
 
 
 @dataclass(frozen=True, slots=True)
 class PumpConfigureFlowUnitArgs:
     unit: PumpFlowUnit
+    unit_index: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class PumpUnitArgs:
+    unit_index: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -458,6 +467,7 @@ class PumpMoveArgs:
     flow_rate_ul_min: float | None = None
     timeout_s: float = 120.0
     poll_interval_s: float = 0.1
+    unit_index: int = 0
 
     def __post_init__(self) -> None:
         if self.flow_rate_ul_min is not None and not math.isfinite(self.flow_rate_ul_min):
@@ -472,6 +482,7 @@ class PumpMoveArgs:
 class PumpReferenceMoveArgs:
     timeout_s: float = 60.0
     poll_interval_s: float = 0.1
+    unit_index: int = 0
 
     def __post_init__(self) -> None:
         _require_finite_positive("timeout_s", self.timeout_s)
@@ -652,7 +663,7 @@ class ZStagePositionResult:
 @dataclass(frozen=True, slots=True)
 class OperationSpec:
     devices: frozenset[DeviceId]
-    argument_type: type
+    argument_type: type | tuple[type, ...]
     result_type: type | tuple[type, ...]
 
 
@@ -687,13 +698,13 @@ OPERATION_SPECS: dict[DeviceOperation, OperationSpec] = {
     DeviceOperation.CAMERA_EXPOSURE_CONFIGURE: OperationSpec(_only(DeviceId.CAMERA), CameraConfigureExposureArgs, CameraExposureResult),
     DeviceOperation.CAMERA_ROI_CONFIGURE: OperationSpec(_only(DeviceId.CAMERA), CameraConfigureRoiArgs, CameraRoiResult),
     DeviceOperation.PUMP_FLOW_SET: OperationSpec(_only(DeviceId.PUMP), PumpSetFlowArgs, _NONE_RESULT),
-    DeviceOperation.PUMP_FLOW_STOP: OperationSpec(_only(DeviceId.PUMP), NoArguments, _NONE_RESULT),
-    DeviceOperation.PUMP_FILL_LEVEL_READ: OperationSpec(_only(DeviceId.PUMP), NoArguments, PumpFillLevelResult),
+    DeviceOperation.PUMP_FLOW_STOP: OperationSpec(_only(DeviceId.PUMP), (NoArguments, PumpUnitArgs), _NONE_RESULT),
+    DeviceOperation.PUMP_FILL_LEVEL_READ: OperationSpec(_only(DeviceId.PUMP), (NoArguments, PumpUnitArgs), PumpFillLevelResult),
     DeviceOperation.PUMP_FILL_LEVEL_SET: OperationSpec(_only(DeviceId.PUMP), PumpSetFillLevelArgs, _NONE_RESULT),
-    DeviceOperation.PUMP_STATUS_READ: OperationSpec(_only(DeviceId.PUMP), NoArguments, PumpStatusResult),
+    DeviceOperation.PUMP_STATUS_READ: OperationSpec(_only(DeviceId.PUMP), (NoArguments, PumpUnitArgs), PumpStatusResult),
     DeviceOperation.PUMP_SYRINGE_CONFIGURE: OperationSpec(_only(DeviceId.PUMP), PumpConfigureSyringeArgs, PumpConfigurationResult),
     DeviceOperation.PUMP_FLOW_UNIT_CONFIGURE: OperationSpec(_only(DeviceId.PUMP), PumpConfigureFlowUnitArgs, PumpConfigurationResult),
-    DeviceOperation.PUMP_FAULT_RECOVER: OperationSpec(_only(DeviceId.PUMP), NoArguments, PumpRecoveryResult),
+    DeviceOperation.PUMP_FAULT_RECOVER: OperationSpec(_only(DeviceId.PUMP), (NoArguments, PumpUnitArgs), PumpRecoveryResult),
     DeviceOperation.PUMP_REFILL: OperationSpec(_only(DeviceId.PUMP), PumpMoveArgs, PumpMovementResult),
     DeviceOperation.PUMP_EMPTY: OperationSpec(_only(DeviceId.PUMP), PumpMoveArgs, PumpMovementResult),
     DeviceOperation.PUMP_REFERENCE_MOVE: OperationSpec(_only(DeviceId.PUMP), PumpReferenceMoveArgs, PumpMovementResult),
@@ -718,8 +729,13 @@ def validate_command(device: DeviceId, operation: DeviceOperation, arguments: ob
     if device not in spec.devices:
         raise ValueError(f"{operation.value} is not valid for {device.value}")
     if not isinstance(arguments, spec.argument_type):
+        expected = (
+            spec.argument_type.__name__
+            if isinstance(spec.argument_type, type)
+            else "/".join(kind.__name__ for kind in spec.argument_type)
+        )
         raise TypeError(
-            f"{operation.value} requires {spec.argument_type.__name__}, "
+            f"{operation.value} requires {expected}, "
             f"got {type(arguments).__name__}"
         )
 
