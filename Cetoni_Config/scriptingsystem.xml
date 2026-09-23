@@ -1,0 +1,8 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Plugin>
+    <ScriptEditor ScriptAutoStart="0"/>
+    <log4cplus>
+        log4cplus.logger.ScriptingSystemLogger=WARN, LogAppender
+    </log4cplus>
+    <PluginLogger>ScriptingSystemLogger</PluginLogger>
+</Plugin>

@@ -1,0 +1,8 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Plugin>
+    <IsServicePanel>1</IsServicePanel>
+    <log4cplus>
+        log4cplus.logger.CANopenToolsLogger=WARN, LogAppender
+    </log4cplus>
+    <PluginLogger>CANopenToolsLogger</PluginLogger>
+</Plugin>

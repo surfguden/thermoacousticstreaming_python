@@ -1,0 +1,16 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Plugin>
+    <CsvLogger>
+		<SampleTimeSecs Min="0.1" Max="3600"/>
+	</CsvLogger>
+	<PlotLogger>
+		<SampleTimeSecs Min="0.1" Max="3600"/>
+	</PlotLogger>
+	<SqlLogger>
+		<DbWriteIntervalSecs>30</DbWriteIntervalSecs>
+	</SqlLogger>
+    <log4cplus>
+        log4cplus.logger.DataLogLogger=WARN, LogAppender
+    </log4cplus>
+    <PluginLogger>DataLogLogger</PluginLogger>
+</Plugin>
