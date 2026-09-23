@@ -19,7 +19,7 @@
 				<MaxAcceleration>200000</MaxAcceleration>
 				<MinimumAbsoluteVelocity>1</MinimumAbsoluteVelocity>
 				<HomingMethod comment="Positive Limit">18</HomingMethod>
-				<ValveInstalled>false</ValveInstalled>
+				<ValveInstalled>true</ValveInstalled>
 				<Simulated>false</Simulated>
 				<ObjDictEntries>
 					<ObjDictEntry Index="6086" SubIndex="0" Value="0" Size="2" comment="Motion Profile Type Trapezoidal"/>
@@ -102,6 +102,10 @@
 			<Caption>neMESYS Low Pressure 1</Caption>
 			<LabbCANPump>neMESYS_Low_Pressure_1_Pump</LabbCANPump>
 			<Syringe ScaleVolume_ml="1.0" ScaleLength_mm="60" MaxStroke_mm="60" Material="Glass" MaxLevel_mm="60" PumpType="255" MaxPressure_bar="37" Caption="1 ml Glass"/>
+			<Valve>
+				<labbCANDevice>neMESYS_Low_Pressure_1_Valve</labbCANDevice>
+				<PositionIcon>3x2Way_Asco</PositionIcon>
+			</Valve>
 			<ValveControlOutputs DO0="neMESYS_Low_Pressure_1_DigOUT2" DO1="neMESYS_Low_Pressure_1_DigOUT1" DO2="neMESYS_Low_Pressure_1_DigOUT3"/>
 			<ValveControlInputs DI0="neMESYS_Low_Pressure_1_DigIN1"/>
 			<AnalogIn1>neMESYS_Low_Pressure_1_AnIN1</AnalogIn1>
@@ -331,7 +335,7 @@
 			<ReadAxisConfigFromDevice>false</ReadAxisConfigFromDevice>
 			<ValveInstalled>true</ValveInstalled>
 			<Identity VendorId="0xfb" ProductCode="0x61200000" Revision="0x21250000" SerialNo="0x77014258"/>
-			<ValveType>-1</ValveType>
+			<ValveType>0</ValveType>
 		</QmixDevice>
 	</QmixDevices>
 </MetaInfo>

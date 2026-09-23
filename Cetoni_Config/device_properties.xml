@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Properties version="20231205" date="29.11.2024 14:35:56" flags="0x00">
+<Properties version="20231205" date="23.09.2026 14:02:00" flags="0x00">
 	<labbCAN>
 		<Environment>
 			<LogCfgFilename>${COMMON_DOCUMENTS}/QmixElements/diaglogger.properties</LogCfgFilename>
@@ -23,7 +23,7 @@
 		<DeviceList/>
 		<ChannelList/>
 	</labbCAN>
-	<Core MaxDeviceLogCnt="3866593312">
+	<Core MaxDeviceLogCnt="3266720">
 		<PluginList>
 			<Plugin>qmixelements</Plugin>
 			<Plugin>scriptingsystem</Plugin>
@@ -31,9 +31,9 @@
 			<Plugin>canopentools</Plugin>
 			<Plugin>qmixdevices</Plugin>
 			<Plugin>datalogger</Plugin>
-			<Plugin>qmixv</Plugin>
-			<Plugin>nemesys</Plugin>
 			<Plugin>qmixcontroller</Plugin>
+			<Plugin>nemesys</Plugin>
+			<Plugin>qmixv</Plugin>
 			<Plugin>qmixio</Plugin>
 		</PluginList>
 		<DeviceManager AutoConnect="0"/>
