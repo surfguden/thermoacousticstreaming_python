@@ -70,9 +70,11 @@ pump reference-move
 camera set-exposure 2.5
 camera set-roi 100 120 512 256
 valve wait-ready
-camera snapshot
+camera snapshot --exposure-ms 2.5
+camera continuous-snapshot --exposure-ms 2.5
 camera configure-sequence 100 2.5
 camera sequence
+camera save-sequence "C:/data/run-001" --format stacked
 camera read-timing
 ad2 configure-do 0 500 1100
 ad2 start-do
@@ -114,8 +116,13 @@ the controls; this is configuration evidence, not a measurement of physical
 output. Scope uses single acquisition with an internal 10 ms completion poll;
 analog detector triggering is edge-only. Scope, waveform, and digital-output
 triggers are typed through the HAL to the driver; camera sequence trigger and
-master-pulse settings follow the same route. Camera results include an image
-preview, and AD2 scope reads are drawn in a dependency-free plot.
+master-pulse settings follow the same route. Camera snapshot, continuous, and
+buffered-sequence acquisitions apply their visible settings when capture starts
+and display the latest frame in a separate acquisition window. Finite sequences
+use DCAM's non-wrapping snapshot buffer, report captured-frame progress, and can
+be saved as individual TIFF frames or one stacked TIFF. Every saved sequence
+also includes `camera_settings.json` with timestamps and all readable DCAM
+properties. AD2 scope reads are drawn in a dependency-free plot.
 
 Use **File > Save settings** and **File > Load settings** to manage explicit
 JSON input profiles. Profiles contain editable control values only. Loading a
@@ -123,8 +130,9 @@ profile never connects hardware, submits commands, restores stale readback, or
 replays a previous log.
 
 The application command surface exposes stable direct operations only. Driver
-coercion helpers, SDK handles, discovery functions, raw protocol methods, and
-camera persistence helpers are not HAL commands. Discovery and hardware probes
+coercion helpers, SDK handles, discovery functions, and raw protocol methods are
+not HAL commands. Camera sequence persistence is exposed as a typed application
+command. Discovery and hardware probes
 remain manual-only under `hardware_tests/`. Device status uses typed per-device
 readback models rather than free-form key/value dictionaries.
 

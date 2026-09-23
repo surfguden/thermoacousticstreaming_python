@@ -134,6 +134,16 @@ def test_camera_roi_can_be_centered_with_integer_limits() -> None:
     )
 
 
+def test_simulated_camera_rejects_invalid_roi_before_applying_it() -> None:
+    camera = SimulatedCamera()
+    camera.open_camera()
+    with pytest.raises(ValueError, match="increment"):
+        camera.configure_roi(SubRegion(1, 0, 512, 256))
+    with pytest.raises(ValueError, match="exceeds sensor width"):
+        camera.configure_roi(SubRegion(1800, 0, 512, 256))
+    assert camera.roi is None
+
+
 def test_simulated_camera_supports_snapshot_and_buffered_sequence_modes() -> None:
     camera = SimulatedCamera(buffer_frames=4)
     camera.open_camera()
@@ -142,14 +152,70 @@ def test_simulated_camera_supports_snapshot_and_buffered_sequence_modes() -> Non
     assert camera.mode is CameraMode.SEQUENCE
     camera.start_capture()
     frames = camera.image_sequence(3)
-    assert [frame["frame_number"] for frame in frames] == [1, 2, 3]
+    assert len(frames) == 3
+    assert all(frame.ndim == 2 for frame in frames)
+    assert camera.frame_count == 3
     assert camera.capture_active
     camera.stop_capture()
 
     camera.configure_snapshot()
     assert camera.mode is CameraMode.SNAPSHOT
     assert camera.sequence_settings is None
-    assert camera.capture_snapshot()["frame_number"] == 4
+    assert camera.capture_snapshot().ndim == 2
+    assert camera.frame_count == 4
+
+
+def test_hamamatsu_buffered_sequence_uses_finite_snap_mode() -> None:
+    calls: list[object] = []
+
+    class FakeDcam:
+        def is_opened(self):
+            return True
+
+        def buf_release(self):
+            calls.append("release")
+            return True
+
+        def buf_alloc(self, count):
+            calls.append(("alloc", count))
+            return True
+
+        def cap_snapshot(self):
+            calls.append("snapshot")
+            return True
+
+        def cap_start(self, sequence=True):
+            calls.append(("sequence", sequence))
+            return True
+
+    driver = HamamatsuDcamDriver()
+    driver.dcam_module = object()
+    driver.dcamapi = object()
+    driver.dcam = FakeDcam()
+    driver.initialized = True
+
+    driver.begin_buffered_sequence(12)
+
+    assert ("alloc", 12) in calls
+    assert "snapshot" in calls
+    assert not any(isinstance(call, tuple) and call[0] == "sequence" for call in calls)
+
+
+def test_simulated_camera_saves_individual_and_stacked_tiff_with_metadata(tmp_path) -> None:
+    camera = SimulatedCamera()
+    camera.open_camera()
+    frames = camera.image_sequence(3)
+    metadata = {"sequence": {"frame_count": 3}, "properties": [{"name": "test", "value": 1}]}
+
+    frames_folder = tmp_path / "frames"
+    camera.save_sequence(frames, frames_folder, image_format="frames", metadata=metadata)
+    assert len(list(frames_folder.glob("frame_*.tiff"))) == 3
+    assert (frames_folder / "camera_settings.json").is_file()
+
+    stack_folder = tmp_path / "stack"
+    camera.save_sequence(frames, stack_folder, image_format="stacked", metadata=metadata)
+    assert (stack_folder / "sequence.tiff").is_file()
+    assert (stack_folder / "camera_settings.json").is_file()
 
 
 def test_analog_discovery_configures_directly_without_an_inner_driver() -> None:

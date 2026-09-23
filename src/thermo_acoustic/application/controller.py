@@ -31,6 +31,7 @@ class _Pending:
 class ApplicationController(QObject):
     command_event = Signal(object)
     command_result = Signal(object)
+    command_progress = Signal(str, object)
     status_changed = Signal(object)
     message = Signal(str)
 
@@ -59,6 +60,7 @@ class ApplicationController(QObject):
             worker.command_succeeded.connect(self._worker_succeeded)
             worker.command_failed.connect(self._worker_failed)
             worker.command_cancelled.connect(self._worker_cancelled)
+            worker.command_progress.connect(self.command_progress)
             worker.status_changed.connect(self._status_received)
 
     def start(self) -> None:

@@ -70,6 +70,7 @@ class FloatRange:
 class IntegerRange:
     minimum: int
     maximum: int
+    increment: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +147,14 @@ class CameraRoiReadback:
 
 
 @dataclass(frozen=True, slots=True)
+class CameraRoiLimitsReadback:
+    horizontal_offset: IntegerRange
+    vertical_offset: IntegerRange
+    horizontal_size: IntegerRange
+    vertical_size: IntegerRange
+
+
+@dataclass(frozen=True, slots=True)
 class CameraReadback:
     mode: str = "snapshot"
     capture_active: bool = False
@@ -154,6 +163,7 @@ class CameraReadback:
     readout_time_s: float | None = None
     minimum_trigger_interval_s: float | None = None
     roi: CameraRoiReadback | None = None
+    roi_limits: CameraRoiLimitsReadback | None = None
     sequence_frame_count: int | None = None
     captured_frame_count: int = 0
 

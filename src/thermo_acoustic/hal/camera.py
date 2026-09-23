@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
+from pathlib import Path
 from time import monotonic
 
 from ..application.commands import (
@@ -10,14 +11,23 @@ from ..application.commands import (
     CameraConfigureSequenceArgs,
     CameraConfigureSnapshotArgs,
     CameraExposureResult,
+    CameraFrameProgress,
     CameraRoiResult,
+    CameraSaveSequenceArgs,
+    CameraSequenceSaveResult,
     CameraSnapshotResult,
     CameraSequenceResult,
     CameraTimingResult,
     DeviceOperation,
     NoArguments,
 )
-from ..domain.models import CameraReadback, CameraRoiReadback, DeviceId
+from ..domain.models import (
+    CameraReadback,
+    CameraRoiLimitsReadback,
+    CameraRoiReadback,
+    DeviceId,
+    IntegerRange,
+)
 from .base import DeferredProgress, DeviceWorker
 
 
@@ -26,16 +36,21 @@ class CameraWorker(DeviceWorker):
         super().__init__(DeviceId.CAMERA, device_factory, readback_factory=CameraReadback, parent=parent)
         self.register(DeviceOperation.CAMERA_SNAPSHOT_CONFIGURE, self.configure_snapshot)
         self.register(DeviceOperation.CAMERA_SNAPSHOT_CAPTURE, self.capture_snapshot)
+        self.register(DeviceOperation.CAMERA_CONTINUOUS_CAPTURE, self.capture_continuous)
         self.register(DeviceOperation.CAMERA_SEQUENCE_CONFIGURE, self.configure_sequence)
         self.register(DeviceOperation.CAMERA_SEQUENCE_CAPTURE, self.capture_sequence)
+        self.register(DeviceOperation.CAMERA_SEQUENCE_SAVE, self.save_sequence)
         self.register(DeviceOperation.CAMERA_CAPTURE_STOP, self.stop_capture)
         self.register(DeviceOperation.CAMERA_TIMING_READ, self.read_timing)
         self.register(DeviceOperation.CAMERA_EXPOSURE_CONFIGURE, self.configure_exposure)
         self.register(DeviceOperation.CAMERA_ROI_CONFIGURE, self.configure_roi)
         self._sequence_args: CameraConfigureSequenceArgs | None = None
+        self._last_sequence_frames: tuple[object, ...] = ()
+        self._last_sequence_metadata: dict[str, object] | None = None
 
     def initialize_device(self) -> None:
         self.device.open_camera()
+        self._refresh_roi_readback()
 
     def cleanup_device(self) -> None:
         self.device.close()
@@ -48,7 +63,11 @@ class CameraWorker(DeviceWorker):
             self.state.readback, mode="snapshot", exposure_ms=args.exposure_ms
         )
 
-    def capture_snapshot(self, _args: NoArguments) -> CameraSnapshotResult:
+    def capture_snapshot(
+        self, args: NoArguments | CameraConfigureSnapshotArgs
+    ) -> CameraSnapshotResult:
+        if isinstance(args, CameraConfigureSnapshotArgs):
+            self.configure_snapshot(args)
         self.state.active = True
         self.state.readback = replace(self.state.readback, mode="snapshot", capture_active=True)
         try:
@@ -56,6 +75,47 @@ class CameraWorker(DeviceWorker):
         finally:
             self.state.active = False
             self.state.readback = replace(self.state.readback, capture_active=False)
+
+    def capture_continuous(self, args: CameraConfigureSnapshotArgs) -> object:
+        self.configure_snapshot(args)
+        self.device.begin_continuous_capture()
+        self.state.active = True
+        self.state.readback = replace(
+            self.state.readback,
+            mode="continuous",
+            capture_active=True,
+            captured_frame_count=0,
+            sequence_frame_count=None,
+        )
+        request_id = self._executing_request_id
+        captured = 0
+
+        def cancel() -> None:
+            self.device.finish_continuous_capture()
+            self.state.active = False
+            self.state.readback = replace(self.state.readback, capture_active=False)
+
+        def step() -> DeferredProgress:
+            nonlocal captured
+            frame = self.device.poll_continuous_frame(
+                max(1, min(100, int(args.poll_interval_s * 1000)))
+            )
+            if frame is not None:
+                captured += 1
+                self.state.readback = replace(
+                    self.state.readback, captured_frame_count=captured
+                )
+                self._emit_status()
+                if request_id is not None:
+                    self.command_progress.emit(
+                        request_id,
+                        CameraFrameProgress(frame, captured, mode="continuous"),
+                    )
+            return DeferredProgress()
+
+        return self.defer_operation(
+            step, cancel=cancel, poll_interval_s=args.poll_interval_s
+        )
 
     def configure_sequence(self, args: CameraConfigureSequenceArgs) -> None:
         settings = {"frames": args.frame_count}
@@ -92,7 +152,11 @@ class CameraWorker(DeviceWorker):
             captured_frame_count=0,
         )
 
-    def capture_sequence(self, _args: NoArguments) -> object:
+    def capture_sequence(
+        self, command_args: NoArguments | CameraConfigureSequenceArgs
+    ) -> object:
+        if isinstance(command_args, CameraConfigureSequenceArgs):
+            self.configure_sequence(command_args)
         if self._sequence_args is None:
             raise RuntimeError("Configure the camera sequence before capture")
         args = self._sequence_args
@@ -103,6 +167,7 @@ class CameraWorker(DeviceWorker):
         self.state.readback = replace(
             self.state.readback, capture_active=True, captured_frame_count=0
         )
+        request_id = self._executing_request_id
 
         def cancel() -> None:
             self.device.finish_buffered_sequence()
@@ -126,9 +191,26 @@ class CameraWorker(DeviceWorker):
                 self.state.readback, captured_frame_count=len(frames)
             )
             self._emit_status()
+            if request_id is not None:
+                self.command_progress.emit(
+                    request_id,
+                    CameraFrameProgress(
+                        frame,
+                        len(frames),
+                        args.frame_count,
+                        mode="sequence",
+                    ),
+                )
             if len(frames) < args.frame_count:
                 return DeferredProgress()
             timestamps = self.device.finish_buffered_sequence()
+            self._last_sequence_frames = tuple(frames)
+            settings = self.device.read_all_settings()
+            settings["sequence"] = {
+                "frame_count": args.frame_count,
+                "timestamps": list(timestamps),
+            }
+            self._last_sequence_metadata = settings
             self.state.active = False
             self.state.readback = replace(self.state.readback, capture_active=False)
             return DeferredProgress(
@@ -172,12 +254,15 @@ class CameraWorker(DeviceWorker):
             raise ValueError("camera ROI offsets must be non-negative")
         if args.horizontal_size <= 0 or args.vertical_size <= 0:
             raise ValueError("camera ROI dimensions must be positive")
+        limits, current = self.device.read_subregion_limits_and_value()
         requested = {
             "horizontal_offset": args.horizontal_offset,
             "vertical_offset": args.vertical_offset,
             "horizontal_size": args.horizontal_size,
             "vertical_size": args.vertical_size,
         }
+        if limits is not None:
+            self._validate_roi(args, limits, current)
         self.device.configure_roi(requested)
         _limits, applied = self.device.read_subregion_limits_and_value()
         if isinstance(applied, dict):
@@ -206,6 +291,89 @@ class CameraWorker(DeviceWorker):
             ),
         )
         return result
+
+    def save_sequence(self, args: CameraSaveSequenceArgs) -> CameraSequenceSaveResult:
+        if not self._last_sequence_frames or self._last_sequence_metadata is None:
+            raise RuntimeError("No completed camera sequence is available to save")
+        folder = Path(args.folder).expanduser()
+        self.device.save_sequence(
+            self._last_sequence_frames,
+            folder,
+            image_format=args.format.value,
+            metadata=self._last_sequence_metadata,
+        )
+        return CameraSequenceSaveResult(
+            str(folder), args.format, len(self._last_sequence_frames)
+        )
+
+    def _refresh_roi_readback(self) -> None:
+        reader = getattr(self.device, "read_subregion_limits_and_value", None)
+        if not callable(reader):
+            return
+        limits, roi = reader()
+        if isinstance(roi, dict):
+            roi_values = roi
+        else:
+            roi_values = {
+                "horizontal_offset": roi.horizontal_offset,
+                "vertical_offset": roi.vertical_offset,
+                "horizontal_size": roi.horizontal_size,
+                "vertical_size": roi.vertical_size,
+            }
+        if limits is None:
+            self.state.readback = replace(
+                self.state.readback,
+                roi=CameraRoiReadback(
+                    int(roi_values["horizontal_offset"]),
+                    int(roi_values["vertical_offset"]),
+                    int(roi_values["horizontal_size"]),
+                    int(roi_values["vertical_size"]),
+                ),
+            )
+            return
+        self.state.readback = replace(
+            self.state.readback,
+            roi=CameraRoiReadback(
+                int(roi_values["horizontal_offset"]), int(roi_values["vertical_offset"]),
+                int(roi_values["horizontal_size"]), int(roi_values["vertical_size"]),
+            ),
+            roi_limits=CameraRoiLimitsReadback(
+                self._range_readback(limits.horizontal_offset),
+                self._range_readback(limits.vertical_offset),
+                self._range_readback(limits.horizontal_size),
+                self._range_readback(limits.vertical_size),
+            ),
+        )
+
+    @staticmethod
+    def _range_readback(value: object) -> IntegerRange:
+        return IntegerRange(
+            int(value.minimum), int(value.maximum), max(int(value.increment), 1)
+        )
+
+    @staticmethod
+    def _validate_roi(args: CameraConfigureRoiArgs, limits: object, current: object) -> None:
+        del current
+        entries = (
+            ("horizontal offset", args.horizontal_offset, limits.horizontal_offset),
+            ("vertical offset", args.vertical_offset, limits.vertical_offset),
+            ("horizontal size", args.horizontal_size, limits.horizontal_size),
+            ("vertical size", args.vertical_size, limits.vertical_size),
+        )
+        for name, value, limit in entries:
+            if not int(limit.minimum) <= value <= int(limit.maximum):
+                raise ValueError(
+                    f"camera ROI {name} must be within {limit.minimum}..{limit.maximum}"
+                )
+            increment = max(int(limit.increment), 1)
+            if (value - int(limit.minimum)) % increment:
+                raise ValueError(
+                    f"camera ROI {name} must follow increment {increment} from {limit.minimum}"
+                )
+        if args.horizontal_offset + args.horizontal_size > int(limits.horizontal_size.maximum):
+            raise ValueError("camera ROI horizontal offset + width exceeds the sensor")
+        if args.vertical_offset + args.vertical_size > int(limits.vertical_size.maximum):
+            raise ValueError("camera ROI vertical offset + height exceeds the sensor")
 
     def safe_stop(self) -> None:
         if self.device_constructed and self.state.connected:

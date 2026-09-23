@@ -266,3 +266,27 @@ class CameraPreview(QLabel):
                 image_format,
             ).copy()
         raise ValueError(f"unsupported frame shape/dtype: {array.shape}/{array.dtype}")
+
+
+class CameraImageWindow(QDialog):
+    """Reusable non-modal camera viewer for every acquisition mode."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Camera acquisition")
+        self.resize(900, 700)
+        layout = QVBoxLayout(self)
+        self.preview = CameraPreview()
+        self.preview.setMinimumSize(640, 480)
+        self.status = QLabel("No acquisition")
+        self.status.setWordWrap(True)
+        layout.addWidget(self.preview, 1)
+        layout.addWidget(self.status)
+
+    def show_frame(self, frame: object, status: str) -> None:
+        was_visible = self.isVisible()
+        self.preview.set_frame(frame)
+        self.status.setText(status)
+        self.show()
+        if not was_visible:
+            self.raise_()

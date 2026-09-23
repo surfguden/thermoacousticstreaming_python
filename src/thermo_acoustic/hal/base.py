@@ -39,6 +39,7 @@ class DeviceWorker(QObject):
     command_succeeded = Signal(str, object)
     command_failed = Signal(str, str)
     command_cancelled = Signal(str, str)
+    command_progress = Signal(str, object)
     status_changed = Signal(object)
     stopped = Signal()
 

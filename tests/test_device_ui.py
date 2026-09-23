@@ -39,9 +39,13 @@ from thermo_acoustic.console.parser import parse_command
 from thermo_acoustic.application.event_formatting import detailed_event_text
 from thermo_acoustic.domain.models import (
     Ad2Readback,
+    CameraReadback,
+    CameraRoiLimitsReadback,
+    CameraRoiReadback,
     ConnectionState,
     DeviceId,
     DeviceStatus,
+    IntegerRange,
     OperatingMode,
 )
 from thermo_acoustic.hal.registry import DeviceRegistry
@@ -66,6 +70,8 @@ def wait(app, ms=80):
 def test_each_panel_builds_every_typed_device_operation(qt_app, device):
     del qt_app
     panel = PANEL_TYPES[device]()
+    if device is DeviceId.CAMERA:
+        panel.sequence_save_folder.setText("camera-sequence-test-output")
     commands = []
     panel.command_requested.connect(lambda _action, command: commands.append(command))
 
@@ -81,6 +87,11 @@ def test_each_panel_builds_every_typed_device_operation(qt_app, device):
         for operation, spec in OPERATION_SPECS.items()
         if device in spec.devices
     }
+    if device is DeviceId.CAMERA:
+        expected -= {
+            DeviceOperation.CAMERA_SNAPSHOT_CONFIGURE,
+            DeviceOperation.CAMERA_SEQUENCE_CONFIGURE,
+        }
     assert operations == expected
 
 
@@ -406,7 +417,6 @@ def test_scope_applied_readback_updates_controls_and_capture_opens_plot(qt_app):
 def test_camera_builds_complete_sequence_trigger_arguments(qt_app):
     del qt_app
     panel = CameraPanel()
-    panel.trigger_enabled.setChecked(True)
     panel.trigger_source.setCurrentIndex(
         panel.trigger_source.findData(CameraTriggerSource.EXTERNAL.value)
     )
@@ -426,7 +436,6 @@ def test_camera_builds_complete_sequence_trigger_arguments(qt_app):
     )
     panel.masterpulse_interval.setValue(0.02)
     panel.masterpulse_burst.setValue(8)
-    panel.global_exposure_enabled.setChecked(True)
     panel.global_exposure.setChecked(True)
 
     trigger = panel._sequence_args().trigger
@@ -441,6 +450,133 @@ def test_camera_builds_complete_sequence_trigger_arguments(qt_app):
     assert trigger.masterpulse_interval_s == 0.02
     assert trigger.masterpulse_burst_times == 8
     assert trigger.global_exposure is True
+
+
+def test_camera_acquisition_controls_always_send_visible_settings(qt_app):
+    del qt_app
+    panel = CameraPanel()
+    panel.snapshot_exposure.setValue(4.5)
+    panel.sequence_exposure.setValue(7.5)
+
+    assert not hasattr(panel, "snapshot_exposure_enabled")
+    assert not hasattr(panel, "sequence_exposure_enabled")
+    assert not hasattr(panel, "trigger_enabled")
+    assert not hasattr(panel, "global_exposure_enabled")
+    assert panel._snapshot_args().exposure_ms == 4.5
+    sequence = panel._sequence_args()
+    assert sequence.exposure_ms == 7.5
+    assert sequence.trigger is not None
+    panel.image_window.close()
+
+
+def test_center_roi_stops_applies_and_restarts_continuous_capture(qt_app):
+    del qt_app
+    panel = CameraPanel()
+    limits = CameraRoiLimitsReadback(
+        IntegerRange(0, 2044, 4),
+        IntegerRange(0, 1020, 4),
+        IntegerRange(4, 2048, 4),
+        IntegerRange(4, 1024, 4),
+    )
+    panel.set_status(
+        DeviceStatus(
+            DeviceId.CAMERA,
+            ConnectionState.CONNECTED,
+            active=True,
+            readback=CameraReadback(
+                mode="continuous",
+                capture_active=True,
+                roi=CameraRoiReadback(0, 0, 512, 256),
+                roi_limits=limits,
+            ),
+        )
+    )
+    panel.roi_width.setValue(512)
+    panel.roi_height.setValue(256)
+    commands = []
+    panel.command_requested.connect(lambda _action, command: commands.append(command))
+
+    panel._buttons["center_roi"].click()
+
+    assert [command.operation for command in commands] == [
+        DeviceOperation.CAMERA_CAPTURE_STOP,
+        DeviceOperation.CAMERA_ROI_CONFIGURE,
+        DeviceOperation.CAMERA_CONTINUOUS_CAPTURE,
+    ]
+    roi = commands[1].arguments
+    assert (roi.horizontal_offset, roi.vertical_offset) == (768, 384)
+
+
+def test_center_roi_restarts_live_simulated_continuous_capture(qt_app):
+    controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
+    window = MainWindow(controller)
+    controller.start()
+    camera = window.panels[DeviceId.CAMERA]
+    camera._buttons["connect"].click()
+    wait(qt_app)
+    camera.roi_width.setValue(512)
+    camera.roi_height.setValue(256)
+    camera._buttons["continuous"].click()
+    wait(qt_app, 180)
+    assert camera.preview.has_image
+
+    camera._buttons["center_roi"].click()
+    wait(qt_app, 350)
+
+    readback = controller.statuses()[DeviceId.CAMERA].readback
+    assert readback.capture_active
+    assert readback.mode == "continuous"
+    assert readback.roi == CameraRoiReadback(768, 384, 512, 256)
+    camera._buttons["capture_stop"].click()
+    wait(qt_app)
+    camera.image_window.close()
+    window.close()
+
+
+def test_simulated_sequence_updates_popup_and_saves_tiff_with_settings(qt_app, tmp_path):
+    controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
+    window = MainWindow(controller)
+    controller.start()
+    camera = window.panels[DeviceId.CAMERA]
+    camera._buttons["connect"].click()
+    wait(qt_app)
+    camera.sequence_frames.setValue(3)
+    camera._buttons["sequence"].click()
+    wait(qt_app, 350)
+
+    assert camera.preview.has_image
+    assert "3 frames" in camera.sequence_status.text()
+    camera.sequence_save_folder.setText(str(tmp_path))
+    camera._buttons["sequence_save"].click()
+    wait(qt_app, 150)
+
+    assert len(list(tmp_path.glob("frame_*.tiff"))) == 3
+    metadata = json.loads((tmp_path / "camera_settings.json").read_text(encoding="utf-8"))
+    assert metadata["sequence"]["frame_count"] == 3
+    assert metadata["properties"]
+    camera.image_window.close()
+    window.close()
+
+
+def test_camera_profile_migrates_removed_enable_checkboxes(qt_app, tmp_path):
+    del qt_app
+    controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
+    window = MainWindow(controller)
+    document = window.profile_document()
+    document["schema_version"] = 1
+    document["devices"]["camera"].update(
+        snapshot_exposure_enabled=True,
+        sequence_exposure_enabled=True,
+        trigger_enabled=True,
+        global_exposure_enabled=True,
+    )
+    path = tmp_path / "legacy-camera-profile.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    window.load_profile(path)
+
+    assert window.panels[DeviceId.CAMERA].snapshot_exposure.value() == 2.5
+    window.close()
 
 
 def test_waveform_modes_share_the_advanced_configuration(qt_app):
@@ -601,3 +737,7 @@ def test_previous_waveform_profile_keys_still_load(qt_app, tmp_path):
     assert channel.single_amplitude.value() == 0.4
     assert channel.trigger["source"].currentData() == Ad2TriggerSource.PC.value
     window.close()
+    CameraReadback,
+    CameraRoiLimitsReadback,
+    CameraRoiReadback,
+    IntegerRange,

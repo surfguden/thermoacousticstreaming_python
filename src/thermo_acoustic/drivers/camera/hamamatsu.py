@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import json
 import logging
 from pathlib import Path
 import sys
@@ -41,6 +42,8 @@ class HamamatsuDcamDriver:
     _timestamp_capability_checked: bool = False
     _timestamp_supported: bool = False
     mode: CameraMode = CameraMode.SNAPSHOT
+    sequence_expected_frames: int = 0
+    sequence_next_index: int = 0
 
     def _load_sdk(self) -> None:
         if self.dcam_module is not None:
@@ -143,6 +146,11 @@ class HamamatsuDcamDriver:
             props = self.dcam_module.DCAM_IDPROP
             mode = self.dcam_module.DCAMPROP.MODE
             self._check(self.dcam.prop_setvalue(props.SUBARRAYMODE, mode.OFF), "set SUBARRAYMODE off")
+            # Move to the minimum valid origin before resizing. Otherwise an
+            # expansion from an offset ROI can transiently violate pos + size
+            # even though the requested final ROI is valid.
+            self._check(self.dcam.prop_setgetvalue(props.SUBARRAYHPOS, limits.horizontal_offset.minimum), "reset SUBARRAYHPOS")
+            self._check(self.dcam.prop_setgetvalue(props.SUBARRAYVPOS, limits.vertical_offset.minimum), "reset SUBARRAYVPOS")
             if roi.horizontal_size > 0:
                 self._check(self.dcam.prop_setgetvalue(props.SUBARRAYHSIZE, roi.horizontal_size), "set SUBARRAYHSIZE")
             if roi.vertical_size > 0:
@@ -179,6 +187,17 @@ class HamamatsuDcamDriver:
                 f"[{limits.vertical_offset.minimum}, {limits.vertical_offset.maximum}] range -- "
                 "rejected before reaching the DCAM SDK."
             )
+        for name, value, limit in (
+            ("horizontal_size", roi.horizontal_size, limits.horizontal_size),
+            ("vertical_size", roi.vertical_size, limits.vertical_size),
+            ("horizontal_offset", horizontal_offset, limits.horizontal_offset),
+            ("vertical_offset", vertical_offset, limits.vertical_offset),
+        ):
+            if value > 0 and (value - limit.minimum) % max(limit.increment, 1):
+                raise HamamatsuDcamError(
+                    f"ROI {name}={value} does not follow the sensor increment "
+                    f"{limit.increment} from {limit.minimum} -- rejected before reaching the DCAM SDK."
+                )
         # Combined check -- mirrors DCAM's own documented INVALIDSUBARRAY
         # condition ("SUBARRAYHPOS + SUBARRAYHSIZE is greater than the number
         # of horizontal pixel of sensor"). Uses whichever size will actually
@@ -323,29 +342,11 @@ class HamamatsuDcamDriver:
         # for DCAMPROP_TRIGGER_GLOBALEXPOSURE__GLOBALRESET=5 in the vendored
         # DCAM-API v4 header, dcamsdk4/inc/dcamprop.h).
         #
-        # enabled=False -> deliberately does NOT call prop_setvalue() at all
-        # (leaves the property at its prior/default state), rather than
-        # picking a specific "off" mode. LabVIEW's own false-case value (0)
-        # is not a valid TRIGGER_GLOBALEXPOSURE enum member (valid range is
-        # 1-5) and the property-ID constant visible at that block-diagram
-        # call site (2049680 / 0x1F4690) does not match
-        # DCAM_IDPROP_TRIGGER_GLOBALEXPOSURE's real v4 value (2032384 /
-        # 0x1F0300) or any other constant in the vendored header -- an
-        # unresolved discrepancy (no DCAM-API v3 header or Hamamatsu
-        # compatibility-note documentation could be found locally or via web
-        # search to explain it; a second, independently-sourced v4 header
-        # -- SLAC's EPICS ADOrcaUsb module -- has byte-identical constants
-        # for this property, weakening but not disproving a version-drift
-        # explanation). Actively setting a specific guessed "off" value
-        # (the previous code used DELAYED) risked being systematically wrong
-        # for every future experiment's exposure timing; not touching the
-        # property when disabled is the safer choice until this can be
-        # confirmed against the real LabVIEW application directly.
-        if not enabled:
-            with log_call("camera", "configure_trigger_global_exposure", command="skip (disabled)") as result:
-                result["response"] = "not applied -- disabled, property left untouched"
-            return
-        value = values.GLOBALRESET
+        # The installed C15440-20UP property reference identifies DELAYED as
+        # this camera's default non-global mode and GLOBALRESET as global
+        # exposure. Apply one explicitly at every sequence start so a prior
+        # acquisition cannot leak its setting into the next one.
+        value = values.GLOBALRESET if enabled else values.DELAYED
         value_name = getattr(value, "name", str(value))
         with log_call("camera", "configure_trigger_global_exposure", command=value_name) as result:
             self._check(
@@ -372,22 +373,35 @@ class HamamatsuDcamDriver:
         self.open_camera()
         count = max(int(frame_count), 1)
         self.mode = CameraMode.SEQUENCE
-        self._ensure_buffer(max(count, self.buffer_frames))
-        self._check(self.dcam.cap_start(True), "Dcam.cap_start buffered sequence")
+        self._ensure_buffer(count)
+        # SNAP is DCAM's finite/linear capture mode. It stops when all allocated
+        # frames are filled, so a completed sequence cannot wrap and overwrite
+        # early frames regardless of how often the application polls.
+        self._check(self.dcam.cap_snapshot(), "Dcam.cap_snapshot buffered sequence")
         self.capture_active = True
         self.last_frame_timestamps = []
+        self.sequence_expected_frames = count
+        self.sequence_next_index = 0
 
     def poll_buffered_sequence_frame(self, timeout_ms: int) -> object | None:
         if not self.capture_active:
             raise HamamatsuDcamError("Buffered sequence is not active")
-        if self.dcam.wait_capevent_frameready(max(int(timeout_ms), 1)):
-            pixel_copy, timestamp = self._last_frame_copy()
-            self.last_frame_timestamps.append(timestamp)
-            return pixel_copy
-        err = self.dcam.lasterr()
-        if hasattr(err, "is_timeout") and err.is_timeout():
+        transfer = self.dcam.cap_transferinfo()
+        self._check(transfer, "Dcam.cap_transferinfo")
+        if int(transfer.nFrameCount) <= self.sequence_next_index:
+            if not self.dcam.wait_capevent_frameready(max(int(timeout_ms), 1)):
+                err = self.dcam.lasterr()
+                if hasattr(err, "is_timeout") and err.is_timeout():
+                    return None
+                raise HamamatsuDcamError(f"wait frame ready failed: {err}")
+            transfer = self.dcam.cap_transferinfo()
+            self._check(transfer, "Dcam.cap_transferinfo after frame ready")
+        if int(transfer.nFrameCount) <= self.sequence_next_index:
             return None
-        raise HamamatsuDcamError(f"wait frame ready failed: {err}")
+        pixel_copy, timestamp = self._frame_copy(self.sequence_next_index)
+        self.sequence_next_index += 1
+        self.last_frame_timestamps.append(timestamp)
+        return pixel_copy
 
     def finish_buffered_sequence(self) -> tuple[str, ...]:
         timestamps = tuple(self.last_frame_timestamps)
@@ -396,6 +410,27 @@ class HamamatsuDcamDriver:
             self.last_frame_timestamps = []
             return ()
         return tuple(str(timestamp) for timestamp in timestamps)
+
+    def begin_continuous_capture(self) -> None:
+        self.open_camera()
+        self.mode = CameraMode.SNAPSHOT
+        self._ensure_buffer(self.buffer_frames)
+        self._check(self.dcam.cap_start(True), "Dcam.cap_start continuous snapshot")
+        self.capture_active = True
+
+    def poll_continuous_frame(self, timeout_ms: int) -> object | None:
+        if not self.capture_active:
+            raise HamamatsuDcamError("Continuous snapshot is not active")
+        if self.dcam.wait_capevent_frameready(max(int(timeout_ms), 1)):
+            frame, _timestamp = self._last_frame_copy()
+            return frame
+        err = self.dcam.lasterr()
+        if hasattr(err, "is_timeout") and err.is_timeout():
+            return None
+        raise HamamatsuDcamError(f"wait frame ready failed: {err}")
+
+    def finish_continuous_capture(self) -> None:
+        self._stop_capture_if_active()
 
     def capture_snapshot(self) -> object:
         self.open_camera()
@@ -484,17 +519,78 @@ class HamamatsuDcamDriver:
             self._timestamp_supported = bool(capability) and capability.is_support_timestamp()
         return self._timestamp_supported
 
-    def save_sequence(self, image_data: object, folder: Path) -> None:
+    def save_sequence(
+        self,
+        image_data: object,
+        folder: Path,
+        *,
+        image_format: str = "frames",
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
         folder.mkdir(parents=True, exist_ok=True)
         frames = list(image_data) if isinstance(image_data, (list, tuple)) else [image_data]
         try:
             from PIL import Image
         except ImportError as exc:
             raise HamamatsuDcamError("Pillow is required to save Hamamatsu image arrays as TIFF files.") from exc
-        for index, frame in enumerate(frames):
-            if frame is None:
+        images = [Image.fromarray(frame) for frame in frames if frame is not None]
+        if image_format == "stacked":
+            if not images:
+                raise HamamatsuDcamError("Cannot save an empty camera sequence")
+            images[0].save(
+                folder / "sequence.tiff",
+                format="TIFF",
+                save_all=True,
+                append_images=images[1:],
+            )
+        elif image_format == "frames":
+            for index, image in enumerate(images):
+                image.save(folder / f"frame_{index:05d}.tiff", format="TIFF")
+        else:
+            raise HamamatsuDcamError(f"Unsupported camera sequence format: {image_format}")
+        (folder / "camera_settings.json").write_text(
+            json.dumps(metadata or {}, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+    def read_all_settings(self) -> dict[str, Any]:
+        """Return a JSON-safe snapshot of all readable DCAM properties."""
+        self.open_camera()
+        strings: dict[str, str] = {}
+        for name in (
+            "BUS", "CAMERAID", "VENDOR", "MODEL", "CAMERAVERSION",
+            "DRIVERVERSION", "MODULEVERSION",
+        ):
+            identifier = getattr(self.dcam_module.DCAM_IDSTR, name, None)
+            if identifier is None:
                 continue
-            Image.fromarray(frame).save(folder / f"frame_{index:05d}.tiff", format="TIFF")
+            value = self.dcam.dev_getstring(identifier)
+            if value is not False:
+                strings[name] = str(value)
+        properties: list[dict[str, Any]] = []
+        property_id: int | object = 0
+        while True:
+            property_id = self.dcam.prop_getnextid(property_id)
+            if property_id is False:
+                break
+            name = self.dcam.prop_getname(property_id)
+            value = self.dcam.prop_getvalue(property_id)
+            if value is False:
+                continue
+            value_text = self.dcam.prop_getvaluetext(property_id, value)
+            properties.append(
+                {
+                    "id": int(property_id),
+                    "name": str(name) if name is not False else f"0x{int(property_id):08x}",
+                    "value": float(value),
+                    "value_text": None if value_text is False else str(value_text),
+                }
+            )
+        return {
+            "captured_at_utc": datetime.now(timezone.utc).isoformat(),
+            "device": strings,
+            "properties": properties,
+        }
 
     def get_camera_buffer_size(self) -> int:
         return self.buffer_frames
@@ -722,8 +818,11 @@ class HamamatsuDcamDriver:
             )
 
     def _last_frame_copy(self) -> tuple[object, str | None]:
+        return self._frame_copy(-1)
+
+    def _frame_copy(self, index: int) -> tuple[object, str | None]:
         if self._timestamp_capability():
-            result = self.dcam.buf_getframe(-1)
+            result = self.dcam.buf_getframe(index)
             self._check(result is not False, "Dcam.buf_getframe")
             frame, image = result
             pixel_copy = image.copy()
@@ -736,8 +835,8 @@ class HamamatsuDcamDriver:
             if frame.timestamp.sec or frame.timestamp.microsec:
                 return pixel_copy, f"dcam_clock:{frame.timestamp.sec}.{frame.timestamp.microsec:06d}"
             return pixel_copy, None
-        frame = self.dcam.buf_getlastframedata()
-        self._check(frame is not False, "Dcam.buf_getlastframedata")
+        frame = self.dcam.buf_getframedata(index)
+        self._check(frame is not False, "Dcam.buf_getframedata")
         return frame.copy(), None
 
     def _integer_range(self, idprop: object) -> IntegerRange:

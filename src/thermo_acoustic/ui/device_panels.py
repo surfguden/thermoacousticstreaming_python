@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -45,6 +46,10 @@ from ..application.commands import (
     CameraConfigureRoiArgs,
     CameraConfigureSequenceArgs,
     CameraConfigureSnapshotArgs,
+    CameraFrameProgress,
+    CameraSaveSequenceArgs,
+    CameraSequenceSaveFormat,
+    CameraSequenceSaveResult,
     CameraSequenceTriggerArgs,
     CameraSequenceResult,
     CameraSnapshotResult,
@@ -74,13 +79,14 @@ from ..domain.models import (
     Ad2Capabilities,
     Ad2WaveformChannelCapabilities,
     ConnectionState,
+    CameraReadback,
     DEVICE_LABELS,
     DeviceId,
     DeviceStatus,
     PumpReadback,
 )
 from .ad2_scope import OscilloscopePanel
-from .widgets import CameraPreview
+from .widgets import CameraImageWindow
 
 
 def double_spin(
@@ -233,14 +239,16 @@ class DevicePanel(QScrollArea):
 
     def mark_pending(self, action: str, request_id: str) -> None:
         self._pending[action] = request_id
-        self._buttons[action].setText(f"{self._button_labels[action]} · pending")
+        if action in self._buttons:
+            self._buttons[action].setText(f"{self._button_labels[action]} · pending")
         self._update_controls()
 
     def clear_pending(self, request_id: str) -> None:
         for action, pending_id in tuple(self._pending.items()):
             if pending_id == request_id:
                 del self._pending[action]
-                self._buttons[action].setText(self._button_labels[action])
+                if action in self._buttons:
+                    self._buttons[action].setText(self._button_labels[action])
         self._update_controls()
 
     def show_notice(self, message: str) -> None:
@@ -1290,20 +1298,23 @@ class ValvePanel(DevicePanel):
 class CameraPanel(DevicePanel):
     def __init__(self, parent=None) -> None:
         super().__init__(DeviceId.CAMERA, parent)
+        self._continuous_active = False
+        self._last_roi_readback = None
+        self.image_window = CameraImageWindow(self)
+        self.preview = self.image_window.preview
         controls = QWidget()
         controls_layout = QGridLayout(controls)
         controls_layout.setContentsMargins(0, 0, 0, 0)
         controls_layout.setVerticalSpacing(2)
         self.layout.addWidget(controls, 1)
         group, form = form_group("Snapshot and exposure")
-        self.snapshot_exposure_enabled = self.register_profile("snapshot_exposure_enabled", QCheckBox())
         self.snapshot_exposure = self.register_profile("snapshot_exposure_ms", double_spin(2.5, 0, 1_000_000))
         self.exposure = self.register_profile("exposure_ms", double_spin(2.5, 0, 1_000_000))
-        form.addRow("Configure exposure", self.snapshot_exposure_enabled)
         form.addRow("Snapshot exposure (ms)", self.snapshot_exposure)
         form.addRow(button_row(
-            self.action_button("snapshot_config", "Configure snapshot", DeviceOperation.CAMERA_SNAPSHOT_CONFIGURE, self._snapshot_args),
-            self.action_button("snapshot", "Capture snapshot", DeviceOperation.CAMERA_SNAPSHOT_CAPTURE),
+            self.action_button("snapshot", "Capture snapshot", DeviceOperation.CAMERA_SNAPSHOT_CAPTURE, self._snapshot_args),
+            self.action_button("continuous", "Continuous snapshot", DeviceOperation.CAMERA_CONTINUOUS_CAPTURE, self._snapshot_args),
+            self.action_button("capture_stop", "Stop capture", DeviceOperation.CAMERA_CAPTURE_STOP),
         ))
         form.addRow("Exposure (ms)", self.exposure)
         form.addRow(button_row(self.action_button("exposure", "Set exposure", DeviceOperation.CAMERA_EXPOSURE_CONFIGURE, lambda: CameraConfigureExposureArgs(self.exposure.value()))))
@@ -1311,23 +1322,32 @@ class CameraPanel(DevicePanel):
 
         group, form = form_group("Buffered sequence")
         self.sequence_frames = self.register_profile("sequence_frames", int_spin(10, 1, 1_000_000))
-        self.sequence_exposure_enabled = self.register_profile("sequence_exposure_enabled", QCheckBox())
         self.sequence_exposure = self.register_profile("sequence_exposure_ms", double_spin(2.5, 0, 1_000_000))
         self.frame_timeout = self.register_profile("frame_timeout_s", double_spin(30, 0.001, 86_400, 3))
         self.frame_poll = self.register_profile("frame_poll_s", double_spin(0.05, 0.001, 60, 3))
         for label, widget in (
-            ("Frames", self.sequence_frames), ("Configure exposure", self.sequence_exposure_enabled),
+            ("Frames", self.sequence_frames),
             ("Exposure (ms)", self.sequence_exposure), ("Per-frame timeout (s)", self.frame_timeout),
             ("Poll interval (s)", self.frame_poll),
         ):
             form.addRow(label, widget)
         form.addRow(button_row(
-            self.action_button("sequence_config", "Configure sequence", DeviceOperation.CAMERA_SEQUENCE_CONFIGURE, self._sequence_args),
-            self.action_button("sequence", "Capture sequence", DeviceOperation.CAMERA_SEQUENCE_CAPTURE),
-            self.action_button("capture_stop", "Stop capture", DeviceOperation.CAMERA_CAPTURE_STOP),
+            self.action_button("sequence", "Capture sequence", DeviceOperation.CAMERA_SEQUENCE_CAPTURE, self._sequence_args),
         ))
         self.sequence_status = QLabel("No sequence")
         form.addRow("Progress", self.sequence_status)
+        self.sequence_save_folder = self.register_profile("sequence_save_folder", QLineEdit())
+        choose_folder = QPushButton("Choose folder…")
+        choose_folder.clicked.connect(self._choose_sequence_folder)
+        self.sequence_save_format = self.register_profile("sequence_save_format", QComboBox())
+        self.sequence_save_format.addItem("Individual TIFF frames", CameraSequenceSaveFormat.FRAMES.value)
+        self.sequence_save_format.addItem("Stacked TIFF", CameraSequenceSaveFormat.STACKED.value)
+        form.addRow("Save folder", self.sequence_save_folder)
+        form.addRow(button_row(choose_folder))
+        form.addRow("Save format", self.sequence_save_format)
+        form.addRow(button_row(
+            self.action_button("sequence_save", "Save camera sequence", DeviceOperation.CAMERA_SEQUENCE_SAVE, self._save_args)
+        ))
         controls_layout.addWidget(group, 1, 0)
 
         group, form = form_group("ROI and timing")
@@ -1338,13 +1358,14 @@ class CameraPanel(DevicePanel):
         for label, widget in (("X", self.roi_x), ("Y", self.roi_y), ("Width", self.roi_width), ("Height", self.roi_height)):
             form.addRow(label, widget)
         form.addRow(button_row(
-            self.action_button("roi", "Set ROI", DeviceOperation.CAMERA_ROI_CONFIGURE, self._roi_args),
+            self._roi_button("roi", "Set ROI", self._roi_args),
+            self._roi_button("center_roi", "Center ROI", self._center_roi_args),
+            self._roi_button("full_sensor", "Full sensor", self._full_sensor_args),
             self.action_button("timing", "Read timing", DeviceOperation.CAMERA_TIMING_READ),
         ))
         controls_layout.addWidget(group, 2, 0)
 
         group, form = form_group("Sequence trigger")
-        self.trigger_enabled = self.register_profile("trigger_enabled", QCheckBox())
         self.trigger_source = self.register_profile("trigger_source", QComboBox())
         for value in CameraTriggerSource:
             self.trigger_source.addItem(value.value, value.value)
@@ -1359,7 +1380,6 @@ class CameraPanel(DevicePanel):
             "trigger_delay_s", double_spin(0, 0, 10.000002, 6)
         )
         for label, widget in (
-            ("Apply trigger settings", self.trigger_enabled),
             ("Source", self.trigger_source),
             ("Polarity", self.trigger_polarity),
             ("Active", self.trigger_active),
@@ -1382,23 +1402,20 @@ class CameraPanel(DevicePanel):
         self.masterpulse_burst = self.register_profile(
             "masterpulse_burst_times", int_spin(1, 1, 65_535)
         )
-        self.global_exposure_enabled = self.register_profile(
-            "global_exposure_enabled", QCheckBox()
-        )
         self.global_exposure = self.register_profile("global_exposure", QCheckBox())
         for label, widget in (
             ("Mode", self.masterpulse_mode),
             ("Source", self.masterpulse_source),
             ("Interval (s)", self.masterpulse_interval),
             ("Burst times", self.masterpulse_burst),
-            ("Set global exposure", self.global_exposure_enabled),
             ("Global exposure", self.global_exposure),
         ):
             form.addRow(label, widget)
         controls_layout.addWidget(group, 1, 1)
 
-        self.preview = CameraPreview()
-        controls_layout.addWidget(self.preview, 2, 1)
+        preview_hint = QLabel("Images open in the camera acquisition window.")
+        preview_hint.setWordWrap(True)
+        controls_layout.addWidget(preview_hint, 2, 1)
         controls_layout.setColumnStretch(0, 1)
         controls_layout.setColumnStretch(1, 1)
         self.readback_label = QLabel("No readback")
@@ -1410,34 +1427,28 @@ class CameraPanel(DevicePanel):
         self.finish_layout()
 
     def _snapshot_args(self) -> CameraConfigureSnapshotArgs:
-        return CameraConfigureSnapshotArgs(
-            self.snapshot_exposure.value() if self.snapshot_exposure_enabled.isChecked() else None
-        )
+        self._show_image_window("Waiting for camera frame…")
+        return CameraConfigureSnapshotArgs(self.snapshot_exposure.value())
 
     def _sequence_args(self) -> CameraConfigureSequenceArgs:
-        trigger = None
-        if self.trigger_enabled.isChecked():
-            trigger = CameraSequenceTriggerArgs(
-                source=CameraTriggerSource(self.trigger_source.currentData()),
-                polarity=CameraTriggerPolarity(self.trigger_polarity.currentData()),
-                active=CameraTriggerActive(self.trigger_active.currentData()),
-                trigger_times=self.trigger_times.value(),
-                delay_s=self.trigger_delay.value(),
-                masterpulse_mode=CameraMasterPulseMode(self.masterpulse_mode.currentData()),
-                masterpulse_source=CameraMasterPulseSource(
-                    self.masterpulse_source.currentData()
-                ),
-                masterpulse_interval_s=self.masterpulse_interval.value(),
-                masterpulse_burst_times=self.masterpulse_burst.value(),
-                global_exposure=(
-                    self.global_exposure.isChecked()
-                    if self.global_exposure_enabled.isChecked()
-                    else None
-                ),
-            )
+        self._show_image_window("Waiting for sequence frame…")
+        trigger = CameraSequenceTriggerArgs(
+            source=CameraTriggerSource(self.trigger_source.currentData()),
+            polarity=CameraTriggerPolarity(self.trigger_polarity.currentData()),
+            active=CameraTriggerActive(self.trigger_active.currentData()),
+            trigger_times=self.trigger_times.value(),
+            delay_s=self.trigger_delay.value(),
+            masterpulse_mode=CameraMasterPulseMode(self.masterpulse_mode.currentData()),
+            masterpulse_source=CameraMasterPulseSource(
+                self.masterpulse_source.currentData()
+            ),
+            masterpulse_interval_s=self.masterpulse_interval.value(),
+            masterpulse_burst_times=self.masterpulse_burst.value(),
+            global_exposure=self.global_exposure.isChecked(),
+        )
         return CameraConfigureSequenceArgs(
             self.sequence_frames.value(),
-            self.sequence_exposure.value() if self.sequence_exposure_enabled.isChecked() else None,
+            self.sequence_exposure.value(),
             self.frame_timeout.value(), self.frame_poll.value(),
             trigger,
         )
@@ -1447,28 +1458,117 @@ class CameraPanel(DevicePanel):
             self.roi_x.value(), self.roi_y.value(), self.roi_width.value(), self.roi_height.value()
         )
 
-    def _validate_profile_values(self, values: dict[str, object]) -> None:
-        trigger = None
-        if values["trigger_enabled"]:
-            trigger = CameraSequenceTriggerArgs(
-                source=CameraTriggerSource(values["trigger_source"]),
-                polarity=CameraTriggerPolarity(values["trigger_polarity"]),
-                active=CameraTriggerActive(values["trigger_active"]),
-                trigger_times=int(values["trigger_times"]),
-                delay_s=float(values["trigger_delay_s"]),
-                masterpulse_mode=CameraMasterPulseMode(values["masterpulse_mode"]),
-                masterpulse_source=CameraMasterPulseSource(values["masterpulse_source"]),
-                masterpulse_interval_s=float(values["masterpulse_interval_s"]),
-                masterpulse_burst_times=int(values["masterpulse_burst_times"]),
-                global_exposure=(
-                    bool(values["global_exposure"])
-                    if values["global_exposure_enabled"]
-                    else None
+    def _roi_button(
+        self, action: str, label: str, arguments: Callable[[], CameraConfigureRoiArgs]
+    ) -> QPushButton:
+        button = QPushButton(label)
+        self._buttons[action] = button
+        self._button_labels[action] = label
+        self._action_operations[action] = DeviceOperation.CAMERA_ROI_CONFIGURE
+        self._requires_connection.add(action)
+        button.clicked.connect(lambda checked=False: self._request_roi(action, arguments))
+        return button
+
+    def _request_roi(
+        self, action: str, arguments: Callable[[], CameraConfigureRoiArgs]
+    ) -> None:
+        try:
+            roi_args = arguments()
+            restart_args = CameraConfigureSnapshotArgs(self.snapshot_exposure.value())
+        except (TypeError, ValueError) as exc:
+            self.show_notice(str(exc))
+            return
+        if self._continuous_active:
+            self.command_requested.emit(
+                f"{action}_stop",
+                DeviceCommand(DeviceId.CAMERA, DeviceOperation.CAMERA_CAPTURE_STOP, source="ui"),
+            )
+        self.command_requested.emit(
+            action,
+            DeviceCommand(
+                DeviceId.CAMERA, DeviceOperation.CAMERA_ROI_CONFIGURE, roi_args, source="ui"
+            ),
+        )
+        if self._continuous_active:
+            self.command_requested.emit(
+                f"{action}_restart",
+                DeviceCommand(
+                    DeviceId.CAMERA,
+                    DeviceOperation.CAMERA_CONTINUOUS_CAPTURE,
+                    restart_args,
+                    source="ui",
                 ),
             )
+
+    def _center_roi_args(self) -> CameraConfigureRoiArgs:
+        limits = self._roi_limits()
+        width, height = self.roi_width.value(), self.roi_height.value()
+        x = self._centered_offset(
+            width, limits.horizontal_size.maximum, limits.horizontal_offset
+        )
+        y = self._centered_offset(
+            height, limits.vertical_size.maximum, limits.vertical_offset
+        )
+        return CameraConfigureRoiArgs(x, y, width, height)
+
+    def _full_sensor_args(self) -> CameraConfigureRoiArgs:
+        limits = self._roi_limits()
+        return CameraConfigureRoiArgs(
+            limits.horizontal_offset.minimum,
+            limits.vertical_offset.minimum,
+            limits.horizontal_size.maximum,
+            limits.vertical_size.maximum,
+        )
+
+    def _roi_limits(self):
+        limits = getattr(self, "_current_roi_limits", None)
+        if limits is None:
+            raise ValueError("Connect the camera before using ROI shortcuts")
+        return limits
+
+    @staticmethod
+    def _centered_offset(size: int, sensor_size: int, limit: object) -> int:
+        increment = max(int(limit.increment), 1)
+        maximum_for_size = min(int(limit.maximum), sensor_size - size)
+        raw = max((sensor_size - size) // 2, int(limit.minimum))
+        aligned = int(limit.minimum) + round((raw - int(limit.minimum)) / increment) * increment
+        maximum_aligned = int(limit.minimum) + max(
+            0, (maximum_for_size - int(limit.minimum)) // increment
+        ) * increment
+        return min(max(aligned, int(limit.minimum)), maximum_aligned)
+
+    def _choose_sequence_folder(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Save camera sequence")
+        if folder:
+            self.sequence_save_folder.setText(folder)
+
+    def _save_args(self) -> CameraSaveSequenceArgs:
+        return CameraSaveSequenceArgs(
+            self.sequence_save_folder.text(),
+            CameraSequenceSaveFormat(self.sequence_save_format.currentData()),
+        )
+
+    def _show_image_window(self, status: str) -> None:
+        self.image_window.status.setText(status)
+        self.image_window.show()
+        self.image_window.raise_()
+
+    def _validate_profile_values(self, values: dict[str, object]) -> None:
+        trigger = CameraSequenceTriggerArgs(
+            source=CameraTriggerSource(values["trigger_source"]),
+            polarity=CameraTriggerPolarity(values["trigger_polarity"]),
+            active=CameraTriggerActive(values["trigger_active"]),
+            trigger_times=int(values["trigger_times"]),
+            delay_s=float(values["trigger_delay_s"]),
+            masterpulse_mode=CameraMasterPulseMode(values["masterpulse_mode"]),
+            masterpulse_source=CameraMasterPulseSource(values["masterpulse_source"]),
+            masterpulse_interval_s=float(values["masterpulse_interval_s"]),
+            masterpulse_burst_times=int(values["masterpulse_burst_times"]),
+            global_exposure=bool(values["global_exposure"]),
+        )
         CameraConfigureSequenceArgs(
             int(values["sequence_frames"]),
-            float(values["sequence_exposure_ms"]) if values["sequence_exposure_enabled"] else None,
+            float(values["sequence_exposure_ms"]),
             float(values["frame_timeout_s"]), float(values["frame_poll_s"]),
             trigger,
         )
@@ -1477,8 +1577,26 @@ class CameraPanel(DevicePanel):
         )
 
     def update_readback(self, readback: object) -> None:
-        if readback is not None:
+        if isinstance(readback, CameraReadback):
             self.readback_label.setText(str(readback))
+            self._continuous_active = readback.mode == "continuous" and readback.capture_active
+            limits = readback.roi_limits
+            if limits is not None:
+                self._current_roi_limits = limits
+                for widget, limit in (
+                    (self.roi_x, limits.horizontal_offset),
+                    (self.roi_y, limits.vertical_offset),
+                    (self.roi_width, limits.horizontal_size),
+                    (self.roi_height, limits.vertical_size),
+                ):
+                    widget.setRange(limit.minimum, limit.maximum)
+                    widget.setSingleStep(max(limit.increment, 1))
+            if readback.roi is not None and readback.roi != self._last_roi_readback:
+                self._last_roi_readback = readback.roi
+                self.roi_x.setValue(readback.roi.horizontal_offset)
+                self.roi_y.setValue(readback.roi.vertical_offset)
+                self.roi_width.setValue(readback.roi.horizontal_size)
+                self.roi_height.setValue(readback.roi.vertical_size)
             captured = getattr(readback, "captured_frame_count", 0)
             expected = getattr(readback, "sequence_frame_count", None)
             if expected is not None:
@@ -1486,20 +1604,40 @@ class CameraPanel(DevicePanel):
 
     def handle_result(self, result: object) -> None:
         if isinstance(result, CameraSnapshotResult):
-            self.preview.set_frame(result.frame)
+            self.image_window.show_frame(result.frame, "Snapshot captured")
             self.sequence_status.setText("Snapshot captured")
         elif isinstance(result, CameraSequenceResult):
             if result.frames:
-                self.preview.set_frame(result.frames[-1])
+                self.image_window.show_frame(
+                    result.frames[-1], f"Sequence complete · {len(result.frames)} frames"
+                )
             timestamp = result.timestamps[-1] if result.timestamps else "no timestamp"
             self.sequence_status.setText(f"{len(result.frames)} frames · last: {timestamp}")
+        elif isinstance(result, CameraSequenceSaveResult):
+            self.sequence_status.setText(
+                f"Saved {result.frame_count} frames to {result.folder} ({result.format.value})"
+            )
+
+    def handle_progress(self, progress: object) -> None:
+        if not isinstance(progress, CameraFrameProgress):
+            return
+        if progress.requested_frame_count is None:
+            status = f"Continuous snapshot · frame {progress.captured_frame_count}"
+        else:
+            status = (
+                f"Buffered sequence · {progress.captured_frame_count}/"
+                f"{progress.requested_frame_count} frames"
+            )
+            self.sequence_status.setText(
+                f"{progress.captured_frame_count}/{progress.requested_frame_count} frames"
+            )
+        self.image_window.show_frame(progress.frame, status)
 
     def apply_successful_command(self, command: DeviceCommand | None) -> None:
         if command is None:
             return
         args = command.arguments
         if isinstance(args, CameraConfigureSnapshotArgs):
-            self.snapshot_exposure_enabled.setChecked(args.exposure_ms is not None)
             if args.exposure_ms is not None:
                 self.snapshot_exposure.setValue(args.exposure_ms)
         elif isinstance(args, CameraConfigureExposureArgs):
@@ -1511,13 +1649,11 @@ class CameraPanel(DevicePanel):
             self.roi_height.setValue(args.vertical_size)
         elif isinstance(args, CameraConfigureSequenceArgs):
             self.sequence_frames.setValue(args.frame_count)
-            self.sequence_exposure_enabled.setChecked(args.exposure_ms is not None)
             if args.exposure_ms is not None:
                 self.sequence_exposure.setValue(args.exposure_ms)
             self.frame_timeout.setValue(args.frame_timeout_s)
             self.frame_poll.setValue(args.poll_interval_s)
             trigger = args.trigger
-            self.trigger_enabled.setChecked(trigger is not None)
             if trigger is not None:
                 self.trigger_source.setCurrentIndex(self.trigger_source.findData(trigger.source.value))
                 self.trigger_polarity.setCurrentIndex(self.trigger_polarity.findData(trigger.polarity.value))
@@ -1528,7 +1664,6 @@ class CameraPanel(DevicePanel):
                 self.masterpulse_source.setCurrentIndex(self.masterpulse_source.findData(trigger.masterpulse_source.value))
                 self.masterpulse_interval.setValue(trigger.masterpulse_interval_s)
                 self.masterpulse_burst.setValue(trigger.masterpulse_burst_times)
-                self.global_exposure_enabled.setChecked(trigger.global_exposure is not None)
                 if trigger.global_exposure is not None:
                     self.global_exposure.setChecked(trigger.global_exposure)
 

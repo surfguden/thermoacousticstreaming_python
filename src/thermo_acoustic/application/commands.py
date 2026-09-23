@@ -31,8 +31,10 @@ class DeviceOperation(str, Enum):
     AD2_DIGITAL_OUTPUT_RESET = "ad2.digital_output.reset"
     CAMERA_SNAPSHOT_CONFIGURE = "camera.snapshot.configure"
     CAMERA_SNAPSHOT_CAPTURE = "camera.snapshot.capture"
+    CAMERA_CONTINUOUS_CAPTURE = "camera.continuous.capture"
     CAMERA_SEQUENCE_CONFIGURE = "camera.sequence.configure"
     CAMERA_SEQUENCE_CAPTURE = "camera.sequence.capture"
+    CAMERA_SEQUENCE_SAVE = "camera.sequence.save"
     CAMERA_CAPTURE_STOP = "camera.capture.stop"
     CAMERA_TIMING_READ = "camera.timing.read"
     CAMERA_EXPOSURE_CONFIGURE = "camera.exposure.configure"
@@ -144,6 +146,11 @@ class CameraTriggerPolarity(str, Enum):
 class CameraTriggerActive(str, Enum):
     EDGE = "edge"
     LEVEL = "level"
+
+
+class CameraSequenceSaveFormat(str, Enum):
+    FRAMES = "frames"
+    STACKED = "stacked"
 
 
 class PumpFlowUnit(str, Enum):
@@ -352,6 +359,12 @@ class Ad2ConfigureDigitalOutputArgs:
 @dataclass(frozen=True, slots=True)
 class CameraConfigureSnapshotArgs:
     exposure_ms: float | None = None
+    poll_interval_s: float = 0.05
+
+    def __post_init__(self) -> None:
+        if self.exposure_ms is not None:
+            _require_finite_nonnegative("exposure_ms", self.exposure_ms)
+        _require_finite_positive("poll_interval_s", self.poll_interval_s)
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,6 +378,16 @@ class CameraConfigureRoiArgs:
     vertical_offset: int
     horizontal_size: int
     vertical_size: int
+
+
+@dataclass(frozen=True, slots=True)
+class CameraSaveSequenceArgs:
+    folder: str
+    format: CameraSequenceSaveFormat = CameraSequenceSaveFormat.FRAMES
+
+    def __post_init__(self) -> None:
+        if not self.folder.strip():
+            raise ValueError("camera sequence save folder must not be empty")
 
 
 def _require_finite_nonnegative(name: str, value: float) -> None:
@@ -577,6 +600,21 @@ class CameraSequenceResult:
 
 
 @dataclass(frozen=True, slots=True)
+class CameraFrameProgress:
+    frame: object
+    captured_frame_count: int
+    requested_frame_count: int | None = None
+    mode: str = "continuous"
+
+
+@dataclass(frozen=True, slots=True)
+class CameraSequenceSaveResult:
+    folder: str
+    format: CameraSequenceSaveFormat
+    frame_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class CameraTimingResult:
     buffer_frame_capacity: int
     readout_time_s: float | None
@@ -690,9 +728,11 @@ OPERATION_SPECS: dict[DeviceOperation, OperationSpec] = {
     DeviceOperation.AD2_DIGITAL_OUTPUT_STOP: OperationSpec(_only(DeviceId.AD2), NoArguments, _NONE_RESULT),
     DeviceOperation.AD2_DIGITAL_OUTPUT_RESET: OperationSpec(_only(DeviceId.AD2), NoArguments, _NONE_RESULT),
     DeviceOperation.CAMERA_SNAPSHOT_CONFIGURE: OperationSpec(_only(DeviceId.CAMERA), CameraConfigureSnapshotArgs, _NONE_RESULT),
-    DeviceOperation.CAMERA_SNAPSHOT_CAPTURE: OperationSpec(_only(DeviceId.CAMERA), NoArguments, CameraSnapshotResult),
+    DeviceOperation.CAMERA_SNAPSHOT_CAPTURE: OperationSpec(_only(DeviceId.CAMERA), (NoArguments, CameraConfigureSnapshotArgs), CameraSnapshotResult),
+    DeviceOperation.CAMERA_CONTINUOUS_CAPTURE: OperationSpec(_only(DeviceId.CAMERA), CameraConfigureSnapshotArgs, _NONE_RESULT),
     DeviceOperation.CAMERA_SEQUENCE_CONFIGURE: OperationSpec(_only(DeviceId.CAMERA), CameraConfigureSequenceArgs, _NONE_RESULT),
-    DeviceOperation.CAMERA_SEQUENCE_CAPTURE: OperationSpec(_only(DeviceId.CAMERA), NoArguments, CameraSequenceResult),
+    DeviceOperation.CAMERA_SEQUENCE_CAPTURE: OperationSpec(_only(DeviceId.CAMERA), (NoArguments, CameraConfigureSequenceArgs), CameraSequenceResult),
+    DeviceOperation.CAMERA_SEQUENCE_SAVE: OperationSpec(_only(DeviceId.CAMERA), CameraSaveSequenceArgs, CameraSequenceSaveResult),
     DeviceOperation.CAMERA_CAPTURE_STOP: OperationSpec(_only(DeviceId.CAMERA), NoArguments, _NONE_RESULT),
     DeviceOperation.CAMERA_TIMING_READ: OperationSpec(_only(DeviceId.CAMERA), NoArguments, CameraTimingResult),
     DeviceOperation.CAMERA_EXPOSURE_CONFIGURE: OperationSpec(_only(DeviceId.CAMERA), CameraConfigureExposureArgs, CameraExposureResult),

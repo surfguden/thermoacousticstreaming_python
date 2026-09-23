@@ -627,6 +627,14 @@ def test_parser_is_a_text_to_typed_command_adapter():
     roi = parse_command("camera set-roi 100 120 512 256")
     assert roi.arguments == CameraConfigureRoiArgs(100, 120, 512, 256)
     sequence = parse_command("camera configure-sequence 20 2.5")
+    sequence_start = parse_command("camera sequence start --frames 20 --exposure-ms 2.5")
+    assert sequence_start.operation is DeviceOperation.CAMERA_SEQUENCE_CAPTURE
+    assert sequence_start.arguments.frame_count == 20
+    assert parse_command("camera snapshot --exposure-ms 4").arguments.exposure_ms == 4
+    assert parse_command("camera continuous-snapshot --exposure-ms 3").operation is DeviceOperation.CAMERA_CONTINUOUS_CAPTURE
+    save = parse_command("camera save-sequence output --format stacked")
+    assert save.operation is DeviceOperation.CAMERA_SEQUENCE_SAVE
+    assert save.arguments.format.value == "stacked"
     assert sequence.arguments.frame_count == 20
     assert parse_command("pump refill").operation is DeviceOperation.PUMP_REFILL
     assert parse_command("pump reference-move").operation is DeviceOperation.PUMP_REFERENCE_MOVE

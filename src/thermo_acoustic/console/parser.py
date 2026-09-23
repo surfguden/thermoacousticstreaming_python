@@ -22,6 +22,8 @@ from ..application.commands import (
     CameraConfigureRoiArgs,
     CameraConfigureSnapshotArgs,
     CameraConfigureSequenceArgs,
+    CameraSaveSequenceArgs,
+    CameraSequenceSaveFormat,
     CameraSequenceTriggerArgs,
     CameraTriggerActive,
     CameraTriggerPolarity,
@@ -130,8 +132,11 @@ Valve:
   valve wait ready --timeout-s SECONDS --poll-interval-s SECONDS
 
 Camera:
-  camera configure-snapshot [EXPOSURE_MS] | camera snapshot | camera read-timing
+  camera configure-snapshot [EXPOSURE_MS] | camera snapshot [--exposure-ms MS]
+  camera continuous-snapshot [--exposure-ms MS] | camera read-timing
   camera configure-sequence FRAMES [EXPOSURE_MS] | camera sequence | camera capture stop
+  camera sequence start --frames N --exposure-ms MS [trigger options]
+  camera save-sequence FOLDER --format frames|stacked
   camera set-exposure EXPOSURE_MS | camera set-roi X Y WIDTH HEIGHT
   Extended: camera snapshot configure --exposure-ms MS
   Extended: camera sequence configure --frames N [--trigger-enabled true ...]
@@ -266,13 +271,55 @@ def parse_command(line: str, *, source: str = "console") -> DeviceCommand | str 
                 trigger=_trigger(options, ""),
             ), source=source)
 
+    if words[:2] == ["camera", "snapshot"] and words[2:3] != ["configure"]:
+        options = _options(words[2:])
+        _only_options(options, "exposure_ms", "poll_interval_s")
+        return DeviceCommand(
+            DeviceId.CAMERA,
+            DeviceOperation.CAMERA_SNAPSHOT_CAPTURE,
+            CameraConfigureSnapshotArgs(
+                float(options["exposure_ms"]) if "exposure_ms" in options else None,
+                _value(options, "poll_interval_s", 0.05, float),
+            ),
+            source=source,
+        )
+    if words[:2] == ["camera", "continuous-snapshot"]:
+        options = _options(words[2:])
+        _only_options(options, "exposure_ms", "poll_interval_s")
+        return DeviceCommand(
+            DeviceId.CAMERA,
+            DeviceOperation.CAMERA_CONTINUOUS_CAPTURE,
+            CameraConfigureSnapshotArgs(
+                float(options["exposure_ms"]) if "exposure_ms" in options else None,
+                _value(options, "poll_interval_s", 0.05, float),
+            ),
+            source=source,
+        )
+    if words[:2] == ["camera", "save-sequence"]:
+        if len(words) < 3:
+            raise ValueError("camera save-sequence requires a destination folder")
+        options = _options(words[3:])
+        _only_options(options, "format")
+        save_format = _value(
+            options, "format", CameraSequenceSaveFormat.FRAMES,
+            lambda value: _enum(CameraSequenceSaveFormat, value),
+        )
+        return DeviceCommand(
+            DeviceId.CAMERA,
+            DeviceOperation.CAMERA_SEQUENCE_SAVE,
+            CameraSaveSequenceArgs(words[2], save_format),
+            source=source,
+        )
     if words[:3] == ["camera", "snapshot", "configure"]:
         options = _options(words[3:])
         _only_options(options, "exposure_ms")
         exposure = float(options["exposure_ms"]) if "exposure_ms" in options else None
         return DeviceCommand(DeviceId.CAMERA, DeviceOperation.CAMERA_SNAPSHOT_CONFIGURE,
                              CameraConfigureSnapshotArgs(exposure), source=source)
-    if words[:3] == ["camera", "sequence", "configure"]:
+    if words[:3] in (
+        ["camera", "sequence", "configure"],
+        ["camera", "sequence", "start"],
+    ):
         options = _options(words[3:])
         allowed = ("frames", "exposure_ms", "timeout_s", "poll_interval_s", "trigger_enabled",
                    "trigger_source", "trigger_polarity", "trigger_active", "trigger_times",
@@ -280,8 +327,8 @@ def parse_command(line: str, *, source: str = "console") -> DeviceCommand | str 
                    "masterpulse_interval_s", "masterpulse_burst_times", "global_exposure")
         _only_options(options, *allowed)
         if "frames" not in options:
-            raise ValueError("camera sequence configure requires --frames COUNT")
-        trigger_enabled = _value(options, "trigger_enabled", False, _bool)
+            raise ValueError(f"camera sequence {words[2]} requires --frames COUNT")
+        trigger_enabled = _value(options, "trigger_enabled", words[2] == "start", _bool)
         trigger = None
         if trigger_enabled:
             trigger = CameraSequenceTriggerArgs(
@@ -294,9 +341,18 @@ def parse_command(line: str, *, source: str = "console") -> DeviceCommand | str 
                 masterpulse_source=_value(options, "masterpulse_source", CameraMasterPulseSource.SOFTWARE, lambda v: _enum(CameraMasterPulseSource, v)),
                 masterpulse_interval_s=_value(options, "masterpulse_interval_s", 0.01, float),
                 masterpulse_burst_times=_value(options, "masterpulse_burst_times", 1, int),
-                global_exposure=_bool(options["global_exposure"]) if "global_exposure" in options else None,
+                global_exposure=(
+                    _bool(options["global_exposure"])
+                    if "global_exposure" in options
+                    else (False if words[2] == "start" else None)
+                ),
             )
-        return DeviceCommand(DeviceId.CAMERA, DeviceOperation.CAMERA_SEQUENCE_CONFIGURE,
+        operation = (
+            DeviceOperation.CAMERA_SEQUENCE_CAPTURE
+            if words[2] == "start"
+            else DeviceOperation.CAMERA_SEQUENCE_CONFIGURE
+        )
+        return DeviceCommand(DeviceId.CAMERA, operation,
             CameraConfigureSequenceArgs(
                 frame_count=int(options["frames"]),
                 exposure_ms=float(options["exposure_ms"]) if "exposure_ms" in options else None,

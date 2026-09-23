@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from ..application.commands import (
     Ad2ScopeReadResult,
+    CameraFrameProgress,
     CameraSequenceResult,
     CameraSnapshotResult,
     CommandEvent,
@@ -34,7 +35,7 @@ from ..domain.models import DEVICE_LABELS, DeviceId, DeviceStatus
 from .device_panels import DevicePanel, PANEL_TYPES
 
 
-PROFILE_SCHEMA_VERSION = 1
+PROFILE_SCHEMA_VERSION = 2
 _TERMINAL_STATES = {"completed", "failed", "cancelled"}
 _TAB_LABELS = {
     DeviceId.AD2: "AD2",
@@ -81,6 +82,7 @@ class MainWindow(QMainWindow):
 
         controller.command_event.connect(self._event)
         controller.command_result.connect(self._result)
+        controller.command_progress.connect(self._progress)
         controller.status_changed.connect(self._status)
         self._status(controller.statuses())
 
@@ -158,6 +160,18 @@ class MainWindow(QMainWindow):
             panel.apply_successful_command(result.command)
             panel.handle_result(result.value)
 
+    def _progress(self, request_id: str, value: object) -> None:
+        pending = self._requests.get(request_id)
+        if pending is None:
+            if not isinstance(value, CameraFrameProgress):
+                return
+            panel = self.panels[DeviceId.CAMERA]
+        else:
+            panel, _action = pending
+        handler = getattr(panel, "handle_progress", None)
+        if callable(handler):
+            handler(value)
+
     @staticmethod
     def _result_summary(value: object) -> str:
         if isinstance(value, CameraSnapshotResult):
@@ -213,7 +227,8 @@ class MainWindow(QMainWindow):
         )
         if not isinstance(document, dict):
             raise ValueError("Settings profile must be a JSON object")
-        if document.get("schema_version") != PROFILE_SCHEMA_VERSION:
+        schema_version = document.get("schema_version")
+        if schema_version not in (1, PROFILE_SCHEMA_VERSION):
             raise ValueError(
                 f"Unsupported settings schema version: {document.get('schema_version')!r}"
             )
@@ -223,6 +238,17 @@ class MainWindow(QMainWindow):
         unknown_devices = set(devices) - {device.value for device in DeviceId}
         if unknown_devices:
             raise ValueError(f"Unknown device settings: {', '.join(sorted(unknown_devices))}")
+        if schema_version == 1 and isinstance(devices.get("camera"), dict):
+            devices = dict(devices)
+            camera = dict(devices["camera"])
+            for obsolete in (
+                "snapshot_exposure_enabled",
+                "sequence_exposure_enabled",
+                "trigger_enabled",
+                "global_exposure_enabled",
+            ):
+                camera.pop(obsolete, None)
+            devices["camera"] = camera
 
         validated: dict[DeviceId, dict[str, object]] = {}
         for device, panel in self.panels.items():
