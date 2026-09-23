@@ -74,6 +74,7 @@ from ..application.commands import (
     TecStatusResult,
     TecWaitStableArgs,
     ValveSetPositionArgs,
+    ValveConnectArgs,
     ValveWaitReadyArgs,
     ZStageSetPositionArgs,
 )
@@ -86,6 +87,7 @@ from ..domain.models import (
     DeviceId,
     DeviceStatus,
     PumpReadback,
+    ValveReadback,
 )
 from ..application.configuration import DEFAULT_PUMP_CONFIGURATION_DIR
 from .ad2_scope import OscilloscopePanel
@@ -1380,6 +1382,15 @@ class PumpPanel(DevicePanel):
 class ValvePanel(DevicePanel):
     def __init__(self, parent=None) -> None:
         super().__init__(DeviceId.VALVE, parent)
+        self.require_port = False
+        port_group, port_form = form_group("Connection")
+        self.port = QComboBox()
+        self.port.addItem("Select COM port", None)
+        refresh_ports = QPushButton("Refresh ports")
+        refresh_ports.clicked.connect(self._refresh_ports)
+        port_form.addRow("COM port", self.port)
+        port_form.addRow(button_row(refresh_ports))
+        self.layout.addWidget(port_group)
         group, form = form_group("Valve position")
         self.position = self.register_profile("position", int_spin(1, 1, 2))
         self.wait_timeout = self.register_profile("wait_timeout_s", double_spin(1, 0.001, 3600, 3))
@@ -1393,13 +1404,37 @@ class ValvePanel(DevicePanel):
         form.addRow("Poll interval (s)", self.wait_poll)
         form.addRow(button_row(self.action_button("wait", "Wait until ready", DeviceOperation.VALVE_WAIT_READY, self._wait_args)))
         self.layout.addWidget(group)
-        self.readback_label = QLabel("No readback")
+        self.readback_label = QLabel("Requested: — · Confirmed: — · Ready: —")
         self.readback_label.setWordWrap(True)
         self.readback_label.setSizePolicy(
             QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
         )
         self.layout.addWidget(self.readback_label)
         self.finish_layout()
+
+    def _refresh_ports(self) -> None:
+        from serial.tools import list_ports
+
+        selected = self.port.currentData()
+        ports = sorted(list_ports.comports(), key=lambda item: item.device)
+        self.port.clear()
+        self.port.addItem("Select COM port", None)
+        for item in ports:
+            self.port.addItem(f"{item.device} · {item.description}", item.device)
+        if selected is not None:
+            index = self.port.findData(selected)
+            if index >= 0:
+                self.port.setCurrentIndex(index)
+        if not ports:
+            self.show_notice("No serial COM ports found")
+
+    def _connect_arguments(self) -> ValveConnectArgs | None:
+        port = self.port.currentData()
+        if port is None:
+            if self.require_port:
+                raise ValueError("Refresh and select a valve COM port before connecting")
+            return None
+        return ValveConnectArgs(str(port))
 
     def _wait_args(self) -> ValveWaitReadyArgs:
         if self.wait_poll.value() > self.wait_timeout.value():
@@ -1411,8 +1446,14 @@ class ValvePanel(DevicePanel):
             raise ValueError("Valve poll interval must not exceed its timeout")
 
     def update_readback(self, readback: object) -> None:
-        if readback is not None:
-            self.readback_label.setText(str(readback))
+        if isinstance(readback, ValveReadback):
+            requested = "—" if readback.requested_position is None else str(readback.requested_position)
+            confirmed = "—" if readback.confirmed_position is None else str(readback.confirmed_position)
+            ready = "—" if readback.ready is None else ("Yes" if readback.ready else "No")
+            note = f" · {readback.status_note}" if readback.status_note else ""
+            self.readback_label.setText(
+                f"Requested: {requested} · Confirmed: {confirmed} · Ready: {ready}{note}"
+            )
 
     def apply_successful_command(self, command: DeviceCommand | None) -> None:
         if command is None:

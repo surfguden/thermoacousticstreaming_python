@@ -43,6 +43,7 @@ from ..application.commands import (
     TecReadStatusArgs,
     TecWaitStableArgs,
     ValveSetPositionArgs,
+    ValveConnectArgs,
     ValveWaitReadyArgs,
     ZStageSetPositionArgs,
 )
@@ -128,6 +129,7 @@ Pump:
   Extended: pump reference move --timeout-s SECONDS --poll-interval-s SECONDS
 
 Valve:
+  connect valve --port COM3
   valve set-position 1|2 | valve read-position | valve wait-ready
   valve wait ready --timeout-s SECONDS --poll-interval-s SECONDS
 
@@ -153,6 +155,12 @@ def parse_command(line: str, *, source: str = "console") -> DeviceCommand | str 
         return None
     if words[0] in ("help", "status", "devices", "quit"):
         return words[0]
+    if words[:2] == ["connect", "valve"] and len(words) > 2:
+        options = _options(words[2:])
+        _only_options(options, "port")
+        if "port" not in options:
+            raise ValueError("connect valve requires --port COMx")
+        return DeviceCommand(DeviceId.VALVE, DeviceOperation.CONNECT, ValveConnectArgs(options["port"]), source=source)
     if words[0] in ("connect", "disconnect") and len(words) == 2 and words[1] in _DEVICES:
         operation = (
             DeviceOperation.CONNECT if words[0] == "connect" else DeviceOperation.DISCONNECT

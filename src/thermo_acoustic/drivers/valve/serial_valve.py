@@ -12,12 +12,9 @@ class ValveError(RuntimeError):
 class Valve:
     transport: TextCommandTransport
     enabled: bool = True
-    # Real-hardware-confirmed default (a real-hardware verification session,
-    # re-confirmed by a prior session too, not a one-off): the valve responds
-    # correctly to the documented "S" status-query protocol on COM5, not the
-    # previously-documented COM6 -- COM6 was a standing documentation error,
-    # not a transient port reassignment.
-    visa_resource: str = "COM5"
+    # The port is selected for each connection. Never silently open a fixed
+    # COM number, which can identify a different device on another computer.
+    visa_resource: str | None = None
     # Protocol-confirmed numeric positions. The physical fluidic routing of
     # P01/P02 remains a bench-confirmation item; do not infer Open/Closed
     # semantics from the serial position token alone.
@@ -25,10 +22,13 @@ class Valve:
     command_position_2: str = "P02"
     status_query_command: str = "S"
     position: int = 1
+    requested_position: int | None = None
     initialized: bool = False
     status_note: str = ""
 
     def initialize(self) -> None:
+        if not self.visa_resource:
+            raise ValveError("Select a valve COM port before connecting")
         self.status_note = ""
         try:
             self.transport.write(f"OPEN {self.visa_resource}")
@@ -50,8 +50,10 @@ class Valve:
         self.initialized = True
 
     def _apply_status_response(self, raw_response: str) -> bool:
-        # Protocol confirmed against IDEX MX Series II driver docs (via the
-        # linnarsson-lab/MXII-valve reference driver): "S\r" queries status.
+        # "S\r" is the existing application query. The public IDEX driver
+        # package does not specify its byte-level command/reply protocol;
+        # retain it until a separately authorized read-only probe confirms a
+        # change is needed.
         # Zero bytes back within the read timeout means nothing is on the
         # other end of the port -- that is the real disconnect signal, so it
         # must be checked before any stripping collapses it into a lone "\r".
@@ -105,13 +107,9 @@ class Valve:
         if position not in (1, 2):
             raise ValueError(f"Unsupported valve position: {position}")
         self._ensure_connected()
-        # Valve-driver review: self.position is now only
-        # assigned after transport.write() returns without raising -- assigning
-        # it first (the old order) meant a raised exception from write() left
-        # self.position claiming a move that was never actually sent.
         command = self.command_position_1 if position == 1 else self.command_position_2
         self.transport.write(command)
-        self.position = position
+        self.requested_position = position
         # A successful serial write confirms only that the command was
         # accepted by the host serial API. The next status query confirms the
         # requested protocol position.
@@ -119,14 +117,30 @@ class Valve:
 
     def read_position(self) -> int:
         """Read and return the valve position without waiting for motion."""
-        self._ensure_connected()
-        raw_response = self.transport.query(self.status_query_command)
-        if not self._apply_status_response(raw_response) or self.status_note != "confirmed":
+        _ready, position = self.read_state()
+        if position is None:
             raise ValveError(
                 f"Valve position is not currently confirmed on {self.visa_resource}: "
                 f"{self.status_note}"
             )
-        return self.position
+        return position
+
+    def read_state(self) -> tuple[bool, int | None]:
+        """Query the existing status command without inferring a busy position."""
+        self._ensure_connected()
+        raw_response = self.transport.query(self.status_query_command)
+        if not self._apply_status_response(raw_response):
+            raise ValveError(
+                f"Valve status on {self.visa_resource}: {self.status_note}"
+            )
+        if self.status_note != "confirmed":
+            return False, None
+        if self.requested_position is not None and self.position != self.requested_position:
+            self.status_note = (
+                f"position {self.position}; awaiting requested {self.requested_position}"
+            )
+            return False, self.position
+        return True, self.position
 
     def wait_until_ready(self, timeout_s: float = 1.0, poll_interval_s: float = 0.05) -> bool:
         # Bounded poll of the same "S\r" handshake used at initialize() time,
@@ -138,9 +152,8 @@ class Valve:
         # unconfirmed position and stop their next actuator command.
         deadline = time.monotonic() + max(timeout_s, 0.0)
         while True:
-            raw_response = self.transport.query(self.status_query_command)
-            self._apply_status_response(raw_response)
-            if self.status_note == "confirmed":
+            ready, _position = self.read_state()
+            if ready:
                 return True
             if time.monotonic() >= deadline:
                 return False

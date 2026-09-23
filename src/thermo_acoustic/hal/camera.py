@@ -255,14 +255,15 @@ class CameraWorker(DeviceWorker):
         if args.horizontal_size <= 0 or args.vertical_size <= 0:
             raise ValueError("camera ROI dimensions must be positive")
         limits, current = self.device.read_subregion_limits_and_value()
+        if limits is not None:
+            args = self._normalize_roi(args, limits)
+            self._validate_roi(args, limits, current)
         requested = {
             "horizontal_offset": args.horizontal_offset,
             "vertical_offset": args.vertical_offset,
             "horizontal_size": args.horizontal_size,
             "vertical_size": args.vertical_size,
         }
-        if limits is not None:
-            self._validate_roi(args, limits, current)
         self.device.configure_roi(requested)
         _limits, applied = self.device.read_subregion_limits_and_value()
         if isinstance(applied, dict):
@@ -350,6 +351,31 @@ class CameraWorker(DeviceWorker):
         return IntegerRange(
             int(value.minimum), int(value.maximum), max(int(value.increment), 1)
         )
+
+    @staticmethod
+    def _snap_roi_value(value: int, limit: object, maximum: int | None = None) -> int:
+        minimum = int(limit.minimum)
+        upper = min(int(limit.maximum), maximum) if maximum is not None else int(limit.maximum)
+        increment = max(int(limit.increment), 1)
+        if upper < minimum:
+            raise ValueError("camera ROI has no permitted value within the sensor")
+        highest_step = (upper - minimum) // increment
+        nearest_step = max(0, (value - minimum + increment // 2) // increment)
+        return minimum + min(nearest_step, highest_step) * increment
+
+    @classmethod
+    def _normalize_roi(cls, args: CameraConfigureRoiArgs, limits: object) -> CameraConfigureRoiArgs:
+        width = cls._snap_roi_value(args.horizontal_size, limits.horizontal_size)
+        height = cls._snap_roi_value(args.vertical_size, limits.vertical_size)
+        x = cls._snap_roi_value(
+            args.horizontal_offset, limits.horizontal_offset,
+            int(limits.horizontal_size.maximum) - width,
+        )
+        y = cls._snap_roi_value(
+            args.vertical_offset, limits.vertical_offset,
+            int(limits.vertical_size.maximum) - height,
+        )
+        return CameraConfigureRoiArgs(x, y, width, height)
 
     @staticmethod
     def _validate_roi(args: CameraConfigureRoiArgs, limits: object, current: object) -> None:

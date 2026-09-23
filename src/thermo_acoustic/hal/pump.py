@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import replace
 import math
+from time import monotonic
 
 from ..application.commands import DeviceOperation, NoArguments, PumpConnectArgs, PumpConfigurationResult, PumpConfigureFlowUnitArgs, PumpConfigureSyringeArgs, PumpFillLevelResult, PumpFlowUnit, PumpMoveArgs, PumpMovementResult, PumpRecoveryResult, PumpReferenceMoveArgs, PumpSetFillLevelArgs, PumpSetFlowArgs, PumpStatusResult, PumpUnitArgs
 from ..application.configuration import DEFAULT_PUMP_CONFIGURATION_DIR, validate_pump_configuration_dir
@@ -113,7 +114,20 @@ class PumpWorker(DeviceWorker):
     def empty(self, args: PumpMoveArgs) -> object: return self._move("empty", args)
     def reference_move(self, args: PumpReferenceMoveArgs) -> object:
         self._call(args.unit_index, "start_reference_move")
-        return self.defer_operation(lambda: DeferredProgress(True, PumpMovementResult(referenced=True)) if self._call(args.unit_index, "reference_move_finished") else DeferredProgress(), cancel=lambda: self.stop_flow(PumpUnitArgs(args.unit_index)), poll_interval_s=args.poll_interval_s)
+        deadline = monotonic() + args.timeout_s
+
+        def step() -> DeferredProgress:
+            if self._call(args.unit_index, "reference_move_finished"):
+                return DeferredProgress(True, PumpMovementResult(referenced=True))
+            if monotonic() >= deadline:
+                raise TimeoutError(f"Pump {args.unit_index + 1} reference move timed out")
+            return DeferredProgress()
+
+        return self.defer_operation(
+            step,
+            cancel=lambda: self.stop_flow(PumpUnitArgs(args.unit_index)),
+            poll_interval_s=args.poll_interval_s,
+        )
     def safe_stop(self) -> None:
         if self.device_constructed and self.state.connected:
             for index in range(self._count()): self._call(index, "stop")

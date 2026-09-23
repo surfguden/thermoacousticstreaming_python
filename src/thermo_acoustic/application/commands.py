@@ -182,6 +182,17 @@ class PumpConnectArgs:
 
 
 @dataclass(frozen=True, slots=True)
+class ValveConnectArgs:
+    port: str
+
+    def __post_init__(self) -> None:
+        port = self.port.strip()
+        if not port:
+            raise ValueError("Select a valve COM port before connecting")
+        object.__setattr__(self, "port", port)
+
+
+@dataclass(frozen=True, slots=True)
 class Ad2TriggerSettingsArgs:
     source: Ad2TriggerSource = Ad2TriggerSource.NONE
     wait_s: float = 0.0
@@ -723,7 +734,7 @@ def _only(device: DeviceId) -> frozenset[DeviceId]:
     return frozenset({device})
 
 OPERATION_SPECS: dict[DeviceOperation, OperationSpec] = {
-    DeviceOperation.CONNECT: OperationSpec(_ALL_DEVICES, (NoArguments, PumpConnectArgs), _NONE_RESULT),
+    DeviceOperation.CONNECT: OperationSpec(_ALL_DEVICES, (NoArguments, PumpConnectArgs, ValveConnectArgs), _NONE_RESULT),
     DeviceOperation.DISCONNECT: OperationSpec(_ALL_DEVICES, NoArguments, _NONE_RESULT),
     DeviceOperation.SAFE_STOP: OperationSpec(_ALL_DEVICES, NoArguments, _NONE_RESULT),
     DeviceOperation.ABORT_ACTIVE: OperationSpec(_ALL_DEVICES, NoArguments, _NONE_RESULT),
@@ -780,6 +791,8 @@ def validate_command(device: DeviceId, operation: DeviceOperation, arguments: ob
         raise ValueError(f"{operation.value} is not valid for {device.value}")
     if operation is DeviceOperation.CONNECT and isinstance(arguments, PumpConnectArgs) and device is not DeviceId.PUMP:
         raise ValueError("PumpConnectArgs is only valid for the pump")
+    if operation is DeviceOperation.CONNECT and isinstance(arguments, ValveConnectArgs) and device is not DeviceId.VALVE:
+        raise ValueError("ValveConnectArgs is only valid for the valve")
     if not isinstance(arguments, spec.argument_type):
         expected = (
             spec.argument_type.__name__

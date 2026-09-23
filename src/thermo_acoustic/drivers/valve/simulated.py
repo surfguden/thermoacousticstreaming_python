@@ -27,6 +27,13 @@ class SimulatedValve:
             raise RuntimeError(f"valve position is not confirmed: {self.status_note}")
         return self.position
 
+    def read_state(self) -> tuple[bool, int | None]:
+        if not self.initialized:
+            raise RuntimeError("valve is not initialized")
+        if self.status_note != "confirmed":
+            self.status_note = "confirmed"
+        return True, self.position
+
     def wait_until_ready(self, timeout_s: float = 1.0, poll_interval_s: float = 0.05) -> bool:
         del timeout_s, poll_interval_s
         if not self.initialized:

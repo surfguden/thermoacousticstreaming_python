@@ -205,6 +205,7 @@ class ValveReadback:
     requested_position: int | None = None
     confirmed_position: int | None = None
     ready: bool | None = None
+    status_note: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

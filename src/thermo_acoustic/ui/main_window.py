@@ -31,7 +31,7 @@ from ..application.commands import (
     ConfirmationRequest,
 )
 from ..application.event_formatting import detailed_event_text, event_summary
-from ..domain.models import DEVICE_LABELS, DeviceId, DeviceStatus
+from ..domain.models import DEVICE_LABELS, DeviceId, DeviceStatus, OperatingMode
 from .device_panels import DevicePanel, PANEL_TYPES
 
 
@@ -67,6 +67,8 @@ class MainWindow(QMainWindow):
         self.panels: dict[DeviceId, DevicePanel] = {}
         for device in DeviceId:
             panel = PANEL_TYPES[device]()
+            if device is DeviceId.VALVE:
+                panel.require_port = controller.mode is OperatingMode.REAL
             panel.command_requested.connect(
                 lambda action, command, source=panel: self._submit(source, action, command)
             )
