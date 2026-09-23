@@ -16,9 +16,9 @@ check paths but must not load vendor DLLs.
 
 `manual_qmix_dll_load.py --dll-dir <SDK DLL folder> --confirm LOAD_QMIX_DLLS_ONLY`
 checks the Qmix bus and pump wrapper imports. It loads their native DLLs but
-does not open a bus or send commands. The folder must contain both
-`labbCAN_Bus_API.dll` and `labbCAN_Pump_API.dll`; the QmixElements application
-installation folder alone may not contain them.
+does not open a bus or send commands. The folder must contain
+`labbCAN_Bus_API.dll`, `labbCAN_Pump_API.dll`, and `labbCAN_Valve_API.dll`;
+the QmixElements application installation folder alone may not contain them.
 
 ## Safety boundary
 

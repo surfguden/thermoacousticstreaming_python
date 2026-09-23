@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 CONFIRMATION = "LOAD_QMIX_DLLS_ONLY"
-REQUIRED_DLLS = ("labbCAN_Bus_API.dll", "labbCAN_Pump_API.dll")
+REQUIRED_DLLS = ("labbCAN_Bus_API.dll", "labbCAN_Pump_API.dll", "labbCAN_Valve_API.dll")
 
 
 def main() -> int:

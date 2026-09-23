@@ -29,6 +29,23 @@ def _default_sdk_python_path() -> Path:
     return Path(__file__).resolve().parents[4] / "qmix_sdk_for_codex" / "python"
 
 
+QMIX_REQUIRED_DLLS = (
+    "labbCAN_Bus_API.dll",
+    "labbCAN_Pump_API.dll",
+    "labbCAN_Valve_API.dll",  # qmixpump imports qmixvalve
+)
+
+
+def _local_qmixsdk_path() -> Path | None:
+    """Find the per-user SDK install via Windows' LOCALAPPDATA variable."""
+    if not (local_appdata := os.environ.get("LOCALAPPDATA")):
+        return None
+    candidate = Path(local_appdata) / "CETONI_SDK"
+    if all((candidate / name).is_file() for name in QMIX_REQUIRED_DLLS):
+        return candidate
+    return None
+
+
 def _syringe_stroke_mm(volume_ml: float, inner_diameter_mm: float) -> float:
     area_mm2 = 3.141592653589793 * (inner_diameter_mm / 2.0) ** 2
     return volume_ml * 1000.0 / area_mm2
@@ -129,9 +146,12 @@ class CetoniPump:
         if not wrapper.is_file():
             raise CetoniPumpError(f"Qmix Python wrapper not found: {wrapper}")
         dll_folder = os.environ.get("QMIXSDK")
+        if not dll_folder and (local_sdk := _local_qmixsdk_path()) is not None:
+            dll_folder = str(local_sdk)
+            # The bundled wrapper reads QMIXSDK only once, at import time.
+            os.environ["QMIXSDK"] = dll_folder
         if dll_folder:
-            required = ("labbCAN_Bus_API.dll", "labbCAN_Pump_API.dll")
-            missing = [name for name in required if not (Path(dll_folder) / name).is_file()]
+            missing = [name for name in QMIX_REQUIRED_DLLS if not (Path(dll_folder) / name).is_file()]
             if missing:
                 raise CetoniPumpError(
                     f"QMIXSDK points to {dll_folder}, but required Qmix SDK DLLs are missing: "
@@ -146,8 +166,10 @@ class CetoniPump:
             raise CetoniPumpError(
                 f"Could not load Qmix SDK from {self.sdk_python_path}: {exc}. "
                 f"QMIXSDK={dll_folder or '<not set>'}. Install the separate Qmix/CETONI SDK "
-                "runtime and set QMIXSDK to the folder containing labbCAN_Bus_API.dll "
-                "and labbCAN_Pump_API.dll (not merely the QmixElements application folder)."
+                "runtime and set QMIXSDK to the folder containing labbCAN_Bus_API.dll, "
+                "labbCAN_Pump_API.dll, and labbCAN_Valve_API.dll "
+                "(normally %LOCALAPPDATA%\\CETONI_SDK on Windows, "
+                "not the QmixElements application folder)."
             ) from exc
         self.qmixbus = qmixbus
         self.qmixpump = qmixpump

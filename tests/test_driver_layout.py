@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import builtins
 from ctypes import c_int
+import os
 from pathlib import Path
 
 import pytest
@@ -87,6 +88,7 @@ def test_cetoni_reports_missing_qmix_dlls_without_loading_hardware(monkeypatch, 
 
 def test_cetoni_reports_native_loader_error_without_hardware_io(monkeypatch) -> None:
     monkeypatch.delenv("QMIXSDK", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", "missing-local-appdata-for-test")
     original_import = builtins.__import__
 
     def fail_qmix_import(name, *args, **kwargs):
@@ -96,6 +98,46 @@ def test_cetoni_reports_native_loader_error_without_hardware_io(monkeypatch) -> 
 
     monkeypatch.setattr(builtins, "__import__", fail_qmix_import)
     with pytest.raises(RuntimeError, match="dependent DLL could not be loaded"):
+        CetoniPump()._load_sdk()
+
+
+def test_cetoni_finds_per_user_sdk_before_import_without_loading_dlls(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("QMIXSDK", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    sdk_folder = tmp_path / "CETONI_SDK"
+    sdk_folder.mkdir()
+    for name in ("labbCAN_Bus_API.dll", "labbCAN_Pump_API.dll", "labbCAN_Valve_API.dll"):
+        (sdk_folder / name).touch()
+    original_import = builtins.__import__
+
+    def fail_qmix_import(name, *args, **kwargs):
+        if name == "qmixsdk":
+            assert os.environ["QMIXSDK"] == str(sdk_folder)
+            raise OSError("stopped before loading any DLL")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fail_qmix_import)
+    with pytest.raises(RuntimeError, match="stopped before loading any DLL"):
+        CetoniPump()._load_sdk()
+
+
+def test_cetoni_preserves_explicit_qmixsdk_override(monkeypatch, tmp_path) -> None:
+    explicit_folder = tmp_path / "explicit"
+    explicit_folder.mkdir()
+    for name in ("labbCAN_Bus_API.dll", "labbCAN_Pump_API.dll", "labbCAN_Valve_API.dll"):
+        (explicit_folder / name).touch()
+    monkeypatch.setenv("QMIXSDK", str(explicit_folder))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "other-user"))
+    original_import = builtins.__import__
+
+    def fail_qmix_import(name, *args, **kwargs):
+        if name == "qmixsdk":
+            assert os.environ["QMIXSDK"] == str(explicit_folder)
+            raise OSError("stopped before loading any DLL")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fail_qmix_import)
+    with pytest.raises(RuntimeError, match="stopped before loading any DLL"):
         CetoniPump()._load_sdk()
 
 
