@@ -1300,7 +1300,9 @@ class CameraPanel(DevicePanel):
         super().__init__(DeviceId.CAMERA, parent)
         self._continuous_active = False
         self._last_roi_readback = None
-        self.image_window = CameraImageWindow(self)
+        # Keep the viewer independent of the control window so it can be
+        # placed behind it while acquisition controls remain accessible.
+        self.image_window = CameraImageWindow()
         self.preview = self.image_window.preview
         controls = QWidget()
         controls_layout = QGridLayout(controls)
@@ -1550,8 +1552,8 @@ class CameraPanel(DevicePanel):
 
     def _show_image_window(self, status: str) -> None:
         self.image_window.status.setText(status)
-        self.image_window.show()
-        self.image_window.raise_()
+        if not self.image_window.isVisible():
+            self.image_window.show()
 
     def _validate_profile_values(self, values: dict[str, object]) -> None:
         trigger = CameraSequenceTriggerArgs(

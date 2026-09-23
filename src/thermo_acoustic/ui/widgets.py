@@ -278,15 +278,16 @@ class CameraImageWindow(QDialog):
         layout = QVBoxLayout(self)
         self.preview = CameraPreview()
         self.preview.setMinimumSize(640, 480)
+        # A QLabel's size hint follows its pixmap. Ignore that hint so each
+        # new sensor frame cannot resize or reposition the window.
+        self.preview.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self.status = QLabel("No acquisition")
         self.status.setWordWrap(True)
         layout.addWidget(self.preview, 1)
         layout.addWidget(self.status)
 
     def show_frame(self, frame: object, status: str) -> None:
-        was_visible = self.isVisible()
         self.preview.set_frame(frame)
         self.status.setText(status)
-        self.show()
-        if not was_visible:
-            self.raise_()
+        if not self.isVisible():
+            self.show()

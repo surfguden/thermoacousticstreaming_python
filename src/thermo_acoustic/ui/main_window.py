@@ -282,6 +282,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Could not load settings", str(exc))
 
     def closeEvent(self, event) -> None:
+        self.panels[DeviceId.CAMERA].image_window.close()
         self.controller.shutdown()
         event.accept()
 

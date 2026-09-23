@@ -5,7 +5,7 @@ import json
 import numpy as np
 import pytest
 from PySide6.QtCore import QEvent, QTimer
-from PySide6.QtWidgets import QAbstractSpinBox, QApplication
+from PySide6.QtWidgets import QAbstractSpinBox, QApplication, QSizePolicy
 
 from thermo_acoustic.application import ApplicationController
 from thermo_acoustic.application.commands import (
@@ -467,6 +467,26 @@ def test_camera_acquisition_controls_always_send_visible_settings(qt_app):
     assert sequence.exposure_ms == 7.5
     assert sequence.trigger is not None
     panel.image_window.close()
+
+
+def test_camera_frames_keep_independent_viewer_geometry(qt_app):
+    panel = CameraPanel()
+    viewer = panel.image_window
+    assert viewer.parentWidget() is None
+    assert not viewer.isModal()
+    assert viewer.preview.sizePolicy().horizontalPolicy() is QSizePolicy.Policy.Ignored
+
+    panel.handle_result(CameraSnapshotResult(np.zeros((64, 64), dtype=np.uint16)))
+    qt_app.processEvents()
+    viewer.resize(750, 590)
+    viewer.move(35, 45)
+    qt_app.processEvents()
+    geometry = viewer.geometry()
+
+    panel.handle_result(CameraSnapshotResult(np.zeros((1200, 1600), dtype=np.uint16)))
+    qt_app.processEvents()
+    assert viewer.geometry() == geometry
+    viewer.close()
 
 
 def test_center_roi_stops_applies_and_restarts_continuous_capture(qt_app):
