@@ -137,7 +137,7 @@ class MainWindow(QMainWindow):
             "Connect real hardware",
             f"Connect to the real {DEVICE_LABELS[device]}?",
         )
-        return answer is QMessageBox.StandardButton.Yes
+        return answer == QMessageBox.StandardButton.Yes
 
     def confirm_operation(self, request: ConfirmationRequest) -> bool:
         answer = QMessageBox.question(
@@ -145,7 +145,7 @@ class MainWindow(QMainWindow):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )
-        return answer is QMessageBox.StandardButton.Yes
+        return answer == QMessageBox.StandardButton.Yes
 
     def _event(self, event: CommandEvent) -> None:
         self.log.append(detailed_event_text(event))

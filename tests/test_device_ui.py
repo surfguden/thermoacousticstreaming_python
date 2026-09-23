@@ -5,7 +5,7 @@ import json
 import numpy as np
 import pytest
 from PySide6.QtCore import QEvent, QTimer
-from PySide6.QtWidgets import QAbstractSpinBox, QApplication, QSizePolicy
+from PySide6.QtWidgets import QAbstractSpinBox, QApplication, QMessageBox, QSizePolicy
 
 from thermo_acoustic.application import ApplicationController
 from thermo_acoustic.application.commands import (
@@ -31,9 +31,11 @@ from thermo_acoustic.application.commands import (
     CommandResult,
     DeviceCommand,
     CommandEvent,
+    ConfirmationRequest,
     DeviceOperation,
     OPERATION_SPECS,
     PumpSetFlowArgs,
+    PumpReferenceMoveArgs,
     PumpConnectArgs,
 )
 from thermo_acoustic.application.configuration import DEFAULT_PUMP_CONFIGURATION_DIR
@@ -617,6 +619,34 @@ def test_center_roi_restarts_live_simulated_continuous_capture(qt_app):
     camera._buttons["capture_stop"].click()
     wait(qt_app)
     camera.image_window.close()
+    window.close()
+
+
+@pytest.mark.parametrize("button, expected", [
+    (QMessageBox.StandardButton.Yes, True),
+    (QMessageBox.StandardButton.Cancel, False),
+])
+@pytest.mark.parametrize("confirmation", ["reference", "connect"])
+def test_hardware_confirmation_uses_clicked_button(qt_app, button, expected, confirmation):
+    controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
+    window = MainWindow(controller)
+
+    def click_button():
+        dialog = qt_app.activeModalWidget()
+        assert isinstance(dialog, QMessageBox)
+        clicked = QMessageBox.StandardButton.No if confirmation == "connect" and button == QMessageBox.StandardButton.Cancel else button
+        dialog.button(clicked).click()
+
+    QTimer.singleShot(20, click_button)
+    if confirmation == "reference":
+        request = ConfirmationRequest(
+            DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_REFERENCE_MOVE, PumpReferenceMoveArgs()),
+            "Remove the syringe before reference move",
+        )
+        accepted = window.confirm_operation(request)
+    else:
+        accepted = window.confirm_real_connection(DeviceId.PUMP)
+    assert accepted is expected
     window.close()
 
 
