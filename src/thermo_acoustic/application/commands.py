@@ -4,10 +4,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 import math
+from pathlib import Path
 from typing import Any, Generic, TypeVar
 from uuid import uuid4
 
 from ..domain.models import DeviceId
+from .configuration import validate_pump_configuration_dir
 
 
 def utc_now() -> datetime:
@@ -169,6 +171,14 @@ class PumpSyringePreset(str, Enum):
 @dataclass(frozen=True, slots=True)
 class NoArguments:
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class PumpConnectArgs:
+    configuration_dir: Path
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "configuration_dir", validate_pump_configuration_dir(self.configuration_dir))
 
 
 @dataclass(frozen=True, slots=True)
@@ -713,7 +723,7 @@ def _only(device: DeviceId) -> frozenset[DeviceId]:
     return frozenset({device})
 
 OPERATION_SPECS: dict[DeviceOperation, OperationSpec] = {
-    DeviceOperation.CONNECT: OperationSpec(_ALL_DEVICES, NoArguments, _NONE_RESULT),
+    DeviceOperation.CONNECT: OperationSpec(_ALL_DEVICES, (NoArguments, PumpConnectArgs), _NONE_RESULT),
     DeviceOperation.DISCONNECT: OperationSpec(_ALL_DEVICES, NoArguments, _NONE_RESULT),
     DeviceOperation.SAFE_STOP: OperationSpec(_ALL_DEVICES, NoArguments, _NONE_RESULT),
     DeviceOperation.ABORT_ACTIVE: OperationSpec(_ALL_DEVICES, NoArguments, _NONE_RESULT),
@@ -768,6 +778,8 @@ def validate_command(device: DeviceId, operation: DeviceOperation, arguments: ob
     spec = OPERATION_SPECS[operation]
     if device not in spec.devices:
         raise ValueError(f"{operation.value} is not valid for {device.value}")
+    if operation is DeviceOperation.CONNECT and isinstance(arguments, PumpConnectArgs) and device is not DeviceId.PUMP:
+        raise ValueError("PumpConnectArgs is only valid for the pump")
     if not isinstance(arguments, spec.argument_type):
         expected = (
             spec.argument_type.__name__

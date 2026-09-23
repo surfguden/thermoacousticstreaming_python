@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from .cetoni import CetoniPump
 from .simulated import SimulatedPump
 
@@ -20,6 +22,9 @@ class CetoniPumpBank:
         self._session = CetoniPump()
         self._pumps: list[object] = []
         self._limits: list[tuple[float, float]] = []
+
+    def set_configuration_path(self, path: Path) -> None:
+        self._session.configuration_path = path
 
     @property
     def unit_count(self) -> int:
@@ -89,6 +94,10 @@ class SimulatedPumpBank:
         if not 1 <= unit_count <= 4:
             raise ValueError("unit_count must be within 1..4")
         self._pumps = [SimulatedPump() for _ in range(unit_count)]
+        self.configuration_path: Path | None = None
+
+    def set_configuration_path(self, path: Path) -> None:
+        self.configuration_path = path
 
     @property
     def unit_count(self) -> int: return len(self._pumps)

@@ -123,7 +123,11 @@ class DeviceWorker(QObject):
             raise RuntimeError(f"{self.device_id.value} device has no cleanup() method")
         cleanup()
 
-    def connect_device(self) -> None:
+    def prepare_connection(self, device: object, arguments: object) -> None:
+        """Validate/apply connection inputs before initializing a device."""
+        del device, arguments
+
+    def connect_device(self, arguments: object = NoArguments()) -> None:
         if self.state.connected:
             return
         if self._device is None:
@@ -132,6 +136,7 @@ class DeviceWorker(QObject):
                 raise RuntimeError(f"{self.device_id.value} device factory returned no device")
             self._device = device
         try:
+            self.prepare_connection(self._device, arguments)
             self.initialize_device()
         except Exception:
             self._device = None
@@ -226,7 +231,7 @@ class DeviceWorker(QObject):
         self._emit_status()
         try:
             if operation is DeviceOperation.CONNECT:
-                value = self.connect_device()
+                value = self.connect_device(arguments)
             elif operation is DeviceOperation.DISCONNECT:
                 value = self.disconnect_device()
             elif operation is DeviceOperation.SAFE_STOP:

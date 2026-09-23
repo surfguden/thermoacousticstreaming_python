@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, is_dataclass
 from enum import Enum
 import json
+from pathlib import Path
 
 from .commands import CommandEvent, NoArguments
 from ..domain.models import DEVICE_LABELS
@@ -11,6 +12,8 @@ from ..domain.models import DEVICE_LABELS
 def _plain(value: object) -> object:
     if isinstance(value, Enum):
         return value.value
+    if isinstance(value, Path):
+        return str(value)
     if is_dataclass(value):
         return {key: _plain(item) for key, item in asdict(value).items()}
     if isinstance(value, dict):

@@ -27,6 +27,7 @@ from thermo_acoustic.application.commands import (
     CameraSnapshotResult,
     CameraSequenceResult,
     CameraTimingResult,
+    PumpConnectArgs,
     PumpFillLevelResult,
     PumpConfigurationResult,
     PumpConfigureFlowUnitArgs,
@@ -595,6 +596,46 @@ def test_real_connection_confirmation_and_lazy_fake_device(qt_app):
     assert worker_thread_checks == [True, True, True, True]
     assert not registry.by_id(DeviceId.PUMP).device_constructed
     controller.shutdown()
+
+
+def test_pump_configuration_reaches_worker_before_initialize(qt_app, tmp_path):
+    (tmp_path / "qmixdevices.xml").touch()
+    calls = []
+
+    class FakePumpBank:
+        unit_count = 0
+
+        def set_configuration_path(self, path):
+            calls.append(("configuration", path))
+
+        def initialize(self):
+            assert calls == [("configuration", tmp_path.resolve())]
+            calls.append(("initialized", None))
+
+        def cleanup(self):
+            pass
+
+    registry = DeviceRegistry(OperatingMode.REAL, {DeviceId.PUMP: FakePumpBank})
+    controller = ApplicationController(
+        registry, mode=OperatingMode.REAL, confirm_real_connection=lambda _: True
+    )
+    controller.start()
+    controller.submit(
+        DeviceCommand(
+            DeviceId.PUMP,
+            DeviceOperation.CONNECT,
+            PumpConnectArgs(tmp_path),
+        )
+    )
+    wait(qt_app)
+    assert calls == [("configuration", tmp_path.resolve()), ("initialized", None)]
+    controller.shutdown()
+
+
+def test_pump_configuration_argument_is_not_valid_for_other_devices(tmp_path):
+    (tmp_path / "qmixdevices.xml").touch()
+    with pytest.raises(ValueError, match="only valid for the pump"):
+        DeviceCommand(DeviceId.AD2, DeviceOperation.CONNECT, PumpConnectArgs(tmp_path))
 
 
 def test_ui_renders_offscreen_and_audit_is_jsonl(qt_app, tmp_path):

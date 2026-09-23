@@ -5,6 +5,7 @@ from dataclasses import replace
 import time
 
 from ..application.commands import (
+    NoArguments,
     Ad2ConfigureDigitalOutputArgs,
     Ad2ConfigureScopeArgs,
     Ad2ScopeAppliedResult,
@@ -58,8 +59,8 @@ class AD2Worker(DeviceWorker):
         self.register(DeviceOperation.AD2_DIGITAL_OUTPUT_RESET, self.reset_digital_output)
         self._capabilities: Ad2Capabilities | None = None
 
-    def connect_device(self) -> None:
-        super().connect_device()
+    def connect_device(self, arguments: object = NoArguments()) -> None:
+        super().connect_device(arguments)
         read_capabilities = getattr(self.device, "capabilities", None)
         if callable(read_capabilities):
             self._capabilities = self._convert_capabilities(read_capabilities())

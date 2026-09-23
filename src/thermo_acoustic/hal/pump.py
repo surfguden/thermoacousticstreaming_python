@@ -5,7 +5,8 @@ from dataclasses import replace
 import math
 from time import monotonic
 
-from ..application.commands import DeviceOperation, PumpConfigurationResult, PumpConfigureFlowUnitArgs, PumpConfigureSyringeArgs, PumpFillLevelResult, PumpFlowUnit, PumpMoveArgs, PumpMovementResult, PumpRecoveryResult, PumpReferenceMoveArgs, PumpSetFillLevelArgs, PumpSetFlowArgs, PumpStatusResult, PumpUnitArgs
+from ..application.commands import DeviceOperation, NoArguments, PumpConnectArgs, PumpConfigurationResult, PumpConfigureFlowUnitArgs, PumpConfigureSyringeArgs, PumpFillLevelResult, PumpFlowUnit, PumpMoveArgs, PumpMovementResult, PumpRecoveryResult, PumpReferenceMoveArgs, PumpSetFillLevelArgs, PumpSetFlowArgs, PumpStatusResult, PumpUnitArgs
+from ..application.configuration import DEFAULT_PUMP_CONFIGURATION_DIR, validate_pump_configuration_dir
 from ..domain.models import DeviceId, PumpReadback, PumpUnitReadback
 from .base import DeferredProgress, DeviceWorker
 
@@ -43,8 +44,15 @@ class PumpWorker(DeviceWorker):
         for index in range(self._count()):
             unit = self._unit(index)
             self._replace_unit(replace(unit, fill_level_ml=float(self._call(index, "read_fill_level")), is_pumping=bool(self._call(index, "read_status"))))
-    def connect_device(self) -> None:
-        super().connect_device(); self._refresh()
+    def prepare_connection(self, device: object, arguments: object) -> None:
+        selected = arguments.configuration_dir if isinstance(arguments, PumpConnectArgs) else DEFAULT_PUMP_CONFIGURATION_DIR
+        path = validate_pump_configuration_dir(selected)
+        configure = getattr(device, "set_configuration_path", None)
+        if callable(configure):
+            configure(path)
+
+    def connect_device(self, arguments: object = NoArguments()) -> None:
+        super().connect_device(arguments); self._refresh()
     def poll_once(self) -> None:
         if self.state.connected and not self.state.busy:
             try: self._refresh()

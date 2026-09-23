@@ -9,6 +9,7 @@ import math
 from typing import Any
 
 from ..common.logging import log_call, log_transaction, run_with_timeout
+from ...application.configuration import DEFAULT_PUMP_CONFIGURATION_DIR
 
 
 class CetoniPumpError(RuntimeError):
@@ -110,7 +111,7 @@ class CetoniPump:
     """Reusable CETONI pump implementation backed directly by the Qmix SDK."""
 
     sdk_python_path: Path = field(default_factory=_default_sdk_python_path)
-    configuration_path: Path = Path(r"C:\Users\Public\Documents\QmixElements\Projects")
+    configuration_path: Path = DEFAULT_PUMP_CONFIGURATION_DIR
     pump_name: str | None = None
     pump_index: int = 0
     # 200 uL/s (2026-08-03): originally confirmed on real hardware via

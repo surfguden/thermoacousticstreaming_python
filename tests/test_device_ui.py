@@ -34,7 +34,9 @@ from thermo_acoustic.application.commands import (
     DeviceOperation,
     OPERATION_SPECS,
     PumpSetFlowArgs,
+    PumpConnectArgs,
 )
+from thermo_acoustic.application.configuration import DEFAULT_PUMP_CONFIGURATION_DIR
 from thermo_acoustic.console.parser import parse_command
 from thermo_acoustic.application.event_formatting import detailed_event_text
 from thermo_acoustic.domain.models import (
@@ -487,6 +489,42 @@ def test_camera_frames_keep_independent_viewer_geometry(qt_app):
     qt_app.processEvents()
     assert viewer.geometry() == geometry
     viewer.close()
+
+
+def test_pump_connect_uses_selected_configuration_folder(qt_app, tmp_path):
+    del qt_app
+    panel = PumpPanel()
+    assert panel.configuration_dir.text() == str(DEFAULT_PUMP_CONFIGURATION_DIR)
+    assert "configuration_dir" not in panel.profile_values()
+    (tmp_path / "qmixdevices.xml").touch()
+    panel.configuration_dir.setText(str(tmp_path))
+    commands = []
+    panel.command_requested.connect(lambda _action, command: commands.append(command))
+
+    panel._buttons["connect"].click()
+    assert len(commands) == 1
+    assert isinstance(commands[0].arguments, PumpConnectArgs)
+    assert commands[0].arguments.configuration_dir == tmp_path.resolve()
+    event = CommandEvent(
+        request_id=commands[0].request_id,
+        state="queued",
+        device=DeviceId.PUMP,
+        operation=DeviceOperation.CONNECT,
+        source="ui",
+        arguments=commands[0].arguments,
+    )
+    logged_args = json.loads(detailed_event_text(event).split("arguments=", 1)[1])
+    assert logged_args["configuration_dir"] == str(tmp_path.resolve())
+
+    panel.configuration_dir.setText("")
+    panel._buttons["connect"].click()
+    assert len(commands) == 1
+    assert "Choose a Qmix configuration folder" in panel.notice_label.text()
+
+    panel.configuration_dir.setText(str(tmp_path / "missing"))
+    panel._buttons["connect"].click()
+    assert len(commands) == 1
+    assert "does not exist" in panel.notice_label.text()
 
 
 def test_center_roi_stops_applies_and_restarts_continuous_capture(qt_app):

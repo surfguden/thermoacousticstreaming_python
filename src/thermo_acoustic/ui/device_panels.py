@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QTimer, Signal
@@ -58,6 +59,7 @@ from ..application.commands import (
     CameraTriggerSource,
     DeviceCommand,
     DeviceOperation,
+    PumpConnectArgs,
     PumpConfigureFlowUnitArgs,
     PumpConfigureSyringeArgs,
     PumpFlowUnit,
@@ -85,6 +87,7 @@ from ..domain.models import (
     DeviceStatus,
     PumpReadback,
 )
+from ..application.configuration import DEFAULT_PUMP_CONFIGURATION_DIR
 from .ad2_scope import OscilloscopePanel
 from .widgets import CameraImageWindow
 
@@ -175,7 +178,10 @@ class DevicePanel(QScrollArea):
         header_layout.addWidget(self.state_label, 0, 3)
         header_layout.addWidget(QLabel("Fault"), 1, 0)
         header_layout.addWidget(self.fault_label, 1, 1, 1, 3)
-        connect = self.action_button("connect", "Connect", DeviceOperation.CONNECT, requires_connection=False)
+        connect = self.action_button(
+            "connect", "Connect", DeviceOperation.CONNECT,
+            self._connect_arguments, requires_connection=False,
+        )
         disconnect = self.action_button(
             "disconnect", "Disconnect", DeviceOperation.DISCONNECT, requires_connection=False
         )
@@ -192,6 +198,9 @@ class DevicePanel(QScrollArea):
     def finish_layout(self) -> None:
         self.layout.addStretch(1)
         self._update_controls()
+
+    def _connect_arguments(self) -> object | None:
+        return None
 
     def action_button(
         self,
@@ -1182,6 +1191,14 @@ class PumpPanel(DevicePanel):
 
     def __init__(self, parent=None) -> None:
         super().__init__(DeviceId.PUMP, parent)
+        group, form = form_group("Qmix configuration")
+        self.configuration_dir = QLineEdit(str(DEFAULT_PUMP_CONFIGURATION_DIR))
+        self.configuration_dir.setPlaceholderText("Folder containing qmixdevices.xml")
+        choose_folder = QPushButton("Choose folder…")
+        choose_folder.clicked.connect(self._choose_configuration_dir)
+        form.addRow("Folder", self.configuration_dir)
+        form.addRow(button_row(choose_folder))
+        self.layout.addWidget(group)
         self.tiles = QWidget()
         self.tiles_layout = QGridLayout(self.tiles)
         self.tiles_layout.setContentsMargins(0, 0, 0, 0)
@@ -1189,6 +1206,19 @@ class PumpPanel(DevicePanel):
         self.layout.addWidget(self.empty_label)
         self.layout.addWidget(self.tiles)
         self.finish_layout()
+
+    def _choose_configuration_dir(self) -> None:
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select Qmix configuration folder", self.configuration_dir.text()
+        )
+        if folder:
+            self.configuration_dir.setText(folder)
+
+    def _connect_arguments(self) -> PumpConnectArgs:
+        selected = self.configuration_dir.text().strip()
+        if not selected:
+            raise ValueError("Choose a Qmix configuration folder before connecting")
+        return PumpConnectArgs(Path(selected))
 
     def _build_tiles(self, count: int) -> None:
         while self.tiles_layout.count():
