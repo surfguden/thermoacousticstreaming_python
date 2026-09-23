@@ -19,6 +19,9 @@ from thermo_acoustic.application.commands import (
     Ad2ScopeTriggerLengthCondition,
     Ad2ScopeTriggerType,
     Ad2AnalogOutputIdle,
+    Ad2ConfigureDigitalOutputArgs,
+    Ad2ConfigureWaveformArgs,
+    Ad2TriggerSettingsArgs,
     Ad2TriggerSource,
     Ad2WaveformAppliedResult,
     Ad2WaveformChannelArgs,
@@ -56,6 +59,8 @@ from thermo_acoustic.domain.models import (
     PumpUnitReadback,
 )
 from thermo_acoustic.hal.registry import DeviceRegistry
+from thermo_acoustic.hal.ad2 import AD2Worker
+from thermo_acoustic.drivers.ad2.simulated import SimulatedAD2
 from thermo_acoustic.ui.device_panels import Ad2Panel, CameraPanel, PANEL_TYPES, PumpPanel
 from thermo_acoustic.ui.main_window import MainWindow
 
@@ -207,6 +212,7 @@ def test_main_window_uses_fixed_minimum_and_separate_detailed_log(qt_app):
     assert [action.text() for action in window.menuBar().actions()] == ["&File", "&Log"]
     for spin in window.findChildren(QAbstractSpinBox):
         assert spin.buttonSymbols() is QAbstractSpinBox.ButtonSymbols.NoButtons
+        assert not spin.keyboardTracking()
         value = spin.value()
         assert window.eventFilter(spin, QEvent(QEvent.Type.Wheel))
         assert spin.value() == value
@@ -229,6 +235,80 @@ def test_human_readable_event_log_includes_time_call_and_arguments():
     assert "CETONI pump" in text
     assert "flow set" in text
     assert '"flow_ul_min": 12.5' in text
+
+
+def test_numeric_editor_keeps_intermediate_text_until_commit(qt_app):
+    del qt_app
+    controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
+    window = MainWindow(controller)
+    spin = window.panels[DeviceId.AD2].do_trigger["wait"]
+    spin.setRange(100, 1000)
+    spin.setValue(100)
+    spin.lineEdit().setText("5")
+    assert spin.lineEdit().text() == "5"
+    assert spin.value() == 100
+    spin.lineEdit().setText("500")
+    spin.interpretText()
+    assert spin.value() == 500
+    window.close()
+
+
+def test_success_replaces_persistent_error_feedback(qt_app):
+    del qt_app
+    controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
+    window = MainWindow(controller)
+    panel = window.panels[DeviceId.AD2]
+    panel.show_notice("Invalid digital configuration")
+    assert "Invalid digital configuration" in window.statusBar().currentMessage()
+    window._event(CommandEvent(
+        request_id="ad2-config-failure",
+        state="failed",
+        device=DeviceId.AD2,
+        operation=DeviceOperation.AD2_DIGITAL_OUTPUT_CONFIGURE,
+        source="ui",
+        message="digital trigger wait_s must be within 2e-07..86400; received 0",
+    ))
+    assert "failed" in panel.notice_label.text()
+    event = CommandEvent(
+        request_id="ad2-start-success",
+        state="completed",
+        device=DeviceId.AD2,
+        operation=DeviceOperation.AD2_DIGITAL_OUTPUT_START,
+        source="ui",
+    )
+    window._event(event)
+    assert "done!" in window.statusBar().currentMessage()
+    assert "done!" in panel.notice_label.text()
+    assert "#2e7d32" in panel.notice_label.styleSheet()
+    window._status(controller.statuses())
+    assert "done!" in window.statusBar().currentMessage()
+    window.close()
+
+
+def test_ad2_zero_trigger_times_bypass_positive_sdk_minimum(qt_app):
+    del qt_app
+    capabilities = SimulatedAD2().capabilities()
+    for channel in capabilities["waveform_channels"]:
+        channel["wait_s"] = (2e-7, 86400.0)
+        channel["run_s"] = (2e-7, 86400.0)
+    capabilities["digital_output"]["wait_s"] = (2e-7, 86400.0)
+    capabilities["digital_output"]["run_s"] = (2e-7, 86400.0)
+    worker = AD2Worker(SimulatedAD2)
+    worker._capabilities = worker._convert_capabilities(capabilities)
+    worker._validate_digital_output(Ad2ConfigureDigitalOutputArgs())
+    worker._validate_waveform(Ad2ConfigureWaveformArgs().resolved_channels())
+    with pytest.raises(ValueError, match="digital trigger wait_s"):
+        worker._validate_digital_output(
+            Ad2ConfigureDigitalOutputArgs(trigger=Ad2TriggerSettingsArgs(wait_s=1e-7))
+        )
+    panel = Ad2Panel()
+    panel._apply_capabilities(worker._capabilities)
+    assert panel.do_trigger["wait"].minimum() == 0
+    assert panel.do_trigger["run"].minimum() == 0
+    assert panel.wave_channels[0].trigger["wait"].minimum() == 0
+    assert panel.wave_channels[0].trigger["run"].minimum() == 0
+    panel.do_trigger["wait"].setValue(2e-7)
+    assert panel.do_trigger["wait"].value() == 2e-7
 
 
 def test_main_window_routes_waveform_sdk_readback_to_both_channels(qt_app):
@@ -593,6 +673,11 @@ def test_camera_viewer_hover_maps_letterboxed_pixels_to_raw_values(qt_app):
     ))
     qt_app.processEvents()
     assert viewer.cursor_status.text().endswith("2, 1, 7")
+    viewer.show_frame(frame + 10, "Continuous snapshot")
+    assert viewer.cursor_status.text().endswith("2, 1, 17")
+    preview.leaveEvent(QEvent(QEvent.Type.Leave))
+    viewer.show_frame(frame + 20, "Continuous snapshot")
+    assert viewer.cursor_status.text().endswith("—")
     assert preview.pixel_at(QPointF(left + 10, top - 2)) is None
     viewer.close()
 

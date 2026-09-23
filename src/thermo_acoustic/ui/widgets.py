@@ -180,6 +180,7 @@ class CameraPreview(QLabel):
         self._image: QImage | None = None
         self._raw_frame: np.ndarray | None = None
         self._display_limits: tuple[int, int] | None = None
+        self._hover_position: QPointF | None = None
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setMinimumSize(260, 180)
         self.setFrameShape(QLabel.Shape.Box)
@@ -206,10 +207,13 @@ class CameraPreview(QLabel):
             self._image = None
             self.setPixmap(QPixmap())
             self.setText(f"Frame metadata: {frame!r}\n({exc})")
+            self.pixel_hovered.emit(None)
             return
         self._image = image.copy()
         self.setText("")
         self._refresh_pixmap()
+        if self._hover_position is not None:
+            self.pixel_hovered.emit(self.pixel_at(self._hover_position))
 
     def set_display_limits(self, limits: tuple[int, int] | None) -> None:
         self._display_limits = limits
@@ -242,12 +246,14 @@ class CameraPreview(QLabel):
         return x, y, raw[y, x].item()
 
     def mouseMoveEvent(self, event) -> None:
-        pixel = self.pixel_at(event.position())
+        self._hover_position = QPointF(event.position())
+        pixel = self.pixel_at(self._hover_position)
         self.setCursor(Qt.CursorShape.CrossCursor if pixel is not None else Qt.CursorShape.ArrowCursor)
         self.pixel_hovered.emit(pixel)
         super().mouseMoveEvent(event)
 
     def leaveEvent(self, event) -> None:
+        self._hover_position = None
         self.pixel_hovered.emit(None)
         self.unsetCursor()
         super().leaveEvent(event)
@@ -476,7 +482,6 @@ class CameraImageWindow(QDialog):
         self.preview.set_frame(frame, limits)
         self.adjust_intensity_button.setEnabled(frame_limits is not None)
         self._apply_limits(limits, update_preview=False)
-        self._show_pixel(None)
         self.status.setText(status)
         if not self.isVisible():
             self.show()

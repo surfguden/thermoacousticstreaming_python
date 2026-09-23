@@ -263,14 +263,13 @@ class DevicePanel(QScrollArea):
         self._update_controls()
 
     def show_notice(self, message: str) -> None:
-        self.notice_label.setText(message)
+        self.set_feedback(message, success=False)
         self.notice.emit(f"{self.device_id.value}: {message}")
-        QTimer.singleShot(
-            5000,
-            lambda expected=message: self.notice_label.setText("")
-            if self.notice_label.text() == expected
-            else None,
-        )
+
+    def set_feedback(self, message: str, *, success: bool) -> None:
+        color = "#2e7d32" if success else "#a65a00"
+        self.notice_label.setStyleSheet(f"color: {color}; font-weight: 600;")
+        self.notice_label.setText(message)
 
     def set_status(self, status: DeviceStatus) -> None:
         # ERROR represents a connected device with an operation fault; it is
@@ -748,10 +747,10 @@ class WaveformChannelEditor(QGroupBox):
                 1000.0 / fm.frequency_hz.minimum,
             )
         self.trigger["wait"].setRange(
-            capabilities.wait_s.minimum, capabilities.wait_s.maximum
+            0, capabilities.wait_s.maximum
         )
         self.trigger["run"].setRange(
-            capabilities.run_s.minimum, capabilities.run_s.maximum
+            0, capabilities.run_s.maximum
         )
         self.trigger["repeat"].setRange(
             capabilities.repeat_count.minimum, capabilities.repeat_count.maximum
@@ -862,8 +861,8 @@ class Ad2Panel(DevicePanel):
         source = self.register_profile(f"{prefix}_trigger_source", QComboBox())
         for trigger_source in Ad2TriggerSource:
             source.addItem(trigger_source.value, trigger_source.value)
-        wait = self.register_profile(f"{prefix}_trigger_wait_s", double_spin(0, 0, 1_000_000))
-        run = self.register_profile(f"{prefix}_trigger_run_s", double_spin(0, 0, 1_000_000))
+        wait = self.register_profile(f"{prefix}_trigger_wait_s", double_spin(0, 0, 1_000_000, 9))
+        run = self.register_profile(f"{prefix}_trigger_run_s", double_spin(0, 0, 1_000_000, 9))
         repeat = self.register_profile(f"{prefix}_trigger_repeat_count", int_spin(0, 0, 1_000_000))
         retrigger = self.register_profile(f"{prefix}_trigger_repeat", QCheckBox())
         for label, widget in (
@@ -996,10 +995,10 @@ class Ad2Panel(DevicePanel):
         )
         self.do_bits.setMaxLength(digital.custom_data_bits_max)
         self.do_trigger["wait"].setRange(
-            digital.wait_s.minimum, digital.wait_s.maximum
+            0, digital.wait_s.maximum
         )
         self.do_trigger["run"].setRange(
-            digital.run_s.minimum, digital.run_s.maximum
+            0, digital.run_s.maximum
         )
         self.do_trigger["repeat"].setRange(
             digital.repeat_count.minimum, digital.repeat_count.maximum

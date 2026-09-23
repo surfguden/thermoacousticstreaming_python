@@ -342,6 +342,13 @@ class AD2Worker(DeviceWorker):
                 f"received {value:g}"
             )
 
+    @classmethod
+    def _require_trigger_time(cls, name: str, value: float, limits: FloatRange) -> None:
+        # WaveForms defines zero wait as no delay and zero run as continuous.
+        # The SDK's positive-time range does not include these special values.
+        if value != 0:
+            cls._require_float_range(name, value, limits)
+
     @staticmethod
     def _require_integer_range(name: str, value: int, limits: IntegerRange) -> None:
         if not limits.minimum <= value <= limits.maximum:
@@ -386,8 +393,8 @@ class AD2Worker(DeviceWorker):
                         value,
                         limits,
                     )
-            self._require_float_range("waveform trigger wait_s", channel.trigger.wait_s, capability.wait_s)
-            self._require_float_range("waveform trigger run_s", channel.trigger.run_s, capability.run_s)
+            self._require_trigger_time("waveform trigger wait_s", channel.trigger.wait_s, capability.wait_s)
+            self._require_trigger_time("waveform trigger run_s", channel.trigger.run_s, capability.run_s)
             self._require_integer_range(
                 "waveform trigger repeat_count",
                 channel.trigger.repeat_count,
@@ -454,8 +461,8 @@ class AD2Worker(DeviceWorker):
                 f"digital output custom data must contain at most "
                 f"{limits.custom_data_bits_max} bits; received {len(args.bits)}"
             )
-        self._require_float_range("digital trigger wait_s", args.trigger.wait_s, limits.wait_s)
-        self._require_float_range("digital trigger run_s", args.trigger.run_s, limits.run_s)
+        self._require_trigger_time("digital trigger wait_s", args.trigger.wait_s, limits.wait_s)
+        self._require_trigger_time("digital trigger run_s", args.trigger.run_s, limits.run_s)
         self._require_integer_range(
             "digital trigger repeat_count", args.trigger.repeat_count, limits.repeat_count
         )

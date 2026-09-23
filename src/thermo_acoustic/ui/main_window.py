@@ -111,6 +111,7 @@ class MainWindow(QMainWindow):
     def _configure_editor_controls(self) -> None:
         for widget in self.findChildren(QAbstractSpinBox):
             widget.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+            widget.setKeyboardTracking(False)
             widget.installEventFilter(self)
         for widget in self.findChildren(QComboBox):
             widget.installEventFilter(self)
@@ -153,8 +154,12 @@ class MainWindow(QMainWindow):
         self.log.append(detailed_event_text(event))
         summary = event_summary(event)
         if summary is not None:
-            self.statusBar().showMessage(summary, 7000)
+            self.statusBar().showMessage(summary)
         if event.state in _TERMINAL_STATES:
+            if event.device is not None and summary is not None:
+                self.panels[event.device].set_feedback(
+                    summary, success=event.state == "completed"
+                )
             pending = self._requests.pop(event.request_id, None)
             if pending is not None:
                 panel, _action = pending
@@ -197,17 +202,18 @@ class MainWindow(QMainWindow):
     def _ui_notice(self, text: str) -> None:
         timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         self.log.append(f"{timestamp} · UI · {text}")
-        self.statusBar().showMessage(text, 5000)
+        self.statusBar().showMessage(text)
 
     def _status(self, statuses: dict[DeviceId, DeviceStatus]) -> None:
         for device, status in statuses.items():
             self.panels[device].set_status(status)
-        self.statusBar().showMessage(
-            " | ".join(
-                f"{device.value}: {status.connection.value}"
-                for device, status in statuses.items()
+        if not self.statusBar().currentMessage():
+            self.statusBar().showMessage(
+                " | ".join(
+                    f"{device.value}: {status.connection.value}"
+                    for device, status in statuses.items()
+                )
             )
-        )
 
     def profile_document(self) -> dict[str, object]:
         return {
