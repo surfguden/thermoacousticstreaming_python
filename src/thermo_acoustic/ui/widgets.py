@@ -4,9 +4,9 @@ import math
 
 import numpy as np
 from PIL import Image
-from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QCheckBox, QDialog, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 
 class ScopePlot(QWidget):
@@ -173,20 +173,35 @@ class ScopePlotWindow(QDialog):
 class CameraPreview(QLabel):
     """Owns a copied QImage so SDK/NumPy buffers may be released safely."""
 
+    pixel_hovered = Signal(object)
+
     def __init__(self, parent=None) -> None:
         super().__init__("No image")
         self._image: QImage | None = None
+        self._raw_frame: np.ndarray | None = None
+        self._display_limits: tuple[int, int] | None = None
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setMinimumSize(260, 180)
         self.setFrameShape(QLabel.Shape.Box)
+        self.setMouseTracking(True)
 
     @property
     def has_image(self) -> bool:
         return self._image is not None
 
-    def set_frame(self, frame: object) -> None:
+    @property
+    def raw_frame(self) -> np.ndarray | None:
+        return self._raw_frame
+
+    @property
+    def display_limits(self) -> tuple[int, int] | None:
+        return self._display_limits
+
+    def set_frame(self, frame: object, limits: tuple[int, int] | None = None) -> None:
+        self._raw_frame = np.ascontiguousarray(frame).copy() if isinstance(frame, np.ndarray) and frame.ndim == 2 else None
+        self._display_limits = limits
         try:
-            image = self._to_qimage(frame)
+            image = self._display_image(frame)
         except (TypeError, ValueError) as exc:
             self._image = None
             self.setPixmap(QPixmap())
@@ -196,12 +211,53 @@ class CameraPreview(QLabel):
         self.setText("")
         self._refresh_pixmap()
 
+    def set_display_limits(self, limits: tuple[int, int] | None) -> None:
+        self._display_limits = limits
+        if self._raw_frame is not None:
+            self._image = self._display_image(self._raw_frame)
+            self._refresh_pixmap()
+
+    def _display_image(self, frame: object) -> QImage:
+        raw = self._raw_frame
+        if raw is not None and raw.dtype == np.uint16 and self._display_limits is not None:
+            low, high = self._display_limits
+            if not 0 <= low < high <= 65535:
+                raise ValueError("Display limits must be within 0..65535 and increasing")
+            scaled = np.clip((raw.astype(np.float32) - low) * (255.0 / (high - low)), 0, 255).astype(np.uint8)
+            return self._to_qimage(scaled)
+        return self._to_qimage(raw if raw is not None else frame)
+
+    def pixel_at(self, position: QPointF) -> tuple[int, int, int | float] | None:
+        raw, pixmap = self._raw_frame, self.pixmap()
+        if raw is None or pixmap.isNull() or pixmap.width() <= 0 or pixmap.height() <= 0:
+            return None
+        area = self.contentsRect()
+        left = area.x() + (area.width() - pixmap.width()) / 2
+        top = area.y() + (area.height() - pixmap.height()) / 2
+        px, py = position.x() - left, position.y() - top
+        if not 0 <= px < pixmap.width() or not 0 <= py < pixmap.height():
+            return None
+        x = min(int(px * raw.shape[1] / pixmap.width()), raw.shape[1] - 1)
+        y = min(int(py * raw.shape[0] / pixmap.height()), raw.shape[0] - 1)
+        return x, y, raw[y, x].item()
+
+    def mouseMoveEvent(self, event) -> None:
+        pixel = self.pixel_at(event.position())
+        self.setCursor(Qt.CursorShape.CrossCursor if pixel is not None else Qt.CursorShape.ArrowCursor)
+        self.pixel_hovered.emit(pixel)
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self.pixel_hovered.emit(None)
+        self.unsetCursor()
+        super().leaveEvent(event)
+
     def _refresh_pixmap(self) -> None:
         if self._image is None:
             return
         self.setPixmap(
             QPixmap.fromImage(self._image).scaled(
-                self.size(),
+                self.contentsRect().size(),
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )
@@ -268,6 +324,64 @@ class CameraPreview(QLabel):
         raise ValueError(f"unsupported frame shape/dtype: {array.shape}/{array.dtype}")
 
 
+class CameraHistogram(QWidget):
+    """Log-height histogram across the full 16-bit pixel-value domain."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.counts = np.zeros(256, dtype=np.int64)
+        self.pixel_count = 0
+        self.saturated_count = 0
+        self.observed_range: tuple[int, int] | None = None
+        self.limits: tuple[int, int] | None = None
+        self.setMinimumHeight(110)
+
+    def set_frame(self, frame: object) -> None:
+        if isinstance(frame, np.ndarray) and frame.ndim == 2 and frame.dtype == np.uint16 and frame.size:
+            values = np.bincount(frame.ravel(), minlength=65536)
+            self.counts = values.reshape(256, 256).sum(axis=1)
+            self.pixel_count = int(frame.size)
+            self.saturated_count = int(values[-1])
+            occupied = np.flatnonzero(values)
+            self.observed_range = (int(occupied[0]), int(occupied[-1]))
+        else:
+            self.counts = np.zeros(256, dtype=np.int64)
+            self.pixel_count = 0
+            self.saturated_count = 0
+            self.observed_range = None
+        self.update()
+
+    def set_limits(self, limits: tuple[int, int] | None) -> None:
+        self.limits = limits
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        painter.fillRect(self.rect(), QColor("#20242a"))
+        left, top = 46, 8
+        width, height = max(self.width() - 60, 1), max(self.height() - 31, 1)
+        painter.setPen(QPen(QColor("#b6bec9")))
+        painter.drawLine(left, top + height, left + width, top + height)
+        painter.drawText(2, top + height + 15, "0")
+        painter.drawText(left + width - 39, top + height + 15, "65535")
+        if self.pixel_count:
+            heights = np.log1p(self.counts)
+            peak = float(heights.max())
+            painter.setPen(QPen(QColor("#8baac4")))
+            for bin_index, value in enumerate(heights):
+                x = left + round(bin_index * width / 255)
+                y = top + height - round(float(value) * height / peak) if peak else top + height
+                painter.drawLine(x, top + height, x, y)
+        if self.limits is not None:
+            for value, color in zip(self.limits, ("#ffb347", "#40d6c4")):
+                painter.setPen(QPen(QColor(color), 2))
+                x = left + round(value * width / 65535)
+                painter.drawLine(x, top, x, top + height)
+        painter.end()
+
+
 class CameraImageWindow(QDialog):
     """Reusable non-modal camera viewer for every acquisition mode."""
 
@@ -283,11 +397,86 @@ class CameraImageWindow(QDialog):
         self.preview.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self.status = QLabel("No acquisition")
         self.status.setWordWrap(True)
+        self.adjust_intensity_button = QPushButton("Adjust intensity")
+        self.adjust_intensity_button.setEnabled(False)
+        self.adjust_intensity_button.clicked.connect(self.adjust_intensity)
+        self.autoscale_checkbox = QCheckBox("Autoscale every frame")
+        self.autoscale_checkbox.toggled.connect(self._autoscale_changed)
+        self.full_range_button = QPushButton("Full range")
+        self.full_range_button.clicked.connect(self.full_range)
+        self.histogram = CameraHistogram()
+        self.intensity_status = QLabel("16-bit display: full range 0–65535")
+        self.cursor_status = QLabel("Cursor (frame x, y, value): —")
+        self.preview.pixel_hovered.connect(self._show_pixel)
+        actions = QHBoxLayout()
+        actions.addWidget(self.adjust_intensity_button)
+        actions.addWidget(self.autoscale_checkbox)
+        actions.addWidget(self.full_range_button)
+        actions.addStretch(1)
         layout.addWidget(self.preview, 1)
+        layout.addLayout(actions)
+        layout.addWidget(self.histogram)
+        layout.addWidget(self.intensity_status)
+        layout.addWidget(self.cursor_status)
         layout.addWidget(self.status)
 
+    @staticmethod
+    def _frame_limits(observed_range: tuple[int, int] | None) -> tuple[int, int] | None:
+        if observed_range is None:
+            return None
+        low, high = observed_range
+        if low == high:
+            low, high = (low, low + 1) if low < 65535 else (65534, 65535)
+        return low, high
+
+    def _apply_limits(self, limits: tuple[int, int] | None, *, update_preview: bool = True) -> None:
+        if update_preview:
+            self.preview.set_display_limits(limits)
+        self.histogram.set_limits(limits)
+        if not self.histogram.pixel_count:
+            self.intensity_status.setText("16-bit histogram unavailable for this frame")
+            return
+        if limits is None:
+            display = "full range 0–65535"
+        else:
+            display = f"adjusted {limits[0]}–{limits[1]} (orange/teal lines)"
+        saturated = self.histogram.saturated_count
+        total = self.histogram.pixel_count
+        observed_low, observed_high = self.histogram.observed_range
+        self.intensity_status.setText(
+            f"16-bit display: {display} · frame values: {observed_low}–{observed_high}"
+            f" · pixels at 65535: {saturated}/{total}"
+        )
+
+    def adjust_intensity(self) -> None:
+        limits = self._frame_limits(self.histogram.observed_range)
+        if limits is not None:
+            self._apply_limits(limits)
+
+    def _autoscale_changed(self, checked: bool) -> None:
+        if checked:
+            self.adjust_intensity()
+
+    def full_range(self) -> None:
+        self.autoscale_checkbox.setChecked(False)
+        self._apply_limits(None)
+
+    def _show_pixel(self, pixel: object) -> None:
+        self.cursor_status.setText(
+            "Cursor (frame x, y, value): —" if pixel is None
+            else f"Cursor (frame x, y, value): {pixel[0]}, {pixel[1]}, {pixel[2]}"
+        )
+
     def show_frame(self, frame: object, status: str) -> None:
-        self.preview.set_frame(frame)
+        self.histogram.set_frame(frame)
+        frame_limits = self._frame_limits(self.histogram.observed_range)
+        limits = frame_limits if self.autoscale_checkbox.isChecked() else self.preview.display_limits
+        if frame_limits is None:
+            limits = None
+        self.preview.set_frame(frame, limits)
+        self.adjust_intensity_button.setEnabled(frame_limits is not None)
+        self._apply_limits(limits, update_preview=False)
+        self._show_pixel(None)
         self.status.setText(status)
         if not self.isVisible():
             self.show()

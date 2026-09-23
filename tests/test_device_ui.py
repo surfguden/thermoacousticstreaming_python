@@ -4,7 +4,8 @@ import json
 
 import numpy as np
 import pytest
-from PySide6.QtCore import QEvent, QTimer
+from PySide6.QtCore import QEvent, QPointF, Qt, QTimer
+from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QAbstractSpinBox, QApplication, QMessageBox, QSizePolicy
 
 from thermo_acoustic.application import ApplicationController
@@ -519,6 +520,80 @@ def test_camera_frames_keep_independent_viewer_geometry(qt_app):
     panel.handle_result(CameraSnapshotResult(np.zeros((1200, 1600), dtype=np.uint16)))
     qt_app.processEvents()
     assert viewer.geometry() == geometry
+    viewer.close()
+
+
+def test_camera_viewer_intensity_controls_use_raw_16_bit_frames(qt_app):
+    panel = CameraPanel()
+    viewer = panel.image_window
+    frame = np.array([[100, 200], [300, 400]], dtype=np.uint16)
+    viewer.show_frame(frame, "Snapshot captured")
+    qt_app.processEvents()
+    assert viewer.preview.display_limits is None
+    assert viewer.preview._image.format().name == "Format_Grayscale16"
+    assert viewer.histogram.pixel_count == 4
+    assert viewer.histogram.counts[0] == 2
+    assert viewer.histogram.counts[1] == 2
+
+    viewer.adjust_intensity_button.click()
+    assert viewer.preview.display_limits == (100, 400)
+    assert viewer.histogram.limits == (100, 400)
+    assert viewer.preview._image.pixelColor(0, 0).red() == 0
+    assert viewer.preview._image.pixelColor(1, 1).red() == 255
+    frame[0, 0] = 500
+    assert viewer.preview.raw_frame[0, 0] == 100
+
+    newer = np.array([[1000, 1100], [1200, 65535]], dtype=np.uint16)
+    viewer.show_frame(newer, "Continuous snapshot")
+    assert viewer.preview.display_limits == (100, 400)
+    assert viewer.histogram.saturated_count == 1
+    assert viewer.histogram.observed_range == (1000, 65535)
+    assert "pixels at 65535: 1/4" in viewer.intensity_status.text()
+    viewer.autoscale_checkbox.setChecked(True)
+    assert viewer.preview.display_limits == (1000, 65535)
+    viewer.show_frame(np.array([[10, 20], [30, 40]], dtype=np.uint16), "Continuous snapshot")
+    assert viewer.preview.display_limits == (10, 40)
+
+    viewer.full_range_button.click()
+    assert not viewer.autoscale_checkbox.isChecked()
+    assert viewer.preview.display_limits is None
+    assert viewer.histogram.limits is None
+    assert viewer.preview._image.format().name == "Format_Grayscale16"
+    viewer.close()
+
+
+@pytest.mark.parametrize("value, limits", [(0, (0, 1)), (65535, (65534, 65535))])
+def test_camera_viewer_can_adjust_constant_frame(qt_app, value, limits):
+    del qt_app
+    panel = CameraPanel()
+    viewer = panel.image_window
+    viewer.show_frame(np.full((4, 4), value, dtype=np.uint16), "Snapshot captured")
+    viewer.adjust_intensity_button.click()
+    assert viewer.preview.display_limits == limits
+    assert viewer.histogram.observed_range == (value, value)
+    viewer.close()
+
+
+def test_camera_viewer_hover_maps_letterboxed_pixels_to_raw_values(qt_app):
+    panel = CameraPanel()
+    viewer = panel.image_window
+    frame = np.array([[1, 2, 3, 4], [5, 6, 7, 8]], dtype=np.uint16)
+    viewer.show_frame(frame, "Snapshot captured")
+    qt_app.processEvents()
+    preview = viewer.preview
+    pixmap = preview.pixmap()
+    area = preview.contentsRect()
+    left = area.x() + (area.width() - pixmap.width()) / 2
+    top = area.y() + (area.height() - pixmap.height()) / 2
+    position = QPointF(left + 2.5 * pixmap.width() / 4, top + 1.5 * pixmap.height() / 2)
+    assert preview.pixel_at(position) == (2, 1, 7)
+    preview.mouseMoveEvent(QMouseEvent(
+        QEvent.Type.MouseMove, position, position, position,
+        Qt.MouseButton.NoButton, Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+    ))
+    qt_app.processEvents()
+    assert viewer.cursor_status.text().endswith("2, 1, 7")
+    assert preview.pixel_at(QPointF(left + 10, top - 2)) is None
     viewer.close()
 
 
