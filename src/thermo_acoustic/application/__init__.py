@@ -5,6 +5,8 @@ from .commands import (
     CommandResult,
     DeviceCommand,
     DeviceOperation,
+    WorkflowCommand,
+    WorkflowOperation,
 )
 from .configuration import ApplicationConfiguration
 
@@ -16,6 +18,8 @@ __all__ = [
     "CommandResult",
     "DeviceCommand",
     "DeviceOperation",
+    "WorkflowCommand",
+    "WorkflowOperation",
 ]
 
 

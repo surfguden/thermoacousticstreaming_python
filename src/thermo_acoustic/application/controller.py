@@ -5,9 +5,9 @@ from dataclasses import dataclass
 from time import monotonic
 from typing import Any, Callable
 
-from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
-from ..domain.models import DeviceStatus, OperatingMode, ZStageReadback
+from ..domain.models import DeviceId, DeviceStatus, OperatingMode, ZStageReadback
 from ..hal.registry import DeviceRegistry
 from .audit import AuditLogger
 from .commands import (
@@ -18,13 +18,18 @@ from .commands import (
     DeviceOperation,
     NoArguments,
     OPERATION_SPECS,
+    FlushArgs,
+    WorkflowCommand,
+    WorkflowOperation,
+    WorkflowProgress,
     validate_command,
 )
+from .workflows import FlushWorkflow
 
 
 @dataclass(slots=True)
 class _Pending:
-    command: DeviceCommand[Any]
+    command: DeviceCommand[Any] | WorkflowCommand
     queued_at: float
 
 
@@ -53,6 +58,11 @@ class ApplicationController(QObject):
         self.confirm_operation = confirm_operation or (lambda _: False)
         self._queue: deque[_Pending] = deque()
         self._active: _Pending | None = None
+        self._flush: FlushWorkflow | None = None
+        self._flush_command: WorkflowCommand | None = None
+        self._wait_timer = QTimer(self)
+        self._wait_timer.setSingleShot(True)
+        self._wait_timer.timeout.connect(self._finish_wait)
         self._urgent: dict[str, DeviceCommand[Any]] = {}
         self._closing = False
         self._statuses = {worker.device_id: worker.status() for worker in registry.all()}
@@ -68,11 +78,25 @@ class ApplicationController(QObject):
             worker._thread.start()
         self.status_changed.emit(dict(self._statuses))
 
-    def submit(self, command: DeviceCommand[Any]) -> str:
+    def submit(self, command: DeviceCommand[Any] | WorkflowCommand) -> str:
         if self._closing:
             raise RuntimeError("Application shutdown has started")
+        if isinstance(command, WorkflowCommand):
+            if command.operation is WorkflowOperation.FLUSH and self.mode is OperatingMode.REAL:
+                args = command.arguments
+                if not self.confirm_operation(ConfirmationRequest(
+                    command,
+                    f"Flush {args.volume_ml:g} mL through pump {args.unit_index + 1} "
+                    f"at {args.flow_ul_min:g} µL/min? The valve will open and the pump will move.",
+                )):
+                    self._emit(command, "failed", "Flush requires operator confirmation")
+                    return command.request_id
+            self._queue.append(_Pending(command, monotonic()))
+            self._emit(command, "queued")
+            self._dispatch_next()
+            return command.request_id
         if not isinstance(command, DeviceCommand):
-            raise TypeError("submit() requires a DeviceCommand")
+            raise TypeError("submit() requires a DeviceCommand or WorkflowCommand")
         validate_command(command.device, command.operation, command.arguments)
         if (
             command.operation is DeviceOperation.CONNECT
@@ -105,6 +129,15 @@ class ApplicationController(QObject):
                 self._emit(command, "failed", "Pump reference move requires operator confirmation")
                 return command.request_id
         if self._is_urgent(command.operation):
+            if (
+                self._flush is not None
+                and command.device in {DeviceId.PUMP, DeviceId.VALVE}
+                and command.operation in {
+                    DeviceOperation.ABORT_ACTIVE, DeviceOperation.SAFE_STOP,
+                    DeviceOperation.PUMP_FLOW_STOP,
+                }
+            ):
+                self._flush.abort(f"Flush interrupted by {command.operation.value}")
             self._urgent[command.request_id] = command
             self._emit(command, "queued")
             self._emit(command, "running")
@@ -138,8 +171,38 @@ class ApplicationController(QObject):
     def _dispatch_next(self) -> None:
         if self._closing or self._active or not self._queue:
             return
-        self._active = self._queue.popleft()
-        command = self._active.command
+        selected: int | None = None
+        for index, pending in enumerate(self._queue):
+            command = pending.command
+            if isinstance(command, WorkflowCommand):
+                if command.operation is WorkflowOperation.WAIT:
+                    if index == 0 and self._flush is None:
+                        selected = index
+                    break  # A queued wait is a global ordering barrier.
+                if self._flush is not None:
+                    continue
+                selected = index
+                break
+            if self._blocked_by_flush(command):
+                continue
+            selected = index
+            break
+        if selected is None:
+            return
+        pending = self._queue[selected]
+        del self._queue[selected]
+        command = pending.command
+        if isinstance(command, WorkflowCommand):
+            self._emit(command, "running")
+            if command.operation is WorkflowOperation.WAIT:
+                self._active = pending
+                self.command_progress.emit(command.request_id, WorkflowProgress("wait", f"Waiting {command.arguments.seconds:g} s"))
+                self._wait_timer.start(round(command.arguments.seconds * 1000))
+            else:
+                self._start_flush(command)
+                self._dispatch_next()
+            return
+        self._active = pending
         self._emit(command, "running")
         self.audit.write(
             "execution_start",
@@ -152,9 +215,91 @@ class ApplicationController(QObject):
             command.request_id, command.operation, command.arguments
         )
 
+    def _blocked_by_flush(self, command: DeviceCommand[Any]) -> bool:
+        if self._flush is None:
+            return False
+        if command.device is DeviceId.VALVE:
+            return True
+        if command.device is not DeviceId.PUMP:
+            return False
+        if command.operation in {
+            DeviceOperation.CONNECT, DeviceOperation.DISCONNECT,
+            DeviceOperation.PUMP_FAULT_RECOVER, DeviceOperation.PUMP_REFERENCE_MOVE,
+        }:
+            return True
+        return getattr(command.arguments, "unit_index", 0) == self._flush.args.unit_index
+
+    def _start_flush(self, command: WorkflowCommand) -> None:
+        self._flush_command = command
+        self._flush = FlushWorkflow(
+            command.arguments,
+            statuses=self.statuses,
+            send=self._send_workflow_step,
+            progress=lambda progress: self.command_progress.emit(command.request_id, progress),
+            failure_started=self._cancel_queued_after_flush_failure,
+            finished=self._finish_flush,
+            parent=self,
+        )
+        self._flush.start()
+
+    def _send_workflow_step(
+        self, device: DeviceId, operation: DeviceOperation, arguments: object, urgent: bool,
+    ) -> str:
+        step = DeviceCommand(device, operation, arguments, source="workflow")
+        self.audit.write(
+            "workflow_step", request_id=step.request_id, device=device.value,
+            operation=operation.value,
+        )
+        worker = self.registry.by_id(device)
+        signal = worker.urgent_command_requested if urgent else worker.command_requested
+        signal.emit(step.request_id, operation, arguments)
+        return step.request_id
+
+    def _cancel_queued_after_flush_failure(self, error: str) -> None:
+        while self._queue:
+            self._emit(self._queue.popleft().command, "cancelled", f"Flush failed: {error}")
+
+    def _finish_flush(self, ok: bool, error: str) -> None:
+        command = self._flush_command
+        workflow = self._flush
+        self._flush = None
+        self._flush_command = None
+        if workflow is not None:
+            workflow.deleteLater()
+        if command is None:
+            return
+        if not ok:
+            self._cancel_queued_after_flush_failure(error)
+        self.command_result.emit(CommandResult(
+            command.request_id, None, command.operation, ok, error=error or None, command=command,
+        ))
+        self._emit(command, "completed" if ok else "failed", error)
+        self._dispatch_next()
+
+    def _finish_wait(self) -> None:
+        pending = self._active
+        if pending is None or not isinstance(pending.command, WorkflowCommand):
+            return
+        command = pending.command
+        self.command_result.emit(CommandResult(command.request_id, None, command.operation, True, command=command))
+        self._emit(command, "completed")
+        self._active = None
+        self._dispatch_next()
+
+    def cancel_active_workflow(self) -> None:
+        if self._flush is not None:
+            self._flush.abort("Flush aborted by operator")
+        elif self._active is not None and isinstance(self._active.command, WorkflowCommand):
+            self._wait_timer.stop()
+            command = self._active.command
+            self.command_result.emit(CommandResult(command.request_id, None, command.operation, False, error="Wait aborted", command=command))
+            self._emit(command, "cancelled", "Wait aborted by operator")
+            self._active = None
+            self._dispatch_next()
+
     def _emit(
         self,
-        command: DeviceCommand[Any],
+        command: DeviceCommand[Any] | WorkflowCommand,
         state: str,
         message: str = "",
         result: object = None,
@@ -175,7 +320,7 @@ class ApplicationController(QObject):
             state,
             request_id=command.request_id,
             source=command.source,
-            device=command.device.value,
+            device=command.device.value if command.device is not None else "workflow",
             operation=command.operation.value,
             message=message,
         )
@@ -238,18 +383,24 @@ class ApplicationController(QObject):
 
     @Slot(str, object)
     def _worker_succeeded(self, request_id: str, value: object) -> None:
+        if self._flush is not None and self._flush.on_step(request_id, True, value):
+            return
         if self._finish_urgent(request_id, True, value):
             return
         self._finish(request_id, True, value)
 
     @Slot(str, str)
     def _worker_failed(self, request_id: str, error: str) -> None:
+        if self._flush is not None and self._flush.on_step(request_id, False, error=error):
+            return
         if self._finish_urgent(request_id, False, error=error):
             return
         self._finish(request_id, False, error=error)
 
     @Slot(str, str)
     def _worker_cancelled(self, request_id: str, reason: str) -> None:
+        if self._flush is not None and self._flush.on_step(request_id, False, error=reason):
+            return
         if not self._active or self._active.command.request_id != request_id:
             return
         command = self._active.command
@@ -265,6 +416,16 @@ class ApplicationController(QObject):
 
     def shutdown(self) -> list[str]:
         self._closing = True
+        self._wait_timer.stop()
+        if self._active is not None and isinstance(self._active.command, WorkflowCommand):
+            self._emit(self._active.command, "cancelled", "Application shutdown")
+            self._active = None
+        if self._flush is not None:
+            self._flush.dispose()
+            if self._flush_command is not None:
+                self._emit(self._flush_command, "cancelled", "Application shutdown")
+            self._flush = None
+            self._flush_command = None
         errors = []
         while self._queue:
             self._emit(self._queue.popleft().command, "cancelled", "Shutdown started")

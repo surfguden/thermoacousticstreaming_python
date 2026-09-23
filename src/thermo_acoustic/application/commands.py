@@ -65,6 +65,11 @@ class DeviceOperation(str, Enum):
     Z_STAGE_POSITION_READ = "z_stage.position.read"
 
 
+class WorkflowOperation(str, Enum):
+    FLUSH = "workflow.flush"
+    WAIT = "workflow.wait"
+
+
 class Ad2TriggerSource(str, Enum):
     NONE = "trigsrcNone"
     PC = "trigsrcPC"
@@ -539,6 +544,15 @@ class PumpReferenceMoveArgs:
 class ValveSetPositionArgs:
     position: int
 
+    def __post_init__(self) -> None:
+        if self.position not in (1, 2):
+            raise ValueError("Valve position must be 1 (open) or 2 (closed)")
+
+
+class ValvePosition(int, Enum):
+    OPEN = 1
+    CLOSED = 2
+
 
 @dataclass(frozen=True, slots=True)
 class ValveWaitReadyArgs:
@@ -823,14 +837,60 @@ class DeviceCommand(Generic[ArgumentsT]):
 
 
 @dataclass(frozen=True, slots=True)
+class FlushArgs:
+    unit_index: int
+    volume_ml: float
+    flow_ul_min: float
+    wait_after_s: float = 0.0
+
+    def __post_init__(self) -> None:
+        if isinstance(self.unit_index, bool) or not isinstance(self.unit_index, int) or self.unit_index < 0:
+            raise ValueError("Select a configured pump unit for flush")
+        _require_finite_positive("flush volume_ml", self.volume_ml)
+        _require_finite_positive("flush flow_ul_min", self.flow_ul_min)
+        if not math.isfinite(self.wait_after_s) or not 0 <= self.wait_after_s <= 100:
+            raise ValueError("flush wait_after_s must be within 0..100")
+
+
+@dataclass(frozen=True, slots=True)
+class WaitArgs:
+    seconds: float
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.seconds) or not 0 <= self.seconds <= 86_400:
+            raise ValueError("workflow wait seconds must be within 0..86400")
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowProgress:
+    state: str
+    detail: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowCommand:
+    operation: WorkflowOperation
+    arguments: FlushArgs | WaitArgs
+    request_id: str = field(default_factory=lambda: uuid4().hex[:12])
+    source: str = "ui"
+    received_at: datetime = field(default_factory=utc_now)
+    device: None = field(default=None, init=False)
+
+    def __post_init__(self) -> None:
+        expected = FlushArgs if self.operation is WorkflowOperation.FLUSH else WaitArgs if self.operation is WorkflowOperation.WAIT else None
+        if expected is None or not isinstance(self.arguments, expected):
+            raise ValueError("Workflow operation and arguments do not match")
+
+
+@dataclass(frozen=True, slots=True)
 class CommandResult(Generic[ResultT]):
     request_id: str
     device: DeviceId | None
-    operation: DeviceOperation
+    operation: DeviceOperation | WorkflowOperation
     ok: bool
     value: ResultT | None = None
     error: str | None = None
-    command: DeviceCommand[Any] | None = None
+    command: DeviceCommand[Any] | WorkflowCommand | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -838,7 +898,7 @@ class CommandEvent:
     request_id: str
     state: str
     device: DeviceId | None
-    operation: DeviceOperation
+    operation: DeviceOperation | WorkflowOperation
     source: str
     message: str = ""
     result: Any = None
@@ -848,5 +908,5 @@ class CommandEvent:
 
 @dataclass(frozen=True, slots=True)
 class ConfirmationRequest:
-    command: DeviceCommand[Any]
+    command: DeviceCommand[Any] | WorkflowCommand
     prompt: str

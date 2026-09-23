@@ -31,8 +31,9 @@ from ..application.commands import (
     ConfirmationRequest,
 )
 from ..application.event_formatting import detailed_event_text, event_summary
-from ..domain.models import DEVICE_LABELS, DeviceId, DeviceStatus, OperatingMode
+from ..domain.models import ConnectionState, DEVICE_LABELS, DeviceId, DeviceStatus, OperatingMode
 from .device_panels import DevicePanel, PANEL_TYPES
+from .workflow_panel import WorkflowPanel
 
 
 PROFILE_SCHEMA_VERSION = 2
@@ -51,7 +52,7 @@ class MainWindow(QMainWindow):
     def __init__(self, controller, parent=None):
         super().__init__(parent)
         self.controller = controller
-        self._requests: dict[str, tuple[DevicePanel, str]] = {}
+        self._requests: dict[str, tuple[DevicePanel | WorkflowPanel, str]] = {}
         self.setWindowTitle("Thermo-acoustic control")
         self.setMinimumSize(960, 1080)
         self.resize(1100, 1080)
@@ -75,6 +76,13 @@ class MainWindow(QMainWindow):
             panel.notice.connect(self._ui_notice)
             self.panels[device] = panel
             self.tabs.addTab(panel, _TAB_LABELS[device])
+        self.workflow_panel = WorkflowPanel()
+        self.workflow_panel.command_requested.connect(
+            lambda action, command: self._submit(self.workflow_panel, action, command)
+        )
+        self.workflow_panel.abort_requested.connect(controller.cancel_active_workflow)
+        self.workflow_panel.notice.connect(self._ui_notice)
+        self.tabs.addTab(self.workflow_panel, "Workflows")
         root_layout.addWidget(self.tabs)
         self.log_window = DetailedLogWindow(self)
         self.log = self.log_window.log
@@ -124,7 +132,7 @@ class MainWindow(QMainWindow):
             return True
         return super().eventFilter(watched, event)
 
-    def _submit(self, panel: DevicePanel, action: str, command) -> None:
+    def _submit(self, panel: DevicePanel | WorkflowPanel, action: str, command) -> None:
         panel.mark_pending(action, command.request_id)
         self._requests[command.request_id] = (panel, action)
         try:
@@ -156,8 +164,12 @@ class MainWindow(QMainWindow):
         if summary is not None:
             self.statusBar().showMessage(summary)
         if event.state in _TERMINAL_STATES:
-            if event.device is not None and summary is not None:
-                self.panels[event.device].set_feedback(
+            target = (
+                self.panels[event.device] if event.device is not None
+                else self.workflow_panel
+            )
+            if summary is not None:
+                target.set_feedback(
                     summary, success=event.state == "completed"
                 )
             pending = self._requests.pop(event.request_id, None)
@@ -207,6 +219,10 @@ class MainWindow(QMainWindow):
     def _status(self, statuses: dict[DeviceId, DeviceStatus]) -> None:
         for device, status in statuses.items():
             self.panels[device].set_status(status)
+        pump = statuses.get(DeviceId.PUMP)
+        self.workflow_panel.update_pumps(
+            pump.readback if pump is not None and pump.connection is ConnectionState.CONNECTED else None
+        )
         if not self.statusBar().currentMessage():
             self.statusBar().showMessage(
                 " | ".join(

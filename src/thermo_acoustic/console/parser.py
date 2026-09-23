@@ -45,6 +45,10 @@ from ..application.commands import (
     ValveSetPositionArgs,
     ValveConnectArgs,
     ValveWaitReadyArgs,
+    FlushArgs,
+    WaitArgs,
+    WorkflowCommand,
+    WorkflowOperation,
     ZStageSetPositionArgs,
 )
 from ..domain.models import DeviceId
@@ -133,6 +137,10 @@ Valve:
   valve set-position 1|2 | valve read-position | valve wait-ready
   valve wait ready --timeout-s SECONDS --poll-interval-s SECONDS
 
+Workflows:
+  workflow flush --unit N --volume-ml ML --flow-ul-min RATE [--wait-after-s SECONDS]
+  workflow wait --seconds SECONDS
+
 Camera:
   camera configure-snapshot [EXPOSURE_MS] | camera snapshot [--exposure-ms MS]
   camera continuous-snapshot [--exposure-ms MS] | camera read-timing
@@ -149,12 +157,30 @@ TEC and Z-stage:
   z-stage check-closed-loop | z-stage enable-closed-loop | z-stage move UM | z-stage read-position"""
 
 
-def parse_command(line: str, *, source: str = "console") -> DeviceCommand | str | None:
+def parse_command(line: str, *, source: str = "console") -> DeviceCommand | WorkflowCommand | str | None:
     words = shlex.split(line.strip())
     if not words:
         return None
     if words[0] in ("help", "status", "devices", "quit"):
         return words[0]
+    if words[:2] == ["workflow", "flush"]:
+        options = _options(words[2:])
+        _only_options(options, "unit", "volume_ml", "flow_ul_min", "wait_after_s")
+        for required in ("unit", "volume_ml", "flow_ul_min"):
+            if required not in options:
+                raise ValueError(f"workflow flush requires --{required.replace('_', '-')} VALUE")
+        return WorkflowCommand(
+            WorkflowOperation.FLUSH,
+            FlushArgs(int(options["unit"]) - 1, float(options["volume_ml"]),
+                      float(options["flow_ul_min"]), _value(options, "wait_after_s", 0.0, float)),
+            source=source,
+        )
+    if words[:2] == ["workflow", "wait"]:
+        options = _options(words[2:])
+        _only_options(options, "seconds")
+        if "seconds" not in options:
+            raise ValueError("workflow wait requires --seconds VALUE")
+        return WorkflowCommand(WorkflowOperation.WAIT, WaitArgs(float(options["seconds"])), source=source)
     if words[:2] == ["connect", "valve"] and len(words) > 2:
         options = _options(words[2:])
         _only_options(options, "port")

@@ -74,6 +74,7 @@ from ..application.commands import (
     TecStatusResult,
     TecWaitStableArgs,
     ValveSetPositionArgs,
+    ValvePosition,
     ValveConnectArgs,
     ValveWaitReadyArgs,
     ZStageSetPositionArgs,
@@ -1391,12 +1392,14 @@ class ValvePanel(DevicePanel):
         port_form.addRow(button_row(refresh_ports))
         self.layout.addWidget(port_group)
         group, form = form_group("Valve position")
-        self.position = self.register_profile("position", int_spin(1, 1, 2))
+        self.position = self.register_profile("position", QComboBox())
+        self.position.addItem("Open (position 1)", ValvePosition.OPEN.value)
+        self.position.addItem("Closed (position 2)", ValvePosition.CLOSED.value)
         self.wait_timeout = self.register_profile("wait_timeout_s", double_spin(1, 0.001, 3600, 3))
         self.wait_poll = self.register_profile("wait_poll_s", double_spin(0.05, 0.001, 60, 3))
         form.addRow("Position", self.position)
         form.addRow(button_row(
-            self.action_button("set", "Set position", DeviceOperation.VALVE_POSITION_SET, lambda: ValveSetPositionArgs(self.position.value())),
+            self.action_button("set", "Set position", DeviceOperation.VALVE_POSITION_SET, lambda: ValveSetPositionArgs(int(self.position.currentData()))),
             self.action_button("read", "Read position", DeviceOperation.VALVE_POSITION_READ),
         ))
         form.addRow("Ready timeout (s)", self.wait_timeout)
@@ -1459,7 +1462,7 @@ class ValvePanel(DevicePanel):
             return
         args = command.arguments
         if isinstance(args, ValveSetPositionArgs):
-            self.position.setValue(args.position)
+            self.position.setCurrentIndex(self.position.findData(args.position))
         elif isinstance(args, ValveWaitReadyArgs):
             self.wait_timeout.setValue(args.timeout_s)
             self.wait_poll.setValue(args.poll_interval_s)

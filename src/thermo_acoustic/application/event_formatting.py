@@ -5,7 +5,7 @@ from enum import Enum
 import json
 from pathlib import Path
 
-from .commands import CommandEvent, NoArguments
+from .commands import CommandEvent, NoArguments, WorkflowOperation
 from ..domain.models import DEVICE_LABELS
 
 
@@ -25,6 +25,8 @@ def _plain(value: object) -> object:
 
 def operation_label(event: CommandEvent) -> str:
     operation = event.operation.value
+    if isinstance(event.operation, WorkflowOperation):
+        operation = operation.removeprefix("workflow.")
     device_prefix = f"{event.device.value}." if event.device is not None else ""
     if operation.startswith(device_prefix):
         operation = operation[len(device_prefix):]
@@ -34,7 +36,7 @@ def operation_label(event: CommandEvent) -> str:
 
 
 def device_label(event: CommandEvent) -> str:
-    return DEVICE_LABELS[event.device] if event.device is not None else "Application"
+    return DEVICE_LABELS[event.device] if event.device is not None else "Workflow"
 
 
 def event_summary(event: CommandEvent) -> str | None:
