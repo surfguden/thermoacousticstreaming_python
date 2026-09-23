@@ -49,6 +49,8 @@ from thermo_acoustic.domain.models import (
     DeviceStatus,
     IntegerRange,
     OperatingMode,
+    PumpReadback,
+    PumpUnitReadback,
 )
 from thermo_acoustic.hal.registry import DeviceRegistry
 from thermo_acoustic.ui.device_panels import Ad2Panel, CameraPanel, PANEL_TYPES, PumpPanel
@@ -78,9 +80,10 @@ def test_each_panel_builds_every_typed_device_operation(qt_app, device):
     panel.command_requested.connect(lambda _action, command: commands.append(command))
 
     panel._buttons["connect"].click()
-    panel.set_status(DeviceStatus(device, ConnectionState.CONNECTED, busy=True))
+    readback = PumpReadback(units=(PumpUnitReadback(0, max_volume_ml=1.0, max_flow_rate_ul_min=1000.0),)) if device is DeviceId.PUMP else None
+    panel.set_status(DeviceStatus(device, ConnectionState.CONNECTED, busy=True, readback=readback))
     for action, button in panel._buttons.items():
-        if action != "connect":
+        if action != "connect" and not (device is DeviceId.PUMP and action.startswith(("level_", "flow_", "syringe_"))):
             button.click()
 
     operations = {command.operation for command in commands}
@@ -94,6 +97,13 @@ def test_each_panel_builds_every_typed_device_operation(qt_app, device):
             DeviceOperation.CAMERA_SNAPSHOT_CONFIGURE,
             DeviceOperation.CAMERA_SEQUENCE_CONFIGURE,
         }
+    if device is DeviceId.PUMP:
+        expected = {
+            DeviceOperation.CONNECT, DeviceOperation.DISCONNECT,
+            DeviceOperation.ABORT_ACTIVE, DeviceOperation.SAFE_STOP,
+            DeviceOperation.PUMP_REFILL, DeviceOperation.PUMP_EMPTY,
+            DeviceOperation.PUMP_FLOW_STOP, DeviceOperation.PUMP_REFERENCE_MOVE,
+        }
     assert operations == expected
 
 
@@ -102,20 +112,46 @@ def test_duplicate_action_is_prevented_by_disabling_pending_button(qt_app):
     panel = PumpPanel()
     commands = []
     panel.command_requested.connect(lambda action, command: commands.append((action, command)))
-    panel.set_status(DeviceStatus(DeviceId.PUMP, ConnectionState.CONNECTED))
+    panel.set_status(DeviceStatus(DeviceId.PUMP, ConnectionState.CONNECTED, readback=PumpReadback(units=(PumpUnitReadback(0),))))
 
-    panel._buttons["status"].click()
+    panel._buttons["refill_0"].click()
     action, command = commands[-1]
     panel.mark_pending(action, command.request_id)
-    assert not panel._buttons["status"].isEnabled()
-    panel._buttons["status"].click()
+    assert not panel._buttons["refill_0"].isEnabled()
+    panel._buttons["refill_0"].click()
 
     assert len(commands) == 1
     assert panel.notice_label.text() == ""
-    assert "pending" in panel._buttons["status"].text().lower()
+    assert "pending" in panel._buttons["refill_0"].text().lower()
     panel.clear_pending(command.request_id)
-    assert panel._buttons["status"].text() == "Read status"
-    assert panel._buttons["status"].isEnabled()
+    assert panel._buttons["refill_0"].text() == "Refill"
+    assert panel._buttons["refill_0"].isEnabled()
+
+
+def test_pump_tile_shows_observed_state_and_syringe(qt_app):
+    del qt_app
+    panel = PumpPanel()
+    def show(unit):
+        panel.set_status(DeviceStatus(DeviceId.PUMP, ConnectionState.CONNECTED,
+            readback=PumpReadback(units=(unit,))))
+        return panel.tiles_layout.itemAtPosition(0, 0).widget()
+
+    tile = show(PumpUnitReadback(0, fill_level_ml=0.3, current_flow_ul_min=15.0,
+        is_pumping=True, is_faulted=False, max_volume_ml=1.0,
+        syringe_name="BD 1ml", syringe_inner_diameter_mm=4.78,
+        syringe_max_piston_stroke_mm=55.7))
+    assert "Pumping" in tile.state_label.text()
+    assert "BD 1ml" in tile.syringe_label.text()
+    assert "4.78 mm" in tile.syringe_label.text()
+    assert tile.flow_label.text() == "15"
+    panel._blink()
+    assert "transparent" in tile.state_label.styleSheet()
+
+    tile = show(PumpUnitReadback(0, is_pumping=False, is_faulted=False))
+    assert "Idle" in tile.state_label.text()
+    tile = show(PumpUnitReadback(0, is_pumping=True, is_faulted=True))
+    assert "Error" in tile.state_label.text()
+    assert "#c62828" in tile.state_label.styleSheet()
 
 
 def test_duplicate_operation_is_blocked_across_ad2_subtabs(qt_app):
@@ -151,10 +187,9 @@ def test_main_window_routes_panel_commands_and_terminal_events(qt_app):
     assert pump.connection_label.text() == "Connected"
     assert pump._pending == {}
 
-    pump.flow.setValue(44.0)
-    pump._buttons["set_flow"].click()
-    wait(qt_app)
-    assert controller.statuses()[DeviceId.PUMP].readback.requested_flow_ul_min == 44.0
+    pump._buttons["refill_0"].click()
+    wait(qt_app, 650)
+    assert controller.statuses()[DeviceId.PUMP].readback.units[0].fill_level_ml == 1.0
     assert pump._pending == {}
     window.close()
 
@@ -240,12 +275,6 @@ def test_console_waveform_configuration_updates_visible_ad2_controls(qt_app):
 
 def test_successful_console_commands_synchronize_other_panel_editors(qt_app):
     del qt_app
-    pump = PumpPanel()
-    pump.apply_successful_command(parse_command("pump refill --flow-ul-min 42 --timeout-s 30 --poll-interval-s 0.2"))
-    assert pump.move_flow.value() == 42.0
-    assert pump.move_timeout.value() == 30.0
-    assert pump.move_poll.value() == 0.2
-
     camera = CameraPanel()
     camera.apply_successful_command(parse_command("camera sequence configure --frames 7 --exposure-ms 3 --timeout-s 5 --poll-interval-s 0.1"))
     assert camera.sequence_frames.value() == 7
@@ -718,7 +747,6 @@ def test_profile_round_trip_is_input_only_and_submits_nothing(qt_app, tmp_path):
     window = MainWindow(controller)
     pump = window.panels[DeviceId.PUMP]
     camera = window.panels[DeviceId.CAMERA]
-    pump.flow.setValue(321.5)
     camera.sequence_frames.setValue(27)
     path = tmp_path / "settings.json"
     window.save_profile(path)
@@ -727,10 +755,9 @@ def test_profile_round_trip_is_input_only_and_submits_nothing(qt_app, tmp_path):
     assert set(document) == {"schema_version", "devices"}
     assert "connection" not in path.read_text(encoding="utf-8")
 
-    pump.flow.setValue(1.0)
+    assert document["devices"]["pump"] == {}
     camera.sequence_frames.setValue(1)
     window.load_profile(path)
-    assert pump.flow.value() == 321.5
     assert camera.sequence_frames.value() == 27
     assert events == []
 
@@ -744,11 +771,10 @@ def test_profile_load_is_atomic_and_rejects_invalid_data(qt_app, tmp_path):
     document = window.profile_document()
     document["devices"]["camera"]["exposure_ms"] = original_exposure + 10
     document["devices"]["pump"]["move_timeout_s"] = 1.0
-    document["devices"]["pump"]["move_poll_s"] = 2.0
     path = tmp_path / "invalid.json"
     path.write_text(json.dumps(document), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="must not exceed"):
+    with pytest.raises(ValueError, match="Unknown pump setting"):
         window.load_profile(path)
     assert camera.exposure.value() == original_exposure
 

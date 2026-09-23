@@ -140,7 +140,11 @@ class MainWindow(QMainWindow):
         return answer is QMessageBox.StandardButton.Yes
 
     def confirm_operation(self, request: ConfirmationRequest) -> bool:
-        answer = QMessageBox.question(self, "Confirm hardware operation", request.prompt)
+        answer = QMessageBox.question(
+            self, "Confirm hardware operation", request.prompt,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
         return answer is QMessageBox.StandardButton.Yes
 
     def _event(self, event: CommandEvent) -> None:

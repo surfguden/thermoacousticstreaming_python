@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import replace
 import math
-from time import monotonic
 
 from ..application.commands import DeviceOperation, NoArguments, PumpConnectArgs, PumpConfigurationResult, PumpConfigureFlowUnitArgs, PumpConfigureSyringeArgs, PumpFillLevelResult, PumpFlowUnit, PumpMoveArgs, PumpMovementResult, PumpRecoveryResult, PumpReferenceMoveArgs, PumpSetFillLevelArgs, PumpSetFlowArgs, PumpStatusResult, PumpUnitArgs
 from ..application.configuration import DEFAULT_PUMP_CONFIGURATION_DIR, validate_pump_configuration_dir
@@ -43,7 +42,19 @@ class PumpWorker(DeviceWorker):
             return
         for index in range(self._count()):
             unit = self._unit(index)
-            self._replace_unit(replace(unit, fill_level_ml=float(self._call(index, "read_fill_level")), is_pumping=bool(self._call(index, "read_status"))))
+            try:
+                level = float(self._call(index, "read_fill_level"))
+                pumping = bool(self._call(index, "read_status"))
+                flow = float(self._call(index, "read_flow")) if hasattr(self.device, "read_flow") else (unit.current_flow_ul_min if pumping else 0.0)
+                faulted = bool(self._call(index, "read_fault")) if hasattr(self.device, "read_fault") else None
+                syringe = self._call(index, "read_syringe") if hasattr(self.device, "read_syringe") else None
+                self._replace_unit(replace(unit, fill_level_ml=level, is_pumping=pumping,
+                    current_flow_ul_min=flow, is_faulted=faulted,
+                    syringe_inner_diameter_mm=syringe[0] if syringe else unit.syringe_inner_diameter_mm,
+                    syringe_max_piston_stroke_mm=syringe[1] if syringe else unit.syringe_max_piston_stroke_mm))
+            except Exception:
+                self._replace_unit(replace(unit, is_faulted=True))
+                raise
     def prepare_connection(self, device: object, arguments: object) -> None:
         selected = arguments.configuration_dir if isinstance(arguments, PumpConnectArgs) else DEFAULT_PUMP_CONFIGURATION_DIR
         path = validate_pump_configuration_dir(selected)
@@ -59,7 +70,10 @@ class PumpWorker(DeviceWorker):
             except Exception as exc: self.state.fault = str(exc)
             self._emit_status()
     def set_flow(self, args: PumpSetFlowArgs) -> None:
-        self._call(args.unit_index, "generate_flow", args.flow_ul_min); self._replace_unit(replace(self._unit(args.unit_index, flow=args.flow_ul_min), is_pumping=args.flow_ul_min != 0))
+        unit = self._unit(args.unit_index)
+        if not math.isfinite(args.flow_ul_min) or unit.max_flow_rate_ul_min is None or abs(args.flow_ul_min) > unit.max_flow_rate_ul_min:
+            raise ValueError(f"flow_ul_min must be within +/-{unit.max_flow_rate_ul_min} µL/min")
+        self._call(args.unit_index, "generate_flow", args.flow_ul_min)
     def stop_flow(self, args: PumpUnitArgs) -> None:
         index = self._index(args); self._call(index, "stop"); self._replace_unit(replace(self._unit(index, flow=0.0), is_pumping=False))
     def read_fill_level(self, args: PumpUnitArgs) -> PumpFillLevelResult:
@@ -68,8 +82,11 @@ class PumpWorker(DeviceWorker):
         index = self._index(args); pumping = bool(self._call(index, "read_status")); current = self._unit(index); self._replace_unit(replace(current, is_pumping=pumping, current_flow_ul_min=current.current_flow_ul_min if pumping else 0.0)); return PumpStatusResult(pumping)
     def set_fill_level(self, args: PumpSetFillLevelArgs) -> None:
         unit = self._unit(args.unit_index)
-        if not math.isfinite(args.fill_level_ml) or args.fill_level_ml < 0 or (unit.max_volume_ml is not None and args.fill_level_ml > unit.max_volume_ml): raise ValueError(f"fill_level_ml must be within 0..{unit.max_volume_ml} mL for the configured syringe")
-        self._call(args.unit_index, "set_fill_level", args.fill_level_ml, args.flow_rate_ul_min); self._replace_unit(replace(unit, fill_level_ml=args.fill_level_ml, current_flow_ul_min=args.flow_rate_ul_min or 0.0, is_pumping=True))
+        if unit.max_volume_ml is None or not math.isfinite(args.fill_level_ml) or not 0 <= args.fill_level_ml <= unit.max_volume_ml:
+            raise ValueError(f"fill_level_ml must be within 0..{unit.max_volume_ml} mL for the configured syringe")
+        if args.flow_rate_ul_min is not None and (not math.isfinite(args.flow_rate_ul_min) or args.flow_rate_ul_min <= 0 or unit.max_flow_rate_ul_min is None or args.flow_rate_ul_min > unit.max_flow_rate_ul_min):
+            raise ValueError(f"flow_rate_ul_min must be within 0..{unit.max_flow_rate_ul_min} µL/min")
+        self._call(args.unit_index, "set_fill_level", args.fill_level_ml, args.flow_rate_ul_min)
     def configure_syringe(self, args: PumpConfigureSyringeArgs) -> PumpConfigurationResult:
         if args.preset is None and (args.inner_diameter_mm is None or args.max_piston_stroke_mm is None): raise ValueError("Choose a syringe preset or provide diameter and piston stroke")
         config = {"name": args.preset.value if args.preset else None, "inner_diameter_mm": args.inner_diameter_mm, "max_piston_stroke_mm": args.max_piston_stroke_mm}
@@ -87,16 +104,11 @@ class PumpWorker(DeviceWorker):
     def _move(self, movement: str, args: PumpMoveArgs) -> object:
         unit = self._unit(args.unit_index)
         if unit.max_flow_rate_ul_min is None: raise RuntimeError("Pump maximum flow is unavailable")
-        flow = abs(float(unit.max_flow_rate_ul_min)) / 2.0; self._call(args.unit_index, movement, flow); target = unit.max_volume_ml if movement == "refill" else 0.0; deadline = monotonic() + args.timeout_s
-        self._replace_unit(replace(unit, current_flow_ul_min=flow, is_pumping=True))
-        def cancel() -> None: self.stop_flow(PumpUnitArgs(args.unit_index))
-        def step() -> DeferredProgress:
-            pumping, level = bool(self._call(args.unit_index, "read_status")), float(self._call(args.unit_index, "read_fill_level")); self._replace_unit(replace(self._unit(args.unit_index), fill_level_ml=level, is_pumping=pumping, current_flow_ul_min=flow if pumping else 0.0))
-            if pumping or not math.isclose(level, float(target), rel_tol=1e-6, abs_tol=1e-9):
-                if monotonic() >= deadline: raise TimeoutError(f"Pump {args.unit_index + 1} {movement} timed out")
-                return DeferredProgress()
-            return DeferredProgress(True, PumpMovementResult(fill_level_ml=level))
-        return self.defer_operation(step, cancel=cancel, poll_interval_s=args.poll_interval_s)
+        flow = abs(float(unit.max_flow_rate_ul_min)) / 2.0
+        self._call(args.unit_index, movement, flow)
+        # Completion means the SDK accepted the start command, not that the
+        # syringe has reached its target. Ordinary polling reports progress.
+        return PumpMovementResult()
     def refill(self, args: PumpMoveArgs) -> object: return self._move("refill", args)
     def empty(self, args: PumpMoveArgs) -> object: return self._move("empty", args)
     def reference_move(self, args: PumpReferenceMoveArgs) -> object:

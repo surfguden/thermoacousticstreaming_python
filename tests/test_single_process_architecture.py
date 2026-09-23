@@ -687,7 +687,7 @@ def test_parser_is_a_text_to_typed_command_adapter():
 
 def test_long_operations_are_typed_and_complete_in_simulation(qt_app):
     registry = DeviceRegistry()
-    controller = ApplicationController(registry, mode=OperatingMode.SIMULATION)
+    controller = ApplicationController(registry, mode=OperatingMode.SIMULATION, confirm_operation=lambda _: True)
     results = []
     controller.command_result.connect(results.append)
     controller.start()
@@ -761,7 +761,7 @@ def test_long_operations_are_typed_and_complete_in_simulation(qt_app):
     controller.shutdown()
 
 
-def test_urgent_pump_stop_bypasses_active_fifo_command(qt_app):
+def test_pump_refill_returns_after_start_and_allows_readback_while_pumping(qt_app):
     calls = []
 
     class SlowPump:
@@ -814,10 +814,9 @@ def test_urgent_pump_stop_bypasses_active_fifo_command(qt_app):
         )
     )
     wait(qt_app, 60)
-    assert not any(
-        event.request_id == "queued-status" and event.state == "running"
-        for event in events
-    )
+    assert any(event.request_id == "refill" and event.state == "completed" for event in events)
+    assert any(event.request_id == "queued-status" and event.state == "completed" for event in events)
+    assert controller.statuses()[DeviceId.PUMP].readback.units[0].is_pumping
 
     controller.submit(
         DeviceCommand(
@@ -834,13 +833,76 @@ def test_urgent_pump_stop_bypasses_active_fifo_command(qt_app):
         if event.state in {"completed", "cancelled", "failed"}
     ]
     assert ("urgent-stop", "completed") in terminal
-    assert ("refill", "cancelled") in terminal
+    assert ("refill", "completed") in terminal
     assert ("queued-status", "completed") in terminal
-    stop_index = terminal.index(("urgent-stop", "completed"))
-    queued_index = terminal.index(("queued-status", "completed"))
-    assert stop_index < queued_index
+    assert not controller.statuses()[DeviceId.PUMP].readback.units[0].is_pumping
     worker_thread = registry.by_id(DeviceId.PUMP).thread()
     assert all(thread is worker_thread for _, thread in calls)
+    controller.shutdown()
+
+
+def test_pump_reference_move_requires_remove_syringe_confirmation(qt_app):
+    confirmations = []
+    registry = DeviceRegistry()
+    controller = ApplicationController(
+        registry, mode=OperatingMode.SIMULATION,
+        confirm_operation=lambda request: confirmations.append(request) or False,
+    )
+    events = []
+    controller.command_event.connect(events.append)
+    controller.start()
+    controller.submit(DeviceCommand(DeviceId.PUMP, DeviceOperation.CONNECT))
+    wait(qt_app)
+
+    command = DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_REFERENCE_MOVE, PumpReferenceMoveArgs(unit_index=1))
+    controller.submit(command)
+    assert events[-1].state == "failed"
+    assert len(confirmations) == 1
+    assert "Pump 2" in confirmations[0].prompt
+    assert "Remove the syringe" in confirmations[0].prompt
+    assert not registry.by_id(DeviceId.PUMP).device._pumps[1].referenced
+    controller.shutdown()
+
+
+def test_pump_poll_reports_observed_per_unit_flow_and_syringe(qt_app):
+    registry = DeviceRegistry()
+    controller = ApplicationController(registry, mode=OperatingMode.SIMULATION)
+    controller.start()
+    controller.submit(DeviceCommand(DeviceId.PUMP, DeviceOperation.CONNECT))
+    controller.submit(DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_SYRINGE_CONFIGURE,
+        PumpConfigureSyringeArgs(inner_diameter_mm=4.7, max_piston_stroke_mm=57.0, unit_index=1)))
+    controller.submit(DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_FLOW_SET, PumpSetFlowArgs(25.0, 1)))
+    wait(qt_app, 650)
+    units = controller.statuses()[DeviceId.PUMP].readback.units
+    assert units[0].current_flow_ul_min == 0.0
+    assert units[1].current_flow_ul_min == 25.0
+    assert units[1].is_pumping is True
+    assert units[1].is_faulted is False
+    assert units[1].syringe_inner_diameter_mm == 4.7
+    assert units[1].syringe_max_piston_stroke_mm == 57.0
+    controller.shutdown()
+
+
+def test_pump_rejects_out_of_range_targets_before_driver_call(qt_app):
+    registry = DeviceRegistry()
+    controller = ApplicationController(registry, mode=OperatingMode.SIMULATION)
+    events = []
+    controller.command_event.connect(events.append)
+    controller.start()
+    controller.submit(DeviceCommand(DeviceId.PUMP, DeviceOperation.CONNECT))
+    wait(qt_app)
+    pump = registry.by_id(DeviceId.PUMP).device._pumps[0]
+
+    controller.submit(DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_FLOW_SET,
+        PumpSetFlowArgs(pump.max_flow_rate_ul_min + 1)))
+    controller.submit(DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_FILL_LEVEL_SET,
+        PumpSetFillLevelArgs(pump.max_volume_ml + 1, 100.0)))
+    wait(qt_app)
+    assert [event.state for event in events if event.operation in {
+        DeviceOperation.PUMP_FLOW_SET, DeviceOperation.PUMP_FILL_LEVEL_SET}
+        and event.state in {"completed", "failed"}] == ["failed", "failed"]
+    assert pump.flow_ul_min == 0.0
+    assert pump.fill_level_ml == 0.0
     controller.shutdown()
 
 

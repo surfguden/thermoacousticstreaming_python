@@ -1202,6 +1202,12 @@ class PumpPanel(DevicePanel):
         self.tiles = QWidget()
         self.tiles_layout = QGridLayout(self.tiles)
         self.tiles_layout.setContentsMargins(0, 0, 0, 0)
+        self._last_units = ()
+        self._blink_visible = True
+        self._blink_timer = QTimer(self)
+        self._blink_timer.setInterval(500)
+        self._blink_timer.timeout.connect(self._blink)
+        self._blink_timer.start()
         self.empty_label = QLabel("Connect to discover pump units in the Qmix Elements configuration.")
         self.layout.addWidget(self.empty_label)
         self.layout.addWidget(self.tiles)
@@ -1232,13 +1238,34 @@ class PumpPanel(DevicePanel):
             group, form = form_group(f"Pump {index + 1}")
             volume = QLabel("—")
             flow = QLabel("—")
+            state = QLabel("● Unknown")
+            syringe_configuration = QLabel("—")
+            syringe_configuration.setWordWrap(True)
+            form.addRow("State", state)
             form.addRow("Volume (mL)", volume)
             form.addRow("Current flow (µL/min)", flow)
+            form.addRow("Syringe", syringe_configuration)
             form.addRow(button_row(
                 self.action_button(f"refill_{index}", "Refill", DeviceOperation.PUMP_REFILL, lambda i=index: PumpMoveArgs(unit_index=i)),
                 self.action_button(f"empty_{index}", "Empty", DeviceOperation.PUMP_EMPTY, lambda i=index: PumpMoveArgs(unit_index=i)),
                 self.action_button(f"stop_{index}", "Stop", DeviceOperation.PUMP_FLOW_STOP, lambda i=index: PumpUnitArgs(i)),
             ))
+            form.addRow(button_row(
+                self.action_button(f"reference_{index}", "Reference move", DeviceOperation.PUMP_REFERENCE_MOVE, lambda i=index: PumpReferenceMoveArgs(unit_index=i)),
+            ))
+            level_button = QPushButton("Go to level…")
+            level_button.clicked.connect(lambda checked=False, i=index: self._go_to_level(i))
+            flow_button = QPushButton("Set flow…")
+            flow_button.clicked.connect(lambda checked=False, i=index: self._set_flow(i))
+            for key, button, operation, label in (
+                (f"level_{index}", level_button, DeviceOperation.PUMP_FILL_LEVEL_SET, "Go to level…"),
+                (f"flow_{index}", flow_button, DeviceOperation.PUMP_FLOW_SET, "Set flow…"),
+            ):
+                self._buttons[key] = button
+                self._button_labels[key] = label
+                self._action_operations[key] = operation
+                self._requires_connection.add(key)
+            form.addRow(button_row(level_button, flow_button))
             syringe = QPushButton("Configure syringe…")
             syringe.clicked.connect(lambda checked=False, i=index: self._configure_syringe(i))
             self._buttons[f"syringe_{index}"] = syringe
@@ -1248,10 +1275,76 @@ class PumpPanel(DevicePanel):
             form.addRow(syringe)
             group.volume_label = volume
             group.flow_label = flow
+            group.state_label = state
+            group.syringe_label = syringe_configuration
             self.tiles_layout.addWidget(group, 0, index)
             self.tiles_layout.setColumnStretch(index, 1)
         self.empty_label.setVisible(count == 0)
         self._update_controls()
+
+    def _unit(self, index: int):
+        return self._last_units[index] if index < len(self._last_units) else None
+
+    def _go_to_level(self, index: int) -> None:
+        unit = self._unit(index)
+        if unit is None or unit.max_volume_ml is None or unit.max_flow_rate_ul_min is None:
+            self.show_notice("Read pump limits before requesting a level")
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Go to level · Pump {index + 1}")
+        layout = QVBoxLayout(dialog)
+        form = QFormLayout()
+        level = double_spin(unit.fill_level_ml or 0.0, 0.0, unit.max_volume_ml)
+        flow = double_spin(unit.max_flow_rate_ul_min / 2, min(0.0001, unit.max_flow_rate_ul_min), unit.max_flow_rate_ul_min)
+        form.addRow("Level (mL)", level)
+        form.addRow("Flow (µL/min)", flow)
+        layout.addLayout(form)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok)
+        buttons.rejected.connect(dialog.reject); buttons.accepted.connect(dialog.accept)
+        layout.addWidget(buttons)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.command_requested.emit(f"level_{index}", DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_FILL_LEVEL_SET, PumpSetFillLevelArgs(level.value(), flow.value(), index), source="ui"))
+
+    def _set_flow(self, index: int) -> None:
+        unit = self._unit(index)
+        if unit is None or unit.max_flow_rate_ul_min is None:
+            self.show_notice("Read pump flow limits before setting flow")
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Set flow · Pump {index + 1}")
+        layout = QVBoxLayout(dialog)
+        form = QFormLayout()
+        flow = double_spin(unit.current_flow_ul_min or 0.0, -unit.max_flow_rate_ul_min, unit.max_flow_rate_ul_min)
+        form.addRow("Flow (µL/min; signed)", flow)
+        layout.addLayout(form)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok)
+        buttons.rejected.connect(dialog.reject); buttons.accepted.connect(dialog.accept)
+        layout.addWidget(buttons)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.command_requested.emit(f"flow_{index}", DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_FLOW_SET, PumpSetFlowArgs(flow.value(), index), source="ui"))
+
+    def _blink(self) -> None:
+        self._blink_visible = not self._blink_visible
+        self._render_states()
+
+    def _render_states(self) -> None:
+        for unit in self._last_units:
+            item = self.tiles_layout.itemAtPosition(0, unit.unit_index)
+            if item is None or item.widget() is None:
+                continue
+            label = item.widget().state_label
+            if not self._connected:
+                text, color = "Unknown", "#808080"
+            elif unit.is_faulted:
+                text, color = "Error", "#c62828"
+            elif unit.is_pumping is True:
+                text, color = "Pumping", "#138a36" if self._blink_visible else "transparent"
+            elif unit.is_pumping is False and unit.is_faulted is False:
+                text, color = "Idle", "#138a36"
+            else:
+                text, color = "Unknown", "#808080"
+            label.setText(f"● {text}")
+            label.setStyleSheet(f"color: {color}; font-weight: 600;")
 
     def _configure_syringe(self, index: int) -> None:
         dialog = QDialog(self)
@@ -1268,13 +1361,20 @@ class PumpPanel(DevicePanel):
 
     def update_readback(self, readback: object) -> None:
         if not isinstance(readback, PumpReadback): return
+        self._last_units = readback.units
         if self.tiles_layout.count() != len(readback.units): self._build_tiles(len(readback.units))
         for unit in readback.units:
             item = self.tiles_layout.itemAtPosition(0, unit.unit_index)
             if item is None or item.widget() is None: continue
             group = item.widget()
             group.volume_label.setText("—" if unit.fill_level_ml is None or unit.max_volume_ml is None else f"{unit.fill_level_ml:.4g} / {unit.max_volume_ml:.4g}")
-            group.flow_label.setText(f"{unit.current_flow_ul_min:.4g}")
+            group.flow_label.setText("—" if unit.current_flow_ul_min is None else f"{unit.current_flow_ul_min:.4g}")
+            geometry = (
+                f"{unit.syringe_inner_diameter_mm:.4g} mm bore × {unit.syringe_max_piston_stroke_mm:.4g} mm stroke"
+                if unit.syringe_inner_diameter_mm is not None and unit.syringe_max_piston_stroke_mm is not None else "Geometry unavailable"
+            )
+            group.syringe_label.setText(f"{unit.syringe_name} · {geometry}" if unit.syringe_name else geometry)
+        self._render_states()
 
 
 class ValvePanel(DevicePanel):

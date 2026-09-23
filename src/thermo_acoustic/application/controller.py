@@ -96,6 +96,14 @@ class ApplicationController(QObject):
             ):
                 self._emit(command, "failed", "Z-stage closed-loop switch requires operator confirmation")
                 return command.request_id
+        if command.operation is DeviceOperation.PUMP_REFERENCE_MOVE:
+            unit_number = command.arguments.unit_index + 1
+            if not self.confirm_operation(ConfirmationRequest(
+                command,
+                f"Pump {unit_number} is about to perform a reference move. Remove the syringe before continuing. Start reference move?",
+            )):
+                self._emit(command, "failed", "Pump reference move requires operator confirmation")
+                return command.request_id
         if self._is_urgent(command.operation):
             self._urgent[command.request_id] = command
             self._emit(command, "queued")

@@ -172,11 +172,14 @@ class CameraReadback:
 class PumpUnitReadback:
     unit_index: int
     fill_level_ml: float | None = None
-    current_flow_ul_min: float = 0.0
+    current_flow_ul_min: float | None = None
     is_pumping: bool | None = None
+    is_faulted: bool | None = None
     max_volume_ml: float | None = None
     max_flow_rate_ul_min: float | None = None
     syringe_name: str | None = None
+    syringe_inner_diameter_mm: float | None = None
+    syringe_max_piston_stroke_mm: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -541,6 +541,16 @@ class CetoniPump:
             result["response"] = is_pumping
         return is_pumping
 
+    def read_flow(self) -> float:
+        return float(self._require_pump().get_flow_is())
+
+    def read_fault(self) -> bool:
+        return bool(self._require_pump().is_in_fault_state())
+
+    def read_syringe(self) -> tuple[float, float]:
+        diameter, stroke = self._require_pump().get_syringe_param()
+        return float(diameter), float(stroke)
+
     def cleanup(self) -> None:
         # Deliberately not wrapped in log_call() -- cleanup() already collects
         # errors from each step (via _run_cleanup_step's own timeout-wrapped

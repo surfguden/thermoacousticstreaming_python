@@ -82,3 +82,18 @@ class SimulatedPump:
 
     def read_status(self) -> bool:
         return self.flow_ul_min != 0.0
+
+    def read_flow(self) -> float:
+        return self.flow_ul_min
+
+    def read_fault(self) -> bool:
+        return False
+
+    def read_syringe(self) -> tuple[float, float] | None:
+        if not self.syringe_config:
+            return None
+        diameter = self.syringe_config.get("inner_diameter_mm")
+        stroke = self.syringe_config.get("max_piston_stroke_mm")
+        if diameter is None or stroke is None:
+            return None
+        return float(diameter), float(stroke)
