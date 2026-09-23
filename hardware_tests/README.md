@@ -7,6 +7,13 @@ import or execute them. Do not run a script merely to check that it works.
 The old full-workflow smoke runner was retired with the application.
 The remaining scripts use individual drivers or vendor wrappers.
 
+For DLL-only checks, `manual_hamamatsu_dll_load.py` requires
+`--confirm LOAD_DCAM_DLL_ONLY`. It imports the bundled DCAM wrapper, which loads
+`dcamapi.dll`, but does not initialize DCAM, discover/open a camera, or acquire.
+Run it manually with the project's Python environment. Keep DLL loading checks
+manual and explicitly gated in future hardware diagnostics; offline tests may
+check paths but must not load vendor DLLs.
+
 ## Safety boundary
 
 - Obtain explicit authorization before any hardware access, including discovery.

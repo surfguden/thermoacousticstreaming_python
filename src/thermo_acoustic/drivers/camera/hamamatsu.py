@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 def _default_sdk_python_path() -> Path:
-    return Path(__file__).resolve().parents[2] / "dcamsdk4" / "samples" / "python"
+    return Path(__file__).resolve().parents[4] / "dcamsdk4" / "samples" / "python"
 
 
 @dataclass(slots=True)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ctypes import c_int
+from pathlib import Path
 
 import pytest
 
@@ -69,6 +70,12 @@ def test_retained_driver_construction_performs_no_hardware_io() -> None:
     assert MeerstetterTecDriver().client is None
     assert SerialTextCommandTransport().port is None
     assert PiezoStage().connected is False
+
+
+def test_hamamatsu_default_wrapper_path_points_to_bundled_sdk() -> None:
+    expected = Path(__file__).resolve().parents[1] / "dcamsdk4" / "samples" / "python"
+    assert HamamatsuDcamDriver().sdk_python_path == expected
+    assert (expected / "dcam.py").is_file()
 
 
 def test_simulated_devices_are_reusable_without_the_hal() -> None:
