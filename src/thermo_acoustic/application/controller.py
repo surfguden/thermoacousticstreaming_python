@@ -82,15 +82,6 @@ class ApplicationController(QObject):
         if self._closing:
             raise RuntimeError("Application shutdown has started")
         if isinstance(command, WorkflowCommand):
-            if command.operation is WorkflowOperation.FLUSH and self.mode is OperatingMode.REAL:
-                args = command.arguments
-                if not self.confirm_operation(ConfirmationRequest(
-                    command,
-                    f"Flush {args.volume_ml:g} mL through pump {args.unit_index + 1} "
-                    f"at {args.flow_ul_min:g} µL/min? The valve will open and the pump will move.",
-                )):
-                    self._emit(command, "failed", "Flush requires operator confirmation")
-                    return command.request_id
             self._queue.append(_Pending(command, monotonic()))
             self._emit(command, "queued")
             self._dispatch_next()

@@ -226,8 +226,12 @@ class FlushWorkflow(QObject):
                     self._timer.start(1000)
                 else:
                     self._complete(False, self._error)
-            elif valve.connection is ConnectionState.ERROR or monotonic() >= self._deadline:
+            elif monotonic() >= self._deadline:
                 reason = f"Valve did not confirm position {desired} within 10 s"
+                if valve.fault:
+                    reason += f"; last status error: {valve.fault}"
+                elif isinstance(readback, ValveReadback) and readback.status_note:
+                    reason += f"; last valve status: {readback.status_note}"
                 if state is FlushState.RECOVERY_CLOSE_WAIT:
                     self._complete(False, f"{self._error}; {reason}")
                 else:
