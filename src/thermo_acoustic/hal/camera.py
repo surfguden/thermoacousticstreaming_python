@@ -5,6 +5,8 @@ from dataclasses import replace
 from pathlib import Path
 from time import monotonic
 
+from PySide6.QtCore import QTimer, Slot
+
 from ..application.commands import (
     CameraConfigureExposureArgs,
     CameraConfigureRoiArgs,
@@ -47,15 +49,25 @@ class CameraWorker(DeviceWorker):
         self._sequence_args: CameraConfigureSequenceArgs | None = None
         self._last_sequence_frames: tuple[object, ...] = ()
         self._last_sequence_metadata: dict[str, object] | None = None
+        self._continuous_timer: QTimer | None = None
+        self._continuous_args: CameraConfigureSnapshotArgs | None = None
+        self._continuous_request_id: str | None = None
+        self._continuous_frame_count = 0
+        self._continuous_last_status_at = 0.0
 
     def initialize_device(self) -> None:
         self.device.open_camera()
         self._refresh_roi_readback()
 
     def cleanup_device(self) -> None:
+        if self._continuous_args is not None:
+            self._stop_continuous()
         self.device.close()
 
     def configure_snapshot(self, args: CameraConfigureSnapshotArgs) -> None:
+        self._with_continuous_paused(lambda: self._configure_snapshot(args))
+
+    def _configure_snapshot(self, args: CameraConfigureSnapshotArgs) -> None:
         settings = None if args.exposure_ms is None else {"exposure_ms": args.exposure_ms}
         self.device.configure_snapshot(settings)
         self.state.configured = True
@@ -66,6 +78,8 @@ class CameraWorker(DeviceWorker):
     def capture_snapshot(
         self, args: NoArguments | CameraConfigureSnapshotArgs
     ) -> CameraSnapshotResult:
+        if self._continuous_args is not None:
+            self._stop_continuous()
         if isinstance(args, CameraConfigureSnapshotArgs):
             self.configure_snapshot(args)
         self.state.active = True
@@ -76,48 +90,91 @@ class CameraWorker(DeviceWorker):
             self.state.active = False
             self.state.readback = replace(self.state.readback, capture_active=False)
 
-    def capture_continuous(self, args: CameraConfigureSnapshotArgs) -> object:
+    def capture_continuous(self, args: CameraConfigureSnapshotArgs) -> None:
+        if self._continuous_args is not None:
+            self._stop_continuous()
         self.configure_snapshot(args)
+        self._continuous_frame_count = 0
+        self._start_continuous(args, self._executing_request_id)
+
+    def _start_continuous(
+        self, args: CameraConfigureSnapshotArgs, request_id: str | None
+    ) -> None:
+        if self._continuous_timer is None:
+            self._continuous_timer = QTimer(self)
+            self._continuous_timer.timeout.connect(self._poll_continuous)
         self.device.begin_continuous_capture()
+        self._continuous_args = args
+        self._continuous_request_id = request_id
+        self._continuous_last_status_at = monotonic()
         self.state.active = True
         self.state.readback = replace(
             self.state.readback,
             mode="continuous",
             capture_active=True,
-            captured_frame_count=0,
+            captured_frame_count=self._continuous_frame_count,
             sequence_frame_count=None,
         )
-        request_id = self._executing_request_id
-        captured = 0
+        self._continuous_timer.start(max(1, int(args.poll_interval_s * 1000)))
 
-        def cancel() -> None:
+    def _stop_continuous(self) -> None:
+        if self._continuous_timer is not None:
+            self._continuous_timer.stop()
+        try:
             self.device.finish_continuous_capture()
+        finally:
+            self._continuous_args = None
+            self._continuous_request_id = None
             self.state.active = False
             self.state.readback = replace(self.state.readback, capture_active=False)
 
-        def step() -> DeferredProgress:
-            nonlocal captured
+    @Slot()
+    def _poll_continuous(self) -> None:
+        args = self._continuous_args
+        if args is None:
+            return
+        try:
             frame = self.device.poll_continuous_frame(
-                max(1, min(100, int(args.poll_interval_s * 1000)))
+                max(1, min(5, int(args.poll_interval_s * 1000)))
             )
             if frame is not None:
-                captured += 1
+                self._continuous_frame_count += 1
                 self.state.readback = replace(
-                    self.state.readback, captured_frame_count=captured
+                    self.state.readback,
+                    captured_frame_count=self._continuous_frame_count,
                 )
-                self._emit_status()
-                if request_id is not None:
+                now = monotonic()
+                if now - self._continuous_last_status_at >= 0.5:
+                    self._continuous_last_status_at = now
+                    self._emit_status()
+                if self._continuous_request_id is not None:
                     self.command_progress.emit(
-                        request_id,
-                        CameraFrameProgress(frame, captured, mode="continuous"),
+                        self._continuous_request_id,
+                        CameraFrameProgress(
+                            frame, self._continuous_frame_count, mode="continuous"
+                        ),
                     )
-            return DeferredProgress()
+        except Exception as exc:
+            try:
+                self._stop_continuous()
+            except Exception as stop_exc:
+                exc = RuntimeError(f"{exc}; stopping capture failed: {stop_exc}")
+            self.state.fault = str(exc)
+            self._emit_status()
 
-        return self.defer_operation(
-            step, cancel=cancel, poll_interval_s=args.poll_interval_s
-        )
+    def _with_continuous_paused(self, action: Callable[[], object]) -> object:
+        args = self._continuous_args
+        request_id = self._continuous_request_id
+        if args is None:
+            return action()
+        self._stop_continuous()
+        result = action()
+        self._start_continuous(args, request_id)
+        return result
 
     def configure_sequence(self, args: CameraConfigureSequenceArgs) -> None:
+        if self._continuous_args is not None:
+            self._stop_continuous()
         settings = {"frames": args.frame_count}
         if args.exposure_ms is not None:
             settings["exposure_ms"] = args.exposure_ms
@@ -155,6 +212,8 @@ class CameraWorker(DeviceWorker):
     def capture_sequence(
         self, command_args: NoArguments | CameraConfigureSequenceArgs
     ) -> object:
+        if self._continuous_args is not None:
+            self._stop_continuous()
         if isinstance(command_args, CameraConfigureSequenceArgs):
             self.configure_sequence(command_args)
         if self._sequence_args is None:
@@ -243,6 +302,11 @@ class CameraWorker(DeviceWorker):
     def configure_exposure(
         self, args: CameraConfigureExposureArgs
     ) -> CameraExposureResult:
+        return self._with_continuous_paused(lambda: self._configure_exposure(args))
+
+    def _configure_exposure(
+        self, args: CameraConfigureExposureArgs
+    ) -> CameraExposureResult:
         applied_ms = float(self.device.configure_exposure_time(args.exposure_ms))
         result = CameraExposureResult(applied_ms)
         self.state.configured = True
@@ -250,6 +314,9 @@ class CameraWorker(DeviceWorker):
         return result
 
     def configure_roi(self, args: CameraConfigureRoiArgs) -> CameraRoiResult:
+        return self._with_continuous_paused(lambda: self._configure_roi(args))
+
+    def _configure_roi(self, args: CameraConfigureRoiArgs) -> CameraRoiResult:
         if args.horizontal_offset < 0 or args.vertical_offset < 0:
             raise ValueError("camera ROI offsets must be non-negative")
         if args.horizontal_size <= 0 or args.vertical_size <= 0:
@@ -402,6 +469,9 @@ class CameraWorker(DeviceWorker):
             raise ValueError("camera ROI vertical offset + height exceeds the sensor")
 
     def safe_stop(self) -> None:
+        if self._continuous_args is not None:
+            self._stop_continuous()
+            return
         if self.device_constructed and self.state.connected:
             self.device.stop_capture()
         self.state.active = False

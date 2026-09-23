@@ -1469,7 +1469,6 @@ class ValvePanel(DevicePanel):
 class CameraPanel(DevicePanel):
     def __init__(self, parent=None) -> None:
         super().__init__(DeviceId.CAMERA, parent)
-        self._continuous_active = False
         self._last_roi_readback = None
         # Keep the viewer independent of the control window so it can be
         # placed behind it while acquisition controls remain accessible.
@@ -1647,31 +1646,15 @@ class CameraPanel(DevicePanel):
     ) -> None:
         try:
             roi_args = arguments()
-            restart_args = CameraConfigureSnapshotArgs(self.snapshot_exposure.value())
         except (TypeError, ValueError) as exc:
             self.show_notice(str(exc))
             return
-        if self._continuous_active:
-            self.command_requested.emit(
-                f"{action}_stop",
-                DeviceCommand(DeviceId.CAMERA, DeviceOperation.CAMERA_CAPTURE_STOP, source="ui"),
-            )
         self.command_requested.emit(
             action,
             DeviceCommand(
                 DeviceId.CAMERA, DeviceOperation.CAMERA_ROI_CONFIGURE, roi_args, source="ui"
             ),
         )
-        if self._continuous_active:
-            self.command_requested.emit(
-                f"{action}_restart",
-                DeviceCommand(
-                    DeviceId.CAMERA,
-                    DeviceOperation.CAMERA_CONTINUOUS_CAPTURE,
-                    restart_args,
-                    source="ui",
-                ),
-            )
 
     def _center_roi_args(self) -> CameraConfigureRoiArgs:
         limits = self._roi_limits()
@@ -1752,7 +1735,6 @@ class CameraPanel(DevicePanel):
     def update_readback(self, readback: object) -> None:
         if isinstance(readback, CameraReadback):
             self.readback_label.setText(str(readback))
-            self._continuous_active = readback.mode == "continuous" and readback.capture_active
             limits = readback.roi_limits
             if limits is not None:
                 self._current_roi_limits = limits
@@ -1815,11 +1797,6 @@ class CameraPanel(DevicePanel):
                 self.snapshot_exposure.setValue(args.exposure_ms)
         elif isinstance(args, CameraConfigureExposureArgs):
             self.exposure.setValue(args.exposure_ms)
-        elif isinstance(args, CameraConfigureRoiArgs):
-            self.roi_x.setValue(args.horizontal_offset)
-            self.roi_y.setValue(args.vertical_offset)
-            self.roi_width.setValue(args.horizontal_size)
-            self.roi_height.setValue(args.vertical_size)
         elif isinstance(args, CameraConfigureSequenceArgs):
             self.sequence_frames.setValue(args.frame_count)
             if args.exposure_ms is not None:
