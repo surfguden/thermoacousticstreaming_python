@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import os
 import sys
 import time
 import math
@@ -124,6 +125,18 @@ class CetoniPump:
     def _load_sdk(self) -> None:
         if self.qmixbus is not None and self.qmixpump is not None:
             return
+        wrapper = self.sdk_python_path / "qmixsdk" / "__init__.py"
+        if not wrapper.is_file():
+            raise CetoniPumpError(f"Qmix Python wrapper not found: {wrapper}")
+        dll_folder = os.environ.get("QMIXSDK")
+        if dll_folder:
+            required = ("labbCAN_Bus_API.dll", "labbCAN_Pump_API.dll")
+            missing = [name for name in required if not (Path(dll_folder) / name).is_file()]
+            if missing:
+                raise CetoniPumpError(
+                    f"QMIXSDK points to {dll_folder}, but required Qmix SDK DLLs are missing: "
+                    f"{', '.join(missing)}. QMIXSDK must name the folder containing both DLLs."
+                )
         path = str(self.sdk_python_path)
         if path not in sys.path:
             sys.path.insert(0, path)
@@ -131,9 +144,10 @@ class CetoniPump:
             from qmixsdk import qmixbus, qmixpump
         except Exception as exc:
             raise CetoniPumpError(
-                f"Could not import Qmix SDK Python wrapper from {self.sdk_python_path}. "
-                "Check that qmix_sdk_for_codex is present and that the Qmix/Cetoni SDK "
-                "DLL folder is installed or available through the QMIXSDK environment variable."
+                f"Could not load Qmix SDK from {self.sdk_python_path}: {exc}. "
+                f"QMIXSDK={dll_folder or '<not set>'}. Install the separate Qmix/CETONI SDK "
+                "runtime and set QMIXSDK to the folder containing labbCAN_Bus_API.dll "
+                "and labbCAN_Pump_API.dll (not merely the QmixElements application folder)."
             ) from exc
         self.qmixbus = qmixbus
         self.qmixpump = qmixpump

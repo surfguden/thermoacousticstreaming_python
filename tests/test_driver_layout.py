@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 from ctypes import c_int
 from pathlib import Path
 
@@ -76,6 +77,26 @@ def test_hamamatsu_default_wrapper_path_points_to_bundled_sdk() -> None:
     expected = Path(__file__).resolve().parents[1] / "dcamsdk4" / "samples" / "python"
     assert HamamatsuDcamDriver().sdk_python_path == expected
     assert (expected / "dcam.py").is_file()
+
+
+def test_cetoni_reports_missing_qmix_dlls_without_loading_hardware(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("QMIXSDK", str(tmp_path))
+    with pytest.raises(RuntimeError, match="labbCAN_Bus_API.dll.*labbCAN_Pump_API.dll"):
+        CetoniPump()._load_sdk()
+
+
+def test_cetoni_reports_native_loader_error_without_hardware_io(monkeypatch) -> None:
+    monkeypatch.delenv("QMIXSDK", raising=False)
+    original_import = builtins.__import__
+
+    def fail_qmix_import(name, *args, **kwargs):
+        if name == "qmixsdk":
+            raise OSError("dependent DLL could not be loaded")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fail_qmix_import)
+    with pytest.raises(RuntimeError, match="dependent DLL could not be loaded"):
+        CetoniPump()._load_sdk()
 
 
 def test_simulated_devices_are_reusable_without_the_hal() -> None:
