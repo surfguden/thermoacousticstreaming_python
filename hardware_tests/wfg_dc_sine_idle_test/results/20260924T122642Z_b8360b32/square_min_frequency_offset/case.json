@@ -1,0 +1,15 @@
+{
+  "captures": {},
+  "case": "square_min_frequency_offset",
+  "error": "AnalogDiscoveryError: FDwfDeviceOpen failed: Devices are busy, used by other applications\nFDwfDeviceOpenEx\n",
+  "events": [
+    {
+      "event": "device_cleaned_up",
+      "utc": "2026-09-24T12:26:48.115+00:00"
+    }
+  ],
+  "finished_utc": "2026-09-24T12:26:48.115+00:00",
+  "scope_capture_method": "three sequential short captures, not a continuous trigger-aligned trace",
+  "started_utc": "2026-09-24T12:26:45.213+00:00",
+  "status": "failed"
+}

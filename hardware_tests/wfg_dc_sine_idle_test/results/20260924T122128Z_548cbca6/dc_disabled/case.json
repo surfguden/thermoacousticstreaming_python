@@ -1,0 +1,69 @@
+{
+  "captures": {},
+  "case": "dc_disabled",
+  "events": [
+    {
+      "event": "device_opened",
+      "utc": "2026-09-24T12:21:31.380+00:00"
+    },
+    {
+      "event": "device_cleaned_up",
+      "utc": "2026-09-24T12:21:31.402+00:00"
+    }
+  ],
+  "finished_utc": "2026-09-24T12:21:31.402+00:00",
+  "requested": {
+    "channels": [
+      {
+        "carrier": {
+          "amplitude_v": 0.0,
+          "enable": true,
+          "frequency_hz": 1.0,
+          "function": "DC",
+          "offset_v": 0.5,
+          "phase_deg": 0.0,
+          "symmetry_percent": 50.0
+        },
+        "channel_index": 0,
+        "effective_carrier": null,
+        "effective_fm_mod": null,
+        "fm_mod": {
+          "amplitude_v": 1.0,
+          "enable": false,
+          "frequency_hz": 1000.0,
+          "function": "Sine",
+          "offset_v": 0.0,
+          "phase_deg": 0.0,
+          "symmetry_percent": 50.0
+        },
+        "idle_state": "Disabled",
+        "out_of_range": false,
+        "trigger": {
+          "repeat_count": 1,
+          "repeat_trigger": false,
+          "sec_run": 3.0,
+          "sec_wait": 0.0,
+          "source": "trigsrcPC"
+        }
+      }
+    ],
+    "running": true,
+    "synchronize_state": "Independent"
+  },
+  "scope_capture_method": "three sequential short captures, not a continuous trigger-aligned trace",
+  "sdk_capabilities": {
+    "carrier_frequency_range_hz": [
+      1e-06,
+      100000000.0
+    ],
+    "idle_mask": 14,
+    "idle_supported": {
+      "Disabled": false,
+      "Hold": true,
+      "Initial": true,
+      "Offset": true
+    }
+  },
+  "started_utc": "2026-09-24T12:21:28.190+00:00",
+  "status": "skipped_unsupported_idle"
+}

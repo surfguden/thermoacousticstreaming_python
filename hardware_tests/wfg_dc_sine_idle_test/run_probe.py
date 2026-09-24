@@ -22,7 +22,7 @@ CONFIRMATION = "CONFIRM_REAL_AD2_WFG1_SCOPE1_LOOPBACK"
 SAMPLE_RATE_HZ = 20_000.0
 SAMPLE_COUNT = 2_048
 RUN_S = 3.0
-CASES = ("dc_disabled", "sine_zero_offset")
+CASES = ("dc_disabled", "square_min_frequency_offset")
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 
 
@@ -94,7 +94,7 @@ def await_wavegen_status(ad2, expected: str, timeout_s: float) -> dict:
     raise RuntimeError(f"WFG1 did not reach {expected} within {timeout_s:g} s; last={last}")
 
 
-def make_config(case: str, voltage_v: float):
+def make_config(case: str, voltage_v: float, minimum_frequency_hz: float):
     from thermo_acoustic.drivers.ad2.configuration import (
         AnalogOutputIdleState, CarrierSettings, TriggerSettings, TriggerSource,
         WaveformFunction, WfgChannelConfig, WfgConfig,
@@ -106,7 +106,8 @@ def make_config(case: str, voltage_v: float):
                                   phase_deg=0.0, enable=True)
         idle = AnalogOutputIdleState.DISABLED
     else:
-        carrier = CarrierSettings(function=WaveformFunction.SINE, frequency_hz=0.0,
+        carrier = CarrierSettings(function=WaveformFunction.SQUARE,
+                                  frequency_hz=minimum_frequency_hz,
                                   amplitude_v=voltage_v, offset_v=0.0,
                                   phase_deg=0.0, enable=True)
         idle = AnalogOutputIdleState.OFFSET
@@ -153,12 +154,10 @@ def run_case(case: str, voltage_v: float, run_dir: Path) -> dict:
 
     case_dir = run_dir / case
     case_dir.mkdir()
-    config = make_config(case, voltage_v)
     record: dict = {
         "case": case,
         "status": "failed",
         "started_utc": utc_now(),
-        "requested": asdict(config),
         "scope_capture_method": "three sequential short captures, not a continuous trigger-aligned trace",
         "captures": {},
         "events": [],
@@ -172,18 +171,23 @@ def run_case(case: str, voltage_v: float, run_dir: Path) -> dict:
         if case == "dc_disabled" and not record["sdk_capabilities"]["idle_supported"]["Disabled"]:
             record["status"] = "skipped_unsupported_idle"
             return record
-        if case == "sine_zero_offset" and not record["sdk_capabilities"]["idle_supported"]["Offset"]:
+        if case == "square_min_frequency_offset" and not record["sdk_capabilities"]["idle_supported"]["Offset"]:
             record["status"] = "skipped_unsupported_idle"
             return record
 
+        minimum_frequency_hz = record["sdk_capabilities"]["carrier_frequency_range_hz"][0]
+        config = make_config(case, voltage_v, minimum_frequency_hz)
+        record["requested"] = asdict(config)
+        record["requested_minimum_frequency_hz"] = minimum_frequency_hz
         ad2.wfg_configure(config)
         record["events"].append({"event": "wfg_armed", "utc": utc_now()})
         try:
             record["sdk_readback"] = asdict(ad2.wfg_readback())
-            if case == "sine_zero_offset":
+            if case == "square_min_frequency_offset":
                 actual_hz = record["sdk_readback"]["channels"][0]["carrier"]["frequency_hz"]
                 record["frequency_readback_hz"] = actual_hz
-                record["frequency_readback_is_zero"] = actual_hz == 0.0
+                record["frequency_readback_matches_minimum"] = math.isclose(
+                    actual_hz, minimum_frequency_hz, rel_tol=1e-9, abs_tol=0.0)
         except Exception as exc:
             record["readback_error"] = f"{type(exc).__name__}: {exc}"
 

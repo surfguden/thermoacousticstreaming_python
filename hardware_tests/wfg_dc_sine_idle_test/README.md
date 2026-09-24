@@ -1,4 +1,4 @@
-# WFG1 DC versus 0 Hz sine idle probe
+# WFG1 DC versus minimum-frequency square idle probe
 
 This is a **manual, output-capable hardware probe**, not a pytest test. It is
 never imported or run by CI. Run it only with WFG1 connected directly to
@@ -17,7 +17,7 @@ tests these WFG1 configurations, each armed for one PC-triggered 3 s run:
 
 1. DC, offset = requested voltage, idle = Disabled. If the device does not
    report Disabled as supported, this case is recorded as skipped.
-2. Sine, frequency = 0 Hz, amplitude = requested voltage, offset = 0 V,
+2. Square, frequency = the SDK-reported minimum, amplitude = requested voltage, offset = 0 V,
    phase = 0°, idle = Offset. A rejected or clamped frequency is recorded,
    not silently interpreted as successful DC generation.
 

@@ -1,0 +1,184 @@
+{
+  "captures": {
+    "armed_idle": {
+      "csv": "armed_idle.csv",
+      "ended_utc": "2026-09-24T12:28:25.923+00:00",
+      "max_v": -0.013489870060743533,
+      "mean_v": -0.023594275229734583,
+      "min_v": -0.03809247242524042,
+      "sample_count": 2048,
+      "sample_rate_hz": 20000.0,
+      "scope_range_v": 1.0,
+      "started_utc": "2026-09-24T12:28:25.811+00:00",
+      "wfg_status_after": {
+        "code": 1,
+        "name": "armed"
+      },
+      "wfg_status_before": {
+        "code": 1,
+        "name": "armed"
+      }
+    },
+    "done_idle": {
+      "csv": "done_idle.csv",
+      "ended_utc": "2026-09-24T12:28:29.055+00:00",
+      "max_v": -0.15436504524375308,
+      "mean_v": -0.2708015213153897,
+      "min_v": -0.4361153956097722,
+      "sample_count": 2048,
+      "sample_rate_hz": 20000.0,
+      "scope_range_v": 1.0,
+      "started_utc": "2026-09-24T12:28:28.944+00:00",
+      "wfg_status_after": {
+        "code": 2,
+        "name": "done"
+      },
+      "wfg_status_before": {
+        "code": 2,
+        "name": "done"
+      }
+    },
+    "running": {
+      "csv": "running.csv",
+      "ended_utc": "2026-09-24T12:28:26.049+00:00",
+      "max_v": 0.4576668163168818,
+      "mean_v": 0.28106994739680785,
+      "min_v": 0.15906536844093325,
+      "sample_count": 2048,
+      "sample_rate_hz": 20000.0,
+      "scope_range_v": 1.0,
+      "started_utc": "2026-09-24T12:28:25.936+00:00",
+      "wfg_status_after": {
+        "code": 3,
+        "name": "running"
+      },
+      "wfg_status_before": {
+        "code": 3,
+        "name": "running"
+      }
+    }
+  },
+  "case": "square_min_frequency_offset",
+  "events": [
+    {
+      "event": "device_opened",
+      "utc": "2026-09-24T12:28:25.792+00:00"
+    },
+    {
+      "event": "wfg_armed",
+      "utc": "2026-09-24T12:28:25.801+00:00"
+    },
+    {
+      "event": "pc_trigger_sent",
+      "utc": "2026-09-24T12:28:25.935+00:00"
+    },
+    {
+      "event": "device_cleaned_up",
+      "utc": "2026-09-24T12:28:29.098+00:00"
+    }
+  ],
+  "finished_utc": "2026-09-24T12:28:29.098+00:00",
+  "frequency_readback_hz": 9.999977295027764e-07,
+  "frequency_readback_matches_minimum": false,
+  "requested": {
+    "channels": [
+      {
+        "carrier": {
+          "amplitude_v": 0.5,
+          "enable": true,
+          "frequency_hz": 1e-06,
+          "function": "Square",
+          "offset_v": 0.0,
+          "phase_deg": 0.0,
+          "symmetry_percent": 50.0
+        },
+        "channel_index": 0,
+        "effective_carrier": null,
+        "effective_fm_mod": null,
+        "fm_mod": {
+          "amplitude_v": 1.0,
+          "enable": false,
+          "frequency_hz": 1000.0,
+          "function": "Sine",
+          "offset_v": 0.0,
+          "phase_deg": 0.0,
+          "symmetry_percent": 50.0
+        },
+        "idle_state": "Offset",
+        "out_of_range": false,
+        "trigger": {
+          "repeat_count": 1,
+          "repeat_trigger": false,
+          "sec_run": 3.0,
+          "sec_wait": 0.0,
+          "source": "trigsrcPC"
+        }
+      }
+    ],
+    "running": true,
+    "synchronize_state": "Independent"
+  },
+  "requested_minimum_frequency_hz": 1e-06,
+  "scope_capture_method": "three sequential short captures, not a continuous trigger-aligned trace",
+  "sdk_capabilities": {
+    "carrier_frequency_range_hz": [
+      1e-06,
+      100000000.0
+    ],
+    "idle_mask": 14,
+    "idle_supported": {
+      "Disabled": false,
+      "Hold": true,
+      "Initial": true,
+      "Offset": true
+    }
+  },
+  "sdk_readback": {
+    "channels": [
+      {
+        "carrier": {
+          "amplitude_v": 0.4998391934229737,
+          "enable": true,
+          "frequency_hz": 9.999977295027764e-07,
+          "function": "Square",
+          "offset_v": -0.0003940167796372407,
+          "phase_deg": 0.0,
+          "symmetry_percent": 50.0
+        },
+        "channel_index": 0,
+        "effective_carrier": {
+          "amplitude_v": 0.4998391934229737,
+          "enable": true,
+          "frequency_hz": 9.999977295027764e-07,
+          "function": "Square",
+          "offset_v": -0.0003940167796372407,
+          "phase_deg": 0.0,
+          "symmetry_percent": 50.0
+        },
+        "effective_fm_mod": null,
+        "fm_mod": {
+          "amplitude_v": 100.0,
+          "enable": false,
+          "frequency_hz": 1000.0000221897726,
+          "function": "DC",
+          "offset_v": 0.0,
+          "phase_deg": 0.0,
+          "symmetry_percent": 50.0
+        },
+        "idle_state": "Offset",
+        "out_of_range": false,
+        "trigger": {
+          "repeat_count": 1,
+          "repeat_trigger": false,
+          "sec_run": 3.0,
+          "sec_wait": 0.0,
+          "source": "trigsrcPC"
+        }
+      }
+    ],
+    "running": true,
+    "synchronize_state": "Independent"
+  },
+  "started_utc": "2026-09-24T12:28:22.696+00:00",
+  "status": "captured"
+}

@@ -1,0 +1,31 @@
+{
+  "captures": {},
+  "case": "dc_disabled",
+  "events": [
+    {
+      "event": "device_opened",
+      "utc": "2026-09-24T12:28:22.661+00:00"
+    },
+    {
+      "event": "device_cleaned_up",
+      "utc": "2026-09-24T12:28:22.684+00:00"
+    }
+  ],
+  "finished_utc": "2026-09-24T12:28:22.684+00:00",
+  "scope_capture_method": "three sequential short captures, not a continuous trigger-aligned trace",
+  "sdk_capabilities": {
+    "carrier_frequency_range_hz": [
+      1e-06,
+      100000000.0
+    ],
+    "idle_mask": 14,
+    "idle_supported": {
+      "Disabled": false,
+      "Hold": true,
+      "Initial": true,
+      "Offset": true
+    }
+  },
+  "started_utc": "2026-09-24T12:28:19.483+00:00",
+  "status": "skipped_unsupported_idle"
+}

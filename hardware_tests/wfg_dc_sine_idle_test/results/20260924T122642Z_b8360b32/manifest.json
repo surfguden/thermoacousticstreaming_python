@@ -1,0 +1,17 @@
+{
+  "cases": {
+    "dc_disabled": {
+      "path": "dc_disabled/case.json",
+      "status": "failed"
+    },
+    "square_min_frequency_offset": {
+      "path": "square_min_frequency_offset/case.json",
+      "status": "failed"
+    }
+  },
+  "finished_utc": "2026-09-24T12:26:48.118+00:00",
+  "probe": "wfg_dc_sine_idle_test",
+  "requested_voltage_v": 0.5,
+  "started_utc": "2026-09-24T12:26:42.136+00:00",
+  "wiring_required": "WFG1 to Scope1 BNC loopback only; laser and other loads disconnected"
+}
