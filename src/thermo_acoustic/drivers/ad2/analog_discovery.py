@@ -484,6 +484,69 @@ class AnalogDiscovery2:
         self._configure_do(self._require_handle("do_configure()"), new_config)
         self.do_config = new_config
 
+    def do_readback(self) -> DoConfig:
+        """Return the configuration sent to the SDK, including achieved divider rate."""
+        return deepcopy(self._get_do_config())
+
+    def experiment_digital_configure(self, frame_count: int, frame_rate_hz: float,
+                                     camera_delay_s: float, led_enabled: bool = True) -> dict[str, float | int]:
+        handle = self._require_handle("experiment_digital_configure()")
+        clock = self._digital_out_internal_clock_info(handle)
+        if clock <= 0 or frame_rate_hz <= 0:
+            raise AnalogDiscoveryError("DigitalOut clock and requested frame rate must be positive")
+        divider = round(clock / (2 * frame_rate_hz))
+        divider_min, divider_max = self._digital_out_divider_info(handle, 0)
+        if not divider_min <= divider <= divider_max or divider <= 0:
+            raise AnalogDiscoveryError("DIO0 frame rate cannot be represented by the device divider")
+        achieved_fps = clock / (2 * divider)
+        initial_ticks = round(camera_delay_s * 2 * achieved_fps)
+        counter_min = c_uint()
+        counter_max = c_uint()
+        self._check(self._dwf.FDwfDigitalOutCounterInfo(c_int(handle), c_int(0),
+                    byref(counter_min), byref(counter_max)), "FDwfDigitalOutCounterInfo")
+        if not counter_min.value <= initial_ticks <= counter_max.value:
+            raise AnalogDiscoveryError("DIO0 camera delay cannot be represented by the initial counter")
+        achieved_delay = initial_ticks / (2 * achieved_fps)
+        global_run = achieved_delay + frame_count / achieved_fps
+        run_min = c_double()
+        run_max = c_double()
+        self._check(self._dwf.FDwfDigitalOutRunInfo(c_int(handle), byref(run_min),
+                    byref(run_max)), "FDwfDigitalOutRunInfo")
+        if not run_min.value <= global_run <= run_max.value:
+            raise AnalogDiscoveryError("Finite DigitalOut run time is outside the device range")
+        trigger = {"source": "trigsrcPC", "sec_wait": 0.0, "sec_run": global_run,
+                   "repeat_count": 1, "repeat_trigger": False}
+        self.do_configure({"channels": [
+            {"channel_index": 0, "enabled": True, "clock_divider": divider,
+             "output_type": "Pulse", "idle_state": "Low", "start_high": False,
+             "counter_initial_bits": initial_ticks, "counter_low_bits": 1,
+             "counter_high_bits": 1, "trigger": trigger},
+            {"channel_index": 1, "enabled": led_enabled, "clock_divider": divider,
+             "output_type": "Pulse", "idle_state": "Low", "start_high": True,
+             "counter_initial_bits": 1, "counter_low_bits": 0,
+             "counter_high_bits": 1, "trigger": trigger},
+        ]})
+        return {"requested_frame_rate_hz": frame_rate_hz,
+                "achieved_frame_rate_hz": achieved_fps,
+                "requested_camera_delay_s": camera_delay_s,
+                "achieved_camera_delay_s": achieved_delay,
+                "frame_count": frame_count, "global_run_s": global_run}
+
+    def experiment_output_states(self) -> tuple[tuple[str, str], str]:
+        handle = c_int(self._require_handle("experiment_output_states()"))
+        names = {0: "ready", 1: "armed", 2: "done", 3: "running",
+                 4: "config", 5: "prefill", 7: "wait"}
+        waveform = []
+        for channel in (0, 1):
+            state = c_int()
+            self._check(self._dwf.FDwfAnalogOutStatus(handle, c_int(channel), byref(state)),
+                        "FDwfAnalogOutStatus")
+            waveform.append(names.get(state.value, f"unknown:{state.value}"))
+        digital = c_int()
+        self._check(self._dwf.FDwfDigitalOutStatus(handle, byref(digital)),
+                    "FDwfDigitalOutStatus")
+        return (waveform[0], waveform[1]), names.get(digital.value, f"unknown:{digital.value}")
+
     def do_reset(self) -> None:
         self._reset_digital_output(self._require_handle("do_reset()"))
         self.do_config = DoConfig()
@@ -696,6 +759,7 @@ class AnalogDiscovery2:
             "FDwfAnalogOutIdleGet": ([c_int, c_int, ctypes.POINTER(c_int)], c_int),
             "FDwfAnalogOutMasterSet": ([c_int, c_int, c_int], c_int),
             "FDwfAnalogOutConfigure": ([c_int, c_int, c_int], c_int),
+            "FDwfAnalogOutStatus": ([c_int, c_int, ctypes.POINTER(c_int)], c_int),
             "FDwfAnalogOutReset": ([c_int, c_int], c_int),
             "FDwfAnalogInChannelEnableSet": ([c_int, c_int, c_int], c_int),
             "FDwfAnalogInAcquisitionModeSet": ([c_int, c_int], c_int),
@@ -746,6 +810,7 @@ class AnalogDiscovery2:
             "FDwfAnalogInStatus": ([c_int, c_int, ctypes.POINTER(c_int)], c_int),
             "FDwfAnalogInStatusData": ([c_int, c_int, ctypes.POINTER(c_double), c_int], c_int),
             "FDwfDigitalOutReset": ([c_int], c_int),
+            "FDwfDigitalOutStatus": ([c_int, ctypes.POINTER(c_int)], c_int),
             "FDwfDigitalOutCount": ([c_int, ctypes.POINTER(c_int)], c_int),
             "FDwfDigitalOutInternalClockInfo": ([c_int, ctypes.POINTER(c_double)], c_int),
             "FDwfDigitalOutEnableSet": ([c_int, c_int, c_int], c_int),

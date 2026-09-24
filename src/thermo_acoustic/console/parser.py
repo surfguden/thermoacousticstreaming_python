@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shlex
+from dataclasses import dataclass
 
 from ..application.commands import (
     Ad2AnalogOutputIdle,
@@ -60,6 +61,14 @@ _SYRINGE_PRESETS = {
     "bd-5ml": PumpSyringePreset.BD_5_ML,
     "bd-10ml": PumpSyringePreset.BD_10_ML,
 }
+
+
+@dataclass(frozen=True, slots=True)
+class ExperimentConsoleCommand:
+    operation: str
+    path: str | None = None
+    output_root: str | None = None
+    image_format: str | None = None
 
 
 def _options(words: list[str]) -> dict[str, str]:
@@ -141,6 +150,11 @@ Workflows:
   workflow flush --unit N --volume-ml ML --flow-ul-min RATE [--wait-after-s SECONDS]
   workflow wait --seconds SECONDS
 
+Experiments:
+  experiment validate DEFINITION.json
+  experiment queue DEFINITION.json --output-root FOLDER [--format frames|stacked]
+  experiment start | status | stop-after-current | abort
+
 Camera:
   camera configure-snapshot [EXPOSURE_MS] | camera snapshot [--exposure-ms MS]
   camera continuous-snapshot [--exposure-ms MS] | camera read-timing
@@ -157,12 +171,32 @@ TEC and Z-stage:
   z-stage check-closed-loop | z-stage enable-closed-loop | z-stage move UM | z-stage read-position"""
 
 
-def parse_command(line: str, *, source: str = "console") -> DeviceCommand | WorkflowCommand | str | None:
-    words = shlex.split(line.strip())
+def parse_command(line: str, *, source: str = "console") -> DeviceCommand | WorkflowCommand | ExperimentConsoleCommand | str | None:
+    if line.lstrip().lower().startswith("experiment "):
+        # shlex's POSIX mode treats bare Windows backslashes as escapes.
+        words = [word[1:-1] if len(word) >= 2 and word[0] == word[-1] and word[0] in {'"', "'"} else word
+                 for word in shlex.split(line.strip(), posix=False)]
+    else:
+        words = shlex.split(line.strip())
     if not words:
         return None
     if words[0] in ("help", "status", "devices", "quit"):
         return words[0]
+    if words[0] == "experiment":
+        if len(words) == 2 and words[1] in {"start", "status", "stop-after-current", "abort"}:
+            return ExperimentConsoleCommand(words[1])
+        if len(words) == 3 and words[1] == "validate":
+            return ExperimentConsoleCommand("validate", path=words[2])
+        if len(words) >= 5 and words[1] == "queue":
+            options = _options(words[3:])
+            _only_options(options, "output_root", "format")
+            if "output_root" not in options:
+                raise ValueError("experiment queue requires --output-root FOLDER")
+            if options.get("format", "frames") not in {"frames", "stacked"}:
+                raise ValueError("experiment queue --format must be frames or stacked")
+            return ExperimentConsoleCommand("queue", words[2], options["output_root"],
+                                            options.get("format"))
+        raise ValueError("Invalid experiment command; type help for usage")
     if words[:2] == ["workflow", "flush"]:
         options = _options(words[2:])
         _only_options(options, "unit", "volume_ml", "flow_ul_min", "wait_after_s")

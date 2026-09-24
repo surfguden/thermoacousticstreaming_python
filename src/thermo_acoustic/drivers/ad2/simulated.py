@@ -108,6 +108,39 @@ class SimulatedAD2:
         self.do_config = coerce_do_config(configuration)
         self.digital_output_running = False
 
+    def do_readback(self) -> DoConfig:
+        if self.do_config is None:
+            raise RuntimeError("Configure digital output before reading settings")
+        return deepcopy(self.do_config)
+
+    def experiment_digital_configure(self, frame_count: int, frame_rate_hz: float,
+                                     camera_delay_s: float, led_enabled: bool = True) -> dict[str, float | int]:
+        run_s = camera_delay_s + frame_count / frame_rate_hz
+        trigger = {"source": "trigsrcPC", "sec_wait": 0.0, "sec_run": run_s,
+                   "repeat_count": 1, "repeat_trigger": False}
+        self.do_configure({"channels": [
+            {"channel_index": 0, "enabled": True, "output_type": "Pulse",
+             "clock_frequency_hz": frame_rate_hz, "start_high": False,
+             "counter_low_bits": 1, "counter_high_bits": 1,
+             "counter_initial_bits": round(camera_delay_s * frame_rate_hz * 2),
+             "idle_state": "Low", "trigger": trigger},
+            {"channel_index": 1, "enabled": led_enabled, "output_type": "Pulse",
+             "clock_frequency_hz": frame_rate_hz, "start_high": True,
+             "counter_low_bits": 0, "counter_high_bits": 1,
+             "counter_initial_bits": 1, "idle_state": "Low", "trigger": trigger},
+        ]})
+        return {"requested_frame_rate_hz": frame_rate_hz,
+                "achieved_frame_rate_hz": frame_rate_hz,
+                "requested_camera_delay_s": camera_delay_s,
+                "achieved_camera_delay_s": camera_delay_s,
+                "frame_count": frame_count, "global_run_s": run_s}
+
+    def experiment_output_states(self) -> tuple[tuple[str, str], str]:
+        # Simulation makes the transition deterministic without sleeping or
+        # opening a real SDK handle.
+        state = "done" if self.triggered else "armed"
+        return (state, state), state
+
     def start_stop_do(self, running: bool) -> None:
         if running and self.do_config is None:
             raise RuntimeError("Configure digital output before starting")

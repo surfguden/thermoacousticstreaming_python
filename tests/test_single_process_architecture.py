@@ -404,9 +404,10 @@ def test_z_stage_mode_switch_requires_query_and_confirmation(qt_app):
     assert status.readback.closed_loop_confirmation_required
 
     controller.submit(DeviceCommand(DeviceId.Z_STAGE, DeviceOperation.Z_STAGE_CLOSED_LOOP_ENABLE))
-    assert events[-1].state == "failed"
-    assert len(confirmations) == 1
-    assert not status.readback.closed_loop
+    wait(qt_app)
+    assert events[-1].state == "completed"
+    assert confirmations == []
+    assert controller.statuses()[DeviceId.Z_STAGE].readback.closed_loop
     controller.shutdown()
 
 

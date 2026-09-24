@@ -34,6 +34,7 @@ from ..application.event_formatting import detailed_event_text, event_summary
 from ..domain.models import ConnectionState, DeviceId, DeviceStatus, OperatingMode
 from .device_panels import DevicePanel, PANEL_TYPES
 from .workflow_panel import WorkflowPanel
+from .experiment_panel import ExperimentPanel
 
 
 PROFILE_SCHEMA_VERSION = 2
@@ -83,6 +84,9 @@ class MainWindow(QMainWindow):
         self.workflow_panel.abort_requested.connect(controller.cancel_active_workflow)
         self.workflow_panel.notice.connect(self._ui_notice)
         self.tabs.addTab(self.workflow_panel, "Workflows")
+        self.experiment_panel = ExperimentPanel(controller.experiments)
+        self.tabs.addTab(self.experiment_panel, "Experiments")
+        controller.experiments.confirm_batch = self.confirm_experiment_batch
         root_layout.addWidget(self.tabs)
         self.log_window = DetailedLogWindow(self)
         self.log = self.log_window.log
@@ -146,6 +150,14 @@ class MainWindow(QMainWindow):
     def confirm_operation(self, request: ConfirmationRequest) -> bool:
         answer = QMessageBox.question(
             self, "Confirm hardware operation", request.prompt,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def confirm_experiment_batch(self, summary: str) -> bool:
+        answer = QMessageBox.warning(
+            self, "Confirm real-hardware experiment batch", summary,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )

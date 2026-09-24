@@ -7,6 +7,8 @@ from .hal.registry import DeviceRegistry
 from .domain.models import OperatingMode
 from .ui.main_window import MainWindow, configure_palette
 from .console.parser import help_text
+from .console.parser import ExperimentConsoleCommand
+from .application.experiments import load_definition, validate_definition
 from .application.event_formatting import detailed_event_text
 
 def main(argv: list[str] | None = None) -> int:
@@ -16,6 +18,29 @@ def main(argv: list[str] | None = None) -> int:
         if item == "help": print(help_text(), flush=True)
         elif item in ("status", "devices"): print(controller.statuses(), flush=True)
         elif item == "quit": qt_app.quit()
+        elif isinstance(item, ExperimentConsoleCommand):
+            try:
+                manager = controller.experiments
+                if item.operation == "validate":
+                    expansion = validate_definition(load_definition(item.path))
+                    print(f"Valid: {len(expansion.experiments)} experiments", flush=True)
+                    for entry in expansion.experiments:
+                        print(f"{entry.experiment_id}: {entry.relative_path} {entry.parameters}", flush=True)
+                elif item.operation == "queue":
+                    folder = manager.queue(load_definition(item.path), item.output_root, item.image_format)
+                    print(f"Queued experiment series: {folder}", flush=True)
+                elif item.operation == "start":
+                    print("Batch started" if manager.start() else "Batch not approved", flush=True)
+                elif item.operation == "status":
+                    print(manager.status(), flush=True)
+                elif item.operation == "stop-after-current":
+                    manager.stop_after_current()
+                    print(manager.status(), flush=True)
+                elif item.operation == "abort":
+                    manager.abort()
+                    print(manager.status(), flush=True)
+            except Exception as exc:
+                print(f"experiment error: {exc}", flush=True)
         elif item is not None:
             try: controller.submit(item)
             except Exception as exc: print(f"validation error: {exc}", flush=True)

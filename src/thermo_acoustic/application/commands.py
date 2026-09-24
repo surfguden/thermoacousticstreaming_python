@@ -28,6 +28,8 @@ class DeviceOperation(str, Enum):
     AD2_SCOPE_CONFIGURE = "ad2.scope.configure"
     AD2_SCOPE_READ = "ad2.scope.read"
     AD2_DIGITAL_OUTPUT_CONFIGURE = "ad2.digital_output.configure"
+    AD2_EXPERIMENT_DIGITAL_CONFIGURE = "ad2.experiment_digital.configure"
+    AD2_OUTPUT_STATUS_READ = "ad2.output_status.read"
     AD2_DIGITAL_OUTPUT_START = "ad2.digital_output.start"
     AD2_DIGITAL_OUTPUT_STOP = "ad2.digital_output.stop"
     AD2_DIGITAL_OUTPUT_RESET = "ad2.digital_output.reset"
@@ -36,6 +38,8 @@ class DeviceOperation(str, Enum):
     CAMERA_CONTINUOUS_CAPTURE = "camera.continuous.capture"
     CAMERA_SEQUENCE_CONFIGURE = "camera.sequence.configure"
     CAMERA_SEQUENCE_CAPTURE = "camera.sequence.capture"
+    CAMERA_SEQUENCE_ARM = "camera.sequence.arm"
+    CAMERA_SEQUENCE_COLLECT = "camera.sequence.collect"
     CAMERA_SEQUENCE_SAVE = "camera.sequence.save"
     CAMERA_CAPTURE_STOP = "camera.capture.stop"
     CAMERA_TIMING_READ = "camera.timing.read"
@@ -383,6 +387,37 @@ class Ad2ConfigureDigitalOutputArgs:
 
 
 @dataclass(frozen=True, slots=True)
+class Ad2ExperimentDigitalArgs:
+    frame_count: int
+    frame_rate_hz: float
+    camera_delay_s: float
+    led_enabled: bool = True
+
+    def __post_init__(self) -> None:
+        if self.frame_count < 1:
+            raise ValueError("frame_count must be positive")
+        _require_finite_positive("frame_rate_hz", self.frame_rate_hz)
+        _require_finite_nonnegative("camera_delay_s", self.camera_delay_s)
+
+
+@dataclass(frozen=True, slots=True)
+class Ad2ExperimentDigitalResult:
+    requested_frame_rate_hz: float
+    achieved_frame_rate_hz: float
+    requested_camera_delay_s: float
+    achieved_camera_delay_s: float
+    frame_count: int
+    global_run_s: float
+    evidence_scope: str = "SDK_ACCEPTED_DIVIDER_CALCULATED_NOT_MEASURED_OUTPUT"
+
+
+@dataclass(frozen=True, slots=True)
+class Ad2OutputStatusResult:
+    waveform_states: tuple[str, str]
+    digital_state: str
+
+
+@dataclass(frozen=True, slots=True)
 class CameraConfigureSnapshotArgs:
     exposure_ms: float | None = None
     poll_interval_s: float = 0.05
@@ -632,6 +667,8 @@ class CameraSnapshotResult:
 class CameraSequenceResult:
     frames: tuple[object, ...]
     timestamps: tuple[str, ...] = ()
+    host_received_utc: tuple[str, ...] = ()
+    settings: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -640,6 +677,8 @@ class CameraFrameProgress:
     captured_frame_count: int
     requested_frame_count: int | None = None
     mode: str = "continuous"
+    sdk_timestamp: str | None = None
+    host_received_utc: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -759,6 +798,8 @@ OPERATION_SPECS: dict[DeviceOperation, OperationSpec] = {
     DeviceOperation.AD2_SCOPE_CONFIGURE: OperationSpec(_only(DeviceId.AD2), Ad2ConfigureScopeArgs, Ad2ScopeAppliedResult),
     DeviceOperation.AD2_SCOPE_READ: OperationSpec(_only(DeviceId.AD2), NoArguments, Ad2ScopeReadResult),
     DeviceOperation.AD2_DIGITAL_OUTPUT_CONFIGURE: OperationSpec(_only(DeviceId.AD2), Ad2ConfigureDigitalOutputArgs, _NONE_RESULT),
+    DeviceOperation.AD2_EXPERIMENT_DIGITAL_CONFIGURE: OperationSpec(_only(DeviceId.AD2), Ad2ExperimentDigitalArgs, Ad2ExperimentDigitalResult),
+    DeviceOperation.AD2_OUTPUT_STATUS_READ: OperationSpec(_only(DeviceId.AD2), NoArguments, Ad2OutputStatusResult),
     DeviceOperation.AD2_DIGITAL_OUTPUT_START: OperationSpec(_only(DeviceId.AD2), NoArguments, _NONE_RESULT),
     DeviceOperation.AD2_DIGITAL_OUTPUT_STOP: OperationSpec(_only(DeviceId.AD2), NoArguments, _NONE_RESULT),
     DeviceOperation.AD2_DIGITAL_OUTPUT_RESET: OperationSpec(_only(DeviceId.AD2), NoArguments, _NONE_RESULT),
@@ -767,6 +808,8 @@ OPERATION_SPECS: dict[DeviceOperation, OperationSpec] = {
     DeviceOperation.CAMERA_CONTINUOUS_CAPTURE: OperationSpec(_only(DeviceId.CAMERA), CameraConfigureSnapshotArgs, _NONE_RESULT),
     DeviceOperation.CAMERA_SEQUENCE_CONFIGURE: OperationSpec(_only(DeviceId.CAMERA), CameraConfigureSequenceArgs, _NONE_RESULT),
     DeviceOperation.CAMERA_SEQUENCE_CAPTURE: OperationSpec(_only(DeviceId.CAMERA), (NoArguments, CameraConfigureSequenceArgs), CameraSequenceResult),
+    DeviceOperation.CAMERA_SEQUENCE_ARM: OperationSpec(_only(DeviceId.CAMERA), NoArguments, _NONE_RESULT),
+    DeviceOperation.CAMERA_SEQUENCE_COLLECT: OperationSpec(_only(DeviceId.CAMERA), NoArguments, CameraSequenceResult),
     DeviceOperation.CAMERA_SEQUENCE_SAVE: OperationSpec(_only(DeviceId.CAMERA), CameraSaveSequenceArgs, CameraSequenceSaveResult),
     DeviceOperation.CAMERA_CAPTURE_STOP: OperationSpec(_only(DeviceId.CAMERA), NoArguments, _NONE_RESULT),
     DeviceOperation.CAMERA_TIMING_READ: OperationSpec(_only(DeviceId.CAMERA), NoArguments, CameraTimingResult),

@@ -104,6 +104,13 @@ def test_each_panel_builds_every_typed_device_operation(qt_app, device):
         expected -= {
             DeviceOperation.CAMERA_SNAPSHOT_CONFIGURE,
             DeviceOperation.CAMERA_SEQUENCE_CONFIGURE,
+            DeviceOperation.CAMERA_SEQUENCE_ARM,
+            DeviceOperation.CAMERA_SEQUENCE_COLLECT,
+        }
+    if device is DeviceId.AD2:
+        expected -= {
+            DeviceOperation.AD2_EXPERIMENT_DIGITAL_CONFIGURE,
+            DeviceOperation.AD2_OUTPUT_STATUS_READ,
         }
     if device is DeviceId.PUMP:
         expected = {

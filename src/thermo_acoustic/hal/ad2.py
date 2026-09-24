@@ -7,6 +7,9 @@ import time
 from ..application.commands import (
     NoArguments,
     Ad2ConfigureDigitalOutputArgs,
+    Ad2ExperimentDigitalArgs,
+    Ad2ExperimentDigitalResult,
+    Ad2OutputStatusResult,
     Ad2ConfigureScopeArgs,
     Ad2ScopeAppliedResult,
     Ad2ScopeChannelArgs,
@@ -55,6 +58,8 @@ class AD2Worker(DeviceWorker):
             self.configure_digital_output,
         )
         self.register(DeviceOperation.AD2_DIGITAL_OUTPUT_START, self.start_digital_output)
+        self.register(DeviceOperation.AD2_EXPERIMENT_DIGITAL_CONFIGURE, self.configure_experiment_digital)
+        self.register(DeviceOperation.AD2_OUTPUT_STATUS_READ, self.read_output_status)
         self.register(DeviceOperation.AD2_DIGITAL_OUTPUT_STOP, self.stop_digital_output)
         self.register(DeviceOperation.AD2_DIGITAL_OUTPUT_RESET, self.reset_digital_output)
         self._capabilities: Ad2Capabilities | None = None
@@ -264,6 +269,28 @@ class AD2Worker(DeviceWorker):
         self.device.start_stop_do(True)
         self.state.active = True
         self.state.readback = replace(self.state.readback, digital_output_running=True)
+
+    def configure_experiment_digital(self, args: Ad2ExperimentDigitalArgs) -> Ad2ExperimentDigitalResult:
+        limits = self._capabilities.digital_output if self._capabilities is not None else None
+        if limits is not None:
+            if limits.channel_count < 2:
+                raise ValueError("Experiment timing requires DIO0 and DIO1")
+            self._require_float_range("DIO0 frame_rate_hz", args.frame_rate_hz,
+                                      limits.clock_frequency_hz)
+        applied = self.device.experiment_digital_configure(
+            args.frame_count, args.frame_rate_hz, args.camera_delay_s, args.led_enabled
+        )
+        self.state.configured = True
+        self.state.readback = replace(
+            self.state.readback, digital_output_configured=True,
+            digital_output_running=False, digital_output_channel=0,
+            digital_output_clock_frequency_hz=float(applied["achieved_frame_rate_hz"]),
+        )
+        return Ad2ExperimentDigitalResult(**applied)
+
+    def read_output_status(self, _args: NoArguments) -> Ad2OutputStatusResult:
+        waveform, digital = self.device.experiment_output_states()
+        return Ad2OutputStatusResult(tuple(waveform), digital)
 
     def stop_digital_output(self, _args: NoArguments) -> None:
         self.device.start_stop_do(False)

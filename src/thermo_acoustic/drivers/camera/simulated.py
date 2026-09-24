@@ -24,6 +24,8 @@ class SimulatedCamera:
         self.trigger_global_exposure: bool | None = None
         self.sensor_width = 2048
         self.sensor_height = 1024
+        self._buffered_timestamps: list[str] = []
+        self._buffered_sequence_active = False
 
     def open_camera(self) -> object:
         self.initialized = True
@@ -148,21 +150,29 @@ class SimulatedCamera:
 
     def begin_buffered_sequence(self, frame_count: int) -> None:
         self._require_initialized()
-        self.sequence_settings = {"frames": max(int(frame_count), 1)}
+        self.sequence_settings = {**(self.sequence_settings or {}),
+                                  "frames": max(int(frame_count), 1)}
+        self._buffered_timestamps = []
+        self._buffered_sequence_active = True
         self.start_capture()
 
     def poll_buffered_sequence_frame(self, timeout_ms: int) -> np.ndarray | None:
         del timeout_ms
         if not self.capture_active:
             raise RuntimeError("Buffered sequence is not active")
-        return self._next_sequence_frame()
+        frame = self._next_sequence_frame()
+        if self._buffered_sequence_active:
+            self._buffered_timestamps.append(f"simulated_camera_clock:{self.frame_count}")
+        return frame
 
     def finish_buffered_sequence(self) -> tuple[str, ...]:
         self.stop_capture()
-        return ()
+        self._buffered_sequence_active = False
+        return tuple(self._buffered_timestamps)
 
     def begin_continuous_capture(self) -> None:
         self._require_initialized()
+        self._buffered_sequence_active = False
         self.start_capture()
 
     def poll_continuous_frame(self, timeout_ms: int) -> np.ndarray | None:

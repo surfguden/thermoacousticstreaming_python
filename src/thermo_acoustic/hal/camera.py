@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic
 
@@ -41,12 +42,15 @@ class CameraWorker(DeviceWorker):
         self.register(DeviceOperation.CAMERA_CONTINUOUS_CAPTURE, self.capture_continuous)
         self.register(DeviceOperation.CAMERA_SEQUENCE_CONFIGURE, self.configure_sequence)
         self.register(DeviceOperation.CAMERA_SEQUENCE_CAPTURE, self.capture_sequence)
+        self.register(DeviceOperation.CAMERA_SEQUENCE_ARM, self.arm_sequence)
+        self.register(DeviceOperation.CAMERA_SEQUENCE_COLLECT, self.collect_sequence)
         self.register(DeviceOperation.CAMERA_SEQUENCE_SAVE, self.save_sequence)
         self.register(DeviceOperation.CAMERA_CAPTURE_STOP, self.stop_capture)
         self.register(DeviceOperation.CAMERA_TIMING_READ, self.read_timing)
         self.register(DeviceOperation.CAMERA_EXPOSURE_CONFIGURE, self.configure_exposure)
         self.register(DeviceOperation.CAMERA_ROI_CONFIGURE, self.configure_roi)
         self._sequence_args: CameraConfigureSequenceArgs | None = None
+        self._sequence_armed = False
         self._last_sequence_frames: tuple[object, ...] = ()
         self._last_sequence_metadata: dict[str, object] | None = None
         self._continuous_timer: QTimer | None = None
@@ -63,6 +67,7 @@ class CameraWorker(DeviceWorker):
         if self._continuous_args is not None:
             self._stop_continuous()
         self.device.close()
+        self._sequence_armed = False
 
     def configure_snapshot(self, args: CameraConfigureSnapshotArgs) -> None:
         self._with_continuous_paused(lambda: self._configure_snapshot(args))
@@ -175,6 +180,9 @@ class CameraWorker(DeviceWorker):
     def configure_sequence(self, args: CameraConfigureSequenceArgs) -> None:
         if self._continuous_args is not None:
             self._stop_continuous()
+        if self._sequence_armed:
+            self.device.finish_buffered_sequence()
+            self._sequence_armed = False
         settings = {"frames": args.frame_count}
         if args.exposure_ms is not None:
             settings["exposure_ms"] = args.exposure_ms
@@ -209,27 +217,40 @@ class CameraWorker(DeviceWorker):
             captured_frame_count=0,
         )
 
+    def arm_sequence(self, _args: NoArguments) -> None:
+        if self._continuous_args is not None:
+            self._stop_continuous()
+        if self._sequence_armed:
+            raise RuntimeError("Camera sequence is already armed")
+        if self._sequence_args is None:
+            raise RuntimeError("Configure the camera sequence before arming")
+        self.device.begin_buffered_sequence(self._sequence_args.frame_count)
+        self._sequence_armed = True
+        self.state.active = True
+        self.state.readback = replace(self.state.readback, capture_active=True, captured_frame_count=0)
+
     def capture_sequence(
         self, command_args: NoArguments | CameraConfigureSequenceArgs
     ) -> object:
-        if self._continuous_args is not None:
-            self._stop_continuous()
         if isinstance(command_args, CameraConfigureSequenceArgs):
             self.configure_sequence(command_args)
+        self.arm_sequence(NoArguments())
+        return self.collect_sequence(NoArguments())
+
+    def collect_sequence(self, _args: NoArguments) -> object:
         if self._sequence_args is None:
             raise RuntimeError("Configure the camera sequence before capture")
+        if not self._sequence_armed:
+            raise RuntimeError("Arm the finite camera buffer before collecting frames")
         args = self._sequence_args
         frames: list[object] = []
+        host_received: list[str] = []
         frame_deadline = monotonic() + args.frame_timeout_s
-        self.device.begin_buffered_sequence(args.frame_count)
-        self.state.active = True
-        self.state.readback = replace(
-            self.state.readback, capture_active=True, captured_frame_count=0
-        )
         request_id = self._executing_request_id
 
         def cancel() -> None:
             self.device.finish_buffered_sequence()
+            self._sequence_armed = False
             self.state.active = False
             self.state.readback = replace(self.state.readback, capture_active=False)
 
@@ -245,6 +266,11 @@ class CameraWorker(DeviceWorker):
                     )
                 return DeferredProgress()
             frames.append(frame)
+            host_received.append(datetime.now(timezone.utc).isoformat())
+            raw_stamps = getattr(self.device, "last_frame_timestamps", None)
+            if raw_stamps is None:
+                raw_stamps = getattr(self.device, "_buffered_timestamps", ())
+            sdk_stamp = raw_stamps[-1] if raw_stamps else None
             frame_deadline = monotonic() + args.frame_timeout_s
             self.state.readback = replace(
                 self.state.readback, captured_frame_count=len(frames)
@@ -258,11 +284,14 @@ class CameraWorker(DeviceWorker):
                         len(frames),
                         args.frame_count,
                         mode="sequence",
+                        sdk_timestamp=str(sdk_stamp) if sdk_stamp is not None else None,
+                        host_received_utc=host_received[-1],
                     ),
                 )
             if len(frames) < args.frame_count:
                 return DeferredProgress()
             timestamps = self.device.finish_buffered_sequence()
+            self._sequence_armed = False
             self._last_sequence_frames = tuple(frames)
             settings = self.device.read_all_settings()
             settings["sequence"] = {
@@ -273,7 +302,8 @@ class CameraWorker(DeviceWorker):
             self.state.active = False
             self.state.readback = replace(self.state.readback, capture_active=False)
             return DeferredProgress(
-                True, CameraSequenceResult(tuple(frames), tuple(timestamps))
+                True, CameraSequenceResult(tuple(frames), tuple(timestamps),
+                                           tuple(host_received), settings)
             )
 
         return self.defer_operation(
@@ -474,5 +504,6 @@ class CameraWorker(DeviceWorker):
             return
         if self.device_constructed and self.state.connected:
             self.device.stop_capture()
+        self._sequence_armed = False
         self.state.active = False
         self.state.readback = replace(self.state.readback, capture_active=False)

@@ -25,6 +25,7 @@ from .commands import (
     validate_command,
 )
 from .workflows import FlushWorkflow
+from .experiment_runner import ExperimentManager
 
 
 @dataclass(slots=True)
@@ -55,6 +56,7 @@ class ApplicationController(QObject):
         self.audit = audit or AuditLogger()
         self.confirm_operation = confirm_operation or (lambda _: False)
         self._last_audit_error: str | None = None
+        self.experiments = ExperimentManager(self, parent=self)
         self._queue: deque[_Pending] = deque()
         self._active: _Pending | None = None
         self._flush: FlushWorkflow | None = None
@@ -80,6 +82,23 @@ class ApplicationController(QObject):
     def submit(self, command: DeviceCommand[Any] | WorkflowCommand) -> str:
         if self._closing:
             raise RuntimeError("Application shutdown has started")
+        if (self.experiments.status()["state"] in {"running", "stopping"}
+                and command.source != "experiment"):
+            safe_observations = {
+                DeviceOperation.CAMERA_SEQUENCE_SAVE,
+                DeviceOperation.CAMERA_TIMING_READ,
+                DeviceOperation.PUMP_FILL_LEVEL_READ,
+                DeviceOperation.PUMP_STATUS_READ,
+                DeviceOperation.VALVE_POSITION_READ,
+                DeviceOperation.TEC_STATUS_READ,
+                DeviceOperation.Z_STAGE_POSITION_READ,
+                DeviceOperation.AD2_OUTPUT_STATUS_READ,
+            }
+            if isinstance(command, WorkflowCommand) or (
+                command.operation not in safe_observations
+                and not self._is_urgent(command.operation)
+            ):
+                raise RuntimeError("Experiment owns the active instruments; use status, save, or abort")
         if isinstance(command, WorkflowCommand):
             self._queue.append(_Pending(command, monotonic()))
             self._emit(command, "queued")
@@ -97,11 +116,6 @@ class ApplicationController(QObject):
             )
             if requirement is None:
                 self._emit(command, "failed", "Read the Z-stage closed-loop confirmation requirement first")
-                return command.request_id
-            if requirement and not self.confirm_operation(
-                ConfirmationRequest(command, "Switch the Z-stage from open-loop to closed-loop control?")
-            ):
-                self._emit(command, "failed", "Z-stage closed-loop switch requires operator confirmation")
                 return command.request_id
         if command.operation is DeviceOperation.PUMP_REFERENCE_MOVE:
             unit_number = command.arguments.unit_index + 1
@@ -429,5 +443,6 @@ class ApplicationController(QObject):
             worker.shutdown_requested.emit()
             if not worker._thread.wait(2000):
                 errors.append(f"{worker.device_id.value}: thread did not terminate")
+        self.experiments.close()
         self._audit("shutdown", errors=errors)
         return errors
