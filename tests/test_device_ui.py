@@ -786,26 +786,21 @@ def test_center_roi_restarts_live_simulated_continuous_capture(qt_app):
     (QMessageBox.StandardButton.Yes, True),
     (QMessageBox.StandardButton.Cancel, False),
 ])
-@pytest.mark.parametrize("confirmation", ["reference", "connect"])
-def test_hardware_confirmation_uses_clicked_button(qt_app, button, expected, confirmation):
+def test_reference_confirmation_uses_clicked_button(qt_app, button, expected):
     controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
     window = MainWindow(controller)
 
     def click_button():
         dialog = qt_app.activeModalWidget()
         assert isinstance(dialog, QMessageBox)
-        clicked = QMessageBox.StandardButton.No if confirmation == "connect" and button == QMessageBox.StandardButton.Cancel else button
-        dialog.button(clicked).click()
+        dialog.button(button).click()
 
     QTimer.singleShot(20, click_button)
-    if confirmation == "reference":
-        request = ConfirmationRequest(
-            DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_REFERENCE_MOVE, PumpReferenceMoveArgs()),
-            "Remove the syringe before reference move",
-        )
-        accepted = window.confirm_operation(request)
-    else:
-        accepted = window.confirm_real_connection(DeviceId.PUMP)
+    request = ConfirmationRequest(
+        DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_REFERENCE_MOVE, PumpReferenceMoveArgs()),
+        "Remove the syringe before reference move",
+    )
+    accepted = window.confirm_operation(request)
     assert accepted is expected
     window.close()
 

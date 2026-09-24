@@ -487,7 +487,6 @@ def test_second_slice_hal_matches_injected_real_driver_contracts(qt_app):
     controller = ApplicationController(
         registry,
         mode=OperatingMode.REAL,
-        confirm_real_connection=lambda _: True,
     )
     results = []
     controller.command_result.connect(results.append)
@@ -544,7 +543,7 @@ def test_second_slice_hal_matches_injected_real_driver_contracts(qt_app):
     controller.shutdown()
 
 
-def test_real_connection_confirmation_and_lazy_fake_device(qt_app):
+def test_real_connection_is_lazy_and_needs_no_confirmation(qt_app):
     calls = []
     worker_thread_checks = []
 
@@ -573,14 +572,8 @@ def test_real_connection_confirmation_and_lazy_fake_device(qt_app):
     controller = ApplicationController(
         registry,
         mode=OperatingMode.REAL,
-        confirm_real_connection=lambda _: False,
     )
     controller.start()
-    controller.submit(DeviceCommand(DeviceId.PUMP, DeviceOperation.CONNECT))
-    wait(qt_app)
-    assert calls == []
-
-    controller.confirm_real_connection = lambda _: True
     controller.submit(DeviceCommand(DeviceId.PUMP, DeviceOperation.CONNECT))
     wait(qt_app)
     assert calls == ["constructed", "initialized"]
@@ -617,7 +610,7 @@ def test_pump_configuration_reaches_worker_before_initialize(qt_app, tmp_path):
 
     registry = DeviceRegistry(OperatingMode.REAL, {DeviceId.PUMP: FakePumpBank})
     controller = ApplicationController(
-        registry, mode=OperatingMode.REAL, confirm_real_connection=lambda _: True
+        registry, mode=OperatingMode.REAL
     )
     controller.start()
     controller.submit(

@@ -8,6 +8,7 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 from thermo_acoustic.application import ApplicationController, DeviceCommand, DeviceOperation
+from thermo_acoustic.application.audit import AuditLogger
 from thermo_acoustic.application.commands import (
     FlushArgs, ValveSetPositionArgs, WaitArgs, WorkflowCommand, WorkflowOperation,
 )
@@ -17,7 +18,7 @@ from thermo_acoustic.hal.registry import DeviceRegistry
 from thermo_acoustic.ui.workflow_panel import WorkflowPanel
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def qt_app():
     return QApplication.instance() or QApplication(["test-workflows"])
 
@@ -115,3 +116,51 @@ def test_workflow_panel_requires_connected_pump_unit(qt_app):
     panel.unit.setCurrentIndex(1)
     panel._request_flush()
     assert emitted[0].arguments.unit_index == 0
+
+
+def test_audit_path_is_anchored_at_startup(tmp_path, monkeypatch):
+    launch_dir = tmp_path / "launch"
+    other_dir = tmp_path / "other"
+    launch_dir.mkdir()
+    other_dir.mkdir()
+    monkeypatch.chdir(launch_dir)
+    audit = AuditLogger("logs/run.jsonl")
+    monkeypatch.chdir(other_dir)
+    assert audit.write("started") is None
+    assert (launch_dir / "logs" / "run.jsonl").exists()
+    assert not (other_dir / "logs").exists()
+
+
+def test_unavailable_audit_log_does_not_block_flush_camera_or_stop(qt_app, tmp_path):
+    blocked_parent = tmp_path / "logs"
+    blocked_parent.write_text("not a directory", encoding="utf-8")
+    controller = ApplicationController(
+        DeviceRegistry(), mode=OperatingMode.SIMULATION,
+        audit=AuditLogger(blocked_parent / "run.jsonl"),
+    )
+    results = []
+    warnings = []
+    controller.command_result.connect(results.append)
+    controller.message.connect(warnings.append)
+    controller.start()
+    try:
+        for device in (DeviceId.PUMP, DeviceId.VALVE):
+            controller.submit(DeviceCommand(device, DeviceOperation.CONNECT))
+        until(qt_app, lambda: len([r for r in results if r.operation is DeviceOperation.CONNECT]) == 2)
+        controller.submit(parse_command("pump refill"))
+        until(qt_app, lambda: any(r.operation is DeviceOperation.PUMP_REFILL for r in results))
+        flush = WorkflowCommand(WorkflowOperation.FLUSH, FlushArgs(0, 0.1, 1000))
+        camera = DeviceCommand(DeviceId.CAMERA, DeviceOperation.CONNECT)
+        controller.submit(flush)
+        controller.submit(camera)
+        until(qt_app, lambda: any(r.request_id == flush.request_id for r in results))
+        assert next(r for r in results if r.request_id == flush.request_id).ok
+        assert next(r for r in results if r.request_id == camera.request_id).ok
+        stop = parse_command("pump stop")
+        controller.submit(stop)
+        until(qt_app, lambda: any(r.request_id == stop.request_id for r in results))
+        assert next(r for r in results if r.request_id == stop.request_id).ok
+        assert len(warnings) == 1
+        assert str(blocked_parent / "run.jsonl") in warnings[0]
+    finally:
+        controller.shutdown()

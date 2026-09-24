@@ -46,7 +46,6 @@ class ApplicationController(QObject):
         *,
         mode: OperatingMode,
         audit: AuditLogger | None = None,
-        confirm_real_connection: Callable[[object], bool] | None = None,
         confirm_operation: Callable[[ConfirmationRequest], bool] | None = None,
         parent=None,
     ) -> None:
@@ -54,8 +53,8 @@ class ApplicationController(QObject):
         self.registry = registry
         self.mode = mode
         self.audit = audit or AuditLogger()
-        self.confirm_real_connection = confirm_real_connection or (lambda _: False)
         self.confirm_operation = confirm_operation or (lambda _: False)
+        self._last_audit_error: str | None = None
         self._queue: deque[_Pending] = deque()
         self._active: _Pending | None = None
         self._flush: FlushWorkflow | None = None
@@ -89,13 +88,6 @@ class ApplicationController(QObject):
         if not isinstance(command, DeviceCommand):
             raise TypeError("submit() requires a DeviceCommand or WorkflowCommand")
         validate_command(command.device, command.operation, command.arguments)
-        if (
-            command.operation is DeviceOperation.CONNECT
-            and self.mode is OperatingMode.REAL
-            and not self.confirm_real_connection(command.device)
-        ):
-            self._emit(command, "failed", "Real device connection requires operator confirmation")
-            return command.request_id
         if command.operation is DeviceOperation.Z_STAGE_CLOSED_LOOP_ENABLE:
             readback = self._statuses[command.device].readback
             requirement = (
@@ -132,7 +124,7 @@ class ApplicationController(QObject):
             self._urgent[command.request_id] = command
             self._emit(command, "queued")
             self._emit(command, "running")
-            self.audit.write(
+            self._audit(
                 "execution_start",
                 request_id=command.request_id,
                 source=command.source,
@@ -195,7 +187,7 @@ class ApplicationController(QObject):
             return
         self._active = pending
         self._emit(command, "running")
-        self.audit.write(
+        self._audit(
             "execution_start",
             request_id=command.request_id,
             source=command.source,
@@ -237,7 +229,7 @@ class ApplicationController(QObject):
         self, device: DeviceId, operation: DeviceOperation, arguments: object, urgent: bool,
     ) -> str:
         step = DeviceCommand(device, operation, arguments, source="workflow")
-        self.audit.write(
+        self._audit(
             "workflow_step", request_id=step.request_id, device=device.value,
             operation=operation.value,
         )
@@ -288,6 +280,14 @@ class ApplicationController(QObject):
             self._active = None
             self._dispatch_next()
 
+    def _audit(self, event: str, **fields: object) -> None:
+        error = self.audit.write(event, **fields)
+        if error is None:
+            self._last_audit_error = None
+        elif error != self._last_audit_error:
+            self._last_audit_error = error
+            self.message.emit(error)
+
     def _emit(
         self,
         command: DeviceCommand[Any] | WorkflowCommand,
@@ -307,7 +307,7 @@ class ApplicationController(QObject):
                 arguments=command.arguments,
             )
         )
-        self.audit.write(
+        self._audit(
             state,
             request_id=command.request_id,
             source=command.source,
@@ -429,5 +429,5 @@ class ApplicationController(QObject):
             worker.shutdown_requested.emit()
             if not worker._thread.wait(2000):
                 errors.append(f"{worker.device_id.value}: thread did not terminate")
-        self.audit.write("shutdown", errors=errors)
+        self._audit("shutdown", errors=errors)
         return errors

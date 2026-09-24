@@ -31,7 +31,7 @@ from ..application.commands import (
     ConfirmationRequest,
 )
 from ..application.event_formatting import detailed_event_text, event_summary
-from ..domain.models import ConnectionState, DEVICE_LABELS, DeviceId, DeviceStatus, OperatingMode
+from ..domain.models import ConnectionState, DeviceId, DeviceStatus, OperatingMode
 from .device_panels import DevicePanel, PANEL_TYPES
 from .workflow_panel import WorkflowPanel
 
@@ -94,6 +94,7 @@ class MainWindow(QMainWindow):
         controller.command_result.connect(self._result)
         controller.command_progress.connect(self._progress)
         controller.status_changed.connect(self._status)
+        controller.message.connect(self._ui_notice)
         self._status(controller.statuses())
 
     def _create_file_menu(self) -> None:
@@ -141,14 +142,6 @@ class MainWindow(QMainWindow):
             self._requests.pop(command.request_id, None)
             panel.clear_pending(command.request_id)
             panel.show_notice(f"Command was not submitted: {exc}")
-
-    def confirm_real_connection(self, device: DeviceId) -> bool:
-        answer = QMessageBox.question(
-            self,
-            "Connect real hardware",
-            f"Connect to the real {DEVICE_LABELS[device]}?",
-        )
-        return answer == QMessageBox.StandardButton.Yes
 
     def confirm_operation(self, request: ConfirmationRequest) -> bool:
         answer = QMessageBox.question(
