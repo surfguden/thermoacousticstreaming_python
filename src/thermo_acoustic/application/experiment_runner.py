@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
+import math
 import shutil
 import sys
 from time import monotonic
@@ -47,6 +48,7 @@ class ExperimentManager(QObject):
         self._partial_host_stamps: list[str] = []
         self._settings: dict[str, Any] = {}
         self._applied: dict[str, Any] = {}
+        self._laser_frequency_hz: float | None = None
         self._callbacks: dict[str, Callable[[Any], None]] = {}
         self._timers: list[QTimer] = []
         self._file_worker = FileWorker()
@@ -287,9 +289,20 @@ class ExperimentManager(QObject):
                       total_flush_ml_by_unit=totals)
 
     def _after_camera_timing(self, expansion: Expansion, storage: SeriesStorage, timing: Any) -> None:
+        try:
+            self._laser_frequency_hz = self._read_laser_min_frequency()
+        except (RuntimeError, ValueError) as exc:
+            self._fail(str(exc))
+            return
         for item in expansion.experiments:
             camera = next(step["args"] for step in item.steps if step["type"] == "camera_configure")
-            dio = next(step["args"]["dio"] for step in item.steps if step["type"] == "ad2_configure")
+            ad2 = next(step["args"] for step in item.steps if step["type"] == "ad2_configure")
+            try:
+                self._validate_laser_window(ad2, self._laser_frequency_hz)
+            except ValueError as exc:
+                self._fail(str(exc))
+                return
+            dio = ad2["dio"]
             interval = 1 / dio["frame_rate_hz"]
             if camera["exposure_ms"] / 1000 >= interval:
                 self._fail("Camera exposure exceeds frame interval")
@@ -308,6 +321,27 @@ class ExperimentManager(QObject):
             else:
                 self._begin_steps(expansion, storage)
         self._configure_all_before_fluidics(expansion, storage, configured)
+
+    def _read_laser_min_frequency(self) -> float:
+        readback = self.controller.statuses()[DeviceId.AD2].readback
+        capabilities = getattr(readback, "capabilities", None)
+        if capabilities is None:
+            raise RuntimeError("AD2 capabilities are unavailable for WFG2 laser frequency")
+        channel = next((item for item in capabilities.waveform_channels
+                        if item.channel_index == 1), None)
+        if channel is None or Ad2WaveformFunction.SQUARE.value not in channel.carrier.functions:
+            raise RuntimeError("AD2 WFG2 does not report support for Square output")
+        minimum = float(channel.carrier.frequency_hz.minimum)
+        maximum = float(channel.carrier.frequency_hz.maximum)
+        if not math.isfinite(minimum) or minimum <= 0 or minimum > maximum:
+            raise ValueError("AD2 WFG2 reported an invalid minimum carrier frequency")
+        return minimum
+
+    @staticmethod
+    def _validate_laser_window(args: dict[str, Any], frequency_hz: float) -> None:
+        laser = args["laser"]
+        if laser["enabled"] and laser["run_s"] * frequency_hz >= 0.5:
+            raise ValueError("Laser run window would reach the low half of the WFG2 square wave")
 
     def _configure_all_before_fluidics(self, expansion: Expansion, storage: SeriesStorage,
                                        done: Callable[[], None]) -> None:
@@ -342,11 +376,12 @@ class ExperimentManager(QObject):
                 storage.event("configuration_preflight", camera=camera, ad2=ad2,
                               applied_digital=json_ready(value))
                 configure_next()
-            self._command(DeviceId.CAMERA, DeviceOperation.CAMERA_SEQUENCE_CONFIGURE,
-                          self._camera_args(camera),
-                          lambda _value: self._command(DeviceId.AD2,
-                                                       DeviceOperation.AD2_WAVEFORM_CONFIGURE,
-                                                       self._waveform_args(ad2), waveform))
+             self._command(DeviceId.CAMERA, DeviceOperation.CAMERA_SEQUENCE_CONFIGURE,
+                           self._camera_args(camera),
+                           lambda _value: self._command(DeviceId.AD2,
+                                                        DeviceOperation.AD2_WAVEFORM_CONFIGURE,
+                                                        self._waveform_args(ad2, self._laser_frequency_hz),
+                                                        waveform))
         configure_next()
 
     def _run_count_preflights(self, expansion: Expansion, storage: SeriesStorage,
@@ -533,7 +568,7 @@ class ExperimentManager(QObject):
         elif kind == "ad2_configure":
             self._settings[kind] = args
             self._command(DeviceId.AD2, DeviceOperation.AD2_WAVEFORM_CONFIGURE,
-                          self._waveform_args(args),
+                          self._waveform_args(args, self._laser_frequency_hz),
                           lambda value: self._ad2_digital_after_waveform(args, value, done))
         elif kind == "camera_arm":
             self._command(DeviceId.CAMERA, DeviceOperation.CAMERA_SEQUENCE_ARM, NoArguments(),
@@ -669,7 +704,9 @@ class ExperimentManager(QObject):
         )
 
     @staticmethod
-    def _waveform_args(args: dict[str, Any]) -> Ad2ConfigureWaveformArgs:
+    def _waveform_args(args: dict[str, Any], laser_frequency_hz: float | None) -> Ad2ConfigureWaveformArgs:
+        if laser_frequency_hz is None:
+            raise RuntimeError("WFG2 minimum frequency was not checked before configuration")
         channels = []
         for index, key in enumerate(("ultrasound", "laser")):
             output = args[key]
@@ -678,11 +715,11 @@ class ExperimentManager(QObject):
                                              run_s=output["run_s"], repeat_count=1)
             channels.append(Ad2WaveformChannelArgs(
                 channel_index=index, enabled=output["enabled"],
-                function=Ad2WaveformFunction.SINE if index == 0 else Ad2WaveformFunction.DC,
-                frequency_hz=output["frequency_hz"] if index == 0 else 1.0,
-                amplitude_v=output["amplitude_v"] if index == 0 else 0.0,
-                offset_v=output["offset_v"] if index == 0 else output["on_voltage_v"],
-                idle_state=Ad2AnalogOutputIdle.DISABLED,
+                function=Ad2WaveformFunction.SINE if index == 0 else Ad2WaveformFunction.SQUARE,
+                frequency_hz=output["frequency_hz"] if index == 0 else laser_frequency_hz,
+                amplitude_v=output["amplitude_v"] if index == 0 else output["on_voltage_v"],
+                offset_v=output["offset_v"] if index == 0 else 0.0,
+                idle_state=Ad2AnalogOutputIdle.OFFSET,
                 trigger=trigger,
             ))
         return Ad2ConfigureWaveformArgs(channels=tuple(channels))

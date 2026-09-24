@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 import json
 from time import monotonic, sleep
+from types import SimpleNamespace
 
 import pytest
 import numpy as np
@@ -12,12 +13,12 @@ from PIL import Image
 from PySide6.QtWidgets import QApplication
 
 from thermo_acoustic.application.controller import ApplicationController
-from thermo_acoustic.application.commands import CameraConfigureRoiArgs, CameraSequenceResult, DeviceCommand, DeviceOperation, PumpMoveArgs
+from thermo_acoustic.application.commands import Ad2AnalogOutputIdle, Ad2WaveformFunction, CameraConfigureRoiArgs, CameraSequenceResult, DeviceCommand, DeviceOperation, PumpMoveArgs
 from thermo_acoustic.application.experiments import default_definition, validate_definition
 from thermo_acoustic.application.experiment_storage import SeriesStorage
 from thermo_acoustic.application.experiment_runner import ExperimentManager
 from thermo_acoustic.console.parser import ExperimentConsoleCommand, parse_command
-from thermo_acoustic.domain.models import DeviceId, OperatingMode
+from thermo_acoustic.domain.models import DeviceId, FloatRange, OperatingMode
 from thermo_acoustic.drivers.ad2 import AnalogDiscovery2
 from thermo_acoustic.hal.registry import DeviceRegistry
 
@@ -122,6 +123,47 @@ def test_tec_json_channel_keys_are_normalized_for_worker_arguments():
     assert args == {"target_temperature_c": {1: 37.0, 2: 38.0}, "channels": (1, 2)}
 
 
+def test_experiment_laser_uses_live_wfg2_minimum_and_safe_offset_idle():
+    expanded = validate_definition(default_definition())
+    settings = next(step["args"] for step in expanded.experiments[0].steps
+                    if step["type"] == "ad2_configure")
+    settings["laser"]["enabled"] = True
+    settings["laser"]["on_voltage_v"] = 0.5
+    capability = SimpleNamespace(channel_index=1, carrier=SimpleNamespace(
+        functions=("Square",), frequency_hz=FloatRange(1e-6, 1e8)))
+    controller = SimpleNamespace(statuses=lambda: {DeviceId.AD2: SimpleNamespace(
+        readback=SimpleNamespace(capabilities=SimpleNamespace(waveform_channels=(capability,))))})
+    frequency = ExperimentManager._read_laser_min_frequency(SimpleNamespace(controller=controller))
+    channels = ExperimentManager._waveform_args(settings, frequency).resolved_channels()
+    ultrasound, laser = channels
+    assert ultrasound.function is Ad2WaveformFunction.SINE
+    assert ultrasound.idle_state is Ad2AnalogOutputIdle.OFFSET
+    assert laser.function is Ad2WaveformFunction.SQUARE
+    assert laser.frequency_hz == 1e-6
+    assert laser.amplitude_v == 0.5
+    assert laser.offset_v == laser.phase_deg == 0
+    assert laser.idle_state is Ad2AnalogOutputIdle.OFFSET
+    ExperimentManager._validate_laser_window(settings, frequency)
+    with pytest.raises(ValueError, match="low half"):
+        ExperimentManager._validate_laser_window(settings, 1.0)
+    with pytest.raises(RuntimeError, match="capabilities are unavailable"):
+        ExperimentManager._read_laser_min_frequency(SimpleNamespace(
+            controller=SimpleNamespace(statuses=lambda: {DeviceId.AD2: SimpleNamespace(readback=None)})))
+
+
+def test_experiment_rejects_nonzero_ultrasound_idle_offset_and_negative_laser_voltage():
+    definition = default_definition()
+    steps = definition["steps"][1]["steps"][0]["steps"][0]["steps"]
+    ad2 = next(step["args"] for step in steps if step["type"] == "ad2_configure")
+    ad2["ultrasound"]["offset_v"] = 0.1
+    with pytest.raises(ValueError, match="ultrasound.offset_v must be 0"):
+        validate_definition(definition)
+    ad2["ultrasound"]["offset_v"] = 0
+    ad2["laser"]["on_voltage_v"] = -0.1
+    with pytest.raises(ValueError, match="laser.on_voltage_v"):
+        validate_definition(definition)
+
+
 def test_simulated_series_writes_timestamped_images_and_metadata(tmp_path):
     app = QApplication.instance() or QApplication(["test-experiments"])
     controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
@@ -144,6 +186,8 @@ def test_simulated_series_writes_timestamped_images_and_metadata(tmp_path):
         experiment[-1]["branches"][1] = [{"type": "wait_outputs", "args": {}}]
         experiment[0]["args"]["frame_count"] = 2
         experiment[1]["args"]["dio"]["frame_count"] = 2
+        experiment[1]["args"]["laser"]["enabled"] = True
+        experiment[1]["args"]["laser"]["on_voltage_v"] = 0.5
         folder = controller.experiments.queue(definition, tmp_path)
         assert controller.experiments.start()
         until(app, lambda: controller.experiments.status()["state"] in {"completed", "failed"})

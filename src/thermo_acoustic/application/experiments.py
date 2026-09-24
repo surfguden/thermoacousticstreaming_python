@@ -217,8 +217,10 @@ def _action(step: dict[str, Any]) -> None:
                 _number(item["frequency_hz"], "ad2.ultrasound.frequency_hz", minimum=1e-12)
                 _number(item["amplitude_v"], "ad2.ultrasound.amplitude_v", minimum=0)
                 _number(item["offset_v"], "ad2.ultrasound.offset_v")
+                if item["offset_v"] != 0:
+                    raise ValueError("ad2.ultrasound.offset_v must be 0 for safe Offset idle")
             else:
-                _number(item["on_voltage_v"], "ad2.laser.on_voltage_v")
+                _number(item["on_voltage_v"], "ad2.laser.on_voltage_v", minimum=0)
             if item["enabled"] and item["run_s"] <= 0:
                 raise ValueError(f"ad2.{output} requires a finite positive run_s")
         expected_window = dio["camera_delay_s"] + dio["frame_count"] / dio["frame_rate_hz"]
