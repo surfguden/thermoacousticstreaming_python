@@ -190,6 +190,9 @@ def test_duplicate_operation_is_blocked_across_ad2_subtabs(qt_app):
     panel.set_status(DeviceStatus(DeviceId.AD2, ConnectionState.CONNECTED, busy=True))
     assert panel._buttons["abort"].isEnabled()
     assert panel._buttons["safe_stop"].isEnabled()
+    panel.clear_pending(command.request_id)
+    assert panel._buttons["wave_trigger_pc"].isEnabled()
+    assert panel._buttons["do_trigger_pc"].isEnabled()
 
 
 def test_main_window_routes_panel_commands_and_terminal_events(qt_app):
@@ -729,7 +732,7 @@ def test_pump_connect_uses_selected_configuration_folder(qt_app, tmp_path):
     assert "does not exist" in panel.notice_label.text()
 
 
-def test_center_roi_stops_applies_and_restarts_continuous_capture(qt_app):
+def test_center_roi_sends_single_command_for_worker_managed_pause_restart(qt_app):
     del qt_app
     panel = CameraPanel()
     limits = CameraRoiLimitsReadback(
@@ -758,12 +761,8 @@ def test_center_roi_stops_applies_and_restarts_continuous_capture(qt_app):
 
     panel._buttons["center_roi"].click()
 
-    assert [command.operation for command in commands] == [
-        DeviceOperation.CAMERA_CAPTURE_STOP,
-        DeviceOperation.CAMERA_ROI_CONFIGURE,
-        DeviceOperation.CAMERA_CONTINUOUS_CAPTURE,
-    ]
-    roi = commands[1].arguments
+    assert [command.operation for command in commands] == [DeviceOperation.CAMERA_ROI_CONFIGURE]
+    roi = commands[0].arguments
     assert (roi.horizontal_offset, roi.vertical_offset) == (768, 384)
 
 

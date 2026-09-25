@@ -293,6 +293,13 @@ class DevicePanel(QScrollArea):
         self._update_controls()
 
     def _update_controls(self) -> None:
+        # The WFG and Digital Output tabs expose the same PC-trigger command.
+        # One pending trigger must disable both entry points without locking
+        # unrelated per-unit pump actions that share an operation type.
+        pc_trigger_pending = any(
+            self._action_operations.get(action) is DeviceOperation.AD2_SOFTWARE_TRIGGER
+            for action in self._pending
+        )
         for action, button in self._buttons.items():
             if action == "connect":
                 enabled = not self._connected
@@ -305,6 +312,9 @@ class DevicePanel(QScrollArea):
             else:
                 enabled = True
             if action in self._pending:
+                enabled = False
+            if (pc_trigger_pending
+                    and self._action_operations.get(action) is DeviceOperation.AD2_SOFTWARE_TRIGGER):
                 enabled = False
             button.setEnabled(enabled)
 
