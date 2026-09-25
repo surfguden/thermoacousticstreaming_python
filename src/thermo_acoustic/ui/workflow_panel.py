@@ -22,6 +22,7 @@ class WorkflowPanel(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._pending: dict[str, str] = {}
+        self._experiment_locked = False
         layout = QVBoxLayout(self)
 
         flush = QGroupBox("Flush")
@@ -121,7 +122,14 @@ class WorkflowPanel(QWidget):
         for action, pending in tuple(self._pending.items()):
             if pending == request_id:
                 del self._pending[action]
-                (self.flush_button if action == "flush" else self.wait_button).setEnabled(True)
+                (self.flush_button if action == "flush" else self.wait_button).setEnabled(
+                    not self._experiment_locked)
+
+    def set_experiment_locked(self, locked: bool) -> None:
+        self._experiment_locked = locked
+        self.flush_button.setEnabled(not locked and "flush" not in self._pending)
+        self.wait_button.setEnabled(not locked and "wait" not in self._pending)
+        self.abort_button.setEnabled(not locked)
 
     def show_notice(self, message: str) -> None:
         self.set_feedback(message, success=False)

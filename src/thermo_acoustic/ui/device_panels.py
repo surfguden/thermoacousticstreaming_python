@@ -163,6 +163,7 @@ class DevicePanel(QScrollArea):
         self._profile_widgets: dict[str, QWidget] = {}
         self._connected = False
         self._busy = False
+        self._experiment_locked = False
         self.setWidgetResizable(True)
         body = QWidget()
         self.layout = QVBoxLayout(body)
@@ -292,6 +293,10 @@ class DevicePanel(QScrollArea):
         self.update_readback(status.readback)
         self._update_controls()
 
+    def set_experiment_locked(self, locked: bool) -> None:
+        self._experiment_locked = locked
+        self._update_controls()
+
     def _update_controls(self) -> None:
         # The WFG and Digital Output tabs expose the same PC-trigger command.
         # One pending trigger must disable both entry points without locking
@@ -315,6 +320,13 @@ class DevicePanel(QScrollArea):
                 enabled = False
             if (pc_trigger_pending
                     and self._action_operations.get(action) is DeviceOperation.AD2_SOFTWARE_TRIGGER):
+                enabled = False
+            if self._experiment_locked and self._action_operations.get(action) not in {
+                DeviceOperation.CAMERA_TIMING_READ, DeviceOperation.PUMP_FILL_LEVEL_READ,
+                DeviceOperation.PUMP_STATUS_READ, DeviceOperation.VALVE_POSITION_READ,
+                DeviceOperation.TEC_STATUS_READ, DeviceOperation.Z_STAGE_POSITION_READ,
+                DeviceOperation.AD2_OUTPUT_STATUS_READ,
+            }:
                 enabled = False
             button.setEnabled(enabled)
 

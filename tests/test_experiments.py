@@ -33,6 +33,12 @@ def until(app, predicate, timeout=10):
     assert predicate(), "Timed out waiting for simulated experiment"
 
 
+def described_default_definition():
+    definition = deepcopy(default_definition())
+    definition["description"] = "Offline test series"
+    return definition
+
+
 def test_sweep_cartesian_order_and_parameter_refs():
     definition = default_definition()
     sweep = definition["steps"][1]
@@ -180,7 +186,7 @@ def test_simulated_series_writes_timestamped_images_and_metadata(tmp_path):
         controller.submit(DeviceCommand(DeviceId.CAMERA, DeviceOperation.CAMERA_ROI_CONFIGURE,
                                         CameraConfigureRoiArgs(0, 0, 16, 16)))
         until(app, lambda: any(result.operation is DeviceOperation.CAMERA_ROI_CONFIGURE for result in results))
-        definition = deepcopy(default_definition())
+        definition = described_default_definition()
         definition["steps"] = [definition["steps"][1]]
         experiment = definition["steps"][0]["steps"][0]["steps"][0]["steps"]
         experiment[-1]["branches"][1] = [{"type": "wait_outputs", "args": {}}]
@@ -192,6 +198,10 @@ def test_simulated_series_writes_timestamped_images_and_metadata(tmp_path):
         assert controller.experiments.start()
         until(app, lambda: controller.experiments.status()["state"] in {"completed", "failed"})
         assert controller.experiments.status()["state"] == "completed"
+        progress = controller.experiments.status()
+        assert progress["planned_experiments"] == progress["batch_completed_experiments"] == 1
+        assert progress["series"][0]["state"] == "completed"
+        assert progress["series"][0]["description"] == "Offline test series"
         manifest = json.loads((folder / "metadata" / "manifest.json").read_text())
         leaf = folder / manifest["experiments"][0]["relative_path"]
         record = json.loads((leaf / "experiment.json").read_text())
@@ -230,7 +240,7 @@ def test_count_preflight_uses_fake_workers_and_discards_test_images(tmp_path):
         controller.submit(DeviceCommand(DeviceId.CAMERA, DeviceOperation.CAMERA_ROI_CONFIGURE,
                                         CameraConfigureRoiArgs(0, 0, 16, 16)))
         until(app, lambda: any(result.operation is DeviceOperation.CAMERA_ROI_CONFIGURE for result in results))
-        definition = deepcopy(default_definition())
+        definition = described_default_definition()
         definition["preflight"] = True
         definition["steps"] = [definition["steps"][1]]
         experiment = definition["steps"][0]["steps"][0]["steps"][0]["steps"]
@@ -266,7 +276,7 @@ def test_save_failure_stops_later_queued_series_without_overwriting(tmp_path):
         controller.submit(DeviceCommand(DeviceId.CAMERA, DeviceOperation.CAMERA_ROI_CONFIGURE,
                                         CameraConfigureRoiArgs(0, 0, 16, 16)))
         until(app, lambda: any(result.operation is DeviceOperation.CAMERA_ROI_CONFIGURE for result in results))
-        definition = deepcopy(default_definition())
+        definition = described_default_definition()
         definition["steps"] = [definition["steps"][1]]
         experiment = definition["steps"][0]["steps"][0]["steps"][0]["steps"]
         experiment[-1]["branches"][1] = [{"type": "wait_outputs", "args": {}}]
@@ -305,7 +315,7 @@ def test_missing_sdk_timestamp_fails_acquisition_and_retains_partial_frames(tmp_
         until(app, lambda: any(result.operation is DeviceOperation.CAMERA_ROI_CONFIGURE for result in results))
         camera = controller.registry.by_id(DeviceId.CAMERA).device
         camera.finish_buffered_sequence = lambda: (camera.stop_capture(), ())[1]
-        definition = deepcopy(default_definition())
+        definition = described_default_definition()
         definition["steps"] = [definition["steps"][1]]
         experiment = definition["steps"][0]["steps"][0]["steps"][0]["steps"]
         experiment[-1]["branches"][1] = [{"type": "wait_outputs", "args": {}}]
@@ -343,7 +353,7 @@ def test_capability_failure_is_detected_before_initial_flush(tmp_path):
         camera = controller.registry.by_id(DeviceId.CAMERA).device
         camera.configure_sequence = lambda _settings: (_ for _ in ()).throw(
             ValueError("fake unsupported exposure"))
-        definition = deepcopy(default_definition())
+        definition = described_default_definition()
         definition["steps"][0]["args"]["volume_ml"] = 0.001
         experiment = definition["steps"][1]["steps"][0]["steps"][0]["steps"]
         experiment[-1]["branches"][1][1]["args"]["volume_ml"] = 0.001
@@ -372,7 +382,7 @@ def test_file_save_and_post_output_flush_overlap_without_blocking_preview(tmp_pa
         controller.submit(DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_REFILL,
                                         PumpMoveArgs(flow_rate_ul_min=1000)))
         until(app, lambda: any(result.operation is DeviceOperation.PUMP_REFILL for result in results))
-        definition = deepcopy(default_definition())
+        definition = described_default_definition()
         definition["steps"] = [definition["steps"][1]]
         experiment = definition["steps"][0]["steps"][0]["steps"][0]["steps"]
         experiment[0]["args"]["frame_count"] = 2
@@ -415,7 +425,7 @@ def test_save_failure_waits_for_already_started_flush_cleanup(tmp_path):
         controller.submit(DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_REFILL,
                                         PumpMoveArgs(flow_rate_ul_min=1000)))
         until(app, lambda: any(result.operation is DeviceOperation.PUMP_REFILL for result in results))
-        definition = deepcopy(default_definition())
+        definition = described_default_definition()
         definition["steps"] = [definition["steps"][1]]
         experiment = definition["steps"][0]["steps"][0]["steps"][0]["steps"]
         experiment[0]["args"]["frame_count"] = 2

@@ -41,6 +41,7 @@ class ApplicationController(QObject):
     command_progress = Signal(str, object)
     status_changed = Signal(object)
     message = Signal(str)
+    panic_changed = Signal(object)
 
     def __init__(
         self,
@@ -68,10 +69,15 @@ class ApplicationController(QObject):
         self._urgent: dict[str, DeviceCommand[Any]] = {}
         self._observations: dict[str, DeviceCommand[Any]] = {}
         self._closing = False
+        self._panic_pending: dict[str, DeviceId] = {}
+        self._panic_errors: list[str] = []
+        self._panic_state = "idle"
+        self._panic_dispatching = False
         self.count_preflight_active = False
         self._statuses = {worker.device_id: worker.status() for worker in registry.all()}
         self.temperature_monitor = TemperatureMonitor(self, parent=self)
         self.experiments.attach_temperature_monitor(self.temperature_monitor)
+        self.command_result.connect(self._panic_result)
         for worker in registry.all():
             worker.command_succeeded.connect(self._worker_succeeded)
             worker.command_failed.connect(self._worker_failed)
@@ -84,6 +90,69 @@ class ApplicationController(QObject):
             worker._thread.start()
         self.status_changed.emit(dict(self._statuses))
         self.temperature_monitor.start()
+
+    def panic_status(self) -> dict[str, object]:
+        return {"state": self._panic_state, "pending": len(self._panic_pending),
+                "errors": tuple(self._panic_errors)}
+
+    def panic_stop(self) -> None:
+        """Urgently stop active outputs without scheduling a valve or stage move."""
+        if self._panic_state == "stopping":
+            raise RuntimeError("Panic stop is already in progress")
+        self._panic_state = "stopping"
+        self._panic_dispatching = True
+        self._panic_errors.clear()
+        self.panic_changed.emit(self.panic_status())
+        if self._flush is not None:
+            self._flush.dispose()
+            self._flush.deleteLater()
+            self._flush = None
+            command = self._flush_command
+            self._flush_command = None
+            if command is not None:
+                self.command_result.emit(CommandResult(
+                    command.request_id, None, command.operation, False,
+                    error="Cancelled by Panic", command=command))
+                self._emit(command, "cancelled", "Cancelled by Panic")
+        if self._active is not None and isinstance(self._active.command, WorkflowCommand):
+            self._wait_timer.stop()
+            command = self._active.command
+            self._active = None
+            self.command_result.emit(CommandResult(
+                command.request_id, None, command.operation, False,
+                error="Cancelled by Panic", command=command))
+            self._emit(command, "cancelled", "Cancelled by Panic")
+        while self._queue:
+            self._emit(self._queue.popleft().command, "cancelled", "Cancelled by Panic")
+        self.experiments.panic_abort()
+        # The valve holds its current position; moving it while flow stops may
+        # be unsafe. The Z-stage has no physical stop primitive yet.
+        for device in (DeviceId.AD2, DeviceId.PUMP, DeviceId.CAMERA, DeviceId.TEC):
+            if self._statuses[device].connection is ConnectionState.DISCONNECTED:
+                continue
+            command = DeviceCommand(device, DeviceOperation.SAFE_STOP, NoArguments(), source="panic")
+            self._panic_pending[command.request_id] = device
+            try:
+                self.submit(command)
+            except Exception as exc:
+                self._panic_pending.pop(command.request_id, None)
+                self._panic_errors.append(f"{device.value}: {exc}")
+        self._panic_dispatching = False
+        self._finish_panic_if_ready()
+
+    def _panic_result(self, result: CommandResult) -> None:
+        device = self._panic_pending.pop(result.request_id, None)
+        if device is None:
+            return
+        if not result.ok:
+            self._panic_errors.append(f"{device.value}: {result.error or 'safe stop failed'}")
+        self._finish_panic_if_ready()
+
+    def _finish_panic_if_ready(self) -> None:
+        if self._panic_state != "stopping" or self._panic_dispatching or self._panic_pending:
+            return
+        self._panic_state = "failed" if self._panic_errors else "completed"
+        self.panic_changed.emit(self.panic_status())
 
     def observe_tec(self) -> str:
         """Read TEC without occupying the global experiment command lane."""
@@ -112,6 +181,8 @@ class ApplicationController(QObject):
     def submit(self, command: DeviceCommand[Any] | WorkflowCommand) -> str:
         if self._closing:
             raise RuntimeError("Application shutdown has started")
+        if self._panic_state == "stopping" and command.source != "panic":
+            raise RuntimeError("Panic safe stop is in progress")
         if self.count_preflight_active and command.source != "experiment-preflight":
             observations = {DeviceOperation.CAMERA_TIMING_READ, DeviceOperation.PUMP_FILL_LEVEL_READ,
                             DeviceOperation.PUMP_STATUS_READ, DeviceOperation.VALVE_POSITION_READ,

@@ -30,6 +30,8 @@ frame_*.npy
 *.tdms
 
 # Logs and temporary files
+/logs/
+/src/thermo_acoustic/logs/
 *.log
 *.err
 *.tmp

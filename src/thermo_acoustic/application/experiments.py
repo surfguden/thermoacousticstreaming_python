@@ -262,7 +262,7 @@ def validate_definition(value: Any) -> Expansion:
         json.dumps(value, allow_nan=False)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"Definition must contain only finite JSON data: {exc}") from exc
-    _keys(value, {"version", "name", "steps", "preflight", "tiff_format", "temperature_logging",
+    _keys(value, {"version", "name", "description", "steps", "preflight", "tiff_format", "temperature_logging",
                   "simple_series"},
           {"version", "name", "steps"}, "definition")
     if not isinstance(value.get("simple_series", False), bool):
@@ -273,6 +273,8 @@ def validate_definition(value: Any) -> Expansion:
         raise ValueError(f"Unsupported experiment definition version: {value['version']!r}")
     if not isinstance(value["name"], str) or not _NAME.fullmatch(value["name"]):
         raise ValueError("Definition name must start with a letter and contain only letters, digits or underscore")
+    if "description" in value and not isinstance(value["description"], str):
+        raise ValueError("Series description must be text")
     if not isinstance(value.get("preflight", False), bool):
         raise ValueError("preflight must be boolean")
     if value.get("tiff_format", "frames") not in ("frames", "stacked"):

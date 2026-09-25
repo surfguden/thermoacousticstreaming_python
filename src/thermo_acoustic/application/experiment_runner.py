@@ -41,6 +41,8 @@ class ExperimentManager(QObject):
         self.confirm_unchecked: Callable[[str], bool] = lambda _summary: True
         self._simple_preflight_passes: dict[str, tuple[int, float | None]] = {}
         self._queued: deque[tuple[Expansion, SeriesStorage]] = deque()
+        self._batch_items: list[tuple[Expansion, SeriesStorage]] = []
+        self._series_states: dict[Path, str] = {}
         self._approved = 0
         self._current: tuple[Expansion, SeriesStorage] | None = None
         self._experiment: PlannedExperiment | None = None
@@ -65,6 +67,11 @@ class ExperimentManager(QObject):
         self._failure_reason = None
         self._state = "idle"
         self._completed = 0
+        self._planned_total = 0
+        self._batch_completed_at_start = 0
+        self._batch_series_total = 0
+        self._phase = "Idle"
+        self._parallel_depth = 0
         self._series_completed_at_start = 0
         controller.command_result.connect(self._command_result)
         controller.command_progress.connect(self._command_progress)
@@ -83,17 +90,58 @@ class ExperimentManager(QObject):
 
     def queue(self, definition: dict[str, Any], output_root: str | Path,
               image_format: str | None = None) -> Path:
+        if self._state in {"running", "stopping", "aborting"}:
+            raise RuntimeError("Cannot queue a series while an experiment batch is running")
+        if self.controller.panic_status()["state"] == "stopping":
+            raise RuntimeError("Cannot queue a series during Panic safe stop")
+        if not isinstance(definition.get("description"), str) or not definition["description"].strip():
+            raise ValueError("Enter a series descriptor before queueing")
+        definition = {**definition, "description": definition["description"].strip()}
+        if self._state in {"completed", "failed", "aborted", "stopped"}:
+            self._state = "idle"
+            self._phase = "Idle"
+            self._planned_total = 0
+            self._batch_series_total = 0
+            self._batch_completed_at_start = self._completed
+            self._batch_items = []
+            self._series_states.clear()
         expansion = validate_definition(definition)
         output = Path(output_root).expanduser().resolve()
         storage = SeriesStorage(output, expansion,
                                 image_format or definition.get("tiff_format", "frames"))
         self._queued.append((expansion, storage))
+        self._series_states[storage.folder] = "queued"
         self._publish()
         return storage.folder
 
     def status(self) -> dict[str, Any]:
+        queued = self._batch_items if self._batch_items else list(self._queued)
+        queue_details = []
+        pump = self.controller.statuses()[DeviceId.PUMP].readback
+        for expansion, storage in queued:
+            passed = False
+            if expansion.definition.get("simple_series"):
+                fingerprint = json.dumps(expansion.definition, sort_keys=True, allow_nan=False)
+                proof = self._simple_preflight_passes.get(fingerprint)
+                if proof is not None and isinstance(pump, PumpReadback):
+                    unit = next((item for item in pump.units if item.unit_index == proof[0]), None)
+                    passed = unit is not None and unit.fill_level_ml == proof[1]
+            queue_details.append({"description": expansion.definition["description"],
+                                  "folder": str(storage.folder),
+                                  "experiment_count": len(expansion.experiments),
+                                  "preflight_passed": passed,
+                                  "state": self._series_states.get(storage.folder, "queued"),
+                                  "current": self._current is not None and storage is self._current[1]})
         return {"state": self._state, "queued_series": len(self._queued),
                 "approved_remaining": self._approved,
+                "batch_series_total": self._batch_series_total,
+                "planned_experiments": self._planned_total,
+                "batch_completed_experiments": self._completed - self._batch_completed_at_start,
+                "current_experiment_number": (self._completed - self._batch_completed_at_start + 1
+                                               if self._experiment is not None else None),
+                "phase": self._phase,
+                "failure_reason": self._failure_reason,
+                "series": queue_details,
                 "current_series": str(self._current[1].folder) if self._current else None,
                 "current_experiment": self._experiment.experiment_id if self._experiment else None,
                 "completed_experiments": self._completed,
@@ -103,6 +151,8 @@ class ExperimentManager(QObject):
         self.changed.emit(self.status())
 
     def start(self) -> bool:
+        if self.controller.panic_status()["state"] == "stopping":
+            raise RuntimeError("Wait for Panic safe stop to finish before starting a batch")
         if self.controller.count_preflight_active:
             raise RuntimeError("Wait for count preflight to finish before starting a batch")
         if self._current is not None or self._state == "running":
@@ -136,6 +186,12 @@ class ExperimentManager(QObject):
             ):
                 return False
         self._approved = queued_now
+        self._batch_items = list(self._queued)
+        self._planned_total = count
+        self._batch_completed_at_start = self._completed
+        self._batch_series_total = queued_now
+        self._phase = "Preparing experiment batch"
+        self._parallel_depth = 0
         self._failed = False
         self._abort_requested = False
         self._stop_after_current = False
@@ -147,6 +203,7 @@ class ExperimentManager(QObject):
     def record_simple_preflight(self, fingerprint: str, unit_index: int,
                                 fill_level_ml: float | None) -> None:
         self._simple_preflight_passes[fingerprint] = (unit_index, fill_level_ml)
+        self._publish()
 
     def stop_after_current(self) -> None:
         if self._state != "running":
@@ -170,14 +227,24 @@ class ExperimentManager(QObject):
                                                      NoArguments(), source="experiment"))
         self._fail("Operator aborted experiment batch")
 
+    def panic_abort(self) -> None:
+        """Stop batch dispatch without asking the flush workflow to move the valve."""
+        if self._state not in {"running", "stopping", "aborting"} or self._failed:
+            return
+        self._abort_requested = True
+        self._fail("Operator pressed Panic", stop_outputs=False)
+
     def _next_series(self) -> None:
         if self._failed or self._abort_requested:
             return
         if self._approved <= 0 or not self._queued or self._stop_after_current:
             self._state = "stopped" if self._stop_after_current else "completed"
+            self._phase = "Stopped after current experiment" if self._stop_after_current else "Experiment series completed"
             self._publish()
             return
         self._current = self._queued.popleft()
+        self._series_states[self._current[1].folder] = "running"
+        self._phase = "Preparing series"
         self._approved -= 1
         self._series_completed_at_start = self._completed
         expansion, storage = self._current
@@ -545,9 +612,11 @@ class ExperimentManager(QObject):
                 return
         storage.status("completed", {"completed_experiments":
                                       self._completed - self._series_completed_at_start})
+        self._series_states[storage.folder] = "completed"
         storage.event("series_completed")
         self._current = None
         self._experiment = None
+        self._phase = "Series completed"
         self._publish()
         QTimer.singleShot(0, self._next_series)
 
@@ -564,6 +633,7 @@ class ExperimentManager(QObject):
             expansion, storage = self._current
             self._experiment = next(item for item in expansion.experiments
                                     if item.experiment_id == node["experiment_id"])
+            self._phase = "Configuring instruments"
             self._capture = None
             self._triggered_at = None
             self._partial_frames.clear()
@@ -585,25 +655,34 @@ class ExperimentManager(QObject):
                     self._fail(f"Final experiment metadata could not be written: {exc}")
                     return
                 self._completed += 1
+                self._phase = "Experiment completed"
                 storage.event("experiment_completed", experiment_id=self._experiment.experiment_id)
                 self._experiment = None
                 self._publish()
                 if self._stop_after_current:
                     storage.status("stopped_after_current", {"completed_experiments":
                                                              self._completed - self._series_completed_at_start})
+                    self._series_states[storage.folder] = "stopped"
                     self._current = None
                     self._approved = 0
                     self._state = "stopped"
+                    self._phase = "Stopped after current experiment"
                     self._publish()
                     return
                 continuation()
             self._run_nodes(node["steps"], finished)
         elif kind == "parallel":
             remaining = len(node["branches"])
+            self._parallel_depth += 1
+            self._phase = ("Saving frames + waiting for outputs/flush"
+                           if any(any(step["type"] == "save_frames" for step in branch)
+                                  for branch in node["branches"]) else "Parallel steps running")
+            self._publish()
             def branch_done() -> None:
                 nonlocal remaining
                 remaining -= 1
                 if remaining == 0 and not self._failed:
+                    self._parallel_depth -= 1
                     continuation()
             for branch in node["branches"]:
                 self._run_nodes(branch, branch_done)
@@ -612,6 +691,19 @@ class ExperimentManager(QObject):
 
     def _run_action(self, node: dict[str, Any], done: Callable[[], None]) -> None:
         kind, args = node["type"], node["args"]
+        if not self._parallel_depth:
+            self._phase = {
+                "flush": "Flushing", "wait": "Waiting for temperature stabilization"
+                    if self._current and self._current[0].definition.get("simple_series")
+                    and self._experiment is None else "Waiting",
+                "tec_set": "Setting temperature", "tec_wait_stable": "Waiting for temperature stabilization",
+                "stage_move": "Moving Z-stage", "camera_configure": "Configuring camera",
+                "ad2_configure": "Configuring AD2", "camera_arm": "Arming camera",
+                "ad2_arm": "Arming AD2", "pc_trigger": "Triggering acquisition",
+                "await_frames": "Acquiring frames", "wait_outputs": "Waiting for AD2 outputs",
+                "save_frames": "Saving frames",
+            }.get(kind, kind)
+            self._publish()
         if kind == "flush":
             command = WorkflowCommand(WorkflowOperation.FLUSH,
                                       FlushArgs(**args), source="experiment")
@@ -846,7 +938,7 @@ class ExperimentManager(QObject):
         self._partial_sdk_stamps.append(value.sdk_timestamp)
         self._partial_host_stamps.append(value.host_received_utc or datetime.now(timezone.utc).isoformat())
 
-    def _fail(self, reason: str) -> None:
+    def _fail(self, reason: str, *, stop_outputs: bool = True) -> None:
         if self._failed:
             return
         self._failed = True
@@ -858,6 +950,7 @@ class ExperimentManager(QObject):
         self._timers.clear()
         self._failure_reason = reason
         self._state = "stopping"
+        self._phase = f"Safe stop after failure: {reason}"
         if self._current is not None and self._experiment is not None and self._partial_frames:
             future = self._file_worker.submit_partial(
                 self._current[1], self._experiment, tuple(self._partial_frames),
@@ -867,14 +960,15 @@ class ExperimentManager(QObject):
         # Stop active electrical/camera outputs. An already-started flush is
         # allowed to perform its own valve/pump cleanup; a host-owned file save
         # is allowed to finish. No subsequent experiment is dispatched.
-        statuses = self.controller.statuses()
-        for device in (DeviceId.AD2, DeviceId.CAMERA):
-            if statuses[device].connection is ConnectionState.CONNECTED:
-                try:
-                    self.controller.submit(DeviceCommand(device, DeviceOperation.SAFE_STOP,
-                                                         NoArguments(), source="experiment"))
-                except RuntimeError:
-                    pass
+        if stop_outputs:
+            statuses = self.controller.statuses()
+            for device in (DeviceId.AD2, DeviceId.CAMERA):
+                if statuses[device].connection is ConnectionState.CONNECTED:
+                    try:
+                        self.controller.submit(DeviceCommand(device, DeviceOperation.SAFE_STOP,
+                                                             NoArguments(), source="experiment"))
+                    except RuntimeError:
+                        pass
         self._finish_failure_when_safe()
 
     def _finish_failure_when_safe(self) -> None:
@@ -887,16 +981,21 @@ class ExperimentManager(QObject):
         self._recorder = None
         reason = self._failure_reason
         self._state = "failed" if not self._abort_requested else "aborted"
+        self._phase = f"Experiment series failed: {reason}"
         if self._current is not None:
             storage = self._current[1]
+            self._series_states[storage.folder] = self._state
             storage.event("series_failed", reason=reason,
                           experiment_id=self._experiment.experiment_id if self._experiment else None)
             storage.status(self._state, {"error": reason,
                                          "completed_experiments": self._completed - self._series_completed_at_start})
         for _, storage in self._queued:
+            self._series_states[storage.folder] = "cancelled"
             storage.status("cancelled", {"reason": f"Earlier series failed: {reason}"})
         self._queued.clear()
         self._approved = 0
+        self._current = None
+        self._experiment = None
         self._failure_reason = None
         self.notice.emit(reason)
         self._publish()

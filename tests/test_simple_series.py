@@ -38,7 +38,7 @@ def settings() -> SimpleSeriesSettings:
         sweep_width_hz=NumericRange(100_000, 200_000, 2), sweep_period_ms=2,
         temperature_control=True, tec_channel=2,
         temperature_c=NumericRange(20, 30, 2), temperature_wait_s=3,
-        temperature_logging=True,
+        temperature_logging=True, description="Offline simple series",
     )
 
 

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout,
     QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
-    QScrollArea, QSpinBox, QVBoxLayout, QWidget,
+    QScrollArea, QSpinBox, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..application.experiments import validate_definition
@@ -48,12 +49,16 @@ class SimpleSeriesPanel(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         body = QWidget()
+        self._body = body
         grid = QGridLayout(body)
         scroll.setWidget(body)
         root.addWidget(scroll, 1)
 
         output = QGroupBox("Output and acquisition")
         form = QFormLayout(output)
+        self.description = QLineEdit()
+        self.description.setPlaceholderText("Required: describe this experiment series")
+        form.addRow("Series descriptor", self.description)
         self.output_root = QLineEdit()
         self.choose_root = QPushButton("Browse…")
         folder = QWidget()
@@ -135,9 +140,11 @@ class SimpleSeriesPanel(QWidget):
         self.pump_unit = QComboBox()
         self.volume = number(0.1, 0.000001, 1000)
         self.flow = number(500, 0.000001, 1_000_000)
+        self.wait_after_flush = number(0, 0, 100, 3)
         form.addRow("Pump unit", self.pump_unit)
         form.addRow("Volume (mL)", self.volume)
         form.addRow("Flow (µL/min)", self.flow)
+        form.addRow("Wait after flush (s)", self.wait_after_flush)
         form.addRow(QLabel("One initial flush and one after every acquisition."))
         grid.addWidget(fluidics, 2, 1)
 
@@ -151,6 +158,11 @@ class SimpleSeriesPanel(QWidget):
                        self.stop_button, self.abort_button):
             controls.addWidget(button)
         root.addLayout(controls)
+        self.batch_list = QTreeWidget()
+        self.batch_list.setHeaderLabels(["Series descriptor", "State", "Experiments", "Preflight", "Output folder"])
+        self.batch_list.setMinimumHeight(110)
+        self._batch_snapshot = None
+        root.addWidget(self.batch_list)
         self.summary = QLabel()
         self.summary.setWordWrap(True)
         root.addWidget(self.summary)
@@ -168,12 +180,14 @@ class SimpleSeriesPanel(QWidget):
         self.manager.changed.connect(self._status)
         self.controller.status_changed.connect(self._devices)
         self.controller.command_result.connect(self._camera_import_result)
+        self.controller.panic_changed.connect(self._panic_changed)
         self.sweep_enabled.toggled.connect(self._enabled)
         self.temperature_control.toggled.connect(self._enabled)
         for widget in self.findChildren(QSpinBox) + self.findChildren(QDoubleSpinBox):
             widget.valueChanged.connect(self._preview)
         for widget in (self.sweep_enabled, self.temperature_control, self.temperature_logging):
             widget.toggled.connect(self._preview)
+        self.description.textChanged.connect(self._preview)
         self._enabled()
         self._devices(controller.statuses())
         self._preview()
@@ -218,7 +232,8 @@ class SimpleSeriesPanel(QWidget):
             amplitude_v=self._values(self.amplitude), exposure_ms=self._values(self.exposure),
             roi=(self.roi_x.value(), self.roi_y.value(), self.roi_width.value(), self.roi_height.value()),
             flush_unit_index=self.pump_unit.currentData(), flush_volume_ml=self.volume.value(),
-            flush_flow_ul_min=self.flow.value(), sweep_enabled=self.sweep_enabled.isChecked(),
+            flush_flow_ul_min=self.flow.value(), flush_wait_after_s=self.wait_after_flush.value(),
+            description=self.description.text().strip(), sweep_enabled=self.sweep_enabled.isChecked(),
             sweep_width_hz=self._values(self.sweep_width), sweep_period_ms=self.sweep_period.value(),
             temperature_control=self.temperature_control.isChecked(), tec_channel=self.tec_channel.currentData(),
             temperature_c=self._values(self.temperature), temperature_wait_s=self.temp_wait.value(),
@@ -298,6 +313,8 @@ class SimpleSeriesPanel(QWidget):
 
     def _preflight(self) -> None:
         try:
+            if not self.description.text().strip():
+                raise ValueError("Enter a series descriptor before preflight")
             definition = self._definition()
             self.preflight_button.setEnabled(False)
             self.state_label.setText("Count preflight running; ultrasound, laser, LED and pump inactive")
@@ -313,8 +330,12 @@ class SimpleSeriesPanel(QWidget):
             self.manager.record_simple_preflight(fingerprint, self.pump_unit.currentData(),
                                                  self._fill_level())
         self.state_label.setText(("Preflight passed: " if ok else "Preflight failed: ") + message)
-        if not ok:
+        if not ok and not message.startswith("Cancelled by Panic"):
             QMessageBox.warning(self, "Preflight failed", message)
+
+    def _panic_changed(self, status: dict) -> None:
+        if status["state"] == "stopping":
+            self.preflight.abort_for_panic()
 
     def _queue(self) -> None:
         try:
@@ -361,7 +382,31 @@ class SimpleSeriesPanel(QWidget):
                     self.tec_channel.addItem(label, channel)
                 if self.tec_channel.findData(current_channel) >= 0:
                     self.tec_channel.setCurrentIndex(self.tec_channel.findData(current_channel))
+        self._render_batch_list(self.manager.status())
+
+    def _render_batch_list(self, status: dict) -> None:
+        snapshot = tuple((item["description"], item["state"], item["experiment_count"],
+                          item["preflight_passed"], item["folder"])
+                         for item in status.get("series", []))
+        if snapshot == self._batch_snapshot:
+            return
+        self._batch_snapshot = snapshot
+        self.batch_list.clear()
+        for series in status.get("series", []):
+            badge = "● Passed" if series["preflight_passed"] else "● Not tested"
+            item = QTreeWidgetItem([series["description"], series["state"],
+                                    str(series["experiment_count"]), badge, series["folder"]])
+            item.setForeground(3, QColor("#2e7d32" if series["preflight_passed"] else "#b71c1c"))
+            self.batch_list.addTopLevelItem(item)
 
     def _status(self, status: dict) -> None:
+        locked = status["state"] in {"running", "stopping", "aborting"}
+        self._body.setEnabled(not locked)
+        self.preflight_button.setEnabled(not locked and not self.preflight._active)
+        self.queue_button.setEnabled(not locked)
+        self.start_button.setEnabled(not locked)
+        self.stop_button.setEnabled(status["state"] == "running")
+        self.abort_button.setEnabled(status["state"] == "running")
+        self._render_batch_list(status)
         self.state_label.setText(f"Batch: {status['state']} · queued: {status['queued_series']} · "
                                  f"completed experiments: {status['completed_experiments']}")

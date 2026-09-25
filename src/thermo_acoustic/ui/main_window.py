@@ -12,9 +12,11 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QFileDialog,
+    QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
+    QPushButton,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
@@ -36,6 +38,7 @@ from .device_panels import DevicePanel, PANEL_TYPES
 from .workflow_panel import WorkflowPanel
 from .experiment_panel import ExperimentPanel
 from .simple_series_panel import SimpleSeriesPanel
+from .status_dashboard import StatusDashboard
 
 
 PROFILE_SCHEMA_VERSION = 2
@@ -51,19 +54,34 @@ _TAB_LABELS = {
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, controller, parent=None):
+    def __init__(self, controller, parent=None, *, ui_log_writer=None):
         super().__init__(parent)
         self.controller = controller
+        self._ui_log_writer = ui_log_writer
         self._requests: dict[str, tuple[DevicePanel | WorkflowPanel, str]] = {}
-        self.setWindowTitle("Thermo-acoustic control")
+        self.setWindowTitle("Thermo-acoustic control — Simulation mode" if
+                            controller.mode is OperatingMode.SIMULATION else "Thermo-acoustic control")
         self.setMinimumSize(960, 1080)
         self.resize(1100, 1080)
         root = QWidget()
         root_layout = QVBoxLayout(root)
         self.setCentralWidget(root)
-        root_layout.addWidget(
-            QLabel(f"Mode: {controller.mode.value} (simulation is the safe default)")
-        )
+        self._last_action = "Ready"
+        self._experiment_status = controller.experiments.status()
+        self._panic_status = controller.panic_status()
+        header = QHBoxLayout()
+        text = QVBoxLayout()
+        self.activity_title = QLabel("Idle")
+        self.activity_detail = QLabel("Ready")
+        self.activity_detail.setWordWrap(True)
+        text.addWidget(self.activity_title)
+        text.addWidget(self.activity_detail)
+        header.addLayout(text, 1)
+        self.panic_button = QPushButton("PANIC · Safe stop")
+        self.panic_button.setToolTip("Confirm, then urgently stop connected outputs and abort the batch")
+        self.panic_button.clicked.connect(self._panic)
+        header.addWidget(self.panic_button)
+        root_layout.addLayout(header)
 
         self.tabs = QTabWidget()
         self.tabs.setMinimumWidth(0)
@@ -87,6 +105,8 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.workflow_panel, "Workflows")
         self.experiment_panel = SimpleSeriesPanel(controller)
         self.tabs.addTab(self.experiment_panel, "Experiments")
+        self.dashboard = StatusDashboard()
+        self.tabs.addTab(self.dashboard, "Status")
         self.builder_window = ExperimentBuilderWindow(controller.experiments, self)
         controller.experiments.confirm_batch = self.confirm_experiment_batch
         controller.experiments.confirm_unchecked = self.confirm_unchecked_preflight
@@ -104,7 +124,79 @@ class MainWindow(QMainWindow):
         controller.status_changed.connect(self._status)
         controller.message.connect(self._ui_notice)
         controller.temperature_monitor.sample.connect(self.panels[DeviceId.TEC].add_temperature_sample)
+        controller.temperature_monitor.sample.connect(self.dashboard.add_temperature_sample)
+        controller.experiments.changed.connect(self._experiment_changed)
+        controller.panic_changed.connect(self._panic_changed)
         self._status(controller.statuses())
+        self._experiment_changed(self._experiment_status)
+
+    def _panic(self) -> None:
+        answer = QMessageBox.warning(
+            self, "Confirm Panic safe stop",
+            "Stop connected AD2, pump, camera and TEC outputs and abort the experiment batch? "
+            "The valve and Z-stage will hold their current positions.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.controller.panic_stop()
+        except Exception as exc:
+            QMessageBox.critical(self, "Panic stop failed", str(exc))
+
+    def _panic_changed(self, status: dict) -> None:
+        self._panic_status = status
+        self.panic_button.setEnabled(status["state"] != "stopping")
+        self._experiment_changed(self._experiment_status)
+        if status["state"] == "stopping":
+            self.experiment_panel.preflight_button.setEnabled(False)
+            self.experiment_panel.queue_button.setEnabled(False)
+            self.experiment_panel.start_button.setEnabled(False)
+            self.builder_window.panel.queue_button.setEnabled(False)
+            self.builder_window.panel.start_button.setEnabled(False)
+        else:
+            current = self.controller.experiments.status()
+            self.experiment_panel._status(current)
+            self.builder_window.panel._status(current)
+
+    def _experiment_changed(self, status: dict) -> None:
+        self._experiment_status = status
+        locked = (status["state"] in {"running", "stopping", "aborting"}
+                  or self._panic_status["state"] == "stopping")
+        for panel in self.panels.values():
+            panel.set_experiment_locked(locked)
+        self.workflow_panel.set_experiment_locked(locked)
+        self.dashboard.update_experiment(status)
+        self._render_activity()
+
+    def _render_activity(self) -> None:
+        panic = self._panic_status
+        experiment = self._experiment_status
+        state = experiment["state"]
+        if panic["state"] == "stopping":
+            title, detail = "Safe stop!", f"Waiting for {panic['pending']} instrument stop results…"
+        elif panic["state"] == "failed":
+            title, detail = "Safe stop incomplete", "; ".join(panic["errors"])
+        elif panic["state"] == "completed":
+            title, detail = "Idle", "Panic safe stop completed; valve and Z-stage held position"
+        elif state == "running":
+            number = experiment.get("current_experiment_number")
+            count = experiment.get("planned_experiments", 0)
+            title = f"Running experiment {number}/{count}…" if number else "Preparing experiment batch…"
+            detail = experiment.get("phase", "Running")
+        elif state in {"stopping", "aborting"}:
+            title, detail = "Safe stop!", experiment.get("phase", "Stopping experiment batch")
+        elif state in {"failed", "aborted"}:
+            title, detail = "Idle", experiment.get("phase", "Experiment series failed")
+        elif state == "completed":
+            title, detail = "Idle", "Experiment series completed!"
+        elif state == "stopped":
+            title, detail = "Idle", "Experiment batch stopped after current experiment"
+        else:
+            title, detail = "Idle", self._last_action
+        self.activity_title.setText(title)
+        self.activity_detail.setText(detail)
 
     def _create_file_menu(self) -> None:
         menu = self.menuBar().addMenu("&File")
@@ -188,10 +280,20 @@ class MainWindow(QMainWindow):
         return answer == QMessageBox.StandardButton.Yes
 
     def _event(self, event: CommandEvent) -> None:
-        self.log.append(detailed_event_text(event))
+        line = detailed_event_text(event)
+        self.log.append(line)
+        if self._ui_log_writer is not None:
+            self._ui_log_writer.write(line)
         summary = event_summary(event)
         if summary is not None:
             self.statusBar().showMessage(summary)
+            if event.source in {"ui", "console"}:
+                self._last_action = summary
+                if self._experiment_status["state"] in {"completed", "failed", "aborted", "stopped"}:
+                    self._experiment_status = {**self._experiment_status, "state": "idle"}
+                if self._panic_status["state"] in {"completed", "failed"}:
+                    self._panic_status = {"state": "idle", "pending": 0, "errors": ()}
+                self._render_activity()
         if event.state in _TERMINAL_STATES:
             target = (
                 self.panels[event.device] if event.device is not None
@@ -242,7 +344,10 @@ class MainWindow(QMainWindow):
 
     def _ui_notice(self, text: str) -> None:
         timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-        self.log.append(f"{timestamp} · UI · {text}")
+        line = f"{timestamp} · UI · {text}"
+        self.log.append(line)
+        if self._ui_log_writer is not None:
+            self._ui_log_writer.write(line)
         self.statusBar().showMessage(text)
 
     def _status(self, statuses: dict[DeviceId, DeviceStatus]) -> None:
@@ -252,6 +357,7 @@ class MainWindow(QMainWindow):
         self.workflow_panel.update_pumps(
             pump.readback if pump is not None and pump.connection is ConnectionState.CONNECTED else None
         )
+        self.dashboard.update_statuses(statuses)
         if not self.statusBar().currentMessage():
             self.statusBar().showMessage(
                 " | ".join(

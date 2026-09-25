@@ -15,6 +15,8 @@ from .base import DeviceWorker
 
 
 class ZStageWorker(DeviceWorker):
+    # Panic currently holds the stage position. Revisit physical emergency
+    # stop behavior here when the stage driver exposes a verified stop API.
     def __init__(self, device_factory: Callable[[], object], parent=None) -> None:
         super().__init__(DeviceId.Z_STAGE, device_factory, readback_factory=ZStageReadback, parent=parent)
         self.register(

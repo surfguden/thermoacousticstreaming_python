@@ -11,7 +11,7 @@ if not exist ".venv\Scripts\python.exe" (
 )
 
 set "PYTHONPATH=%CD%\src"
-".venv\Scripts\python.exe" -m thermo_acoustic.main --mode real --audit-log "logs\run.jsonl"
+".venv\Scripts\python.exe" -m thermo_acoustic.main --mode real
 
 if errorlevel 1 (
     echo.

@@ -642,7 +642,7 @@ def test_ui_renders_offscreen_and_audit_is_jsonl(qt_app, tmp_path):
     window = MainWindow(controller)
     window.show()
     wait(qt_app, 20)
-    assert window.windowTitle() == "Thermo-acoustic control"
+    assert window.windowTitle() == "Thermo-acoustic control — Simulation mode"
     window.close()
     assert (tmp_path / "audit.jsonl").exists()
 

@@ -100,6 +100,18 @@ class SimpleSeriesPreflight(QObject):
                                                  PumpUnitArgs(index), lambda _value: refresh()))
         refresh()
 
+    def abort_for_panic(self) -> None:
+        """Relinquish camera/AD2 ownership; the controller performs urgent stops."""
+        if not self._active and not self._recovery_message:
+            return
+        self._active = False
+        self._guard.stop()
+        self._pending.clear()
+        self._recovery_pending.clear()
+        self._recovery_message = ""
+        self.controller.count_preflight_active = False
+        self.finished.emit(False, "Cancelled by Panic; instrument stops are in progress", self._fingerprint)
+
     def _next_pair(self) -> None:
         if not self._active:
             return

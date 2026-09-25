@@ -10,10 +10,19 @@ from .console.parser import help_text
 from .console.parser import ExperimentConsoleCommand
 from .application.experiments import load_definition, validate_definition
 from .application.event_formatting import detailed_event_text
+from .application.session_logging import create_session_logs, UiLogWriter
+from .drivers.common.logging import configure as configure_hardware_logging
+from pathlib import Path
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(); parser.add_argument("--mode", choices=["simulation", "real"], default="simulation"); parser.add_argument("--audit-log", default=None); args = parser.parse_args(argv)
-    qt_app = QApplication(sys.argv[:1]); configure_palette(qt_app); mode = OperatingMode(args.mode); controller = ApplicationController(DeviceRegistry(mode), mode=mode, audit=AuditLogger(args.audit_log)); window = MainWindow(controller); controller.confirm_operation = window.confirm_operation; reader = ConsoleCommandReader()
+    qt_app = QApplication(sys.argv[:1]); configure_palette(qt_app); mode = OperatingMode(args.mode)
+    session = create_session_logs(Path.cwd() / "logs", mode.value)
+    configure_hardware_logging(session.hardware, max_bytes=0)
+    controller = ApplicationController(DeviceRegistry(mode), mode=mode,
+                                       audit=AuditLogger(args.audit_log or session.audit))
+    window = MainWindow(controller, ui_log_writer=UiLogWriter(session.ui))
+    controller.confirm_operation = window.confirm_operation; reader = ConsoleCommandReader()
     def handle(item):
         if item == "help": print(help_text(), flush=True)
         elif item in ("status", "devices"): print(controller.statuses(), flush=True)

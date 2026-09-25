@@ -46,6 +46,8 @@ class SimpleSeriesSettings:
     flush_unit_index: int
     flush_volume_ml: float
     flush_flow_ul_min: float
+    description: str = ""
+    flush_wait_after_s: float = 0.0
     sweep_enabled: bool = False
     sweep_width_hz: NumericRange = NumericRange(0, 0, 1)
     sweep_period_ms: float = 1.0
@@ -70,6 +72,8 @@ def compile_simple_series(settings: SimpleSeriesSettings) -> dict[str, Any]:
         raise ValueError("Repeats and frame count must be positive")
     if settings.temperature_wait_s < 0:
         raise ValueError("Temperature wait must be nonnegative")
+    if not 0 <= settings.flush_wait_after_s <= 100:
+        raise ValueError("Wait after flush must be within 0..100 s")
     if settings.sweep_enabled and (settings.sweep_period_ms <= 0 or any(width <= 0 for width in widths)):
         raise ValueError("Sweep width and period must be positive")
     if settings.sweep_enabled and any(center - width / 2 <= 0 for center in frequencies for width in widths):
@@ -79,7 +83,8 @@ def compile_simple_series(settings: SimpleSeriesSettings) -> dict[str, Any]:
         raise ValueError("ROI offsets must be nonnegative and dimensions positive")
     flush = {"type": "flush", "args": {"unit_index": settings.flush_unit_index,
                                          "volume_ml": settings.flush_volume_ml,
-                                         "flow_ul_min": settings.flush_flow_ul_min}}
+                                         "flow_ul_min": settings.flush_flow_ul_min,
+                                         "wait_after_s": settings.flush_wait_after_s}}
     ultrasound = {"enabled": True, "start_s": settings.sound_start_s,
                   "run_s": settings.sound_run_s, "frequency_hz": {"$param": "frequency_hz"},
                   "amplitude_v": {"$param": "amplitude_v"}, "offset_v": 0}
@@ -123,7 +128,8 @@ def compile_simple_series(settings: SimpleSeriesSettings) -> dict[str, Any]:
                      {"type": "wait", "args": {"seconds": settings.temperature_wait_s}},
                      *body,
                  ]}]
-    definition = {"version": 1, "name": "simple_series", "preflight": False,
+    definition = {"version": 1, "name": "simple_series", "description": settings.description.strip(),
+                  "preflight": False,
                   "simple_series": True,
                   "tiff_format": settings.tiff_format,
                   "temperature_logging": settings.temperature_logging,

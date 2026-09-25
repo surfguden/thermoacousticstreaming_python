@@ -222,7 +222,8 @@ def test_main_window_uses_fixed_minimum_and_separate_detailed_log(qt_app):
     assert window.log.parent() is window.log_window
     assert [action.text() for action in window.menuBar().actions()] == [
         "&File", "&Log", "Experiment &builder"]
-    assert window.tabs.tabText(window.tabs.count() - 1) == "Experiments"
+    assert window.tabs.tabText(window.tabs.count() - 2) == "Experiments"
+    assert window.tabs.tabText(window.tabs.count() - 1) == "Status"
     assert window.builder_window.panel.parent() is window.builder_window
     for spin in window.findChildren(QAbstractSpinBox):
         assert spin.buttonSymbols() is QAbstractSpinBox.ButtonSymbols.NoButtons

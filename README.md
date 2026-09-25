@@ -147,7 +147,7 @@ and validation remain in application and worker code. Existing driver timeouts
 remain in the retained drivers.
 
 ```powershell
-python -m thermo_acoustic.main --mode real --audit-log logs\run.jsonl
+python -m thermo_acoustic.main --mode real
 ```
 
 Offline tests use simulation or injected fake drivers and do not prove physical
@@ -162,8 +162,11 @@ $env:QT_QPA_PLATFORM = "offscreen"
 python tools\check_repository_hygiene.py
 ```
 
-Audit output is structured JSON Lines and is disabled unless `--audit-log` is
-provided. Tests write logs only under temporary directories.
+Each UI launch creates a UTC-timestamped folder under `logs/` with a detailed
+UI command log, structured JSON Lines audit log, and hardware transaction log.
+The folder is ignored by Git. `--audit-log PATH` overrides only the audit file
+location for callers that need a fixed path. Tests write logs only under
+temporary directories.
 
 ## Retained drivers
 

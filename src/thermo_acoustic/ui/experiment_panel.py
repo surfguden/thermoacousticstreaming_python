@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
     QMessageBox, QPlainTextEdit, QPushButton, QSplitter, QTreeWidget,
@@ -57,6 +58,10 @@ class ExperimentPanel(QWidget):
         self.preview = QPlainTextEdit()
         self.preview.setReadOnly(True)
         root.addWidget(self.preview, 1)
+        self.description = QLineEdit()
+        self.description.setPlaceholderText("Required series descriptor")
+        root.addWidget(QLabel("Series descriptor (required before queueing)"))
+        root.addWidget(self.description)
         queue_row = QHBoxLayout()
         self.output_root = QLineEdit()
         self.output_root.setPlaceholderText("Choose output root before queueing")
@@ -78,11 +83,17 @@ class ExperimentPanel(QWidget):
         for button in (self.queue_button, self.start_button, self.stop_button, self.abort_button):
             controls.addWidget(button)
         root.addLayout(controls)
+        self.batch_list = QTreeWidget()
+        self.batch_list.setHeaderLabels(["Series descriptor", "State", "Experiments", "Preflight", "Output folder"])
+        self.batch_list.setMinimumHeight(100)
+        self._batch_snapshot = None
+        root.addWidget(self.batch_list)
         self.state_label = QLabel("No experiment series queued")
         self.state_label.setWordWrap(True)
         root.addWidget(self.state_label)
 
         self.template_button.clicked.connect(self._template)
+        self.definition_json.textChanged.connect(self._sync_description_from_json)
         self.load_button.clicked.connect(self._load)
         self.save_button.clicked.connect(self._save)
         self.validate_button.clicked.connect(self._validate)
@@ -99,6 +110,7 @@ class ExperimentPanel(QWidget):
         self.abort_button.clicked.connect(manager.abort)
         manager.changed.connect(self._status)
         manager.notice.connect(self._notice)
+        manager.controller.status_changed.connect(lambda _statuses: self._render_batch_list(manager.status()))
         self._template()
         self._status(manager.status())
 
@@ -106,10 +118,20 @@ class ExperimentPanel(QWidget):
         value = json.loads(self.definition_json.toPlainText())
         if not isinstance(value, dict):
             raise ValueError("Definition must be a JSON object")
+        value["description"] = self.description.text().strip()
         return value
+
+    def _sync_description_from_json(self) -> None:
+        try:
+            value = json.loads(self.definition_json.toPlainText())
+        except (TypeError, ValueError):
+            return
+        if isinstance(value, dict) and isinstance(value.get("description"), str):
+            self.description.setText(value["description"])
 
     def _replace(self, value: dict) -> None:
         self.definition_json.setPlainText(json.dumps(value, indent=2, ensure_ascii=False))
+        self.description.setText(str(value.get("description", "")))
         self.preflight.setChecked(bool(value.get("preflight", False)))
         format_index = self.format.findData(value.get("tiff_format", "frames"))
         if format_index >= 0:
@@ -264,10 +286,32 @@ class ExperimentPanel(QWidget):
             self._notice(str(exc))
 
     def _status(self, status: dict) -> None:
+        locked = status["state"] in {"running", "stopping", "aborting"}
+        self.queue_button.setEnabled(not locked)
+        self.start_button.setEnabled(not locked)
+        self.stop_button.setEnabled(status["state"] == "running")
+        self.abort_button.setEnabled(status["state"] == "running")
+        self._render_batch_list(status)
         self.state_label.setText(f"State: {status['state']} · queued series: {status['queued_series']} "
                                  f"· completed experiments: {status['completed_experiments']} "
                                  f"· current: {status['current_experiment'] or 'none'} "
                                  f"· folder: {status['current_series'] or 'none'}")
+
+    def _render_batch_list(self, status: dict) -> None:
+        snapshot = tuple((item["description"], item["state"], item["experiment_count"],
+                          item["preflight_passed"], item["folder"])
+                         for item in status.get("series", []))
+        if snapshot == self._batch_snapshot:
+            return
+        self._batch_snapshot = snapshot
+        self.batch_list.clear()
+        for series in status.get("series", []):
+            item = QTreeWidgetItem([series["description"], series["state"],
+                                    str(series["experiment_count"]),
+                                    "● Passed" if series["preflight_passed"] else "● Not tested",
+                                    series["folder"]])
+            item.setForeground(3, QColor("#2e7d32" if series["preflight_passed"] else "#b71c1c"))
+            self.batch_list.addTopLevelItem(item)
 
     def _notice(self, message: str) -> None:
         self.state_label.setText(message)
