@@ -94,6 +94,59 @@ def test_stacked_tiff_page_mapping_and_missing_stamp(tmp_path):
     with Image.open(storage.folder / experiment.relative_path / "sequence.tif") as image:
         assert image.n_frames == 10
     assert record["timestamp_clock_domains"]["host_received_utc"].startswith("Host UTC")
+    bad_root = tmp_path / "bad"
+    bad_root.mkdir()
+    bad_storage = SeriesStorage(bad_root, expansion, "stacked")
+    bad_experiment = expansion.experiments[0]
+    bad_frames = (np.zeros((4, 4, 3), dtype=np.uint16),) + frames[1:]
+    invalid = CameraSequenceResult(bad_frames, complete.timestamps,
+                                   complete.host_received_utc, complete.settings)
+    with pytest.raises(ValueError, match="non-grayscale"):
+        bad_storage.save_frames(bad_experiment, invalid, {})
+    assert not (bad_storage.folder / bad_experiment.relative_path).exists()
+    assert not list(bad_storage.folder.rglob(".capture_*"))
+
+
+def test_experiment_base_must_be_empty_and_uses_numbered_batch_folders(tmp_path):
+    expansion = validate_definition(default_definition())
+    first = SeriesStorage(tmp_path, expansion, "frames")
+    assert first.folder.name == "experiment_batch_0001"
+    with pytest.raises(ValueError, match="must be empty"):
+        SeriesStorage(tmp_path, expansion, "frames")
+    second = SeriesStorage(tmp_path, expansion, "frames", continuing_batch=True)
+    assert second.folder.name == "experiment_batch_0002"
+
+
+def test_duplicate_parameter_path_is_rejected_before_storage(tmp_path):
+    definition = default_definition()
+    definition["steps"][1]["parameters"]["frequency_hz"] = [2e6, 2e6]
+    with pytest.raises(ValueError, match="Duplicate experiment parameter path"):
+        validate_definition(definition)
+    assert not list(tmp_path.iterdir())
+
+
+def test_failure_discards_only_unfinished_experiment(tmp_path):
+    QApplication.instance() or QApplication(["test-experiments"])
+    definition = default_definition()
+    definition["steps"][1]["steps"][0]["count"] = 2
+    expansion = validate_definition(definition)
+    storage = SeriesStorage(tmp_path, expansion, "frames")
+    frames = tuple(np.zeros((4, 4), dtype=np.uint16) for _ in range(10))
+    capture = CameraSequenceResult(frames, tuple(f"sdk:{i}" for i in range(10)),
+                                   tuple("2026-09-25T00:00:00+00:00" for _ in frames))
+    for experiment in expansion.experiments:
+        storage.save_frames(experiment, capture, {})
+    controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
+    manager = controller.experiments
+    manager._current = (expansion, storage)
+    manager._experiment = expansion.experiments[1]
+    manager._failure_reason = "simulated later failure"
+    manager._state = "stopping"
+    manager._completed = 1
+    manager._finish_failure_when_safe()
+    assert (storage.folder / expansion.experiments[0].relative_path / "experiment.json").exists()
+    assert not (storage.folder / expansion.experiments[1].relative_path).exists()
+    assert manager.status()["state"] == "failed"
 
 
 def test_dio_experiment_configuration_calculates_divider_and_initial_delay_without_hardware():
@@ -299,7 +352,7 @@ def test_save_failure_stops_later_queued_series_without_overwriting(tmp_path):
         controller.shutdown()
 
 
-def test_missing_sdk_timestamp_fails_acquisition_and_retains_partial_frames(tmp_path):
+def test_missing_sdk_timestamp_fails_acquisition_without_saving_frames(tmp_path):
     app = QApplication.instance() or QApplication(["test-experiments"])
     controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
     results = []
@@ -325,11 +378,11 @@ def test_missing_sdk_timestamp_fails_acquisition_and_retains_partial_frames(tmp_
         assert controller.experiments.start()
         until(app, lambda: controller.experiments.status()["state"] == "failed")
         manifest = json.loads((folder / "metadata" / "manifest.json").read_text())
-        partial = folder / manifest["experiments"][0]["relative_path"] / "partial_capture"
-        record = json.loads((partial / "partial.json").read_text())
-        assert record["acquisition_status"] == "partial_failed"
-        assert record["captured_frames"] == 2
-        assert len(list(partial.glob("*.tif"))) == 2
+        leaf = folder / manifest["experiments"][0]["relative_path"]
+        assert not leaf.exists()
+        assert not list(folder.rglob("*.tif"))
+        assert not list(folder.rglob("partial_capture"))
+        assert '"state": "failed"' in (folder / "metadata" / "status.json").read_text()
     finally:
         controller.shutdown()
 

@@ -8,6 +8,8 @@ from enum import Enum
 import json
 from pathlib import Path
 from concurrent.futures import Future, ThreadPoolExecutor
+import shutil
+import tempfile
 from typing import Any
 
 import numpy as np
@@ -45,14 +47,20 @@ def write_json(path: Path, value: Any) -> None:
 
 
 class SeriesStorage:
-    def __init__(self, root: Path, expansion: Expansion, image_format: str) -> None:
+    def __init__(self, root: Path, expansion: Expansion, image_format: str,
+                 *, continuing_batch: bool = False) -> None:
         if image_format not in {"frames", "stacked"}:
             raise ValueError("TIFF format must be frames or stacked")
-        root.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-        base = f"experiment_series_{expansion.definition['name']}_{stamp}"
-        for index in range(1000):
-            candidate = root / (base if index == 0 else f"{base}_{index:03d}")
+        if not root.is_dir():
+            raise ValueError("Experiment base folder must exist and be a directory")
+        existing = list(root.iterdir())
+        if existing and not continuing_batch:
+            raise ValueError("Experiment base folder must be empty before queueing a batch")
+        if continuing_batch and any(not path.is_dir() or not path.name.startswith("experiment_batch_")
+                                    for path in existing):
+            raise ValueError("Experiment base folder contains files outside this batch")
+        for index in range(1, 1001):
+            candidate = root / f"experiment_batch_{index:04d}"
             try:
                 candidate.mkdir()
                 break
@@ -88,7 +96,7 @@ class SeriesStorage:
 
     def save_frames(self, experiment: PlannedExperiment, capture: CameraSequenceResult,
                     metadata: dict[str, Any]) -> dict[str, Any]:
-        folder = self.folder / experiment.relative_path
+        destination = self.folder / experiment.relative_path
         expected = next(step["args"]["frame_count"] for step in experiment.steps
                         if step["type"] == "camera_configure")
         count = len(capture.frames)
@@ -97,7 +105,21 @@ class SeriesStorage:
                              f"{len(capture.timestamps)} SDK stamps and {len(capture.host_received_utc)} host stamps")
         if any(not stamp for stamp in capture.timestamps):
             raise ValueError("Camera SDK timestamp missing; refusing to label acquisition complete")
-        folder.mkdir(parents=True, exist_ok=False)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists():
+            raise FileExistsError(f"Experiment folder already exists: {destination}")
+        folder = Path(tempfile.mkdtemp(prefix=".capture_", dir=destination.parent))
+        try:
+            record = self._write_frames(folder, experiment, capture, metadata, count)
+            folder.rename(destination)
+            return record
+        finally:
+            if folder.exists():
+                shutil.rmtree(folder)
+
+    def _write_frames(self, folder: Path, experiment: PlannedExperiment,
+                      capture: CameraSequenceResult, metadata: dict[str, Any],
+                      count: int) -> dict[str, Any]:
         frame_data = [np.array(frame, copy=True) for frame in capture.frames]
         if any(data.ndim != 2 for data in frame_data):
             raise ValueError("Camera sequence contains a non-grayscale image")
@@ -143,22 +165,6 @@ class SeriesStorage:
         record["post_acquisition"] = outcome
         write_json(path, record)
 
-    def save_partial(self, experiment: PlannedExperiment, frames: tuple[object, ...],
-                     sdk_timestamps: tuple[str | None, ...],
-                     host_timestamps: tuple[str, ...], reason: str) -> None:
-        folder = self.folder / experiment.relative_path / "partial_capture"
-        folder.mkdir(parents=True, exist_ok=True)
-        records = []
-        for index, frame in enumerate(frames, 1):
-            name = f"partial_frame_{index:06d}.tif"
-            Image.fromarray(np.array(frame, copy=True)).save(folder / name)
-            records.append({"filename": name, "camera_sdk_timestamp": sdk_timestamps[index - 1],
-                            "host_received_utc": host_timestamps[index - 1]})
-        write_json(folder / "partial.json", {"acquisition_status": "partial_failed",
-                                           "reason": reason, "captured_frames": len(frames),
-                                           "frames": records})
-
-
 class FileWorker:
     """One serialized file thread; frames never reference a DCAM-owned buffer."""
 
@@ -170,12 +176,6 @@ class FileWorker:
         # CameraWorker has already copied each frame out of the DCAM buffer.
         # Do not duplicate a potentially large sequence on the Qt/UI thread.
         return self._pool.submit(storage.save_frames, experiment, capture, metadata)
-
-    def submit_partial(self, storage: SeriesStorage, experiment: PlannedExperiment,
-                       frames: tuple[object, ...], sdk_timestamps: tuple[str | None, ...],
-                       host_timestamps: tuple[str, ...], reason: str) -> Future:
-        return self._pool.submit(storage.save_partial, experiment, frames,
-                                 sdk_timestamps, host_timestamps, reason)
 
     def close(self) -> None:
         self._pool.shutdown(wait=True, cancel_futures=False)

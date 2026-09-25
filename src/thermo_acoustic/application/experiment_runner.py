@@ -19,7 +19,7 @@ from .commands import (
     Ad2AnalogOutputIdle, Ad2ConfigureWaveformArgs, Ad2ExperimentDigitalArgs,
     Ad2TriggerSettingsArgs, Ad2TriggerSource, Ad2WaveformChannelArgs,
     Ad2WaveformFunction, CameraConfigureRoiArgs, CameraConfigureSequenceArgs, CameraConfigureSnapshotArgs,
-    CameraFrameProgress, CameraSequenceResult, CameraSequenceTriggerArgs, CameraTriggerActive,
+    CameraSequenceResult, CameraSequenceTriggerArgs, CameraTriggerActive,
     CameraTriggerPolarity, CameraTriggerSource, DeviceCommand, DeviceOperation,
     FlushArgs, NoArguments, PumpUnitArgs, TecApplySetpointsArgs, TecWaitStableArgs,
     WaitArgs, WorkflowCommand, WorkflowOperation, ZStageSetPositionArgs,
@@ -48,10 +48,7 @@ class ExperimentManager(QObject):
         self._experiment: PlannedExperiment | None = None
         self._capture: CameraSequenceResult | None = None
         self._triggered_at: float | None = None
-        self._collect_request_id: str | None = None
-        self._partial_frames: list[object] = []
-        self._partial_sdk_stamps: list[str | None] = []
-        self._partial_host_stamps: list[str] = []
+        self._batch_output_root: Path | None = None
         self._settings: dict[str, Any] = {}
         self._applied: dict[str, Any] = {}
         self._laser_frequency_hz: float | None = None
@@ -74,7 +71,6 @@ class ExperimentManager(QObject):
         self._parallel_depth = 0
         self._series_completed_at_start = 0
         controller.command_result.connect(self._command_result)
-        controller.command_progress.connect(self._command_progress)
 
     def attach_temperature_monitor(self, monitor) -> None:
         monitor.sample.connect(self._temperature_sample)
@@ -105,10 +101,15 @@ class ExperimentManager(QObject):
             self._batch_completed_at_start = self._completed
             self._batch_items = []
             self._series_states.clear()
+            self._batch_output_root = None
         expansion = validate_definition(definition)
         output = Path(output_root).expanduser().resolve()
+        if self._batch_output_root is not None and output != self._batch_output_root:
+            raise ValueError("All queued series in one batch must use the same experiment base folder")
         storage = SeriesStorage(output, expansion,
-                                image_format or definition.get("tiff_format", "frames"))
+                                image_format or definition.get("tiff_format", "frames"),
+                                continuing_batch=self._batch_output_root is not None)
+        self._batch_output_root = output
         self._queued.append((expansion, storage))
         self._series_states[storage.folder] = "queued"
         self._publish()
@@ -636,9 +637,6 @@ class ExperimentManager(QObject):
             self._phase = "Configuring instruments"
             self._capture = None
             self._triggered_at = None
-            self._partial_frames.clear()
-            self._partial_sdk_stamps.clear()
-            self._partial_host_stamps.clear()
             self._settings = {}
             self._applied = {}
             storage.event("experiment_started", experiment_id=self._experiment.experiment_id)
@@ -911,8 +909,6 @@ class ExperimentManager(QObject):
         if self._failed or self._abort_requested:
             return
         self._callbacks[command.request_id] = callback
-        if isinstance(command, DeviceCommand) and command.operation is DeviceOperation.CAMERA_SEQUENCE_COLLECT:
-            self._collect_request_id = command.request_id
         try:
             self.controller.submit(command)
         except Exception as exc:
@@ -921,22 +917,12 @@ class ExperimentManager(QObject):
 
     def _command_result(self, result: Any) -> None:
         callback = self._callbacks.pop(result.request_id, None)
-        if result.request_id == self._collect_request_id:
-            self._collect_request_id = None
         if callback is None or self._failed or self._abort_requested:
             return
         if not result.ok:
             self._fail(result.error or f"{result.operation.value} failed")
             return
         callback(result.value)
-
-    def _command_progress(self, request_id: str, value: Any) -> None:
-        if (request_id != self._collect_request_id or self._experiment is None
-                or not isinstance(value, CameraFrameProgress) or value.mode != "sequence"):
-            return
-        self._partial_frames.append(value.frame)
-        self._partial_sdk_stamps.append(value.sdk_timestamp)
-        self._partial_host_stamps.append(value.host_received_utc or datetime.now(timezone.utc).isoformat())
 
     def _fail(self, reason: str, *, stop_outputs: bool = True) -> None:
         if self._failed:
@@ -951,12 +937,6 @@ class ExperimentManager(QObject):
         self._failure_reason = reason
         self._state = "stopping"
         self._phase = f"Safe stop after failure: {reason}"
-        if self._current is not None and self._experiment is not None and self._partial_frames:
-            future = self._file_worker.submit_partial(
-                self._current[1], self._experiment, tuple(self._partial_frames),
-                tuple(self._partial_sdk_stamps), tuple(self._partial_host_stamps), reason,
-            )
-            self._file_futures.add(future)
         # Stop active electrical/camera outputs. An already-started flush is
         # allowed to perform its own valve/pump cleanup; a host-owned file save
         # is allowed to finish. No subsequent experiment is dispatched.
@@ -980,6 +960,18 @@ class ExperimentManager(QObject):
             return
         self._recorder = None
         reason = self._failure_reason
+        if self._current is not None and self._experiment is not None:
+            storage = self._current[1]
+            incomplete = (storage.folder / self._experiment.relative_path).resolve()
+            if not incomplete.is_relative_to(storage.folder.resolve()):
+                reason += "; unsafe unfinished experiment path could not be discarded"
+            elif incomplete.is_dir():
+                try:
+                    shutil.rmtree(incomplete)
+                    storage.event("incomplete_experiment_discarded",
+                                  experiment_id=self._experiment.experiment_id)
+                except OSError as exc:
+                    reason += f"; unfinished experiment files could not be discarded: {exc}"
         self._state = "failed" if not self._abort_requested else "aborted"
         self._phase = f"Experiment series failed: {reason}"
         if self._current is not None:

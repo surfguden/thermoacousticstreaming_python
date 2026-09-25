@@ -317,7 +317,12 @@ def validate_definition(value: Any) -> Expansion:
                 combinations = product(*choices)
                 for combination in combinations:
                     local = dict(zip(names, combination))
-                    segments = tuple(f"{name}={_leaf_name(item)}" for name, item in local.items())
+                    labels = {"temperature_c": "temperature", "frequency_hz": "frequency",
+                              "sweep_width_hz": "sweep_width", "amplitude_v": "amplitude",
+                              "exposure_ms": "exposure"} if value.get("simple_series") else {}
+                    segments = tuple(f"{labels[name]}_{_leaf_name(item)}" if name in labels
+                                     else f"{name}={_leaf_name(item)}"
+                                     for name, item in local.items())
                     result.extend(walk(node["steps"], parameters | local, repeat, path + segments))
                     if len(result) + len(planned) > max_nodes:
                         raise ValueError("Experiment plan is too large")
@@ -341,7 +346,7 @@ def validate_definition(value: Any) -> Expansion:
                 experiment_id = f"experiment_{len(planned) + 1:06d}"
                 folder = "/".join(path + (f"repeat_{repeat:04d}",))
                 if any(item.relative_path == folder for item in planned):
-                    folder = "/".join(path + (experiment_id, f"repeat_{repeat:04d}"))
+                    raise ValueError(f"Duplicate experiment parameter path: {folder}")
                 if len(folder) > 180:
                     raise ValueError("Expanded parameter folder path is too long")
                 item = PlannedExperiment(experiment_id, dict(parameters), repeat, folder, tuple(body))

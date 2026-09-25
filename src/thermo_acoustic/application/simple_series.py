@@ -64,10 +64,11 @@ def compile_simple_series(settings: SimpleSeriesSettings) -> dict[str, Any]:
     frequencies = settings.frequency_hz.values("Frequency")
     amplitudes = settings.amplitude_v.values("Amplitude")
     exposures = settings.exposure_ms.values("Exposure")
-    widths = settings.sweep_width_hz.values("Sweep width") if settings.sweep_enabled else []
-    temperatures = settings.temperature_c.values("Temperature") if settings.temperature_control else []
-    for temperature in temperatures:
-        validate_tec_target_temperature(temperature)
+    widths = settings.sweep_width_hz.values("Sweep width") if settings.sweep_enabled else ["NaN"]
+    temperatures = settings.temperature_c.values("Temperature") if settings.temperature_control else ["NaN"]
+    if settings.temperature_control:
+        for temperature in temperatures:
+            validate_tec_target_temperature(temperature)
     if settings.repeats < 1 or settings.frame_count < 1:
         raise ValueError("Repeats and frame count must be positive")
     if settings.temperature_wait_s < 0:
@@ -120,14 +121,12 @@ def compile_simple_series(settings: SimpleSeriesSettings) -> dict[str, Any]:
                                   ("exposure_ms", exposures))):
         if values:
             body = [{"type": "sweep", "parameters": {name: values}, "steps": body}]
-    if settings.temperature_control:
-        body = [{"type": "sweep", "parameters": {"temperature_c": temperatures},
-                 "steps": [
-                     {"type": "tec_set", "args": {"target_temperature_c":
-                         {"$param": "temperature_c"}, "channels": [settings.tec_channel]}},
-                     {"type": "wait", "args": {"seconds": settings.temperature_wait_s}},
-                     *body,
-                 ]}]
+    temperature_steps = ([{"type": "tec_set", "args": {"target_temperature_c":
+                          {"$param": "temperature_c"}, "channels": [settings.tec_channel]}},
+                          {"type": "wait", "args": {"seconds": settings.temperature_wait_s}}]
+                         if settings.temperature_control else [])
+    body = [{"type": "sweep", "parameters": {"temperature_c": temperatures},
+             "steps": [*temperature_steps, *body]}]
     definition = {"version": 1, "name": "simple_series", "description": settings.description.strip(),
                   "preflight": False,
                   "simple_series": True,

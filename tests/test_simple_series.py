@@ -53,6 +53,9 @@ def test_fixed_form_expansion_order_and_flush_count():
     assert expansion.experiments[32].parameters["temperature_c"] == 30
     assert expansion.experiments[0].relative_path.endswith("repeat_0001")
     assert expansion.experiments[1].relative_path.endswith("repeat_0002")
+    assert expansion.experiments[0].relative_path.split("/") == [
+        "temperature_20.0", "frequency_1000000.0", "sweep_width_100000.0",
+        "amplitude_1.0", "exposure_1.0", "repeat_0001"]
     flushes = [expansion.steps[0]]
     for experiment in expansion.experiments:
         steps = experiment.steps
@@ -83,6 +86,15 @@ def test_single_step_uses_start_and_sweep_bounds():
         compile_simple_series(replace(settings(), frequency_hz=NumericRange(100, 100, 1)))
     with pytest.raises(ValueError, match="target temperature"):
         compile_simple_series(replace(settings(), temperature_c=NumericRange(85, 85, 1)))
+
+
+def test_disabled_temperature_and_sweep_keep_fixed_folder_levels():
+    definition = compile_simple_series(replace(settings(), temperature_control=False,
+                                               sweep_enabled=False))
+    path = validate_definition(definition).experiments[0].relative_path.split("/")
+    assert path[0] == "temperature_NaN"
+    assert path[2] == "sweep_width_NaN"
+    assert path[-1] == "repeat_0001"
 
 
 def test_ultrasound_fm_is_center_plus_minus_half_width():
