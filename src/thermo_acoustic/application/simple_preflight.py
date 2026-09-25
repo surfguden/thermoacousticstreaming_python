@@ -116,7 +116,7 @@ class SimpleSeriesPreflight(QObject):
         if not self._active:
             return
         if not self._pairs:
-            self._finish(True, "All planned exposure settings collected N timestamped frames. Physical DIO0 edge count is unverified.")
+            self._finish(True, "All planned exposure settings collected N timestamped frames.")
             return
         camera, dio = self._pairs.popleft()
         roi = camera.get("roi")

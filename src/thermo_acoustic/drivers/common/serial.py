@@ -14,7 +14,7 @@ class TextCommandTransport(Protocol):
 @dataclass(slots=True)
 class SerialTextCommandTransport:
     baud_rate: int = 19200
-    timeout_s: float = 1.0
+    timeout_s: float = 2.0
     write_timeout_s: float = 5.0
     line_ending: str = "\r"
     port: object | None = None

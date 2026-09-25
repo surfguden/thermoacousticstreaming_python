@@ -1,0 +1,2 @@
+Check dio0 loopback by setting 10 pulses and camera buffer to 11. If we get 11 frames and no timeout, it needs revision
+Count-only camera preflight does not verify the exact physical DIO0 edge count or frame-interval accuracy without a loopback bench check.

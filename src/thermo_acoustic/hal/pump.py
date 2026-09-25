@@ -118,7 +118,7 @@ class PumpWorker(DeviceWorker):
 
         def step() -> DeferredProgress:
             if self._call(args.unit_index, "reference_move_finished"):
-                return DeferredProgress(True, PumpMovementResult(referenced=True))
+                return DeferredProgress(True, PumpMovementResult())
             if monotonic() >= deadline:
                 raise TimeoutError(f"Pump {args.unit_index + 1} reference move timed out")
             return DeferredProgress()

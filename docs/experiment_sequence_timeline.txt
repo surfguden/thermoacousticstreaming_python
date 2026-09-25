@@ -1,0 +1,1146 @@
+THERMO ACOUSTIC STREAMING - V3 EXPERIMENT SEQUENCE TIMELINE
+======================================================================
+
+Purpose
+-------
+
+This document explains the intended high-level experimental sequence, the
+order and timing of one automated experiment repeat, and which v3 GUI settings
+change each part of the sequence.
+
+The intended procedure and the current Python implementation are kept
+separate. Items labelled "intended" or "suggested correction" are design
+requirements for a future implementation task; this document does not
+authorize or implement those code changes.
+
+This document does not claim that every requested AD2 or camera time has been
+physically measured. Where the software knows only an order, timeout, or
+requested hardware window, that limitation is stated explicitly.
+
+
+0. INTENDED HIGH-LEVEL EXPERIMENTAL SEQUENCE
+--------------------------------------------
+
+There are two levels to distinguish:
+
+    Experimental sequence
+        The complete run containing one or more experiments/repeats.
+
+    Single experiment
+        One hardware-timed acquisition and its resulting image set.
+
+Sequence-wide error rule:
+
+    If any command or operation reports an error during an experimental
+    procedure, abort the complete experimental sequence. Never automatically
+    retry the failed operation or any other part of that procedure. Recovery,
+    correction, and starting a new sequence require a separate operator action.
+
+    Waiting for a commanded operation to finish and polling its status are not
+    retries. Reissuing a command after an error is a retry and is prohibited.
+
+Intended sequence-level order:
+
+    1. Initial flush, once at the beginning of the experimental sequence.
+       This is the first-experiment edge case. The flush includes the
+       configured WaitAfterFlush delay; there is no additional separate wait
+       before hardware configuration.
+
+    2. Run the first experiment.
+
+    3. After acquisition, save that experiment's images and run the next
+       flush in parallel.
+
+    4. Repeat the experiment followed by parallel save-and-flush work for
+       every remaining experiment.
+
+The post-experiment flush is last in the order of one experiment and prepares
+the fluidics for the next experiment. The same post-experiment flush is still
+performed after the final experiment.
+
+Flush Enable rule:
+
+    The existing experiment "Flush Enable" / "Flush after capture" checkbox
+    controls all automatic flushing for the complete experimental sequence.
+
+    When enabled:
+        - perform the once-only initial flush before experiment 1
+        - perform one post-experiment flush after every experiment, in
+          parallel with saving that experiment's images
+        - also perform the post-experiment flush after the final experiment
+
+    When disabled:
+        - do not perform the initial flush
+        - do not perform any automatic post-experiment flushes
+
+    When enabled, the initial flush and every post-experiment flush use the
+    same shared GUI settings:
+        - Flush Flow Rate (uL/min)
+        - flush volume (ml)
+        - WaitAfterFlush (s)
+
+    Sequence-level volume preflight:
+        TotalAutomaticFlushes = TotalExperiments + 1
+        RequiredFlushVolume_ml = TotalAutomaticFlushes * FlushVolume_ml
+
+        Before the initial flush, the program must verify that the pump's
+        tracked syringe fill level is at least RequiredFlushVolume_ml. It must
+        also retain the existing per-flush syringe-capacity and value checks.
+        If the complete planned flush volume is unavailable, reject the
+        sequence before issuing any valve or pump command.
+
+        For a TEC scan, TotalExperiments means the total number of experiment
+        repeats across all temperature points; the initial flush is still
+        counted only once for the complete experimental sequence.
+
+    Every automatic flush uses the same internal operation order:
+        1. command valve position P01 and wait until the valve is ready
+        2. dispense the configured volume at the configured flow rate and
+           wait until pump movement completes
+        3. command valve position P02 and wait until the valve is ready
+        4. wait for the configured WaitAfterFlush duration
+
+    This setting does not control a separately requested manual flush.
+
+Intended single-experiment order:
+
+    1. Configure and arm all AD2 outputs for the same PC trigger. Perform this
+       fresh for every experiment, even when the requested settings have not
+       changed from the preceding experiment.
+    2. Configure and arm the camera. Perform this fresh for every experiment,
+       even when its requested settings have not changed.
+    3. Send the single AD2 PC trigger. This event defines logical t = 0.
+    4. Acquire the requested camera frames while the AD2 outputs run.
+    5. As soon as all requested camera frames have been received, proceed in
+       parallel without waiting for a longer WFG window:
+         - save images and metadata to disk
+         - perform the flush, including WaitAfterFlush
+
+The intended acquisition-completion condition is receipt of all N requested
+camera frames. A longer ultrasound or laser window does not delay saving or
+flushing. Consequently, a WFG output may still be active while images are
+being saved and the fluidics flush is running.
+
+Intended AD2 configure-and-arm phase:
+
+    Output enable controls:
+        - W1 ultrasound and W2 laser can be enabled independently.
+        - In experimental Helper mode, DIO0 and DIO1 are both always enabled:
+          DIO0 triggers the camera and DIO1 drives the LED timing signal.
+        - The LED is optional only in the physical setup: the operator may
+          leave the DIO1-to-LED cable disconnected. Helper mode still generates
+          DIO1.
+        - Expert mode may expose independent DIO0/DIO1 enable controls as part
+          of its manual raw AD2 configuration.
+        - All software-enabled outputs are armed and released by the
+          experiment's common PC trigger.
+
+    Future experiment setup modes:
+
+        Expert mode
+            Gives the user manual control over the raw Analog Discovery WFG
+            and DIO settings used by the experiment. Safety and
+            representability validation still remain required; Expert mode
+            does not bypass them.
+
+        Helper mode
+            Helps the user derive and apply a consistent set of synchronized
+            AD2 settings from higher-level experimental choices. The exact
+            controls owned or calculated by Helper mode must be specified
+            during the later GUI/design review.
+
+            Helper mode exposes one "Imaging start delay (s)" value. It is
+            used as the shared DIO0/DIO1 Wait for every experiment in the
+            sequence. Helper mode does not expose the current dynamic-delay
+            toggle or the ten-entry per-repeat delay array. Per-repeat or raw
+            DIO timing belongs to the later Expert mode.
+
+            Confirmed DIO1 Helper behavior:
+                - DIO1 is always generated in software.
+                - DIO1 remains Low during the imaging Wait after t = 0.
+                - DIO1 changes High when DIO0 issues the first camera trigger.
+                - DIO1 remains High continuously through the rest of the
+                  camera-trigger schedule.
+                - The absolute DIO1 end from t = 0 is DIO0 imaging Wait plus
+                  DIO0 active duration.
+                - DIO1 pulse-counter data uses one High count, zero initial
+                  counts, and zero Low counts.
+                - If the physical DIO1-to-LED cable is connected, the LED turns
+                  on when the first frame is triggered and remains on for the
+                  complete imaging experiment. If the cable is disconnected,
+                  the same DIO1 signal is still generated but no LED is driven.
+
+            A later Expert mode will expose the raw AD2 configuration instead
+            of deriving these fixed Helper-mode values.
+
+            Confirmed DIO0 Helper behavior:
+                - DIO0 is always generated in software and triggers the camera.
+                - output type is Pulse with 50 percent duty cycle
+                - pulse-counter data uses one High count and one Low count
+                - Initial count is 0
+                - the line is Low before its active Run and starts High when
+                  the shared imaging Wait expires, producing the first positive
+                  camera-trigger edge
+                - active Run duration = Frames / achieved DIO0 frequency
+
+    1. Validate all derived and operator-entered AD2 settings before issuing
+       any AD2 configuration command:
+           - N and FPS are positive
+           - the AD2 divider produces a valid positive achieved DIO frequency
+           - W1, W2, and DIO Wait/Run values are finite and non-negative
+           - both WFG outer repeat counts are 1
+           - W1, W2, DIO0, and DIO1 all use trigger source PC
+
+    2. Build the WFG requests:
+           - physical W1/software channel 0 carries ultrasound
+           - physical W2/software channel 1 carries the laser
+           - each GUI-enabled WFG uses its own carrier settings, Wait, and Run
+
+    3. Build one DigitalOut request containing DIO0 and DIO1, using the ported
+       config_do_clock_special() path:
+           - DIO0 role = camera trigger; always enabled in Helper mode
+           - DIO1 role = LED timing; always enabled in Helper mode
+           - DIO1's physical cable to the LED may be left disconnected
+           - both lines share the DigitalOut Wait/Run/Repeat/Trigger Source
+             settings imposed by WaveForms
+           - apply the confirmed Helper-mode pulse/counter settings below
+
+       Helper timing representation:
+           DIO0 and DIO1 use the same global DigitalOut Wait selected from the
+           single Helper-mode "Imaging start delay (s)" value. The same value
+           applies to every experiment. When that Wait expires, DIO0 generates
+           the first positive camera-trigger edge and DIO1 changes High. DIO1
+           then stays High during the shared DigitalOut Run. Thus its absolute
+           end time is Wait + Run, while the AD2 Run field itself represents
+           the active duration after Wait.
+
+    4. Configure WFG first and DIO0/DIO1 second, with generation enabled but all
+       active outputs waiting in their armed state for the common PC trigger.
+       Configuration itself must not define t = 0 or intentionally produce an
+       ultrasound, laser, or camera-trigger output.
+
+    5. Preserve the requested and applied AD2 settings in the experiment
+       record. If any AD2 configuration step fails, do not configure/arm the
+       camera and do not send the PC trigger; report the failure and stop the
+       sequence.
+
+    6. If camera configuration or arming fails after AD2 has been armed, raise
+       an error and abort the experimental sequence without sending the PC
+       trigger. No additional special recovery procedure is specified.
+
+    After this phase, AD2 is armed but the experiment has not started. Camera
+    configuration and arming occur next. Only the later single pc_trigger()
+    event defines t = 0 and releases the armed AD2 timing state machines.
+
+Confirmed Helper-mode camera and DIO synchronization model:
+
+    The camera must be hardware-triggered from AD2 DIO0. DIO1 supplies the LED
+    timing signal. Both outputs are always generated in experimental Helper
+    mode; using the LED remains optional because the operator may leave its
+    physical DIO1 cable disconnected. The software behavior is confirmed below;
+    physical timing remains to be verified on hardware.
+
+    Confirmed channel mapping (physical and software numbering):
+        AD2 physical W1 / software channel_index 0 = ultrasound
+        AD2 physical W2 / software channel_index 1 = laser
+        AD2 DIO0 = camera trigger, always enabled in Helper mode
+        AD2 DIO1 = LED timing, always enabled in Helper mode; cable optional
+
+    Common timing reference:
+        W1, W2, DIO0, and DIO1 all use trigger source PC.
+        One pc_trigger() event defines logical t = 0 for the experiment.
+        Each AD2 output's Wait value is an offset measured from that same t = 0.
+        The camera is armed before t = 0 and does not receive the PC trigger
+        directly; it receives the later positive edges generated by DIO0.
+
+    AD2 WFG configuration:
+        Physical W1 / software channel_index 0:
+            role = ultrasound
+            trigger source = PC
+            wait = W1 GUI Start delay, measured from t = 0
+            run = W1 GUI Run duration
+            repeat count = 1
+
+        Physical W2 / software channel_index 1:
+            role = laser
+            trigger source = PC
+            wait = W2 GUI Start delay, measured from t = 0
+            run = W2 GUI Run duration
+            repeat count = 1
+
+        Requested WFG timing:
+            ultrasound start = W1 Start delay
+            ultrasound end   = W1 Start delay + W1 Run duration
+            laser start      = W2 Start delay
+            laser end        = W2 Start delay + W2 Run duration
+
+        The two WFG outputs have independent Wait and Run values, but both
+        windows are referenced to the same PC-trigger t = 0. Their carrier
+        waveform settings determine signal content inside these windows; they
+        do not create separate experiment-level trigger events.
+
+    Let:
+        N = Frames per repeat
+        F_requested = GUI Camera FPS in frames per second
+        F_achieved = actual DIO0 pulse frequency produced by the AD2 divider
+
+    Camera configuration:
+        sequence frame count = N
+        allocated camera buffer size = exactly N frames
+        DCAM trigger source = External
+        DCAM trigger polarity = Positive (rising-edge trigger)
+
+    Confirmed Helper-mode DigitalOut configuration:
+        shared trigger source = PC
+        shared wait = GUI imaging-start offset from t = 0
+        shared run = N / F_achieved
+        shared repeat count = 1
+        shared repeat trigger = False
+
+        DIO0 camera trigger:
+            enabled = True
+            output type = Pulse
+            idle state = Low
+            start state = High
+            High count = 1
+            Low count = 1
+            Initial count = 0
+            achieved pulse frequency = F_achieved
+
+        DIO1 LED timing:
+            enabled = True
+            output type = Pulse/counter output
+            idle state = Low
+            start state = High
+            High count = 1
+            Low count = 0
+            Initial count = 0
+            remains High for the complete shared Run
+
+        End condition:
+            When the finite shared Run duration expires, DIO0 and DIO1 both
+            return automatically to their configured idle state Low (0). No
+            separate host-software stop command defines this transition.
+
+    Execution:
+        configure and arm W1, W2, DIO0, and DIO1 for the same PC trigger
+        configure and arm the externally triggered camera
+        issue one AD2 PC trigger, defining t = 0
+        let every AD2 output count its own configured Wait from t = 0
+        after the shared DIO imaging offset, DIO0 produces its first positive
+        camera-trigger edge and DIO1 changes High
+        DIO0 produces N positive edges at F_achieved
+        DIO1 remains High through the shared N / F_achieved Run
+
+FPS representability rule:
+
+    FPS is not restricted to integer values. The Helper passes F_requested to
+    the special-clock configuration, which selects an integer AD2 clock divider
+    and determines F_achieved. Preserve and display both values; do not claim
+    the requested value was produced when divider quantization changed it.
+
+    To preserve exactly N camera-trigger periods, calculate the shared Run from
+    the achieved value:
+
+        DIO_Run = N / F_achieved
+        DIO_End = DIO_Wait + DIO_Run
+
+    The first DIO0 rising edge occurs at DIO_Wait, the final requested rising
+    edge occurs at DIO_Wait + (N - 1) / F_achieved, and the Run ends one full
+    achieved frame period later. Failure to obtain a valid positive achieved
+    frequency is an error before the experiment trigger; it is not retried.
+
+Future DIO implementation and verification work:
+
+    The implementing agent must:
+
+        - preserve the confirmed mapping: DIO0 camera trigger, DIO1 LED timing
+        - keep both lines enabled in Helper mode; optional LED use is by leaving
+          the physical DIO1-to-LED cable disconnected
+        - allow independent DIO enable control only in Expert mode
+        - use the DIO special-clock configuration path
+          (Application/AD2Sdk config_do_clock_special())
+        - apply the confirmed output type, counter values, idle state, Wait,
+          Run, Repeat, Repeat Trigger, and PC-trigger settings above
+        - obtain F_achieved before finalizing the shared N / F_achieved Run
+        - keep every enabled DIO and WFG output referenced to the same PC
+          trigger and logical t = 0
+        - verify the physical DIO, camera-exposure, and LED timing on the bench
+
+    WaveForms constraint to account for during that revision:
+
+        DIO0 and DIO1 can have independent Enable states and channel data, but
+        Wait, Run, Repeat, Repeat Trigger, and Trigger Source are configured
+        once for the complete AD2 DigitalOut instrument. Independent DIO enable
+        controls therefore do not imply independent DIO timing windows. The
+        camera/LED special-clock design must share those global timing settings
+        in Helper mode or establish a different supported mechanism.
+
+    The earlier fixed-1-kHz Custom-pattern proposal is superseded. Do not
+    reintroduce it into Helper mode.
+
+Deferred camera setup and acquisition review:
+
+    Revisit the complete camera path before implementation. The review must
+    cover:
+
+        - configuring sequence frame count N
+        - allocating a camera buffer of exactly N frames
+        - setting DCAM trigger source External and polarity Positive
+        - arming capture before the shared AD2 PC trigger
+        - defining completion from DCAM's captured-frame count, not only N
+          successful FRAMEREADY waits
+        - retrieving N distinct indexed buffer frames rather than repeatedly
+          copying only the latest frame
+        - checking frame indices/timestamps and detecting missed, duplicated,
+          overwritten, or extra frames
+        - defining zero-frame behavior, per-frame/whole-acquisition timeout,
+          cleanup, and partial-capture preservation
+
+    This review is intentionally deferred. The current implementation's
+    counted-wait behavior remains documented as current behavior, not as the
+    final intended camera-completion design.
+
+Intended shared trigger step:
+
+    Preconditions:
+        - all enabled WFG and DIO outputs are configured and armed on PC trigger
+        - camera configuration succeeded and the camera is armed
+        - no experiment output has intentionally started
+
+    Trigger action:
+        - issue exactly one ad2.pc_trigger() call
+        - the common AD2 PC-trigger event defines logical t = 0
+        - every enabled WFG and DIO state machine begins counting its own Wait
+          from that same event
+        - after each Wait expires, that output enters its configured Run window
+        - the externally armed camera responds to the configured DIO camera-
+          trigger edges; it is not directly triggered by the PC call
+
+    No separate host-software trigger is sent to W1, W2, DIO0, or DIO1. Their
+    relative timing is generated by AD2 hardware after the one common event.
+
+    PC-trigger failure rule:
+        If the PC-trigger call returns an error or an uncertain acknowledgement,
+        raise an error and abort the experimental sequence. Do not retry the PC
+        trigger automatically: the first trigger may already have reached AD2,
+        so retrying could create a second experiment trigger. No additional
+        special recovery procedure is specified here.
+
+Resolved AD2 terminology:
+
+    - WaveForms trigger source None starts generation without waiting for a
+      trigger. It cannot also mean manual/software triggering. The intended
+      manual software trigger is trigger source PC followed by pc_trigger().
+    - WaveForms repeat count 0 means infinite repeats. The intended finite
+      Helper-mode DigitalOut Trigger-Wait-Run repeat count is 1, not 0 or N.
+
+Required sequence boundary (rendezvous):
+
+    Saving and flushing start as parallel execution paths after an experiment.
+    ("Execution path" here means concurrent work inside the program, not a
+    separate Codex thread.) The two paths then rendezvous: the next experiment
+    must not begin until both saving and flushing have completed successfully.
+    A failure in either path prevents the sequence from advancing normally.
+
+    After a successful rendezvous, a remaining experiment begins with a fresh
+    AD2 configure-and-arm phase followed by a fresh camera configure-and-arm
+    phase. Neither device configuration is reused merely because its settings
+    match the preceding experiment. There is no third rendezvous condition for
+    the preceding experiment's programmed AD2 end time: advancement waits for
+    the completed saving/TDMS path and completed flush path.
+
+    Save completion requirement:
+        The save side is not complete merely because image acquisition has
+        returned or because image data exists in memory. Successful durable
+        saving requires:
+
+            - all N requested images written successfully as TIFF files
+            - the complete ordered image-name list recorded
+            - available frame timestamps recorded with their clock-domain
+              limitation preserved
+            - camera settings and requested/applied AD2 settings recorded
+            - final experiment metadata written successfully to TDMS
+
+        The repeat is not complete, and the next experiment may not start,
+        until the final TDMS metadata write also succeeds.
+
+    File-writing ownership:
+        Only the saving path writes files. The flush path performs the hardware
+        operation; it does not gather experiment data and does not write TIFF
+        or TDMS data. The saving path writes all N TIFFs and the final TDMS in
+        parallel with the physical flush. The two completed paths then
+        rendezvous. The flush outcome is operational status and is not added to
+        the intended TDMS record.
+
+        Conceptually:
+
+            all N images received
+                    |
+                    +--> saving path: write N TIFFs + TDMS --+
+                    |                                        |
+                    +--> flush path: hardware only ----------+--> rendezvous
+                                                                 |
+                                                                 v
+                                                         repeat complete
+
+    Initial-flush failure:
+        If the once-only initial flush fails, do not start experiment 1.
+        Report the flush failure and stop the experimental sequence.
+
+    Post-experiment flush failure:
+        Image saving must continue to completion even if the parallel flush
+        path fails. At the rendezvous, report the operational flush failure and
+        stop the sequence before another experiment begins. The flush failure
+        does not cause the saving path to modify TDMS. If this was the final
+        experiment, preserve the saved images and report that the sequence
+        ended with a flush failure.
+
+    Image-save failure:
+        The parallel flush already in progress is allowed to reach a safe
+        completion or its established failure/timeout result. At the
+        rendezvous, report the save failure and do not begin another
+        experiment.
+
+Future non-blocking WFG-overrun warning:
+
+    Calculate the programmed end of each output from the shared t = 0:
+
+        DIO_End = DIO_Wait + DIO_Run
+        W1_End  = W1_Wait  + W1_Run
+        W2_End  = W2_Wait  + W2_Run
+
+    If W1_End > DIO_End, display a warning that the ultrasound output extends
+    beyond the camera-trigger window.
+
+    If W2_End > DIO_End, display a warning that the laser output extends
+    beyond the camera-trigger window.
+
+    The warning should identify the affected WFG output and its programmed
+    overrun duration. It is informational: it does not prevent the experiment
+    from starting or delay the save-and-flush stage.
+
+Safety issue requiring explicit review before implementation:
+
+    This intended order can start fluid movement while ultrasound or laser
+    output is still active. A warning communicates the overlap but is not a
+    safety interlock. The physical setup and operating procedure must establish
+    that this overlap is safe before an implementation is authorized.
+
+Known differences in the current implementation (suggested corrections):
+
+    - There is no distinct once-only initial flush at sequence start.
+      Although the current Flush Enable flag controls each repeat's
+      post-capture flush, it does not currently enable an initial flush.
+    - Current preflight compares one flush volume with the tracked pump fill.
+      The intended preflight must reserve enough tracked volume for the
+      initial flush plus one post-experiment flush per planned experiment.
+    - The current repeat performs flush first and save second; they are not
+      parallel.
+      If that current flush fails, run_experiment2() returns before the normal
+      image-save step. The intended parallel design must preserve and finish
+      saving the captured images even when flushing fails.
+    - The current implementation writes a FlushCompleted success/failure
+      property to data.tdms after a flush attempt. In the intended parallel
+      design, flush completion is operational status used at the rendezvous;
+      the flush path does not gather experimental data or write to TDMS.
+    - Automated camera acquisition currently uses Internal trigger. DIO
+      control of camera exposure is not established by the current code.
+    - The current experiment request creates only DIO1, labels it as an LED
+      clock, and omits DIO0. The intended Helper request must always configure
+      DIO0 for the camera and DIO1 for the LED in one special-clock request.
+      The current DigitalOut trigger source also defaults to None rather than
+      PC.
+    - The current GUI supports a fixed DIO delay or a ten-entry per-repeat
+      delay array selected by a dynamic-delay checkbox. Intended Helper mode
+      replaces those alternatives with one "Imaging start delay (s)" used by
+      every experiment; advanced per-repeat timing is deferred to Expert mode.
+    - Current WFG trigger sources and repeat counts are configurable
+      independently. The intended experiment requires both WFG outputs and
+      DIO0/DIO1 to use the same PC trigger, with each WFG outer repeat count
+      fixed at 1.
+    - The current implementation waits for the remaining programmed AD2 time
+      after image acquisition. The intended procedure instead releases saving
+      and flushing as soon as all requested images have been received, with a
+      future warning when a WFG window extends beyond DIO1.
+    - The current camera buffer is max(N, 3), not exactly N when N is one or
+      two frames.
+    - The owner-confirmed intended mapping is physical W1/software channel 0
+      for ultrasound and physical W2/software channel 1 for the laser. The
+      W2-to-laser physical path is not yet verified by retained bench evidence.
+    - The owner-confirmed intended mapping is DIO0 for camera triggering and
+      DIO1 for LED timing. The physical DIO0-to-camera trigger timing and
+      DIO1-to-LED timing remain bench-unverified.
+
+
+1. THREE TYPES OF TIME IN THIS PROGRAM
+--------------------------------------
+
+1. Software order
+   The code defines the order in which functions are called. For example, the
+   camera is armed before the shared AD2 PC-trigger call.
+
+2. Programmed/requested hardware time
+   WFG channel start/run values and the shared DIO0/DIO1 window are programmed
+   in seconds. Helper mode calculates their requested starts and ends and must
+   distinguish requested from achieved DIO frequency.
+
+3. Measured physical time
+   The exact physical relationship among AD2 AnalogOut, DIO0, DIO1, camera
+   exposure, LED illumination, and the PC-trigger call has not yet been bench
+   verified. Camera frame timestamps are read after acquisition, but they are
+   in the camera's clock domain and are not currently synchronized to the AD2
+   clock.
+
+In the timelines below:
+
+    [==========]  configured/requested timed output
+    o             software command or instantaneous event
+    ............  programmed delay before an output
+    ????????????  exact time is not determined before the run
+    ----------->  conditional wait or continuation
+
+
+2. SERIES-LEVEL PROCEDURE
+-------------------------
+
+Intended sequence structure without a TEC temperature scan:
+
+    Start experiment
+          |
+          v
+    Validate/build the experiment series
+          |
+          v
+    Initial flush once, including WaitAfterFlush
+    (first physical experimental action)
+          |
+          v
+    Repeat 1 -> parallel save + flush -> Repeat 2 -> ... -> Repeat N
+          |                                                   |
+          |                                                   v
+          +----------------------------------------> parallel save + flush
+          |
+          v
+    Series complete
+
+The current implementation does not yet follow this sequence-level flush
+placement. Its current per-repeat order is recorded in section 3.
+
+GUI setting:
+
+    Series identity and inner repeats -> Series repeats
+
+This controls N, the number of Experiment2 repeats. Each repeat receives its
+own repeat_NNN output folder.
+
+If "Frequency scan across repeats" is enabled, one frequency-list value is
+assigned to WFG channel 0 for each repeat. The frequency count must equal
+Series repeats. This changes carrier frequency between repeats; it does not
+change the timing formulas below.
+
+Current implementation only: the existing GUI can select a fixed DIO1 delay or
+one of ten per-repeat delay slots. Intended Helper mode removes that choice and
+uses one "Imaging start delay (s)" for every experiment. Per-repeat raw timing
+is deferred to Expert mode.
+
+
+With a TEC temperature scan:
+
+    For each configured temperature point:
+
+        Set TEC target(s)
+              |
+              v
+        Wait until temperature is within tolerance continuously for the
+        configured minimum in-tolerance time
+              |
+              v
+        Optional post-stabilization hold
+              |
+              v
+        Run all Series repeats for this temperature point
+
+Relevant GUI settings under "TEC temperature scan":
+
+    Channel 1 points (deg C)
+    Channel relationship
+    Channel 2 points (deg C), when channels are unlocked
+    Target tolerance (deg C)
+    Minimum in-tolerance time (s)
+    Maximum wait per target (s)
+    Status poll interval (s)
+    Post-stabilization hold (s)
+
+A graceful stop is checked between repeats. During a TEC scan it is checked
+between complete temperature-point groups. An operation already in progress
+is allowed to finish.
+
+
+3. ONE AUTOMATED REPEAT - SOFTWARE ORDER
+----------------------------------------
+
+The current Application.run_experiment2() order is shown below. This is a
+record of existing behavior, not the intended parallel save-and-flush design:
+
+    1. Create the repeat folder and initial data.tdms record.
+
+    2. Configure AD2:
+         - WFG channel 0
+         - WFG channel 1
+         - DIO1 pulse output
+
+    3. Configure camera:
+         - apply Experiment exposure time
+         - apply sequence settings
+         - force automated camera trigger source to Internal
+         - apply requested global-exposure reset mode
+         - verify that requested Camera FPS is not greater than the live
+           exposure-plus-readout timing budget
+
+    4. Start/arm camera capture.
+
+    5. Call ad2.pc_trigger(). This call is the t = 0 reference used below.
+
+    6. Request the configured number of camera frames and wait for the camera
+       frame-acquisition call to return.
+
+    7. Read camera frame timestamps and stop camera capture.
+
+    8. If any requested AD2 output window has not yet ended, wait only for the
+       remaining AD2 time.
+
+    9. If enabled, perform the flush sequence shown separately in section 7.
+
+   10. Save TIFF images, image metadata, camera settings, and the final TDMS
+       metadata for the repeat.
+
+
+4. ONE-REPEAT TIMELINE
+----------------------
+
+Time origin:
+
+    t = 0 is the host software call to ad2.pc_trigger().
+
+AD2 is configured first and the camera is configured and armed second. The
+single PC trigger is sent only after both steps succeed.
+
+Intended Helper-mode symbolic timeline:
+
+    Time from shared PC-trigger call
+
+                          t=0
+                           |
+    Software               o  one shared AD2 PC trigger
+    Camera armed            o  already armed before t=0
+
+    Ultrasound / W1        |...W1 Wait...[W1 Run]|
+    Laser / W2             |...W2 Wait.........[W2 Run]|
+
+    DIO0 camera trigger    |...Imaging Wait...[N pulses at F_achieved]|
+    DIO1 LED               |...Imaging Wait...[HIGH continuously.....]|
+    Camera frames          |...Imaging Wait...o..o..o...............o|
+                                           first                 frame N
+
+    Save path                               starts when all N frames arrive
+    Flush path                              starts at the same boundary
+
+    DIO_Run = N / F_achieved
+    DIO_End = Imaging_Wait + DIO_Run
+
+At DIO_End, DIO0 and DIO1 return automatically to idle Low. Saving and
+flushing do not wait for a longer W1 or W2 window. The next experiment starts
+only after the saving/TDMS path and flush path rendezvous; there is no separate
+AD2-end condition at that repeat boundary.
+
+Current implementation difference: the camera is internally triggered, only
+DIO1 is configured, DIO Run is based on requested FPS, and the application
+waits for the maximum programmed AD2 end before sequential flush and save.
+
+
+5. GUI SETTINGS THAT CHANGE THE MAIN TIMELINE
+---------------------------------------------
+
+A. Sound / acoustic request: WFG channel 0
+
+GUI location:
+
+    AD2 Output -> Acoustic / primary analog output (AD2 channel 0)
+
+Timing controls:
+
+    Channel output / Enable
+        Includes or excludes this output from the repeat and completion time.
+
+    Start delay (s)
+        WFG0_Start. Moves the requested sound start left or right in time.
+
+    Run duration (s)
+        WFG0_Run. Changes the requested sound duration and WFG0_End.
+
+    Trigger source
+        Current GUI exposes this raw choice. Intended Helper mode forces PC so
+        W1 shares the experiment's t = 0; raw choices belong to Expert mode.
+
+Signal-content controls that do not directly change start/end time:
+
+    Frequency, Amplitude, Offset, Function, Symmetry/Duty Cycle, Phase
+
+FM sweep controls change the frequency program within the same WFG0 run
+window. Frequency scan changes the base frequency between repeats.
+
+
+B. Secondary analog request: WFG channel 1
+
+GUI location:
+
+    AD2 Output -> Secondary analog output (AD2 channel 1)
+
+The Enable, Start delay, Run duration, and signal-content controls work
+independently from channel 0. The owner-confirmed intended role is laser
+control. Helper mode forces trigger source PC and outer repeat count 1; the
+physical W2-to-laser path still requires retained bench verification.
+
+
+C. Camera trigger and LED timing: DIO0/DIO1
+
+GUI location:
+
+    Experimental Helper -> acquisition timing
+
+Controls and formulas:
+
+    Camera FPS
+        DIO0 requested pulse frequency = Camera_FPS
+        Achieved pulse period = 1 / F_achieved
+
+    Frames per experiment
+        DIO Run = Frames / F_achieved
+        Also sets the camera sequence and buffer count N.
+
+    Imaging start delay (s)
+        Shared DIO0/DIO1 Wait from t = 0, used by every experiment.
+
+Helper mode always generates both outputs. DIO0 is a 50-percent-duty camera-
+trigger pulse train. DIO1 changes High with the first DIO0 edge and remains
+High through the complete imaging Run. Connecting the physical DIO1-to-LED
+cable is optional. The current fixed/dynamic DIO1-delay controls are legacy
+current behavior and are not part of intended Helper mode.
+
+
+D. Camera image acquisition
+
+GUI controls:
+
+    Frames per repeat
+        Number of frames requested by image_sequence().
+
+    Exposure time (ms)
+        Applied to the real camera before capture.
+
+    Request global exposure reset
+        Requests the camera's supported global-reset exposure mode when on.
+
+Inherited Camera Setup controls:
+
+    MasterPulse mode
+    MasterPulse source
+    MasterPulse interval
+    MasterPulse burst count
+
+Important limitation:
+
+    Intended Helper mode sets DCAM trigger source External and polarity
+    Positive so DIO0 rising edges trigger frames. The current implementation
+    instead forces Internal trigger and therefore does not yet implement this
+    synchronization.
+
+The physical relationship between DIO0 edges, camera exposure, and DIO1 LED
+state must still be measured. Saved camera timestamps are in the camera clock
+domain and are not currently transformed into the AD2 t = 0 clock domain.
+
+
+E. Repeat completion boundary
+
+There is no Helper-mode AD2-completion-wait control. As soon as all N camera
+frames have arrived, saving/TDMS and flushing start in parallel. The next
+experiment waits for both paths to finish, not for the preceding WFG end time.
+Longer WFG windows produce the separately deferred non-blocking warning.
+
+
+6. WORKED ONE-REPEAT EXAMPLE
+----------------------------
+
+Illustrative GUI values:
+
+    W1 ultrasound: enabled, Start delay = 1.0 s, Run duration = 4.0 s
+    W2 laser:      enabled, Start delay = 2.0 s, Run duration = 5.0 s
+    Camera FPS requested: 10 fps
+    Camera FPS achieved:  10 fps
+    Frames:                30
+    Imaging start delay:   0.5 s
+
+Calculated times:
+
+    W1: 1.0 s -> 5.0 s
+    W2: 2.0 s -> 7.0 s
+    DIO Run = 30 / 10 = 3.0 s
+    DIO0/DIO1: 0.5 s -> 3.5 s
+    DIO0 pulse period = 1 / 10 = 0.1 s
+    first camera trigger = 0.5 s
+    final camera trigger = 0.5 + 29 / 10 = 3.4 s
+
+Approximate drawing of the programmed requests:
+
+    Time (s)       0       1       2       3       4       5       6       7
+                   |-------|-------|-------|-------|-------|-------|-------|
+    W1 ultrasound ........[===============================]
+                            1.0                             5.0
+
+    W2 laser      ................[=======================================]
+                                    2.0                                   7.0
+
+    DIO0 camera    ....o-o-o-o-o-o-o-o-o-o-o-o-o-o-o-o-o-o-o-o-o-o-o-o-o-o-o-o-o-o
+                       first                                                       last
+
+    DIO1 LED       ....[=======================]
+                       HIGH                    3.5; then idle Low
+
+    Camera images  ....o-o-o-o-o-o-o-o-o-o-o-o-o-o-o-o-o-o-o-o-o-o-o-o-o-o-o-o-o-o
+                   intended: External/Positive; physical timing unverified
+
+    Save + flush   begin as soon as all 30 images have arrived. W2 continues
+                   to its programmed 7.0 s end and produces an overrun warning;
+                   it does not delay save or flush.
+
+
+7. FLUSH SEQUENCE - SHOWN SEPARATELY
+------------------------------------
+
+In the intended design, flush has two placements, both using the same
+valve-P01, dispense, valve-P02, WaitAfterFlush operation order:
+
+    - once at the beginning of the full experimental sequence, before the
+      first experiment (the first-experiment edge case)
+    - after each experiment, in parallel with saving that experiment's images
+
+WaitAfterFlush is part of the flush sequence and is the only configured wait
+associated with flushing. There is no separate wait between the initial flush
+and hardware configuration.
+
+In the current implementation, flush occurs only after camera capture and the
+required AD2 completion wait. It runs before image saving rather than in
+parallel with it. It is not simultaneous with the sound, DIO1, or
+image-acquisition windows.
+
+The current flush order is:
+
+    Validate requested volume, flow rate, syringe capacity, and tracked fill
+          |
+          v
+    Command valve position P01
+          |
+          v
+    Wait until valve ready, with a 1.0 s timeout
+          |
+          v
+    Command pump to dispense the requested volume at the requested flow rate
+          |
+          v
+    Poll pump status until complete or until the movement timeout
+          |
+          v
+    Command valve position P02
+          |
+          v
+    Wait until valve ready, with a 1.0 s timeout
+          |
+          v
+    Wait for the configured WaitAfterFlush duration
+          |
+          v
+    Re-apply/finalize the tracked pump target level
+          |
+          v
+    FlushComplete
+
+Use a separate local flush time origin because the first valve-ready time is
+not known in advance:
+
+    tF = 0 is the pump-dispense command, after P01 reports ready.
+
+Nominal pump movement time:
+
+    Pump_nominal_s = (Flush_volume_ml * 1000 / Flow_rate_uL_per_min) * 60
+
+Pump timeout:
+
+    Pump_timeout_s = Pump_nominal_s + 5.0 s safety margin
+
+Separate flush timeline:
+
+    Before tF=0    o command P01
+                   ---------- wait for P01 ready, maximum 1.0 s
+
+    Pump           tF=0 [========== actual pump motion ==========]
+                         nominal duration = Pump_nominal_s
+                         hard deadline    = Pump_timeout_s
+
+    Valve P02             ? o command after actual pump completion
+                           ---------- wait for P02 ready, maximum 1.0 s
+
+    Post-flush wait          [ configured WaitAfterFlush ]
+                             starts after P02 reports ready
+
+    Finalize                 o final pump-level update, then FlushComplete
+
+Pump completion and valve-ready times are status-driven, so the absolute P02
+and post-flush-wait positions cannot be known exactly before the run.
+
+
+GUI settings under Fluidics / Flush settings:
+
+    Flush after capture
+        Current behavior: enables or disables the complete post-capture flush
+        for every repeat, including the final repeat.
+
+        Intended behavior: controls every automatic flush for the series--the
+        once-only initial flush and every post-experiment flush, including the
+        final one. It does not control a separately requested manual flush.
+
+    Flush Flow Rate (uL/min)
+        Changes nominal pump time and timeout. The intended sequence uses this
+        same value for the initial and every post-experiment flush.
+
+    flush volume (ml)
+        Changes nominal pump time, timeout, and final tracked fill. The
+        intended sequence uses this same value for the initial and every
+        post-experiment flush.
+
+    WaitAfterFlush
+        Exact configured waiting duration after P02 reports ready. The
+        intended sequence uses this same value for the initial and every
+        post-experiment flush.
+
+    Selected syringe capacity
+        Used for the capacity safety check. It does not directly change the
+        nominal movement formula.
+
+Pump and Valve must both be enabled. If either is disabled, the automated
+runtime skips the flush and records the instrument-enabled state.
+
+
+Worked flush example:
+
+    Flush volume = 0.05 ml
+    Flow rate    = 200 uL/min
+    WaitAfterFlush = 2.0 s
+
+    Pump_nominal_s = (0.05 * 1000 / 200) * 60 = 15.0 s
+    Pump_timeout_s = 15.0 + 5.0 = 20.0 s
+
+    P01 readiness occurs before tF=0 and may take up to 1.0 s.
+    Pump command is issued at tF=0.
+    P02 is commanded when the pump actually reports completion.
+    After P02 reports ready, the program waits exactly 2.0 configured seconds.
+
+
+8. SETTINGS THAT CHANGE CONTENT BUT NOT THE BASIC ORDER
+-------------------------------------------------------
+
+The following settings change what happens inside a repeat without changing
+the sequence order shown above:
+
+    WFG frequency/amplitude/function/offset/symmetry/phase
+    FM sweep within a repeat
+    Frequency scan value selected for each repeat
+    Camera ROI (changes readout time and therefore FPS feasibility)
+    Output path (changes where files are written)
+    Simulation/enabled state of each device (may replace or skip hardware calls)
+
+
+9. HANDOVER CHECKLIST FOR A FUTURE IMPLEMENTING AGENT
+------------------------------------------------------
+
+This file records design decisions only. Do not implement them without a new
+explicit implementation request. Do not use or inspect the retained LabVIEW
+code to reinterpret these owner-confirmed requirements.
+
+Primary implementation gaps:
+
+    Experimental Helper GUI
+        - expose Camera FPS, Frames per experiment, and one Imaging start
+          delay (s)
+        - remove the dynamic-delay toggle and ten per-repeat delay fields from
+          Helper mode
+        - keep raw/per-repeat DIO settings for a later Expert mode
+        - display requested and achieved DIO0 frequency
+
+    DIO request construction
+        - create DIO0 and DIO1 together in one DoConfig
+        - use config_do_clock_special()
+        - apply the confirmed counters, Low idle, shared PC trigger, shared
+          Wait, finite Run, repeat count 1, and repeat-trigger False
+        - obtain F_achieved from the divider and use N / F_achieved for Run
+        - use F_achieved for the camera exposure-plus-readout feasibility check
+        - preserve requested and achieved settings in the experiment record
+
+    Camera
+        - configure External trigger with Positive polarity
+        - configure/arm after AD2 and before the one PC trigger
+        - complete the separately deferred camera buffer/acquisition review
+
+    Sequence control
+        - add the Flush Enable-controlled once-only initial flush
+        - start saving/TDMS and post-experiment flush in parallel after all N
+          images arrive
+        - make the flush path hardware-only; only the save path writes files
+        - rendezvous both paths before configuring the next experiment
+        - abort the complete sequence on any error and never retry
+
+    Validation
+        - use simulated/fake hardware for automated tests
+        - separately bench-verify DIO0 edge count/timing, camera exposure,
+          DIO1 LED state, and WFG relationships before claiming physical timing
+        - report every device accessed and command issued during hardware work
+
+Explicitly deferred owner discussions:
+
+    - detailed camera setup, buffering, and acquisition-completion behavior
+    - partial TIFF-save failure handling
+    - WFG-overrun warning presentation and physical overlap safety review
+    - full Expert-mode raw AD2 controls
+
+
+10. SOURCE LOCATIONS
+--------------------
+
+The sequence described here is traced from:
+
+    src/thermo_acoustic/application.py
+        Application.run_experiment2()
+        Application._ad2_completion_wait_seconds()
+        Application.flush()
+        Application.run_temperature_series()
+
+    src/thermo_acoustic/qt_ui.py
+        MainWindow._build_experiment_series()
+        MainWindow._experiment_do_clock_config()
+        MainWindow._experiment_wfg_config()
+
+    src/thermo_acoustic/qt_ui_v3.py
+        v3 labels, grouping, derived timing summaries, and GUI relationships
+
+    src/thermo_acoustic/workflows.py
+        Experiment2
+        ExperimentSeries2
+        FlushSettings.timeout_s
+
+    src/thermo_acoustic/hamamatsu_dcam.py
+        camera sequence and trigger property application
+
+WaveForms trigger, wait, run, repeat, and None-trigger semantics are documented
+by Digilent here:
+
+    https://digilent.com/reference/software/waveforms/waveforms-3/reference-manual

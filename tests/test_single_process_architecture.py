@@ -751,7 +751,7 @@ def test_long_operations_are_typed_and_complete_in_simulation(qt_app):
         }
     ]
     assert all(isinstance(result, PumpMovementResult) for result in movements)
-    assert movements[-1].referenced
+    assert registry.by_id(DeviceId.PUMP).device._pumps[0].referenced
     controller.shutdown()
 
 

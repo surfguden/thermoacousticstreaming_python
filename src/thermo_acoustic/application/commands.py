@@ -734,7 +734,6 @@ class PumpRecoveryResult:
 @dataclass(frozen=True, slots=True)
 class PumpMovementResult:
     fill_level_ml: float | None = None
-    referenced: bool = False
 
 
 @dataclass(frozen=True, slots=True)
