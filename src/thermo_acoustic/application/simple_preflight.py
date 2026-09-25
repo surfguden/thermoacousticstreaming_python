@@ -12,7 +12,8 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from ..domain.models import ConnectionState, DeviceId, PumpReadback
 from .commands import (
     Ad2ExperimentDigitalArgs, CameraConfigureRoiArgs, CameraConfigureSequenceArgs,
-    CameraSequenceTriggerArgs, CameraTriggerActive, CameraTriggerPolarity,
+    CameraConfigureSnapshotArgs, CameraSequenceTriggerArgs, CameraTriggerActive,
+    CameraTriggerPolarity,
     CameraTriggerSource, DeviceCommand, DeviceOperation, NoArguments, PumpUnitArgs,
 )
 from .experiments import validate_definition
@@ -28,13 +29,19 @@ class SimpleSeriesPreflight(QObject):
         self._pairs: deque[tuple[dict, dict]] = deque()
         self._fingerprint = ""
         self._active = False
+        self._recovery_pending: dict[str, str] = {}
+        self._recovery_errors: list[str] = []
+        self._recovery_message = ""
+        self._recovery_camera_stopped = False
+        self._recovery_preview_requested = False
+        self._recovery_preview_restored = False
         self._guard = QTimer(self)
         self._guard.setSingleShot(True)
         self._guard.timeout.connect(lambda: self._finish(False, "Count preflight timed out"))
         controller.command_result.connect(self._result)
 
     def run(self, definition: dict) -> None:
-        if self._active:
+        if self._active or self._recovery_message:
             raise RuntimeError("A count preflight is already running")
         if self.controller.count_preflight_active:
             raise RuntimeError("A count preflight is already running")
@@ -154,6 +161,16 @@ class SimpleSeriesPreflight(QObject):
             self._finish(False, str(exc))
 
     def _result(self, result: Any) -> None:
+        recovery = self._recovery_pending.pop(result.request_id, None)
+        if recovery is not None:
+            if not result.ok:
+                self._recovery_errors.append(f"{recovery}: {result.error or 'command failed'}")
+            elif recovery == "camera stop":
+                self._recovery_camera_stopped = True
+            elif recovery == "camera preview":
+                self._recovery_preview_restored = True
+            self._continue_recovery()
+            return
         callback = self._pending.pop(result.request_id, None)
         if callback is None or not self._active:
             return
@@ -166,23 +183,63 @@ class SimpleSeriesPreflight(QObject):
         if not self._active:
             return
         self._active = False
-        self.controller.count_preflight_active = False
         self._guard.stop()
         self._pending.clear()
         if not ok:
+            self._recovery_message = message
+            self._recovery_errors = []
+            self._recovery_camera_stopped = False
+            self._recovery_preview_requested = False
+            self._recovery_preview_restored = False
             for device in (DeviceId.AD2, DeviceId.CAMERA):
-                if self.controller.statuses()[device].connection is ConnectionState.CONNECTED:
-                    try:
-                        self.controller.submit(DeviceCommand(device, DeviceOperation.SAFE_STOP,
-                                                             NoArguments(), source="experiment-preflight"))
-                    except RuntimeError:
-                        pass
-        elif self.controller.statuses()[DeviceId.CAMERA].connection is ConnectionState.CONNECTED:
+                # A failed worker command changes its status to ERROR while the
+                # hardware is still connected. It must still receive SAFE_STOP.
+                if self.controller.statuses()[device].connection is ConnectionState.DISCONNECTED:
+                    continue
+                command = DeviceCommand(device, DeviceOperation.SAFE_STOP,
+                                        NoArguments(), source="experiment-preflight")
+                self._recovery_pending[command.request_id] = f"{device.value} stop"
+                try:
+                    self.controller.submit(command)
+                except Exception as exc:
+                    self._recovery_pending.pop(command.request_id, None)
+                    self._recovery_errors.append(f"{device.value} stop: {exc}")
+            self._continue_recovery()
+            return
+        self.controller.count_preflight_active = False
+        if self.controller.statuses()[DeviceId.CAMERA].connection is ConnectionState.CONNECTED:
             try:
-                from .commands import CameraConfigureSnapshotArgs
                 self.controller.submit(DeviceCommand(DeviceId.CAMERA,
                     DeviceOperation.CAMERA_CONTINUOUS_CAPTURE, CameraConfigureSnapshotArgs(),
                     source="experiment-preflight"))
             except RuntimeError:
                 pass
         self.finished.emit(ok, message, self._fingerprint)
+
+    def _continue_recovery(self) -> None:
+        if self._recovery_pending:
+            return
+        if not self._recovery_preview_requested and self._recovery_camera_stopped:
+            self._recovery_preview_requested = True
+            if self.controller.statuses()[DeviceId.CAMERA].connection is ConnectionState.CONNECTED:
+                command = DeviceCommand(DeviceId.CAMERA, DeviceOperation.CAMERA_CONTINUOUS_CAPTURE,
+                                        CameraConfigureSnapshotArgs(), source="experiment-preflight")
+                self._recovery_pending[command.request_id] = "camera preview"
+                try:
+                    self.controller.submit(command)
+                except Exception as exc:
+                    self._recovery_pending.pop(command.request_id, None)
+                    self._recovery_errors.append(f"camera preview: {exc}")
+                    self._continue_recovery()
+                return
+            self._recovery_errors.append("camera remains unavailable after stop")
+        if self._recovery_errors:
+            detail = f"; recovery errors: {'; '.join(self._recovery_errors)}"
+        elif self._recovery_preview_restored:
+            detail = "; camera preview restored"
+        else:
+            detail = "; camera preview not restored"
+        message = self._recovery_message + detail
+        self._recovery_message = ""
+        self.controller.count_preflight_active = False
+        self.finished.emit(False, message, self._fingerprint)

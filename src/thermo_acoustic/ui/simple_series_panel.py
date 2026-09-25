@@ -183,7 +183,7 @@ class SimpleSeriesPanel(QWidget):
     def _range(form: QFormLayout, label: str, start: float, stop: float,
                *, minimum: float = 0, maximum: float = 100_000_000) -> tuple:
         box = QWidget()
-        row = QHBoxLayout(box)
+        row = QGridLayout(box)
         row.setContentsMargins(0, 0, 0, 0)
         start_widget = number(start, minimum, maximum)
         stop_widget = number(stop, minimum, maximum)
@@ -194,12 +194,12 @@ class SimpleSeriesPanel(QWidget):
         stop_widget.setToolTip(steps_tip)
         steps_label = QLabel("Steps")
         steps_label.setToolTip(steps_tip)
-        row.addWidget(QLabel("Start"))
-        row.addWidget(start_widget)
-        row.addWidget(QLabel("Stop"))
-        row.addWidget(stop_widget)
-        row.addWidget(steps_label)
-        row.addWidget(steps)
+        for column, (caption, control) in enumerate(((QLabel("Start"), start_widget),
+                                                     (QLabel("Stop"), stop_widget),
+                                                     (steps_label, steps))):
+            row.addWidget(caption, 0, column)
+            row.addWidget(control, 1, column)
+            row.setColumnStretch(column, 1)
         form.addRow(label, box)
         return start_widget, stop_widget, steps
 
@@ -313,6 +313,8 @@ class SimpleSeriesPanel(QWidget):
             self.manager.record_simple_preflight(fingerprint, self.pump_unit.currentData(),
                                                  self._fill_level())
         self.state_label.setText(("Preflight passed: " if ok else "Preflight failed: ") + message)
+        if not ok:
+            QMessageBox.warning(self, "Preflight failed", message)
 
     def _queue(self) -> None:
         try:

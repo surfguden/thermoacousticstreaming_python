@@ -5,10 +5,12 @@ from __future__ import annotations
 import csv
 from dataclasses import replace
 import json
+from types import SimpleNamespace
 
 import pytest
 from time import monotonic, sleep
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QGridLayout, QMessageBox
+from PySide6.QtCore import QObject, Signal
 
 from thermo_acoustic.application.controller import ApplicationController
 from thermo_acoustic.application.experiments import validate_definition
@@ -20,7 +22,7 @@ from thermo_acoustic.application.commands import (DeviceCommand, DeviceOperation
                                                   PumpSetFillLevelArgs, TecApplySetpointsArgs,
                                                   WorkflowOperation)
 from thermo_acoustic.application.simple_preflight import SimpleSeriesPreflight
-from thermo_acoustic.domain.models import DeviceId, OperatingMode
+from thermo_acoustic.domain.models import ConnectionState, DeviceId, OperatingMode
 from thermo_acoustic.hal.registry import DeviceRegistry
 from thermo_acoustic.ui.main_window import MainWindow
 
@@ -151,6 +153,112 @@ def test_explicit_count_preflight_uses_simulated_workers_and_discards_frames():
         controller.shutdown()
 
 
+def test_failed_preflight_stops_error_state_camera_before_restoring_preview():
+    class Controller(QObject):
+        command_result = Signal(object)
+
+        def __init__(self):
+            super().__init__()
+            self.count_preflight_active = True
+            self.commands = []
+            self.connections = {DeviceId.AD2: ConnectionState.CONNECTED,
+                                DeviceId.CAMERA: ConnectionState.ERROR}
+
+        def statuses(self):
+            return {device: SimpleNamespace(connection=state)
+                    for device, state in self.connections.items()}
+
+        def submit(self, command):
+            self.commands.append(command)
+
+    controller = Controller()
+    preflight = SimpleSeriesPreflight(controller)
+    preflight._active = True
+    preflight._fingerprint = "planned-settings"
+    finished = []
+    preflight.finished.connect(lambda *args: finished.append(args))
+
+    preflight._finish(False, "Camera frame 1/2 timed out")
+    stops = [command for command in controller.commands
+             if command.operation is DeviceOperation.SAFE_STOP]
+    assert {command.device for command in stops} == {DeviceId.AD2, DeviceId.CAMERA}
+    assert controller.count_preflight_active
+    assert not finished
+
+    for command in stops:
+        if command.device is DeviceId.CAMERA:
+            controller.connections[DeviceId.CAMERA] = ConnectionState.CONNECTED
+        controller.command_result.emit(SimpleNamespace(request_id=command.request_id,
+                                                        ok=True, error=None))
+    preview = controller.commands[-1]
+    assert preview.operation is DeviceOperation.CAMERA_CONTINUOUS_CAPTURE
+    assert preview.device is DeviceId.CAMERA
+    controller.command_result.emit(SimpleNamespace(request_id=preview.request_id,
+                                                    ok=True, error=None))
+    assert finished == [(False, "Camera frame 1/2 timed out; camera preview restored",
+                         "planned-settings")]
+    assert not controller.count_preflight_active
+
+
+def test_failed_preflight_keeps_camera_responsive_without_reconnect():
+    app = QApplication.instance() or QApplication(["test-preflight-recovery"])
+    registry = DeviceRegistry(mode=OperatingMode.SIMULATION)
+    controller = ApplicationController(registry, mode=OperatingMode.SIMULATION)
+    results = []
+    controller.command_result.connect(results.append)
+    preflight = SimpleSeriesPreflight(controller)
+    finished = []
+    preflight.finished.connect(lambda *args: finished.append(args))
+    controller.start()
+    try:
+        for device in (DeviceId.AD2, DeviceId.CAMERA, DeviceId.PUMP, DeviceId.VALVE):
+            controller.submit(DeviceCommand(device, DeviceOperation.CONNECT))
+        deadline = monotonic() + 5
+        while monotonic() < deadline and sum(result.operation is DeviceOperation.CONNECT and result.ok
+                                              for result in results) < 4:
+            app.processEvents(); sleep(0.01)
+        assert sum(result.operation is DeviceOperation.CONNECT and result.ok for result in results) == 4
+        controller.submit(DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_FILL_LEVEL_SET,
+                                        PumpSetFillLevelArgs(1.0)))
+        deadline = monotonic() + 3
+        while monotonic() < deadline and not any(result.operation is DeviceOperation.PUMP_FILL_LEVEL_SET
+                                                  for result in results):
+            app.processEvents(); sleep(0.01)
+
+        camera = registry.by_id(DeviceId.CAMERA).device
+        original_poll = camera.poll_buffered_sequence_frame
+
+        def fail_once(timeout_ms):
+            camera.poll_buffered_sequence_frame = original_poll
+            raise RuntimeError("injected frame read failure")
+
+        camera.poll_buffered_sequence_frame = fail_once
+        definition = compile_simple_series(replace(settings(), repeats=1, frame_count=2,
+            frequency_hz=NumericRange(1_000_000, 1_000_000, 1),
+            amplitude_v=NumericRange(1, 1, 1), exposure_ms=NumericRange(1, 1, 1),
+            sweep_enabled=False, temperature_control=False, temperature_logging=False,
+            roi=(0, 0, 16, 16), flush_unit_index=0))
+        preflight.run(definition)
+        deadline = monotonic() + 10
+        while monotonic() < deadline and not finished:
+            app.processEvents(); sleep(0.01)
+        assert finished and not finished[0][0]
+        assert "injected frame read failure" in finished[0][1]
+        assert "camera preview restored" in finished[0][1]
+        assert any(result.operation is DeviceOperation.SAFE_STOP and result.device is DeviceId.CAMERA
+                   and result.ok for result in results)
+
+        controller.submit(DeviceCommand(DeviceId.CAMERA, DeviceOperation.CAMERA_SNAPSHOT_CAPTURE))
+        deadline = monotonic() + 3
+        while monotonic() < deadline and not any(result.operation is DeviceOperation.CAMERA_SNAPSHOT_CAPTURE
+                                                  for result in results):
+            app.processEvents(); sleep(0.01)
+        assert any(result.operation is DeviceOperation.CAMERA_SNAPSHOT_CAPTURE and result.ok
+                   for result in results)
+    finally:
+        controller.shutdown()
+
+
 def test_simple_series_runs_on_simulated_workers_and_logs_temperature(tmp_path):
     app = QApplication.instance() or QApplication(["test-simple-series"])
     controller = ApplicationController(DeviceRegistry(mode=OperatingMode.SIMULATION),
@@ -222,10 +330,33 @@ def test_simple_tab_imports_live_camera_roi_and_exposure():
             app.processEvents(); sleep(0.01)
         panel = window.experiment_panel
         assert "only Start is used" in panel.frequency[2].toolTip()
+        for controls in (panel.frequency, panel.amplitude, panel.sweep_width,
+                         panel.temperature, panel.exposure):
+            layout = controls[0].parentWidget().layout()
+            assert isinstance(layout, QGridLayout)
+            for column, (caption, control) in enumerate(zip(("Start", "Stop", "Steps"), controls)):
+                assert layout.itemAtPosition(0, column).widget().text() == caption
+                assert layout.itemAtPosition(1, column).widget() is control
         assert (panel.roi_x.value(), panel.roi_y.value(),
                 panel.roi_width.value(), panel.roi_height.value()) == (0, 0, 2048, 1024)
         assert panel.exposure[0].value() == panel.exposure[1].value() == 2.5
         assert panel.exposure[2].value() == 1
+    finally:
+        window.close()
+
+
+def test_failed_preflight_warning_remains_visible_after_recovery(monkeypatch):
+    QApplication.instance() or QApplication(["test-preflight-warning-ui"])
+    controller = ApplicationController(DeviceRegistry(mode=OperatingMode.SIMULATION),
+                                       mode=OperatingMode.SIMULATION)
+    window = MainWindow(controller)
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda _parent, title, message: warnings.append((title, message)))
+    try:
+        panel = window.experiment_panel
+        panel._preflight_finished(False, "Camera frame timed out; camera preview restored", "settings")
+        assert "Preflight failed: Camera frame timed out" in panel.state_label.text()
+        assert warnings == [("Preflight failed", "Camera frame timed out; camera preview restored")]
     finally:
         window.close()
 
