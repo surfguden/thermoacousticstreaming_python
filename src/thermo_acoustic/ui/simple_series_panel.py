@@ -188,11 +188,17 @@ class SimpleSeriesPanel(QWidget):
         start_widget = number(start, minimum, maximum)
         stop_widget = number(stop, minimum, maximum)
         steps = integer(1)
+        steps_tip = ("Steps is the number of evenly spaced values. With 1 step, only Start is used "
+                     "and Stop is ignored. With 2 or more steps, both endpoints are included.")
+        steps.setToolTip(steps_tip)
+        stop_widget.setToolTip(steps_tip)
+        steps_label = QLabel("Steps")
+        steps_label.setToolTip(steps_tip)
         row.addWidget(QLabel("Start"))
         row.addWidget(start_widget)
         row.addWidget(QLabel("Stop"))
         row.addWidget(stop_widget)
-        row.addWidget(QLabel("Steps"))
+        row.addWidget(steps_label)
         row.addWidget(steps)
         form.addRow(label, box)
         return start_widget, stop_widget, steps

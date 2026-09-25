@@ -17,14 +17,14 @@ class NumericRange:
     steps: int
 
     def values(self, name: str) -> list[float]:
-        if not all(math.isfinite(value) for value in (self.start, self.stop)):
-            raise ValueError(f"{name} endpoints must be finite")
+        if not math.isfinite(self.start):
+            raise ValueError(f"{name} start must be finite")
         if self.steps < 1:
             raise ValueError(f"{name} steps must be positive")
         if self.steps == 1:
-            if self.start != self.stop:
-                raise ValueError(f"{name} start and stop must match for one step")
             return [self.start]
+        if not math.isfinite(self.stop):
+            raise ValueError(f"{name} stop must be finite")
         return [self.start + (self.stop - self.start) * index / (self.steps - 1)
                 for index in range(self.steps)]
 

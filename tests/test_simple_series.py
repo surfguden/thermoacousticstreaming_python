@@ -65,9 +65,18 @@ def test_fixed_form_expansion_order_and_flush_count():
     assert ad2["ultrasound"]["sweep_width_hz"] == 100_000
 
 
-def test_single_step_requires_equal_endpoints_and_sweep_bounds():
-    with pytest.raises(ValueError, match="must match"):
-        NumericRange(1, 2, 1).values("Frequency")
+def test_single_step_uses_start_and_sweep_bounds():
+    assert NumericRange(1, 2, 1).values("Frequency") == [1]
+    assert NumericRange(1, float("nan"), 1).values("Amplitude") == [1]
+    assert NumericRange(1, 3, 3).values("Frequency") == [1, 2, 3]
+    one_step = compile_simple_series(replace(settings(),
+        frequency_hz=NumericRange(1_000_000, 2_000_000, 1),
+        amplitude_v=NumericRange(1, 2, 1),
+        exposure_ms=NumericRange(1, 2, 1)))
+    first = validate_definition(one_step).experiments[0]
+    assert first.parameters["frequency_hz"] == 1_000_000
+    assert first.parameters["amplitude_v"] == 1
+    assert first.parameters["exposure_ms"] == 1
     with pytest.raises(ValueError, match="start frequency"):
         compile_simple_series(replace(settings(), frequency_hz=NumericRange(100, 100, 1)))
     with pytest.raises(ValueError, match="target temperature"):
@@ -212,6 +221,7 @@ def test_simple_tab_imports_live_camera_roi_and_exposure():
                                                   for result in results):
             app.processEvents(); sleep(0.01)
         panel = window.experiment_panel
+        assert "only Start is used" in panel.frequency[2].toolTip()
         assert (panel.roi_x.value(), panel.roi_y.value(),
                 panel.roi_width.value(), panel.roi_height.value()) == (0, 0, 2048, 1024)
         assert panel.exposure[0].value() == panel.exposure[1].value() == 2.5
