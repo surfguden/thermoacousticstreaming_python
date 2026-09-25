@@ -90,6 +90,7 @@ from ..domain.models import (
     PumpReadback,
     ValveReadback,
 )
+from .temperature_plot import TemperaturePlot
 from ..application.configuration import DEFAULT_PUMP_CONFIGURATION_DIR
 from .ad2_scope import OscilloscopePanel
 from .widgets import CameraImageWindow
@@ -498,11 +499,11 @@ class WaveformChannelEditor(QGroupBox):
         self.sweep_function = self._profile(
             f"{self.prefix}_sweep_function", self._function_combo()
         )
-        self.sweep_start = self._profile(
-            f"{self.prefix}_sweep_start_hz", double_spin(900, 0, 100_000_000, 3)
+        self.sweep_center = self._profile(
+            f"{self.prefix}_sweep_center_hz", double_spin(1000, 0.001, 100_000_000, 3)
         )
-        self.sweep_stop = self._profile(
-            f"{self.prefix}_sweep_stop_hz", double_spin(1100, 0.001, 100_000_000, 3)
+        self.sweep_width = self._profile(
+            f"{self.prefix}_sweep_width_hz", double_spin(200, 0.001, 100_000_000, 3)
         )
         self.sweep_time = self._profile(
             f"{self.prefix}_sweep_time_ms", double_spin(1, 0.001, 1_000_000, 4)
@@ -516,8 +517,8 @@ class WaveformChannelEditor(QGroupBox):
         )
         for label, widget in (
             ("Carrier type", self.sweep_function),
-            ("Frequency start (Hz)", self.sweep_start),
-            ("Frequency stop (Hz)", self.sweep_stop),
+            ("Center frequency (Hz)", self.sweep_center),
+            ("Full sweep width (Hz)", self.sweep_width),
             ("Sweep time (ms)", self.sweep_time),
             ("Direction", self.sweep_direction),
             ("Offset (V)", self.sweep_offset),
@@ -525,8 +526,8 @@ class WaveformChannelEditor(QGroupBox):
             form.addRow(label, widget)
         self.sweep_widgets = (
             self.sweep_function,
-            self.sweep_start,
-            self.sweep_stop,
+            self.sweep_center,
+            self.sweep_width,
             self.sweep_time,
             self.sweep_direction,
             self.sweep_offset,
@@ -615,11 +616,10 @@ class WaveformChannelEditor(QGroupBox):
             self.adv_offset.setValue(self.single_offset.value())
             self.fm_enabled.setChecked(False)
         elif mode == "sweep":
-            start = self.sweep_start.value()
-            stop = self.sweep_stop.value()
-            if stop <= start:
+            center = self.sweep_center.value()
+            width = self.sweep_width.value()
+            if center - width / 2 <= 0:
                 return
-            center = (start + stop) / 2.0
             self.adv_function.setCurrentIndex(
                 self.adv_function.findData(self.sweep_function.currentData())
             )
@@ -630,7 +630,7 @@ class WaveformChannelEditor(QGroupBox):
                 self.fm_function.findData(self.sweep_direction.currentData())
             )
             self.fm_frequency.setValue(1000.0 / self.sweep_time.value())
-            self.fm_index.setValue(((stop - start) / 2.0) / center * 100.0)
+            self.fm_index.setValue(width / (2.0 * center) * 100.0)
             self.fm_offset.setValue(0.0)
             self.fm_symmetry.setValue(
                 50.0
@@ -640,8 +640,8 @@ class WaveformChannelEditor(QGroupBox):
             self.fm_phase.setValue(0.0)
 
     def arguments(self) -> Ad2WaveformChannelArgs:
-        if self.mode.currentData() == "sweep" and self.sweep_stop.value() <= self.sweep_start.value():
-            raise ValueError(f"CH{self.channel_index + 1} sweep stop must exceed sweep start")
+        if self.mode.currentData() == "sweep" and self.sweep_center.value() <= self.sweep_width.value() / 2:
+            raise ValueError(f"CH{self.channel_index + 1} sweep start must be positive")
         self._sync_current_to_advanced()
         return Ad2WaveformChannelArgs(
             channel_index=self.channel_index,
@@ -695,8 +695,8 @@ class WaveformChannelEditor(QGroupBox):
             self.fm_enabled.setChecked(channel.fm_enabled)
             if channel.fm_enabled and channel.fm_frequency_hz > 0:
                 deviation = channel.frequency_hz * channel.fm_modulation_index_percent / 100.0
-                self.sweep_start.setValue(max(0.0, channel.frequency_hz - deviation))
-                self.sweep_stop.setValue(channel.frequency_hz + deviation)
+                self.sweep_center.setValue(channel.frequency_hz)
+                self.sweep_width.setValue(2.0 * deviation)
                 self.sweep_time.setValue(1000.0 / channel.fm_frequency_hz)
                 self.sweep_direction.setCurrentIndex(
                     self.sweep_direction.findData(channel.fm_function.value)
@@ -725,7 +725,7 @@ class WaveformChannelEditor(QGroupBox):
             }
         )
         self._set_function_options(self.sweep_direction, sweep_functions)
-        for widget in (self.single_frequency, self.adv_frequency, self.sweep_start, self.sweep_stop):
+        for widget in (self.single_frequency, self.adv_frequency, self.sweep_center, self.sweep_width):
             widget.setRange(carrier.frequency_hz.minimum, carrier.frequency_hz.maximum)
         for widget in (self.single_amplitude, self.adv_amplitude):
             widget.setRange(carrier.amplitude.minimum, carrier.amplitude.maximum)
@@ -932,10 +932,10 @@ class Ad2Panel(DevicePanel):
         for channel in (1, 2):
             prefix = f"wave_ch{channel}"
             if values[f"{prefix}_mode"] == "sweep":
-                if float(values[f"{prefix}_sweep_stop_hz"]) <= float(
-                    values[f"{prefix}_sweep_start_hz"]
-                ):
-                    raise ValueError(f"CH{channel} sweep stop must exceed sweep start")
+                if float(values[f"{prefix}_sweep_center_hz"]) <= float(
+                    values[f"{prefix}_sweep_width_hz"]
+                ) / 2:
+                    raise ValueError(f"CH{channel} sweep start must be positive")
 
     def update_readback(self, readback: object) -> None:
         if readback is not None:
@@ -1857,7 +1857,12 @@ class TecPanel(DevicePanel):
         controls_layout.addWidget(self.table, 0, 1)
         controls_layout.setColumnStretch(0, 1)
         controls_layout.setColumnStretch(1, 2)
+        self.temperature_plot = TemperaturePlot()
+        self.layout.addWidget(self.temperature_plot)
         self.finish_layout()
+
+    def add_temperature_sample(self, sample: dict) -> None:
+        self.temperature_plot.add_sample(sample)
 
     def _targets(self) -> float | dict[int, float]:
         if self.target_mode.currentData() == "broadcast":

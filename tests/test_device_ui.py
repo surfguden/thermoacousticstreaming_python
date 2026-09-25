@@ -106,6 +106,7 @@ def test_each_panel_builds_every_typed_device_operation(qt_app, device):
             DeviceOperation.CAMERA_SEQUENCE_CONFIGURE,
             DeviceOperation.CAMERA_SEQUENCE_ARM,
             DeviceOperation.CAMERA_SEQUENCE_COLLECT,
+            DeviceOperation.CAMERA_SETTINGS_READ,  # import lives in the simple experiment tab
         }
     if device is DeviceId.AD2:
         expected -= {
@@ -216,7 +217,10 @@ def test_main_window_uses_fixed_minimum_and_separate_detailed_log(qt_app):
     assert window.minimumWidth() == 960
     assert window.minimumHeight() == 1080
     assert window.log.parent() is window.log_window
-    assert [action.text() for action in window.menuBar().actions()] == ["&File", "&Log"]
+    assert [action.text() for action in window.menuBar().actions()] == [
+        "&File", "&Log", "Experiment &builder"]
+    assert window.tabs.tabText(window.tabs.count() - 1) == "Experiments"
+    assert window.builder_window.panel.parent() is window.builder_window
     for spin in window.findChildren(QAbstractSpinBox):
         assert spin.buttonSymbols() is QAbstractSpinBox.ButtonSymbols.NoButtons
         assert not spin.keyboardTracking()
@@ -863,8 +867,8 @@ def test_waveform_modes_share_the_advanced_configuration(qt_app):
     panel = Ad2Panel()
     channel = panel.wave_channels[0]
     channel.mode.setCurrentIndex(1)
-    channel.sweep_start.setValue(900.0)
-    channel.sweep_stop.setValue(1100.0)
+    channel.sweep_center.setValue(1000.0)
+    channel.sweep_width.setValue(200.0)
     channel.sweep_time.setValue(2.0)
     channel.sweep_direction.setCurrentIndex(
         channel.sweep_direction.findData("RampUp")

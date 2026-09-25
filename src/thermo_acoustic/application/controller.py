@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
-from ..domain.models import DeviceId, DeviceStatus, OperatingMode, ZStageReadback
+from ..domain.models import ConnectionState, DeviceId, DeviceStatus, OperatingMode, ZStageReadback
 from ..hal.registry import DeviceRegistry
 from .audit import AuditLogger
 from .commands import (
@@ -26,6 +26,7 @@ from .commands import (
 )
 from .workflows import FlushWorkflow
 from .experiment_runner import ExperimentManager
+from .temperature_monitor import TemperatureMonitor
 
 
 @dataclass(slots=True)
@@ -65,8 +66,12 @@ class ApplicationController(QObject):
         self._wait_timer.setSingleShot(True)
         self._wait_timer.timeout.connect(self._finish_wait)
         self._urgent: dict[str, DeviceCommand[Any]] = {}
+        self._observations: dict[str, DeviceCommand[Any]] = {}
         self._closing = False
+        self.count_preflight_active = False
         self._statuses = {worker.device_id: worker.status() for worker in registry.all()}
+        self.temperature_monitor = TemperatureMonitor(self, parent=self)
+        self.experiments.attach_temperature_monitor(self.temperature_monitor)
         for worker in registry.all():
             worker.command_succeeded.connect(self._worker_succeeded)
             worker.command_failed.connect(self._worker_failed)
@@ -78,10 +83,43 @@ class ApplicationController(QObject):
         for worker in self.registry.all():
             worker._thread.start()
         self.status_changed.emit(dict(self._statuses))
+        self.temperature_monitor.start()
+
+    def observe_tec(self) -> str:
+        """Read TEC without occupying the global experiment command lane."""
+        from .commands import TecReadStatusArgs
+        if self._closing or self._statuses[DeviceId.TEC].connection is not ConnectionState.CONNECTED:
+            raise RuntimeError("TEC is not connected")
+        command = DeviceCommand(DeviceId.TEC, DeviceOperation.TEC_STATUS_READ,
+                                TecReadStatusArgs(), source="temperature-monitor")
+        self._observations[command.request_id] = command
+        self.registry.by_id(DeviceId.TEC).command_requested.emit(
+            command.request_id, command.operation, command.arguments)
+        return command.request_id
+
+    def _finish_observation(self, request_id: str, ok: bool, value=None, error=None) -> bool:
+        command = self._observations.pop(request_id, None)
+        if command is None:
+            return False
+        if ok and not isinstance(value, OPERATION_SPECS[command.operation].result_type):
+            ok = False
+            error = f"{command.operation.value} returned an unexpected result type"
+            value = None
+        self.command_result.emit(CommandResult(request_id, command.device, command.operation,
+                                               ok, value, error, command))
+        return True
 
     def submit(self, command: DeviceCommand[Any] | WorkflowCommand) -> str:
         if self._closing:
             raise RuntimeError("Application shutdown has started")
+        if self.count_preflight_active and command.source != "experiment-preflight":
+            observations = {DeviceOperation.CAMERA_TIMING_READ, DeviceOperation.PUMP_FILL_LEVEL_READ,
+                            DeviceOperation.PUMP_STATUS_READ, DeviceOperation.VALVE_POSITION_READ,
+                            DeviceOperation.TEC_STATUS_READ, DeviceOperation.AD2_OUTPUT_STATUS_READ}
+            if isinstance(command, WorkflowCommand) or (
+                command.operation not in observations and not self._is_urgent(command.operation)
+            ):
+                raise RuntimeError("Count preflight owns camera and AD2; wait for it to finish")
         if (self.experiments.status()["state"] in {"running", "stopping"}
                 and command.source != "experiment"):
             safe_observations = {
@@ -392,6 +430,8 @@ class ApplicationController(QObject):
             return
         if self._finish_urgent(request_id, True, value):
             return
+        if self._finish_observation(request_id, True, value):
+            return
         self._finish(request_id, True, value)
 
     @Slot(str, str)
@@ -400,11 +440,15 @@ class ApplicationController(QObject):
             return
         if self._finish_urgent(request_id, False, error=error):
             return
+        if self._finish_observation(request_id, False, error=error):
+            return
         self._finish(request_id, False, error=error)
 
     @Slot(str, str)
     def _worker_cancelled(self, request_id: str, reason: str) -> None:
         if self._flush is not None and self._flush.on_step(request_id, False, error=reason):
+            return
+        if self._finish_observation(request_id, False, error=reason):
             return
         if not self._active or self._active.command.request_id != request_id:
             return
@@ -421,6 +465,7 @@ class ApplicationController(QObject):
 
     def shutdown(self) -> list[str]:
         self._closing = True
+        self.temperature_monitor.stop()
         self._wait_timer.stop()
         if self._active is not None and isinstance(self._active.command, WorkflowCommand):
             self._emit(self._active.command, "cancelled", "Application shutdown")

@@ -6,6 +6,7 @@ from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 import math
+import json
 import shutil
 import sys
 from time import monotonic
@@ -17,7 +18,7 @@ from ..domain.models import ConnectionState, DeviceId, OperatingMode, PumpReadba
 from .commands import (
     Ad2AnalogOutputIdle, Ad2ConfigureWaveformArgs, Ad2ExperimentDigitalArgs,
     Ad2TriggerSettingsArgs, Ad2TriggerSource, Ad2WaveformChannelArgs,
-    Ad2WaveformFunction, CameraConfigureSequenceArgs, CameraConfigureSnapshotArgs,
+    Ad2WaveformFunction, CameraConfigureRoiArgs, CameraConfigureSequenceArgs, CameraConfigureSnapshotArgs,
     CameraFrameProgress, CameraSequenceResult, CameraSequenceTriggerArgs, CameraTriggerActive,
     CameraTriggerPolarity, CameraTriggerSource, DeviceCommand, DeviceOperation,
     FlushArgs, NoArguments, PumpUnitArgs, TecApplySetpointsArgs, TecWaitStableArgs,
@@ -25,6 +26,7 @@ from .commands import (
 )
 from .experiment_storage import FileWorker, SeriesStorage, json_ready
 from .experiments import Expansion, PlannedExperiment, validate_definition
+from .temperature_recording import TemperatureRecorder
 
 
 class ExperimentManager(QObject):
@@ -36,6 +38,8 @@ class ExperimentManager(QObject):
         super().__init__(parent)
         self.controller = controller
         self.confirm_batch = confirm_batch or (lambda _summary: False)
+        self.confirm_unchecked: Callable[[str], bool] = lambda _summary: True
+        self._simple_preflight_passes: dict[str, tuple[int, float | None]] = {}
         self._queued: deque[tuple[Expansion, SeriesStorage]] = deque()
         self._approved = 0
         self._current: tuple[Expansion, SeriesStorage] | None = None
@@ -53,6 +57,7 @@ class ExperimentManager(QObject):
         self._timers: list[QTimer] = []
         self._file_worker = FileWorker()
         self._file_futures: set[Any] = set()
+        self._recorder: TemperatureRecorder | None = None
         self._failure_reason: str | None = None
         self._stop_after_current = False
         self._abort_requested = False
@@ -63,6 +68,18 @@ class ExperimentManager(QObject):
         self._series_completed_at_start = 0
         controller.command_result.connect(self._command_result)
         controller.command_progress.connect(self._command_progress)
+
+    def attach_temperature_monitor(self, monitor) -> None:
+        monitor.sample.connect(self._temperature_sample)
+
+    def _temperature_sample(self, sample: dict) -> None:
+        if self._recorder is None:
+            return
+        error = self._recorder.error()
+        if error:
+            self._fail(f"Temperature log write failed: {error}")
+            return
+        self._recorder.add(sample)
 
     def queue(self, definition: dict[str, Any], output_root: str | Path,
               image_format: str | None = None) -> Path:
@@ -86,10 +103,30 @@ class ExperimentManager(QObject):
         self.changed.emit(self.status())
 
     def start(self) -> bool:
+        if self.controller.count_preflight_active:
+            raise RuntimeError("Wait for count preflight to finish before starting a batch")
         if self._current is not None or self._state == "running":
             raise RuntimeError("An experiment batch is already running")
         if not self._queued:
             raise RuntimeError("Queue at least one experiment series")
+        unchecked = []
+        for expansion, _storage in self._queued:
+            if not expansion.definition.get("simple_series"):
+                continue
+            fingerprint = json.dumps(expansion.definition, sort_keys=True, allow_nan=False)
+            proof = self._simple_preflight_passes.get(fingerprint)
+            unit = next(item["args"]["unit_index"] for item in expansion.steps
+                        if item["type"] == "flush")
+            pump = self.controller.statuses()[DeviceId.PUMP].readback
+            current = next((item.fill_level_ml for item in pump.units if item.unit_index == unit), None) \
+                if isinstance(pump, PumpReadback) else None
+            if proof != (unit, current):
+                unchecked.append(expansion.definition["name"])
+        if unchecked and not self.confirm_unchecked(
+            f"Count preflight has not passed for {len(unchecked)} queued simple series with their current "
+            "settings and syringe level. Continue with standard Start validation?"
+        ):
+            return False
         queued_now = len(self._queued)
         count = sum(len(expansion.experiments) for expansion, _ in self._queued)
         if self.controller.mode is OperatingMode.REAL:
@@ -106,6 +143,10 @@ class ExperimentManager(QObject):
         self._publish()
         QTimer.singleShot(0, self._next_series)
         return True
+
+    def record_simple_preflight(self, fingerprint: str, unit_index: int,
+                                fill_level_ml: float | None) -> None:
+        self._simple_preflight_passes[fingerprint] = (unit_index, fill_level_ml)
 
     def stop_after_current(self) -> None:
         if self._state != "running":
@@ -142,6 +183,12 @@ class ExperimentManager(QObject):
         expansion, storage = self._current
         storage.status("preflight", {"experiment_count": len(expansion.experiments)})
         storage.event("series_started")
+        if expansion.definition.get("temperature_logging"):
+            try:
+                self._recorder = TemperatureRecorder(storage.metadata / "temperature.csv")
+            except Exception as exc:
+                self._fail(f"Temperature log could not be opened: {exc}")
+                return
         self._publish()
         try:
             self._require_devices(expansion.steps)
@@ -209,6 +256,9 @@ class ExperimentManager(QObject):
                     resources.add("z_stage")
         visit(steps)
         statuses = self.controller.statuses()
+        if (self._current is not None and self._current[0].definition.get("temperature_logging")
+                and statuses[DeviceId.TEC].connection is not ConnectionState.CONNECTED):
+            raise RuntimeError("Temperature logging requires a connected TEC")
         for device in DeviceId:
             if device.value in resources and statuses[device].connection is not ConnectionState.CONNECTED:
                 raise RuntimeError(f"Required device is not connected: {device.value}")
@@ -223,9 +273,20 @@ class ExperimentManager(QObject):
         status = self.controller.statuses()
         camera = status[DeviceId.CAMERA].readback
         roi = getattr(camera, "roi", None)
-        if roi is None:
+        if roi is None and any(
+            "roi" not in step["args"] for item in expansion.experiments for step in item.steps
+            if step["type"] == "camera_configure"
+        ):
             raise RuntimeError("Camera ROI readback is unavailable for memory/disk preflight")
-        frame_bytes = roi.horizontal_size * roi.vertical_size * 2
+        limits = getattr(camera, "roi_limits", None)
+        width_margin = max(0, limits.horizontal_size.increment - 1) if limits else 0
+        height_margin = max(0, limits.vertical_size.increment - 1) if limits else 0
+        frame_bytes = max(
+            ((step["args"].get("roi", {}).get("width", roi.horizontal_size if roi else 0) + width_margin)
+             * (step["args"].get("roi", {}).get("height", roi.vertical_size if roi else 0) + height_margin) * 2
+             for item in expansion.experiments for step in item.steps
+             if step["type"] == "camera_configure"), default=0,
+        )
         total_frames = sum(next(step["args"]["frame_count"] for step in item.steps
                                 if step["type"] == "camera_configure")
                            for item in expansion.experiments)
@@ -376,8 +437,7 @@ class ExperimentManager(QObject):
                 storage.event("configuration_preflight", camera=camera, ad2=ad2,
                               applied_digital=json_ready(value))
                 configure_next()
-            self._command(DeviceId.CAMERA, DeviceOperation.CAMERA_SEQUENCE_CONFIGURE,
-                           self._camera_args(camera),
+            self._configure_camera(camera,
                            lambda _value: self._command(DeviceId.AD2,
                                                         DeviceOperation.AD2_WAVEFORM_CONFIGURE,
                                                         self._waveform_args(ad2, self._laser_frequency_hz),
@@ -452,8 +512,7 @@ class ExperimentManager(QObject):
             preflight_camera["frame_timeout_s"] = max(
                 0.5, dio["camera_delay_s"] + 2 / dio["frame_rate_hz"]
             )
-            self._command(DeviceId.CAMERA, DeviceOperation.CAMERA_SEQUENCE_CONFIGURE,
-                          self._camera_args(preflight_camera), configured)
+            self._configure_camera(preflight_camera, configured)
         self._command(DeviceId.AD2, DeviceOperation.AD2_WAVEFORM_STOP, NoArguments(),
                       lambda _value: next_pair())
 
@@ -474,6 +533,16 @@ class ExperimentManager(QObject):
         self._preview(lambda: self._run_nodes(list(expansion.steps), lambda: self._complete_series(storage)))
 
     def _complete_series(self, storage: SeriesStorage) -> None:
+        if self._recorder is not None:
+            self._recorder.close()
+            if not self._recorder.drained():
+                QTimer.singleShot(50, lambda: self._complete_series(storage))
+                return
+            error = self._recorder.error()
+            self._recorder = None
+            if error:
+                self._fail(f"Temperature log write failed: {error}")
+                return
         storage.status("completed", {"completed_experiments":
                                       self._completed - self._series_completed_at_start})
         storage.event("series_completed")
@@ -563,8 +632,7 @@ class ExperimentManager(QObject):
                           ZStageSetPositionArgs(**args), lambda value: self._record("stage_move", args, value, done))
         elif kind == "camera_configure":
             self._settings[kind] = args
-            self._command(DeviceId.CAMERA, DeviceOperation.CAMERA_SEQUENCE_CONFIGURE,
-                          self._camera_args(args), lambda _value: done())
+            self._configure_camera(args, lambda _value: done())
         elif kind == "ad2_configure":
             self._settings[kind] = args
             self._command(DeviceId.AD2, DeviceOperation.AD2_WAVEFORM_CONFIGURE,
@@ -703,6 +771,18 @@ class ExperimentManager(QObject):
             ),
         )
 
+    def _configure_camera(self, args: dict[str, Any], done: Callable[[Any], None]) -> None:
+        def configure_sequence(_value=None) -> None:
+            self._command(DeviceId.CAMERA, DeviceOperation.CAMERA_SEQUENCE_CONFIGURE,
+                          self._camera_args(args), done)
+        roi = args.get("roi")
+        if roi is None:
+            configure_sequence()
+        else:
+            self._command(DeviceId.CAMERA, DeviceOperation.CAMERA_ROI_CONFIGURE,
+                          CameraConfigureRoiArgs(roi["x"], roi["y"], roi["width"], roi["height"]),
+                          configure_sequence)
+
     @staticmethod
     def _waveform_args(args: dict[str, Any], laser_frequency_hz: float | None) -> Ad2ConfigureWaveformArgs:
         if laser_frequency_hz is None:
@@ -720,6 +800,12 @@ class ExperimentManager(QObject):
                 amplitude_v=output["amplitude_v"] if index == 0 else output["on_voltage_v"],
                 offset_v=output["offset_v"] if index == 0 else 0.0,
                 idle_state=Ad2AnalogOutputIdle.OFFSET,
+                fm_enabled=index == 0 and "sweep_width_hz" in output,
+                fm_function=Ad2WaveformFunction.TRIANGLE,
+                fm_frequency_hz=(1000.0 / output["sweep_period_ms"]
+                                 if index == 0 and "sweep_width_hz" in output else 1000.0),
+                fm_modulation_index_percent=(50.0 * output["sweep_width_hz"] / output["frequency_hz"]
+                                             if index == 0 and "sweep_width_hz" in output else 0.0),
                 trigger=trigger,
             ))
         return Ad2ConfigureWaveformArgs(channels=tuple(channels))
@@ -764,6 +850,8 @@ class ExperimentManager(QObject):
         if self._failed:
             return
         self._failed = True
+        if self._recorder is not None:
+            self._recorder.close()
         for timer in self._timers:
             timer.stop()
             timer.deleteLater()
@@ -792,9 +880,11 @@ class ExperimentManager(QObject):
     def _finish_failure_when_safe(self) -> None:
         if self._failure_reason is None:
             return
-        if self.controller._flush is not None or any(not future.done() for future in self._file_futures):
+        if (self.controller._flush is not None or any(not future.done() for future in self._file_futures)
+                or (self._recorder is not None and not self._recorder.drained())):
             QTimer.singleShot(100, self._finish_failure_when_safe)
             return
+        self._recorder = None
         reason = self._failure_reason
         self._state = "failed" if not self._abort_requested else "aborted"
         if self._current is not None:
@@ -812,4 +902,6 @@ class ExperimentManager(QObject):
         self._publish()
 
     def close(self) -> None:
+        if self._recorder is not None:
+            self._recorder.close()
         self._file_worker.close()

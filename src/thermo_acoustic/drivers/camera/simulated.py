@@ -40,6 +40,10 @@ class SimulatedCamera:
         self.exposure_ms = max(float(exposure_ms), 0.0)
         return self.exposure_ms
 
+    def read_exposure_time(self) -> float:
+        self._require_initialized()
+        return self.exposure_ms
+
     def configure_roi(self, roi: SubRegion | dict | None) -> None:
         self._require_initialized()
         if roi is None:

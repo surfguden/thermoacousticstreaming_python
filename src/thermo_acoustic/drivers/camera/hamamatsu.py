@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
 import logging
+import math
 from pathlib import Path
 import sys
 import time
@@ -120,6 +121,18 @@ class HamamatsuDcamDriver:
             log_result["response"] = applied_ms
             log_result["effective"] = applied_ms
         return applied_ms
+
+    def read_exposure_time(self) -> float:
+        self.open_camera()
+        with log_call("camera", "read_exposure_time", response_stage="OBSERVED") as result:
+            value = self.dcam.prop_getvalue(self.dcam_module.DCAM_IDPROP.EXPOSURETIME)
+            if value is False or value is None:
+                raise HamamatsuDcamError("Could not read EXPOSURETIME")
+            exposure_ms = float(value) * 1000.0
+            if not math.isfinite(exposure_ms) or exposure_ms < 0:
+                raise HamamatsuDcamError("Camera returned invalid EXPOSURETIME")
+            result["response"] = exposure_ms
+        return exposure_ms
 
     def configure_roi(self, roi: SubRegion | dict | None) -> None:
         if roi is None:

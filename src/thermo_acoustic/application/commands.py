@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Generic, TypeVar
 from uuid import uuid4
 
-from ..domain.models import DeviceId
+from ..domain.models import CameraReadback, DeviceId
 from .configuration import validate_pump_configuration_dir
 
 
@@ -43,6 +43,7 @@ class DeviceOperation(str, Enum):
     CAMERA_SEQUENCE_SAVE = "camera.sequence.save"
     CAMERA_CAPTURE_STOP = "camera.capture.stop"
     CAMERA_TIMING_READ = "camera.timing.read"
+    CAMERA_SETTINGS_READ = "camera.settings.read"
     CAMERA_EXPOSURE_CONFIGURE = "camera.exposure.configure"
     CAMERA_ROI_CONFIGURE = "camera.roi.configure"
     PUMP_FLOW_SET = "pump.flow.set"
@@ -813,6 +814,7 @@ OPERATION_SPECS: dict[DeviceOperation, OperationSpec] = {
     DeviceOperation.CAMERA_SEQUENCE_SAVE: OperationSpec(_only(DeviceId.CAMERA), CameraSaveSequenceArgs, CameraSequenceSaveResult),
     DeviceOperation.CAMERA_CAPTURE_STOP: OperationSpec(_only(DeviceId.CAMERA), NoArguments, _NONE_RESULT),
     DeviceOperation.CAMERA_TIMING_READ: OperationSpec(_only(DeviceId.CAMERA), NoArguments, CameraTimingResult),
+    DeviceOperation.CAMERA_SETTINGS_READ: OperationSpec(_only(DeviceId.CAMERA), NoArguments, CameraReadback),
     DeviceOperation.CAMERA_EXPOSURE_CONFIGURE: OperationSpec(_only(DeviceId.CAMERA), CameraConfigureExposureArgs, CameraExposureResult),
     DeviceOperation.CAMERA_ROI_CONFIGURE: OperationSpec(_only(DeviceId.CAMERA), CameraConfigureRoiArgs, CameraRoiResult),
     DeviceOperation.PUMP_FLOW_SET: OperationSpec(_only(DeviceId.PUMP), PumpSetFlowArgs, _NONE_RESULT),

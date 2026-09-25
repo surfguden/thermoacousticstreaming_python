@@ -35,6 +35,7 @@ from ..domain.models import ConnectionState, DeviceId, DeviceStatus, OperatingMo
 from .device_panels import DevicePanel, PANEL_TYPES
 from .workflow_panel import WorkflowPanel
 from .experiment_panel import ExperimentPanel
+from .simple_series_panel import SimpleSeriesPanel
 
 
 PROFILE_SCHEMA_VERSION = 2
@@ -84,14 +85,17 @@ class MainWindow(QMainWindow):
         self.workflow_panel.abort_requested.connect(controller.cancel_active_workflow)
         self.workflow_panel.notice.connect(self._ui_notice)
         self.tabs.addTab(self.workflow_panel, "Workflows")
-        self.experiment_panel = ExperimentPanel(controller.experiments)
+        self.experiment_panel = SimpleSeriesPanel(controller)
         self.tabs.addTab(self.experiment_panel, "Experiments")
+        self.builder_window = ExperimentBuilderWindow(controller.experiments, self)
         controller.experiments.confirm_batch = self.confirm_experiment_batch
+        controller.experiments.confirm_unchecked = self.confirm_unchecked_preflight
         root_layout.addWidget(self.tabs)
         self.log_window = DetailedLogWindow(self)
         self.log = self.log_window.log
         self._create_file_menu()
         self._create_log_menu()
+        self._create_builder_menu()
         self._configure_editor_controls()
 
         controller.command_event.connect(self._event)
@@ -99,6 +103,7 @@ class MainWindow(QMainWindow):
         controller.command_progress.connect(self._progress)
         controller.status_changed.connect(self._status)
         controller.message.connect(self._ui_notice)
+        controller.temperature_monitor.sample.connect(self.panels[DeviceId.TEC].add_temperature_sample)
         self._status(controller.statuses())
 
     def _create_file_menu(self) -> None:
@@ -115,6 +120,17 @@ class MainWindow(QMainWindow):
         show_action = QAction("Show detailed log…", self)
         show_action.triggered.connect(self._show_log)
         menu.addAction(show_action)
+
+    def _create_builder_menu(self) -> None:
+        menu = self.menuBar().addMenu("Experiment &builder")
+        show_action = QAction("Show experiment builder…", self)
+        show_action.triggered.connect(self._show_builder)
+        menu.addAction(show_action)
+
+    def _show_builder(self) -> None:
+        self.builder_window.show()
+        self.builder_window.raise_()
+        self.builder_window.activateWindow()
 
     def _show_log(self) -> None:
         self.log_window.show()
@@ -158,6 +174,14 @@ class MainWindow(QMainWindow):
     def confirm_experiment_batch(self, summary: str) -> bool:
         answer = QMessageBox.warning(
             self, "Confirm real-hardware experiment batch", summary,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def confirm_unchecked_preflight(self, summary: str) -> bool:
+        answer = QMessageBox.warning(
+            self, "Count preflight not current", summary,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )
@@ -282,6 +306,17 @@ class MainWindow(QMainWindow):
             ):
                 camera.pop(obsolete, None)
             devices["camera"] = camera
+        if isinstance(devices.get("ad2"), dict):
+            devices = dict(devices)
+            ad2 = dict(devices["ad2"])
+            for channel in (1, 2):
+                prefix = f"wave_ch{channel}"
+                start = ad2.pop(f"{prefix}_sweep_start_hz", None)
+                stop = ad2.pop(f"{prefix}_sweep_stop_hz", None)
+                if start is not None and stop is not None:
+                    ad2[f"{prefix}_sweep_center_hz"] = (start + stop) / 2
+                    ad2[f"{prefix}_sweep_width_hz"] = stop - start
+            devices["ad2"] = ad2
 
         validated: dict[DeviceId, dict[str, object]] = {}
         for device, panel in self.panels.items():
@@ -316,6 +351,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self.panels[DeviceId.CAMERA].image_window.close()
+        self.builder_window.close()
         self.controller.shutdown()
         event.accept()
 
@@ -334,3 +370,13 @@ class DetailedLogWindow(QDialog):
         self.log.setReadOnly(True)
         self.log.setPlaceholderText("Detailed command activity will appear here")
         layout.addWidget(self.log)
+
+
+class ExperimentBuilderWindow(QDialog):
+    def __init__(self, manager, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Experiment builder")
+        self.resize(1250, 850)
+        layout = QVBoxLayout(self)
+        self.panel = ExperimentPanel(manager)
+        layout.addWidget(self.panel)

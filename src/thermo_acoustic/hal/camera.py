@@ -47,6 +47,7 @@ class CameraWorker(DeviceWorker):
         self.register(DeviceOperation.CAMERA_SEQUENCE_SAVE, self.save_sequence)
         self.register(DeviceOperation.CAMERA_CAPTURE_STOP, self.stop_capture)
         self.register(DeviceOperation.CAMERA_TIMING_READ, self.read_timing)
+        self.register(DeviceOperation.CAMERA_SETTINGS_READ, self.read_settings)
         self.register(DeviceOperation.CAMERA_EXPOSURE_CONFIGURE, self.configure_exposure)
         self.register(DeviceOperation.CAMERA_ROI_CONFIGURE, self.configure_roi)
         self._sequence_args: CameraConfigureSequenceArgs | None = None
@@ -328,6 +329,13 @@ class CameraWorker(DeviceWorker):
             minimum_trigger_interval_s=result.minimum_trigger_interval_s,
         )
         return result
+
+    def read_settings(self, _args: NoArguments) -> CameraReadback:
+        self._refresh_roi_readback()
+        reader = getattr(self.device, "read_exposure_time", None)
+        if callable(reader):
+            self.state.readback = replace(self.state.readback, exposure_ms=reader())
+        return self.state.readback
 
     def configure_exposure(
         self, args: CameraConfigureExposureArgs

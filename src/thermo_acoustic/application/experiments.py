@@ -143,7 +143,7 @@ def _action(step: dict[str, Any]) -> None:
         "stage_move": ({"position_um"}, {"position_um"}),
         "ad2_configure": ({"ultrasound", "laser", "dio", "output_timeout_s"}, {"ultrasound", "laser", "dio", "output_timeout_s"}),
         "ad2_arm": (set(), set()),
-        "camera_configure": ({"frame_count", "exposure_ms", "global_exposure", "frame_timeout_s"}, {"frame_count", "exposure_ms", "global_exposure"}),
+        "camera_configure": ({"frame_count", "exposure_ms", "global_exposure", "frame_timeout_s", "roi"}, {"frame_count", "exposure_ms", "global_exposure"}),
         "camera_arm": (set(), set()),
         "pc_trigger": (set(), set()),
         "await_frames": (set(), set()),
@@ -185,6 +185,15 @@ def _action(step: dict[str, Any]) -> None:
         if not isinstance(args["global_exposure"], bool):
             raise ValueError("camera.global_exposure must be boolean")
         _number(args.get("frame_timeout_s", 30), "camera.frame_timeout_s", minimum=1e-12)
+        if "roi" in args:
+            roi = args["roi"]
+            if not isinstance(roi, dict):
+                raise ValueError("camera.roi must be an object")
+            _keys(roi, {"x", "y", "width", "height"}, {"x", "y", "width", "height"}, "camera.roi")
+            for field in ("x", "y"):
+                _integer(roi[field], f"camera.roi.{field}")
+            for field in ("width", "height"):
+                _integer(roi[field], f"camera.roi.{field}", minimum=1)
     elif kind == "stage_move":
         _number(args["position_um"], "stage.position_um")
     elif kind == "tec_wait_stable":
@@ -205,10 +214,12 @@ def _action(step: dict[str, Any]) -> None:
             item = args[output]
             if not isinstance(item, dict):
                 raise ValueError(f"ad2.{output} must be an object")
-            fields = ({"enabled", "start_s", "run_s", "frequency_hz", "amplitude_v", "offset_v"}
+            fields = ({"enabled", "start_s", "run_s", "frequency_hz", "amplitude_v", "offset_v",
+                       "sweep_width_hz", "sweep_period_ms"}
                       if output == "ultrasound" else
                       {"enabled", "start_s", "run_s", "on_voltage_v"})
-            _keys(item, fields, fields, f"ad2.{output}")
+            required = fields - {"sweep_width_hz", "sweep_period_ms"} if output == "ultrasound" else fields
+            _keys(item, fields, required, f"ad2.{output}")
             if not isinstance(item["enabled"], bool):
                 raise ValueError(f"ad2.{output}.enabled must be boolean")
             for field in ("start_s", "run_s"):
@@ -219,6 +230,13 @@ def _action(step: dict[str, Any]) -> None:
                 _number(item["offset_v"], "ad2.ultrasound.offset_v")
                 if item["offset_v"] != 0:
                     raise ValueError("ad2.ultrasound.offset_v must be 0 for safe Offset idle")
+                if ("sweep_width_hz" in item) != ("sweep_period_ms" in item):
+                    raise ValueError("Ultrasound sweep requires both width and period")
+                if "sweep_width_hz" in item:
+                    width = _number(item["sweep_width_hz"], "ad2.ultrasound.sweep_width_hz", minimum=1e-12)
+                    _number(item["sweep_period_ms"], "ad2.ultrasound.sweep_period_ms", minimum=1e-12)
+                    if item["frequency_hz"] - width / 2 <= 0:
+                        raise ValueError("Ultrasound sweep start frequency must be positive")
             else:
                 _number(item["on_voltage_v"], "ad2.laser.on_voltage_v", minimum=0)
             if item["enabled"] and item["run_s"] <= 0:
@@ -244,8 +262,13 @@ def validate_definition(value: Any) -> Expansion:
         json.dumps(value, allow_nan=False)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"Definition must contain only finite JSON data: {exc}") from exc
-    _keys(value, {"version", "name", "steps", "preflight", "tiff_format"},
+    _keys(value, {"version", "name", "steps", "preflight", "tiff_format", "temperature_logging",
+                  "simple_series"},
           {"version", "name", "steps"}, "definition")
+    if not isinstance(value.get("simple_series", False), bool):
+        raise ValueError("simple_series must be boolean")
+    if not isinstance(value.get("temperature_logging", False), bool):
+        raise ValueError("temperature_logging must be boolean")
     if value["version"] != SCHEMA_VERSION:
         raise ValueError(f"Unsupported experiment definition version: {value['version']!r}")
     if not isinstance(value["name"], str) or not _NAME.fullmatch(value["name"]):
