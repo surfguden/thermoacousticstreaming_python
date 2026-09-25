@@ -376,7 +376,7 @@ class ExperimentManager(QObject):
                 storage.event("configuration_preflight", camera=camera, ad2=ad2,
                               applied_digital=json_ready(value))
                 configure_next()
-             self._command(DeviceId.CAMERA, DeviceOperation.CAMERA_SEQUENCE_CONFIGURE,
+            self._command(DeviceId.CAMERA, DeviceOperation.CAMERA_SEQUENCE_CONFIGURE,
                            self._camera_args(camera),
                            lambda _value: self._command(DeviceId.AD2,
                                                         DeviceOperation.AD2_WAVEFORM_CONFIGURE,
