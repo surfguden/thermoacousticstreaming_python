@@ -43,8 +43,9 @@ def _create_camera_driver() -> object:
 
 def _create_tec_driver() -> object:
     from ..drivers.tec import MeerstetterTecDriver, TecController
+    from ..drivers.tec.controller import _real_tec_client_factory
 
-    return TecController(driver=MeerstetterTecDriver(), enabled=True)
+    return TecController(driver=MeerstetterTecDriver(client_factory=_real_tec_client_factory), enabled=True)
 
 
 def _create_z_stage_driver() -> object:

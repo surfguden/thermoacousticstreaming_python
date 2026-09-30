@@ -41,15 +41,6 @@ class WorkflowPanel(QWidget):
         form.addRow(self.flush_button)
         layout.addWidget(flush)
 
-        wait = QGroupBox("Wait in command queue")
-        wait_form = QFormLayout(wait)
-        self.wait_seconds = self._number(1, 0, 86_400, 3)
-        self.wait_button = QPushButton("Queue wait")
-        self.wait_button.clicked.connect(self._request_wait)
-        wait_form.addRow("Seconds", self.wait_seconds)
-        wait_form.addRow(self.wait_button)
-        layout.addWidget(wait)
-
         self.abort_button = QPushButton("Abort active workflow")
         self.abort_button.clicked.connect(self.abort_requested.emit)
         layout.addWidget(self.abort_button)
@@ -106,29 +97,19 @@ class WorkflowPanel(QWidget):
             return
         self.command_requested.emit("flush", command)
 
-    def _request_wait(self) -> None:
-        try:
-            command = WorkflowCommand(WorkflowOperation.WAIT, WaitArgs(self.wait_seconds.value()))
-        except (TypeError, ValueError) as exc:
-            self.show_notice(str(exc))
-            return
-        self.command_requested.emit("wait", command)
-
     def mark_pending(self, action: str, request_id: str) -> None:
         self._pending[action] = request_id
-        (self.flush_button if action == "flush" else self.wait_button).setEnabled(False)
+        self.flush_button.setEnabled(False)
 
     def clear_pending(self, request_id: str) -> None:
         for action, pending in tuple(self._pending.items()):
             if pending == request_id:
                 del self._pending[action]
-                (self.flush_button if action == "flush" else self.wait_button).setEnabled(
-                    not self._experiment_locked)
+                self.flush_button.setEnabled(not self._experiment_locked)
 
     def set_experiment_locked(self, locked: bool) -> None:
         self._experiment_locked = locked
         self.flush_button.setEnabled(not locked and "flush" not in self._pending)
-        self.wait_button.setEnabled(not locked and "wait" not in self._pending)
         self.abort_button.setEnabled(not locked)
 
     def show_notice(self, message: str) -> None:

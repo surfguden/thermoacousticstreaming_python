@@ -9,6 +9,7 @@ from ..application.commands import (
     ZStageClosedLoopRequirementResult,
     ZStagePositionResult,
     ZStageSetPositionArgs,
+    ZStageRelativeMoveArgs,
 )
 from ..domain.models import DeviceId, ZStageReadback
 from .base import DeviceWorker
@@ -26,9 +27,14 @@ class ZStageWorker(DeviceWorker):
         self.register(DeviceOperation.Z_STAGE_CLOSED_LOOP_ENABLE, self.enable_closed_loop)
         self.register(DeviceOperation.Z_STAGE_POSITION_SET, self.set_position)
         self.register(DeviceOperation.Z_STAGE_POSITION_READ, self.read_position)
+        self.register(DeviceOperation.Z_STAGE_POSITION_RELATIVE, self.move_relative)
 
     def initialize_device(self) -> None:
         self.device.connect()
+        limits = getattr(self.device, "travel_limits", None)
+        self.state.readback = replace(self.state.readback,
+                                      max_travel_um=getattr(self.device, "max_travel_um", None)
+                                      or (limits.maximum_um if limits is not None else None))
 
     def cleanup_device(self) -> None:
         self.device.disconnect()
@@ -66,3 +72,13 @@ class ZStageWorker(DeviceWorker):
         result = ZStagePositionResult(float(self.device.get_position()))
         self.state.readback = replace(self.state.readback, position_um=result.position_um)
         return result
+
+    def move_relative(self, args: ZStageRelativeMoveArgs) -> ZStagePositionResult:
+        if not self.state.readback.closed_loop:
+            raise RuntimeError("Enable closed-loop before moving")
+        current = float(self.device.get_position())
+        limits = self.device.travel_limits
+        target = current + args.delta_um
+        if limits is not None and not 0 <= target <= limits.maximum_um:
+            raise ValueError(f"Relative move target {target:g} µm is outside 0..{limits.maximum_um:g} µm")
+        return self.set_position(ZStageSetPositionArgs(target))

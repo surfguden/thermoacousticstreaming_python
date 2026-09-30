@@ -27,6 +27,7 @@ from .commands import (
 from .workflows import FlushWorkflow
 from .experiment_runner import ExperimentManager
 from .temperature_monitor import TemperatureMonitor
+from .z_stack import ZStackRunner
 
 
 @dataclass(slots=True)
@@ -59,6 +60,7 @@ class ApplicationController(QObject):
         self.confirm_operation = confirm_operation or (lambda _: False)
         self._last_audit_error: str | None = None
         self.experiments = ExperimentManager(self, parent=self)
+        self.z_stack = ZStackRunner(self, parent=self)
         self._queue: deque[_Pending] = deque()
         self._active: _Pending | None = None
         self._flush: FlushWorkflow | None = None
@@ -100,6 +102,7 @@ class ApplicationController(QObject):
         if self._panic_state == "stopping":
             raise RuntimeError("Panic stop is already in progress")
         self._panic_state = "stopping"
+        self.z_stack.abort_for_panic()
         self._panic_dispatching = True
         self._panic_errors.clear()
         self.panic_changed.emit(self.panic_status())
@@ -183,6 +186,13 @@ class ApplicationController(QObject):
             raise RuntimeError("Application shutdown has started")
         if self._panic_state == "stopping" and command.source != "panic":
             raise RuntimeError("Panic safe stop is in progress")
+        if self.z_stack.state == "running" and command.source not in {"z-stack", "panic"}:
+            allowed = {DeviceOperation.Z_STAGE_POSITION_READ, DeviceOperation.TEC_STATUS_READ,
+                       DeviceOperation.PUMP_STATUS_READ, DeviceOperation.PUMP_FILL_LEVEL_READ,
+                       DeviceOperation.CAMERA_TIMING_READ}
+            if isinstance(command, WorkflowCommand) or (command.operation not in allowed
+                    and not self._is_urgent(command.operation)):
+                raise RuntimeError("Z stack owns the camera and stage until acquisition finishes")
         if self.count_preflight_active and command.source != "experiment-preflight":
             observations = {DeviceOperation.CAMERA_TIMING_READ, DeviceOperation.PUMP_FILL_LEVEL_READ,
                             DeviceOperation.PUMP_STATUS_READ, DeviceOperation.VALVE_POSITION_READ,
@@ -536,6 +546,7 @@ class ApplicationController(QObject):
 
     def shutdown(self) -> list[str]:
         self._closing = True
+        self.z_stack.abort_for_panic()
         self.temperature_monitor.stop()
         self._wait_timer.stop()
         if self._active is not None and isinstance(self._active.command, WorkflowCommand):
@@ -560,5 +571,6 @@ class ApplicationController(QObject):
             if not worker._thread.wait(2000):
                 errors.append(f"{worker.device_id.value}: thread did not terminate")
         self.experiments.close()
+        self.z_stack.close()
         self._audit("shutdown", errors=errors)
         return errors

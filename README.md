@@ -1,8 +1,8 @@
 # Thermo-acoustic control
 
 This repository contains a single-process, simulation-first Qt application for
-the thermo-acoustic test rig. It is deliberately limited to individual device
-commands; experiments, recipes, and multi-device sequencing are deferred.
+the thermo-acoustic test rig. It supports individual device commands,
+experiment batches, and application-owned acquisition workflows.
 
 ## Architecture
 
@@ -44,8 +44,8 @@ thermo_acoustic/
 
 The design is analogous to a LabVIEW queued message handler: one producer-safe
 application queue, one dispatcher, and a dedicated actor/loop for each device.
-There is no TCP/HTTP/socket protocol, named pipe, thread pool, or controller
-process.
+There is no TCP/HTTP/socket protocol, named pipe, or controller process.
+Image saving uses a host-side thread pool so the Qt event loop stays responsive.
 
 ## Launch simulation
 
@@ -135,6 +135,26 @@ not HAL commands. Camera sequence persistence is exposed as a typed application
 command. Discovery and hardware probes
 remain manual-only under `hardware_tests/`. Device status uses typed per-device
 readback models rather than free-form key/value dictionaries.
+
+## Experiment and Z-stack controls
+
+The Experiments tab checks camera and syringe readiness separately. **Preflight
+camera settings** exercises each distinct camera/trigger configuration in the
+current form before it is queued. Its green result follows those tested camera
+settings. **Preflight batch syringe level** refreshes each pump's level and
+compares it with all planned flushes across the queued batch. Adding, editing,
+or removing a series invalidates that batch result. A queued series can be
+selected, loaded into the form, updated, or removed; removing it keeps its
+output folder. In real mode, Start requires a current syringe capacity check
+and warns about series without a camera preflight.
+
+The TEC tab selects a COM port before a real connection. The Z-stage tab has
+absolute and relative moves. The Z stack tab uses software-triggered camera
+snapshots at evenly spaced positions, verifies each controller position before
+capture, and writes TIFF images with camera and Z-position metadata. Choose an
+existing empty folder before starting. Live preview is available while setting
+endpoints and continues between stack captures. The pump tiles control a
+two-position built-in CETONI valve independently of the serial valve tab.
 
 ## Real mode safeguards
 

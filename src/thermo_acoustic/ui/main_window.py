@@ -103,6 +103,9 @@ class MainWindow(QMainWindow):
         self.workflow_panel.abort_requested.connect(controller.cancel_active_workflow)
         self.workflow_panel.notice.connect(self._ui_notice)
         self.tabs.addTab(self.workflow_panel, "Workflows")
+        from .z_stack_panel import ZStackPanel
+        self.z_stack_panel = ZStackPanel(controller.z_stack, self.panels[DeviceId.CAMERA])
+        self.tabs.addTab(self.z_stack_panel, "Z stack")
         self.experiment_panel = SimpleSeriesPanel(controller)
         self.tabs.addTab(self.experiment_panel, "Experiments")
         self.dashboard = StatusDashboard()
@@ -126,6 +129,7 @@ class MainWindow(QMainWindow):
         controller.temperature_monitor.sample.connect(self.panels[DeviceId.TEC].add_temperature_sample)
         controller.temperature_monitor.sample.connect(self.dashboard.add_temperature_sample)
         controller.experiments.changed.connect(self._experiment_changed)
+        controller.z_stack.changed.connect(lambda _status: self._experiment_changed(self._experiment_status))
         controller.panic_changed.connect(self._panic_changed)
         self._status(controller.statuses())
         self._experiment_changed(self._experiment_status)
@@ -163,6 +167,7 @@ class MainWindow(QMainWindow):
     def _experiment_changed(self, status: dict) -> None:
         self._experiment_status = status
         locked = (status["state"] in {"running", "stopping", "aborting"}
+                  or self.controller.z_stack.state == "running"
                   or self._panic_status["state"] == "stopping")
         for panel in self.panels.values():
             panel.set_experiment_locked(locked)

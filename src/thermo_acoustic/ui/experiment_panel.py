@@ -13,12 +13,14 @@ from PySide6.QtWidgets import (
 )
 
 from ..application.experiments import default_definition, load_definition, save_definition, validate_definition
+from ..application.simple_preflight import SimpleSeriesPreflight
 
 
 class ExperimentPanel(QWidget):
     def __init__(self, manager, parent=None) -> None:
         super().__init__(parent)
         self.manager = manager
+        self.camera_preflight = SimpleSeriesPreflight(manager.controller, self)
         root = QVBoxLayout(self)
         root.addWidget(QLabel("Experiment builder · versioned JSON · selected steps can be edited or reordered"))
         toolbar = QHBoxLayout()
@@ -69,7 +71,7 @@ class ExperimentPanel(QWidget):
         self.format = QComboBox()
         self.format.addItem("Individual TIFF", "frames")
         self.format.addItem("Stacked TIFF", "stacked")
-        self.preflight = QCheckBox("Real-mode count preflight")
+        self.preflight = QCheckBox("Also repeat count preflight when series starts")
         queue_row.addWidget(self.output_root, 2)
         queue_row.addWidget(self.choose_output)
         queue_row.addWidget(self.format)
@@ -77,14 +79,22 @@ class ExperimentPanel(QWidget):
         root.addLayout(queue_row)
         controls = QHBoxLayout()
         self.queue_button = QPushButton("Queue series")
+        self.camera_preflight_button = QPushButton("Preflight camera settings")
+        self.syringe_preflight_button = QPushButton("Preflight batch syringe level")
+        self.queue_load_button = QPushButton("Load selected for editing")
+        self.queue_update_button = QPushButton("Update selected series")
+        self.queue_remove_button = QPushButton("Remove selected series")
         self.start_button = QPushButton("Start queued batch")
         self.stop_button = QPushButton("Stop after current")
         self.abort_button = QPushButton("Abort batch")
-        for button in (self.queue_button, self.start_button, self.stop_button, self.abort_button):
+        for button in (self.camera_preflight_button, self.syringe_preflight_button,
+                       self.queue_button, self.queue_load_button, self.queue_update_button,
+                       self.queue_remove_button, self.start_button, self.stop_button, self.abort_button):
             controls.addWidget(button)
         root.addLayout(controls)
         self.batch_list = QTreeWidget()
-        self.batch_list.setHeaderLabels(["Series descriptor", "State", "Experiments", "Preflight", "Output folder"])
+        self.batch_list.setHeaderLabels(["Series descriptor", "State", "Experiments",
+                                         "Camera preflight", "Syringe preflight", "Output folder"])
         self.batch_list.setMinimumHeight(100)
         self._batch_snapshot = None
         root.addWidget(self.batch_list)
@@ -105,10 +115,19 @@ class ExperimentPanel(QWidget):
         self.down_button.clicked.connect(lambda: self._move(1))
         self.choose_output.clicked.connect(self._choose_output)
         self.queue_button.clicked.connect(self._queue)
+        self.camera_preflight_button.clicked.connect(self._preflight_camera)
+        self.syringe_preflight_button.clicked.connect(self._preflight_syringe)
+        self.queue_load_button.clicked.connect(self._queue_load)
+        self.queue_update_button.clicked.connect(self._queue_update)
+        self.queue_remove_button.clicked.connect(self._queue_remove)
+        self.camera_preflight.finished.connect(self._camera_preflight_finished)
         self.start_button.clicked.connect(self._start)
         self.stop_button.clicked.connect(manager.stop_after_current)
         self.abort_button.clicked.connect(manager.abort)
         manager.changed.connect(self._status)
+        manager.controller.panic_changed.connect(
+            lambda status: self.camera_preflight.abort_for_panic()
+            if status["state"] == "stopping" else None)
         manager.notice.connect(self._notice)
         manager.controller.status_changed.connect(lambda _statuses: self._render_batch_list(manager.status()))
         self._template()
@@ -279,6 +298,55 @@ class ExperimentPanel(QWidget):
         except Exception as exc:
             self._notice(str(exc))
 
+    def _selected_folder(self) -> str:
+        selected = self.batch_list.currentItem()
+        if selected is None:
+            raise ValueError("Select a queued series")
+        return selected.text(5)
+
+    def _queue_load(self) -> None:
+        try:
+            self._replace(self.manager.queued_definition(self._selected_folder()))
+            self._notice("Selected series loaded; edit then choose Update selected series")
+        except Exception as exc:
+            self._notice(str(exc))
+
+    def _queue_update(self) -> None:
+        try:
+            definition = self._definition()
+            definition["preflight"] = self.preflight.isChecked()
+            definition["tiff_format"] = self.format.currentData()
+            self.manager.update_queued(self._selected_folder(), definition)
+            self._notice("Selected series updated; batch syringe preflight reset")
+        except Exception as exc:
+            self._notice(str(exc))
+
+    def _queue_remove(self) -> None:
+        try:
+            self.manager.remove_queued(self._selected_folder())
+            self._notice("Series removed from batch; output folder kept")
+        except Exception as exc:
+            self._notice(str(exc))
+
+    def _preflight_camera(self) -> None:
+        try:
+            self.camera_preflight.run(self._definition())
+            self._notice("Camera preflight running")
+        except Exception as exc:
+            self._notice(str(exc))
+
+    def _camera_preflight_finished(self, ok: bool, message: str, fingerprint: str) -> None:
+        if ok:
+            self.manager.record_camera_preflight(fingerprint)
+        self._notice(("Camera preflight passed: " if ok else "Camera preflight failed: ") + message)
+
+    def _preflight_syringe(self) -> None:
+        try:
+            self.manager.preflight_syringe(lambda ok, message: self._notice(message))
+            self._notice("Batch syringe preflight running")
+        except Exception as exc:
+            self._notice(str(exc))
+
     def _start(self) -> None:
         try:
             self.manager.start()
@@ -287,7 +355,12 @@ class ExperimentPanel(QWidget):
 
     def _status(self, status: dict) -> None:
         locked = status["state"] in {"running", "stopping", "aborting"}
-        self.queue_button.setEnabled(not locked)
+        editing_locked = locked or status["syringe_preflight_active"] or self.camera_preflight._active
+        self.queue_button.setEnabled(not editing_locked)
+        self.camera_preflight_button.setEnabled(not locked and not self.camera_preflight._active)
+        self.syringe_preflight_button.setEnabled(not locked and not status["syringe_preflight_active"])
+        for button in (self.queue_load_button, self.queue_update_button, self.queue_remove_button):
+            button.setEnabled(not editing_locked and status["queued_series"] > 0)
         self.start_button.setEnabled(not locked)
         self.stop_button.setEnabled(status["state"] == "running")
         self.abort_button.setEnabled(status["state"] == "running")
@@ -298,20 +371,28 @@ class ExperimentPanel(QWidget):
                                  f"· folder: {status['current_series'] or 'none'}")
 
     def _render_batch_list(self, status: dict) -> None:
+        selected = self.batch_list.currentItem().text(5) if self.batch_list.currentItem() else None
         snapshot = tuple((item["description"], item["state"], item["experiment_count"],
-                          item["preflight_passed"], item["folder"])
+                          item["camera_preflight_passed"], item["syringe_preflight_passed"], item["folder"])
                          for item in status.get("series", []))
         if snapshot == self._batch_snapshot:
             return
         self._batch_snapshot = snapshot
         self.batch_list.clear()
         for series in status.get("series", []):
+            camera_badge = ("● Yes" if series["camera_preflight_passed"] else "● No") \
+                if series["camera_preflight_applicable"] else "N/A"
+            syringe_badge = ("● Yes" if series["syringe_preflight_passed"] else "● No") \
+                if series["syringe_preflight_applicable"] else "N/A"
             item = QTreeWidgetItem([series["description"], series["state"],
                                     str(series["experiment_count"]),
-                                    "● Passed" if series["preflight_passed"] else "● Not tested",
+                                    camera_badge, syringe_badge,
                                     series["folder"]])
-            item.setForeground(3, QColor("#2e7d32" if series["preflight_passed"] else "#b71c1c"))
+            item.setForeground(3, QColor("#2e7d32" if series["camera_preflight_passed"] else "#b71c1c"))
+            item.setForeground(4, QColor("#2e7d32" if series["syringe_preflight_passed"] else "#b71c1c"))
             self.batch_list.addTopLevelItem(item)
+            if series["folder"] == selected:
+                self.batch_list.setCurrentItem(item)
 
     def _notice(self, message: str) -> None:
         self.state_label.setText(message)

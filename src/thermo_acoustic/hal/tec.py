@@ -7,6 +7,7 @@ from ..application.commands import (
     DeviceOperation,
     NoArguments,
     TecApplySetpointsArgs,
+    TecConnectArgs,
     TecChannelStatusResult,
     TecReadStatusArgs,
     TecStatusResult,
@@ -23,6 +24,13 @@ class TecWorker(DeviceWorker):
         self.register(DeviceOperation.TEC_OUTPUTS_OFF, self.outputs_off)
         self.register(DeviceOperation.TEC_STATUS_READ, self.read_status)
         self.register(DeviceOperation.TEC_WAIT_STABLE, self.wait_until_stable)
+
+    def prepare_connection(self, device: object, arguments: object) -> None:
+        if isinstance(arguments, TecConnectArgs):
+            if hasattr(device, "driver"):
+                device.driver.port = arguments.port
+        elif hasattr(device, "driver") and getattr(device.driver, "port", None) is None:
+            raise ValueError("Select a TEC COM port before connecting")
 
     @staticmethod
     def _result(statuses: dict[int, object]) -> TecStatusResult:

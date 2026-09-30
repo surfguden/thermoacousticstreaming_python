@@ -27,6 +27,7 @@ from .commands import (
 from .experiment_storage import FileWorker, SeriesStorage, json_ready
 from .experiments import Expansion, PlannedExperiment, validate_definition
 from .temperature_recording import TemperatureRecorder
+from .simple_preflight import camera_preflight_fingerprint
 
 
 class ExperimentManager(QObject):
@@ -39,7 +40,12 @@ class ExperimentManager(QObject):
         self.controller = controller
         self.confirm_batch = confirm_batch or (lambda _summary: False)
         self.confirm_unchecked: Callable[[str], bool] = lambda _summary: True
-        self._simple_preflight_passes: dict[str, tuple[int, float | None]] = {}
+        self._camera_preflight_passes: set[str] = set()
+        self._syringe_preflight_levels: dict[int, float] | None = None
+        self._syringe_preflight_pending: dict[str, tuple[Callable[[Any], None], Callable[[bool, str], None]]] = {}
+        self._syringe_preflight_active = False
+        self._camera_was_connected = False
+        self._pump_was_connected = False
         self._queued: deque[tuple[Expansion, SeriesStorage]] = deque()
         self._batch_items: list[tuple[Expansion, SeriesStorage]] = []
         self._series_states: dict[Path, str] = {}
@@ -71,6 +77,23 @@ class ExperimentManager(QObject):
         self._parallel_depth = 0
         self._series_completed_at_start = 0
         controller.command_result.connect(self._command_result)
+        controller.command_result.connect(self._syringe_preflight_result)
+        controller.status_changed.connect(self._preflight_device_status)
+
+    def _preflight_device_status(self, statuses: dict) -> None:
+        camera_connected = statuses[DeviceId.CAMERA].connection is ConnectionState.CONNECTED
+        pump_connected = statuses[DeviceId.PUMP].connection is ConnectionState.CONNECTED
+        changed = False
+        if self._camera_was_connected and not camera_connected:
+            changed = bool(self._camera_preflight_passes)
+            self._camera_preflight_passes.clear()
+        if self._pump_was_connected and not pump_connected:
+            changed = changed or self._syringe_preflight_levels is not None
+            self._invalidate_syringe_preflight()
+        self._camera_was_connected = camera_connected
+        self._pump_was_connected = pump_connected
+        if changed:
+            self._publish()
 
     def attach_temperature_monitor(self, monitor) -> None:
         monitor.sample.connect(self._temperature_sample)
@@ -86,6 +109,8 @@ class ExperimentManager(QObject):
 
     def queue(self, definition: dict[str, Any], output_root: str | Path,
               image_format: str | None = None) -> Path:
+        if self._syringe_preflight_active or self.controller.count_preflight_active:
+            raise RuntimeError("Wait for preflight to finish before changing the batch")
         if self._state in {"running", "stopping", "aborting"}:
             raise RuntimeError("Cannot queue a series while an experiment batch is running")
         if self.controller.panic_status()["state"] == "stopping":
@@ -111,26 +136,160 @@ class ExperimentManager(QObject):
                                 continuing_batch=self._batch_output_root is not None)
         self._batch_output_root = output
         self._queued.append((expansion, storage))
+        self._invalidate_syringe_preflight()
         self._series_states[storage.folder] = "queued"
         self._publish()
         return storage.folder
 
+    def queued_definition(self, folder: str | Path) -> dict[str, Any]:
+        return next(expansion.definition for expansion, storage in self._queued
+                    if storage.folder == Path(folder))
+
+    def update_queued(self, folder: str | Path, definition: dict[str, Any]) -> None:
+        if self._syringe_preflight_active or self.controller.count_preflight_active:
+            raise RuntimeError("Wait for preflight to finish before changing the batch")
+        if self._state == "running":
+            raise RuntimeError("Cannot edit a running batch")
+        expansion = validate_definition(definition)
+        items = list(self._queued)
+        for index, (_old, storage) in enumerate(items):
+            if storage.folder == Path(folder):
+                storage.update_definition(expansion)
+                storage.image_format = definition.get("tiff_format", storage.image_format)
+                items[index] = (expansion, storage)
+                self._queued = deque(items)
+                self._invalidate_syringe_preflight()
+                self._publish()
+                return
+        raise ValueError("Selected series is not queued")
+
+    def remove_queued(self, folder: str | Path) -> None:
+        if self._syringe_preflight_active or self.controller.count_preflight_active:
+            raise RuntimeError("Wait for preflight to finish before changing the batch")
+        if self._state == "running":
+            raise RuntimeError("Cannot remove a series from a running batch")
+        items = list(self._queued)
+        for index, (_expansion, storage) in enumerate(items):
+            if storage.folder == Path(folder):
+                storage.status("removed_from_queue", {})
+                del items[index]
+                self._queued = deque(items)
+                self._series_states.pop(storage.folder, None)
+                self._invalidate_syringe_preflight()
+                self._publish()
+                return
+        raise ValueError("Selected series is not queued")
+
+    def record_camera_preflight(self, fingerprint: str) -> None:
+        self._camera_preflight_passes.add(fingerprint)
+        self._publish()
+
+    def camera_preflighted(self, definition: dict[str, Any]) -> bool:
+        return camera_preflight_fingerprint(validate_definition(definition)) in self._camera_preflight_passes
+
+    @staticmethod
+    def _flush_totals(items: list[tuple[Expansion, SeriesStorage]]) -> dict[int, float]:
+        totals: dict[int, float] = {}
+        def visit(steps):
+            for step in steps:
+                if step["type"] == "flush":
+                    args = step["args"]
+                    index = args["unit_index"]
+                    totals[index] = totals.get(index, 0.0) + args["volume_ml"]
+                elif step["type"] == "experiment":
+                    visit(step["steps"])
+                elif step["type"] == "parallel":
+                    for branch in step["branches"]:
+                        visit(branch)
+        for expansion, _storage in items:
+            visit(expansion.steps)
+        return totals
+
+    def _invalidate_syringe_preflight(self) -> None:
+        self._syringe_preflight_levels = None
+
+    def _syringe_preflight_current(self) -> bool:
+        levels = self._syringe_preflight_levels
+        if levels is None:
+            return False
+        pump = self.controller.statuses()[DeviceId.PUMP].readback
+        if not isinstance(pump, PumpReadback):
+            return False
+        units = {unit.unit_index: unit for unit in pump.units}
+        return all(index in units and units[index].fill_level_ml is not None
+                   and units[index].fill_level_ml + 1e-6 >= level
+                   and units[index].is_pumping is False
+                   for index, level in levels.items())
+
+    def preflight_syringe(self, finished: Callable[[bool, str], None]) -> None:
+        if self._syringe_preflight_active or self._state == "running":
+            raise RuntimeError("Syringe preflight is already active or batch is running")
+        if not self._queued:
+            raise RuntimeError("Queue a series before checking syringe capacity")
+        if self.controller.statuses()[DeviceId.PUMP].connection is not ConnectionState.CONNECTED:
+            raise RuntimeError("Connect the pump before syringe preflight")
+        totals = self._flush_totals(list(self._queued))
+        self._invalidate_syringe_preflight()
+        self._syringe_preflight_active = True
+        indices = deque(sorted(totals))
+        def complete(ok: bool, message: str) -> None:
+            self._syringe_preflight_active = False
+            self._publish()
+            finished(ok, message)
+        def next_unit(_value=None):
+            if not indices:
+                pump = self.controller.statuses()[DeviceId.PUMP].readback
+                units = {unit.unit_index: unit for unit in pump.units} if isinstance(pump, PumpReadback) else {}
+                levels = {}
+                for index, needed in totals.items():
+                    unit = units.get(index)
+                    if unit is None or unit.fill_level_ml is None or unit.is_pumping is not False:
+                        complete(False, f"Pump {index + 1} has no idle, readable fill level")
+                        return
+                    if unit.fill_level_ml < needed:
+                        complete(False, f"Pump {index + 1} needs {needed:g} mL; has {unit.fill_level_ml:g} mL")
+                        return
+                    levels[index] = unit.fill_level_ml
+                self._syringe_preflight_levels = levels
+                complete(True, "Batch syringe capacity passed")
+                return
+            index = indices.popleft()
+            def send(operation, callback):
+                command = DeviceCommand(DeviceId.PUMP, operation, PumpUnitArgs(index), source="experiment-preflight")
+                self._syringe_preflight_pending[command.request_id] = callback, complete
+                try:
+                    self.controller.submit(command)
+                except Exception as exc:
+                    self._syringe_preflight_pending.pop(command.request_id, None)
+                    complete(False, str(exc))
+            send(DeviceOperation.PUMP_STATUS_READ,
+                 lambda _value: send(DeviceOperation.PUMP_FILL_LEVEL_READ, next_unit))
+        next_unit()
+
+    def _syringe_preflight_result(self, result) -> None:
+        pending = self._syringe_preflight_pending.pop(result.request_id, None)
+        if pending is None:
+            return
+        callback, complete = pending
+        if result.ok:
+            callback(result.value)
+        else:
+            complete(False, result.error or "Syringe preflight failed")
+
     def status(self) -> dict[str, Any]:
         queued = self._batch_items if self._batch_items else list(self._queued)
         queue_details = []
-        pump = self.controller.statuses()[DeviceId.PUMP].readback
+        syringe_passed = self._syringe_preflight_current()
         for expansion, storage in queued:
-            passed = False
-            if expansion.definition.get("simple_series"):
-                fingerprint = json.dumps(expansion.definition, sort_keys=True, allow_nan=False)
-                proof = self._simple_preflight_passes.get(fingerprint)
-                if proof is not None and isinstance(pump, PumpReadback):
-                    unit = next((item for item in pump.units if item.unit_index == proof[0]), None)
-                    passed = unit is not None and unit.fill_level_ml == proof[1]
+            camera_applicable = bool(expansion.experiments)
+            passed = camera_applicable and camera_preflight_fingerprint(expansion) in self._camera_preflight_passes
             queue_details.append({"description": expansion.definition["description"],
                                   "folder": str(storage.folder),
                                   "experiment_count": len(expansion.experiments),
-                                  "preflight_passed": passed,
+                                  "camera_preflight_applicable": camera_applicable,
+                                  "camera_preflight_passed": passed,
+                                  "syringe_preflight_applicable": bool(self._flush_totals([(expansion, storage)])),
+                                  "syringe_preflight_passed": syringe_passed,
                                   "state": self._series_states.get(storage.folder, "queued"),
                                   "current": self._current is not None and storage is self._current[1]})
         return {"state": self._state, "queued_series": len(self._queued),
@@ -146,12 +305,16 @@ class ExperimentManager(QObject):
                 "current_series": str(self._current[1].folder) if self._current else None,
                 "current_experiment": self._experiment.experiment_id if self._experiment else None,
                 "completed_experiments": self._completed,
-                "stop_after_current": self._stop_after_current}
+                "stop_after_current": self._stop_after_current,
+                "syringe_preflight_passed": syringe_passed,
+                "syringe_preflight_active": self._syringe_preflight_active}
 
     def _publish(self) -> None:
         self.changed.emit(self.status())
 
     def start(self) -> bool:
+        if self.controller.z_stack.state == "running":
+            raise RuntimeError("Wait for the Z stack to finish before starting the batch")
         if self.controller.panic_status()["state"] == "stopping":
             raise RuntimeError("Wait for Panic safe stop to finish before starting a batch")
         if self.controller.count_preflight_active:
@@ -160,22 +323,16 @@ class ExperimentManager(QObject):
             raise RuntimeError("An experiment batch is already running")
         if not self._queued:
             raise RuntimeError("Queue at least one experiment series")
-        unchecked = []
-        for expansion, _storage in self._queued:
-            if not expansion.definition.get("simple_series"):
-                continue
-            fingerprint = json.dumps(expansion.definition, sort_keys=True, allow_nan=False)
-            proof = self._simple_preflight_passes.get(fingerprint)
-            unit = next(item["args"]["unit_index"] for item in expansion.steps
-                        if item["type"] == "flush")
-            pump = self.controller.statuses()[DeviceId.PUMP].readback
-            current = next((item.fill_level_ml for item in pump.units if item.unit_index == unit), None) \
-                if isinstance(pump, PumpReadback) else None
-            if proof != (unit, current):
-                unchecked.append(expansion.definition["name"])
+        if self._syringe_preflight_active:
+            raise RuntimeError("Wait for syringe preflight to finish")
+        if (self.controller.mode is OperatingMode.REAL
+                and self._flush_totals(list(self._queued)) and not self._syringe_preflight_current()):
+            raise RuntimeError("Run syringe preflight for the current batch before Start")
+        unchecked = [expansion.definition["description"] for expansion, _storage in self._queued
+                     if camera_preflight_fingerprint(expansion) not in self._camera_preflight_passes]
         if unchecked and not self.confirm_unchecked(
-            f"Count preflight has not passed for {len(unchecked)} queued simple series with their current "
-            "settings and syringe level. Continue with standard Start validation?"
+            f"Camera preflight has not passed for {len(unchecked)} queued series with their current "
+            "camera settings. Continue with standard Start validation?"
         ):
             return False
         queued_now = len(self._queued)
@@ -200,11 +357,6 @@ class ExperimentManager(QObject):
         self._publish()
         QTimer.singleShot(0, self._next_series)
         return True
-
-    def record_simple_preflight(self, fingerprint: str, unit_index: int,
-                                fill_level_ml: float | None) -> None:
-        self._simple_preflight_passes[fingerprint] = (unit_index, fill_level_ml)
-        self._publish()
 
     def stop_after_current(self) -> None:
         if self._state != "running":

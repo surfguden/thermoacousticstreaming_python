@@ -34,6 +34,10 @@ from thermo_acoustic.drivers.camera import (
 )
 from thermo_acoustic.drivers.pump import CetoniPump, SimulatedPump
 from thermo_acoustic.drivers.tec import MeerstetterTecDriver, SimulatedTec, TecController
+from thermo_acoustic.drivers.tec.controller import TecStatus
+from thermo_acoustic.application.commands import TecConnectArgs
+from thermo_acoustic.hal.tec import TecWorker
+from thermo_acoustic.drivers.pump.bank import CetoniPumpBank
 from thermo_acoustic.drivers.valve import SerialTextCommandTransport, SimulatedValve, Valve
 from thermo_acoustic.drivers.z_stage import PiezoStage, SimulatedZStage, ZStageLimits
 from thermo_acoustic.hal import DeviceRegistry, DeviceWorker
@@ -189,6 +193,62 @@ def test_simulated_devices_are_reusable_without_the_hal() -> None:
     with pytest.raises(ValueError, match="must exactly match"):
         tec.apply_static_setpoint({1: 25.0}, channels=(1, 2))
     tec.set_output_stage_static_off()
+
+
+def test_real_tec_port_is_applied_before_client_connection_without_hardware() -> None:
+    observed = []
+
+    class FakeClient:
+        def connect(self):
+            observed.append("connect")
+
+        def read_status(self, channels):
+            return {channel: TecStatus(channel=channel, current_temperature_c=25.0)
+                    for channel in channels}
+
+        def close(self):
+            observed.append("close")
+
+    driver = MeerstetterTecDriver(client_factory=lambda port: observed.append(port) or FakeClient())
+    controller = TecController(driver=driver, enabled=True)
+    worker = TecWorker(lambda: controller)
+    worker.prepare_connection(controller, TecConnectArgs("COM9"))
+    controller.initialize()
+    assert observed[:2] == ["COM9", "connect"]
+    assert sorted(controller.last_status) == [1, 2]
+    driver.close()
+
+
+def test_cetoni_builtin_valve_maps_ui_positions_to_zero_based_sdk() -> None:
+    class FakeValve:
+        position = 0
+
+        def number_of_valve_positions(self):
+            return 2
+
+        def actual_valve_position(self):
+            return self.position
+
+        def switch_valve_to_position(self, position):
+            self.position = position
+
+    class FakePump:
+        valve = FakeValve()
+
+        def has_valve(self):
+            return True
+
+        def get_valve(self):
+            return self.valve
+
+    bank = CetoniPumpBank()
+    bank._pumps = [FakePump()]
+    bank.read_status = lambda _index: False
+    assert bank.read_valve_position(0) == 1
+    assert bank.set_valve_position(0, 2) == 2
+    assert bank._pumps[0].valve.position == 1
+    with pytest.raises(ValueError):
+        bank.set_valve_position(0, 3)
 
 
 def test_camera_roi_can_be_centered_with_integer_limits() -> None:

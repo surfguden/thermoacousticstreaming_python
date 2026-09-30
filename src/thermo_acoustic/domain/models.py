@@ -180,6 +180,7 @@ class PumpUnitReadback:
     syringe_name: str | None = None
     syringe_inner_diameter_mm: float | None = None
     syringe_max_piston_stroke_mm: float | None = None
+    valve_position: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,6 +229,7 @@ class ZStageReadback:
     closed_loop_confirmation_required: bool | None = None
     closed_loop: bool = False
     position_um: float | None = None
+    max_travel_um: float | None = None
 
 
 DeviceReadback = Ad2Readback | CameraReadback | PumpReadback | ValveReadback | TecReadback | ZStageReadback

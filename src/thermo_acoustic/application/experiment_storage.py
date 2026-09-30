@@ -84,6 +84,21 @@ class SeriesStorage:
         })
         self.status("queued", {})
 
+    def update_definition(self, expansion: Expansion) -> None:
+        """Replace only the queued plan; no acquired data may be present."""
+        if any(path.is_dir() for path in self.folder.iterdir() if path != self.metadata):
+            raise RuntimeError("Cannot edit a series after acquisition has created output")
+        write_json(self.metadata / "definition.json", expansion.definition)
+        write_json(self.metadata / "manifest.json", {
+            "schema_version": 1,
+            "experiments": [{"experiment_id": item.experiment_id,
+                             "relative_path": item.relative_path,
+                             "parameters": item.parameters,
+                             "repeat_index": item.repeat_index}
+                            for item in expansion.experiments],
+        })
+        self.status("queued", {"edited": True})
+
     def status(self, state: str, detail: dict[str, Any]) -> None:
         write_json(self.metadata / "status.json", {
             "state": state, "updated_utc": datetime.now(timezone.utc).isoformat(), **detail,

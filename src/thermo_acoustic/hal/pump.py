@@ -5,7 +5,7 @@ from dataclasses import replace
 import math
 from time import monotonic
 
-from ..application.commands import DeviceOperation, NoArguments, PumpConnectArgs, PumpConfigurationResult, PumpConfigureFlowUnitArgs, PumpConfigureSyringeArgs, PumpFillLevelResult, PumpFlowUnit, PumpMoveArgs, PumpMovementResult, PumpRecoveryResult, PumpReferenceMoveArgs, PumpSetFillLevelArgs, PumpSetFlowArgs, PumpStatusResult, PumpUnitArgs
+from ..application.commands import DeviceOperation, NoArguments, PumpConnectArgs, PumpConfigurationResult, PumpConfigureFlowUnitArgs, PumpConfigureSyringeArgs, PumpFillLevelResult, PumpFlowUnit, PumpMoveArgs, PumpMovementResult, PumpRecoveryResult, PumpReferenceMoveArgs, PumpSetFillLevelArgs, PumpSetFlowArgs, PumpStatusResult, PumpUnitArgs, PumpValvePositionArgs, PumpValvePositionResult
 from ..application.configuration import DEFAULT_PUMP_CONFIGURATION_DIR, validate_pump_configuration_dir
 from ..domain.models import DeviceId, PumpReadback, PumpUnitReadback
 from .base import DeferredProgress, DeviceWorker
@@ -17,6 +17,8 @@ class PumpWorker(DeviceWorker):
         super().__init__(DeviceId.PUMP, device_factory, readback_factory=PumpReadback, poll_interval_s=0.5, parent=parent)
         for operation, handler in ((DeviceOperation.PUMP_FLOW_SET, self.set_flow), (DeviceOperation.PUMP_FLOW_STOP, self.stop_flow), (DeviceOperation.PUMP_FILL_LEVEL_READ, self.read_fill_level), (DeviceOperation.PUMP_STATUS_READ, self.read_status), (DeviceOperation.PUMP_FILL_LEVEL_SET, self.set_fill_level), (DeviceOperation.PUMP_SYRINGE_CONFIGURE, self.configure_syringe), (DeviceOperation.PUMP_FLOW_UNIT_CONFIGURE, self.configure_flow_unit), (DeviceOperation.PUMP_FAULT_RECOVER, self.recover_fault), (DeviceOperation.PUMP_REFILL, self.refill), (DeviceOperation.PUMP_EMPTY, self.empty), (DeviceOperation.PUMP_REFERENCE_MOVE, self.reference_move)):
             self.register(operation, handler)
+        self.register(DeviceOperation.PUMP_VALVE_POSITION_READ, self.read_valve_position)
+        self.register(DeviceOperation.PUMP_VALVE_POSITION_SET, self.set_valve_position)
 
     def _count(self) -> int: return int(getattr(self.device, "unit_count", 1))
     @staticmethod
@@ -49,10 +51,12 @@ class PumpWorker(DeviceWorker):
                 flow = float(self._call(index, "read_flow")) if hasattr(self.device, "read_flow") else (unit.current_flow_ul_min if pumping else 0.0)
                 faulted = bool(self._call(index, "read_fault")) if hasattr(self.device, "read_fault") else None
                 syringe = self._call(index, "read_syringe") if hasattr(self.device, "read_syringe") else None
+                valve_position = self._call(index, "read_valve_position") if hasattr(self.device, "read_valve_position") else None
                 self._replace_unit(replace(unit, fill_level_ml=level, is_pumping=pumping,
                     current_flow_ul_min=flow, is_faulted=faulted,
                     syringe_inner_diameter_mm=syringe[0] if syringe else unit.syringe_inner_diameter_mm,
-                    syringe_max_piston_stroke_mm=syringe[1] if syringe else unit.syringe_max_piston_stroke_mm))
+                    syringe_max_piston_stroke_mm=syringe[1] if syringe else unit.syringe_max_piston_stroke_mm,
+                    valve_position=valve_position))
             except Exception:
                 self._replace_unit(replace(unit, is_faulted=True))
                 raise
@@ -128,6 +132,15 @@ class PumpWorker(DeviceWorker):
             cancel=lambda: self.stop_flow(PumpUnitArgs(args.unit_index)),
             poll_interval_s=args.poll_interval_s,
         )
+    def read_valve_position(self, args: PumpUnitArgs) -> PumpValvePositionResult:
+        position = self._call(args.unit_index, "read_valve_position")
+        self._replace_unit(replace(self._unit(args.unit_index), valve_position=position))
+        return PumpValvePositionResult(position, position is not None)
+
+    def set_valve_position(self, args: PumpValvePositionArgs) -> PumpValvePositionResult:
+        position = self._call(args.unit_index, "set_valve_position", args.position)
+        self._replace_unit(replace(self._unit(args.unit_index), valve_position=position))
+        return PumpValvePositionResult(position, True)
     def safe_stop(self) -> None:
         if self.device_constructed and self.state.connected:
             for index in range(self._count()): self._call(index, "stop")

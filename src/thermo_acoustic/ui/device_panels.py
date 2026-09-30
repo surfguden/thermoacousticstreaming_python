@@ -69,7 +69,9 @@ from ..application.commands import (
     PumpSetFlowArgs,
     PumpSyringePreset,
     PumpUnitArgs,
+    PumpValvePositionArgs,
     TecApplySetpointsArgs,
+    TecConnectArgs,
     TecReadStatusArgs,
     TecStatusResult,
     TecWaitStableArgs,
@@ -78,6 +80,7 @@ from ..application.commands import (
     ValveConnectArgs,
     ValveWaitReadyArgs,
     ZStageSetPositionArgs,
+    ZStageRelativeMoveArgs,
 )
 from ..domain.models import (
     Ad2Capabilities,
@@ -1264,11 +1267,21 @@ class PumpPanel(DevicePanel):
             flow = QLabel("—")
             state = QLabel("● Unknown")
             syringe_configuration = QLabel("—")
+            valve_state = QLabel("Unknown")
             syringe_configuration.setWordWrap(True)
             form.addRow("State", state)
             form.addRow("Volume (mL)", volume)
             form.addRow("Current flow (µL/min)", flow)
             form.addRow("Syringe", syringe_configuration)
+            form.addRow("Built-in valve", valve_state)
+            form.addRow(button_row(
+                self.action_button(f"valve_1_{index}", "Valve 1", DeviceOperation.PUMP_VALVE_POSITION_SET,
+                                   lambda i=index: PumpValvePositionArgs(1, i)),
+                self.action_button(f"valve_2_{index}", "Valve 2", DeviceOperation.PUMP_VALVE_POSITION_SET,
+                                   lambda i=index: PumpValvePositionArgs(2, i)),
+                self.action_button(f"valve_read_{index}", "Read valve", DeviceOperation.PUMP_VALVE_POSITION_READ,
+                                   lambda i=index: PumpUnitArgs(i)),
+            ))
             form.addRow(button_row(
                 self.action_button(f"refill_{index}", "Refill", DeviceOperation.PUMP_REFILL, lambda i=index: PumpMoveArgs(unit_index=i)),
                 self.action_button(f"empty_{index}", "Empty", DeviceOperation.PUMP_EMPTY, lambda i=index: PumpMoveArgs(unit_index=i)),
@@ -1301,6 +1314,7 @@ class PumpPanel(DevicePanel):
             group.flow_label = flow
             group.state_label = state
             group.syringe_label = syringe_configuration
+            group.valve_label = valve_state
             self.tiles_layout.addWidget(group, 0, index)
             self.tiles_layout.setColumnStretch(index, 1)
         self.empty_label.setVisible(count == 0)
@@ -1398,7 +1412,17 @@ class PumpPanel(DevicePanel):
                 if unit.syringe_inner_diameter_mm is not None and unit.syringe_max_piston_stroke_mm is not None else "Geometry unavailable"
             )
             group.syringe_label.setText(f"{unit.syringe_name} · {geometry}" if unit.syringe_name else geometry)
+            group.valve_label.setText("Unavailable" if unit.valve_position is None else f"Position {unit.valve_position}")
         self._render_states()
+
+    def _update_controls(self) -> None:
+        super()._update_controls()
+        for unit in getattr(self, "_last_units", ()):
+            for position in (1, 2):
+                button = self._buttons.get(f"valve_{position}_{unit.unit_index}")
+                if button is not None:
+                    button.setEnabled(button.isEnabled() and unit.valve_position is not None
+                                      and unit.is_pumping is False)
 
 
 class ValvePanel(DevicePanel):
@@ -1845,6 +1869,14 @@ class CameraPanel(DevicePanel):
 class TecPanel(DevicePanel):
     def __init__(self, parent=None) -> None:
         super().__init__(DeviceId.TEC, parent)
+        connection, connection_form = form_group("Connection")
+        self.port = QComboBox()
+        self.port.addItem("Select COM port", None)
+        refresh = QPushButton("Refresh ports")
+        refresh.clicked.connect(self._refresh_ports)
+        connection_form.addRow("TEC COM port", self.port)
+        connection_form.addRow(button_row(refresh))
+        self.layout.addWidget(connection)
         controls = QWidget()
         controls_layout = QGridLayout(controls)
         self.layout.addWidget(controls)
@@ -1883,8 +1915,34 @@ class TecPanel(DevicePanel):
         self.layout.addWidget(self.temperature_plot)
         self.finish_layout()
 
+    def _refresh_ports(self) -> None:
+        from serial.tools import list_ports
+        selected = self.port.currentData()
+        self.port.clear()
+        self.port.addItem("Select COM port", None)
+        for item in sorted(list_ports.comports(), key=lambda entry: entry.device):
+            self.port.addItem(f"{item.device} · {item.description}", item.device)
+        index = self.port.findData(selected)
+        if index >= 0:
+            self.port.setCurrentIndex(index)
+
+    def _connect_arguments(self) -> TecConnectArgs | None:
+        port = self.port.currentData()
+        return TecConnectArgs(str(port)) if port is not None else None
+
     def add_temperature_sample(self, sample: dict) -> None:
         self.temperature_plot.add_sample(sample)
+
+    def set_status(self, status: DeviceStatus) -> None:
+        super().set_status(status)
+        if status.busy and any(self._action_operations.get(action) is DeviceOperation.TEC_WAIT_STABLE
+                               for action in self._pending):
+            channels = getattr(status.readback, "channels", ())
+            readings = ", ".join(
+                f"ch{item.channel}: {item.current_temperature_c:.2f} °C"
+                for item in channels if item.current_temperature_c is not None)
+            self.state_label.setText("Waiting for temperature stabilization" +
+                                     (f" · {readings}" if readings else ""))
 
     def _targets(self) -> float | dict[int, float]:
         if self.target_mode.currentData() == "broadcast":
@@ -1961,14 +2019,22 @@ class ZStagePanel(DevicePanel):
         super().__init__(DeviceId.Z_STAGE, parent)
         group, form = form_group("Closed-loop position")
         self.position = self.register_profile("position_um", double_spin(50, -1_000_000, 1_000_000))
+        self.step = self.register_profile("relative_step_um", double_spin(1, 0.001, 1_000_000))
         form.addRow(button_row(
             self.action_button("requirement", "Check closed-loop requirement", DeviceOperation.Z_STAGE_CLOSED_LOOP_REQUIREMENT_READ),
             self.action_button("enable", "Enable closed loop", DeviceOperation.Z_STAGE_CLOSED_LOOP_ENABLE),
         ))
         form.addRow("Position (µm)", self.position)
+        form.addRow("Relative step (µm)", self.step)
         form.addRow(button_row(
             self.action_button("move", "Move", DeviceOperation.Z_STAGE_POSITION_SET, lambda: ZStageSetPositionArgs(self.position.value())),
             self.action_button("read", "Read position", DeviceOperation.Z_STAGE_POSITION_READ),
+        ))
+        form.addRow(button_row(
+            self.action_button("up", "Up", DeviceOperation.Z_STAGE_POSITION_RELATIVE,
+                               lambda: ZStageRelativeMoveArgs(self.step.value())),
+            self.action_button("down", "Down", DeviceOperation.Z_STAGE_POSITION_RELATIVE,
+                               lambda: ZStageRelativeMoveArgs(-self.step.value())),
         ))
         self.layout.addWidget(group)
         self.readback_label = QLabel("No readback")

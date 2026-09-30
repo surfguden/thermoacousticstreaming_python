@@ -57,6 +57,8 @@ class DeviceOperation(str, Enum):
     PUMP_REFILL = "pump.refill"
     PUMP_EMPTY = "pump.empty"
     PUMP_REFERENCE_MOVE = "pump.reference_move"
+    PUMP_VALVE_POSITION_SET = "pump.valve.position.set"
+    PUMP_VALVE_POSITION_READ = "pump.valve.position.read"
     VALVE_POSITION_SET = "valve.position.set"
     VALVE_POSITION_READ = "valve.position.read"
     VALVE_WAIT_READY = "valve.wait_ready"
@@ -68,6 +70,7 @@ class DeviceOperation(str, Enum):
     Z_STAGE_CLOSED_LOOP_ENABLE = "z_stage.closed_loop.enable"
     Z_STAGE_POSITION_SET = "z_stage.position.set"
     Z_STAGE_POSITION_READ = "z_stage.position.read"
+    Z_STAGE_POSITION_RELATIVE = "z_stage.position.relative"
 
 
 class WorkflowOperation(str, Enum):
@@ -199,6 +202,17 @@ class ValveConnectArgs:
         port = self.port.strip()
         if not port:
             raise ValueError("Select a valve COM port before connecting")
+        object.__setattr__(self, "port", port)
+
+
+@dataclass(frozen=True, slots=True)
+class TecConnectArgs:
+    port: str
+
+    def __post_init__(self) -> None:
+        port = self.port.strip()
+        if not port:
+            raise ValueError("Select a TEC COM port before connecting")
         object.__setattr__(self, "port", port)
 
 
@@ -548,6 +562,16 @@ class PumpUnitArgs:
 
 
 @dataclass(frozen=True, slots=True)
+class PumpValvePositionArgs:
+    position: int
+    unit_index: int = 0
+
+    def __post_init__(self) -> None:
+        if self.position not in (1, 2):
+            raise ValueError("CETONI valve position must be 1 or 2")
+
+
+@dataclass(frozen=True, slots=True)
 class PumpMoveArgs:
     flow_rate_ul_min: float | None = None
     timeout_s: float = 120.0
@@ -635,6 +659,15 @@ class TecWaitStableArgs:
 @dataclass(frozen=True, slots=True)
 class ZStageSetPositionArgs:
     position_um: float
+
+
+@dataclass(frozen=True, slots=True)
+class ZStageRelativeMoveArgs:
+    delta_um: float
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.delta_um) or self.delta_um == 0:
+            raise ValueError("Relative Z move must be finite and nonzero")
 
 
 @dataclass(frozen=True, slots=True)
@@ -737,6 +770,12 @@ class PumpMovementResult:
 
 
 @dataclass(frozen=True, slots=True)
+class PumpValvePositionResult:
+    position: int | None
+    available: bool
+
+
+@dataclass(frozen=True, slots=True)
 class ValvePositionResult:
     position: int
 
@@ -787,7 +826,7 @@ def _only(device: DeviceId) -> frozenset[DeviceId]:
     return frozenset({device})
 
 OPERATION_SPECS: dict[DeviceOperation, OperationSpec] = {
-    DeviceOperation.CONNECT: OperationSpec(_ALL_DEVICES, (NoArguments, PumpConnectArgs, ValveConnectArgs), _NONE_RESULT),
+    DeviceOperation.CONNECT: OperationSpec(_ALL_DEVICES, (NoArguments, PumpConnectArgs, ValveConnectArgs, TecConnectArgs), _NONE_RESULT),
     DeviceOperation.DISCONNECT: OperationSpec(_ALL_DEVICES, NoArguments, _NONE_RESULT),
     DeviceOperation.SAFE_STOP: OperationSpec(_ALL_DEVICES, NoArguments, _NONE_RESULT),
     DeviceOperation.ABORT_ACTIVE: OperationSpec(_ALL_DEVICES, NoArguments, _NONE_RESULT),
@@ -827,6 +866,8 @@ OPERATION_SPECS: dict[DeviceOperation, OperationSpec] = {
     DeviceOperation.PUMP_REFILL: OperationSpec(_only(DeviceId.PUMP), PumpMoveArgs, PumpMovementResult),
     DeviceOperation.PUMP_EMPTY: OperationSpec(_only(DeviceId.PUMP), PumpMoveArgs, PumpMovementResult),
     DeviceOperation.PUMP_REFERENCE_MOVE: OperationSpec(_only(DeviceId.PUMP), PumpReferenceMoveArgs, PumpMovementResult),
+    DeviceOperation.PUMP_VALVE_POSITION_SET: OperationSpec(_only(DeviceId.PUMP), PumpValvePositionArgs, PumpValvePositionResult),
+    DeviceOperation.PUMP_VALVE_POSITION_READ: OperationSpec(_only(DeviceId.PUMP), PumpUnitArgs, PumpValvePositionResult),
     DeviceOperation.VALVE_POSITION_SET: OperationSpec(_only(DeviceId.VALVE), ValveSetPositionArgs, _NONE_RESULT),
     DeviceOperation.VALVE_POSITION_READ: OperationSpec(_only(DeviceId.VALVE), NoArguments, ValvePositionResult),
     DeviceOperation.VALVE_WAIT_READY: OperationSpec(_only(DeviceId.VALVE), ValveWaitReadyArgs, ValveReadyResult),
@@ -838,6 +879,7 @@ OPERATION_SPECS: dict[DeviceOperation, OperationSpec] = {
     DeviceOperation.Z_STAGE_CLOSED_LOOP_ENABLE: OperationSpec(_only(DeviceId.Z_STAGE), NoArguments, _NONE_RESULT),
     DeviceOperation.Z_STAGE_POSITION_SET: OperationSpec(_only(DeviceId.Z_STAGE), ZStageSetPositionArgs, ZStagePositionResult),
     DeviceOperation.Z_STAGE_POSITION_READ: OperationSpec(_only(DeviceId.Z_STAGE), NoArguments, ZStagePositionResult),
+    DeviceOperation.Z_STAGE_POSITION_RELATIVE: OperationSpec(_only(DeviceId.Z_STAGE), ZStageRelativeMoveArgs, ZStagePositionResult),
 }
 
 
@@ -851,6 +893,8 @@ def validate_command(device: DeviceId, operation: DeviceOperation, arguments: ob
         raise ValueError("PumpConnectArgs is only valid for the pump")
     if operation is DeviceOperation.CONNECT and isinstance(arguments, ValveConnectArgs) and device is not DeviceId.VALVE:
         raise ValueError("ValveConnectArgs is only valid for the valve")
+    if operation is DeviceOperation.CONNECT and isinstance(arguments, TecConnectArgs) and device is not DeviceId.TEC:
+        raise ValueError("TecConnectArgs is only valid for the TEC")
     if not isinstance(arguments, spec.argument_type):
         expected = (
             spec.argument_type.__name__

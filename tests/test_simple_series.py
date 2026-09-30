@@ -42,6 +42,54 @@ def settings() -> SimpleSeriesSettings:
     )
 
 
+def test_batch_syringe_preflight_totals_and_queue_edits(tmp_path):
+    app = QApplication.instance() or QApplication(["test-batch-syringe"])
+    controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
+    controller.start()
+    try:
+        results = []
+        controller.command_result.connect(results.append)
+        controller.submit(DeviceCommand(DeviceId.PUMP, DeviceOperation.CONNECT))
+        deadline = monotonic() + 3
+        while monotonic() < deadline and not any(result.operation is DeviceOperation.CONNECT and result.ok
+                                                   for result in results):
+            app.processEvents(); sleep(0.01)
+        controller.submit(DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_FILL_LEVEL_SET,
+                                        PumpSetFillLevelArgs(1.0, unit_index=0)))
+        deadline = monotonic() + 3
+        while monotonic() < deadline and not any(result.operation is DeviceOperation.PUMP_FILL_LEVEL_SET
+                                                   and result.ok for result in results):
+            app.processEvents(); sleep(0.01)
+        base = replace(settings(), repeats=1, flush_unit_index=0,
+                       frequency_hz=NumericRange(1_000_000, 1_000_000, 1),
+                       amplitude_v=NumericRange(1, 1, 1),
+                       exposure_ms=NumericRange(1, 1, 1), sweep_enabled=False,
+                       temperature_control=False, temperature_logging=False)
+        manager = controller.experiments
+        first = manager.queue(compile_simple_series(base), tmp_path)
+        second = manager.queue(compile_simple_series(replace(base, description="Second")), tmp_path)
+        assert manager._flush_totals(list(manager._queued)) == {0: 0.4}
+        finished = []
+        manager.preflight_syringe(lambda ok, message: finished.append((ok, message)))
+        deadline = monotonic() + 3
+        while monotonic() < deadline and not finished:
+            app.processEvents(); sleep(0.01)
+        assert finished[0][0], finished
+        assert manager.status()["syringe_preflight_passed"]
+        third = manager.queue(compile_simple_series(replace(base, description="Third")), tmp_path)
+        assert not manager.status()["syringe_preflight_passed"]
+        manager.remove_queued(third)
+        assert third.is_dir()
+        assert manager.status()["queued_series"] == 2
+        assert not manager.status()["syringe_preflight_passed"]
+        manager.update_queued(second, compile_simple_series(replace(base, description="Edited",
+            exposure_ms=NumericRange(2, 2, 1))))
+        assert manager.queued_definition(second)["description"] == "Edited"
+        assert first.is_dir()
+    finally:
+        controller.shutdown()
+
+
 def test_fixed_form_expansion_order_and_flush_count():
     expansion = validate_definition(compile_simple_series(settings()))
     assert len(expansion.experiments) == 64
@@ -412,6 +460,8 @@ def test_start_warns_for_missing_or_stale_count_preflight(tmp_path):
     manager.confirm_unchecked = lambda message: warnings.append(message) or False
     assert not manager.start()
     assert "not passed" in warnings[0]
-    manager.record_simple_preflight(json.dumps(definition, sort_keys=True), 1, None)
+    from thermo_acoustic.application.simple_preflight import camera_preflight_fingerprint
+    from thermo_acoustic.application.experiments import validate_definition
+    manager.record_camera_preflight(camera_preflight_fingerprint(validate_definition(definition)))
     assert manager.start()
     controller.shutdown()

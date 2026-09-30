@@ -89,6 +89,29 @@ class CetoniPumpBank:
     def start_reference_move(self, index: int) -> None: self._call(index, "start_reference_move")
     def reference_move_finished(self, index: int) -> bool: return self._call(index, "reference_move_finished")
 
+    def read_valve_position(self, index: int) -> int | None:
+        pump = self._pumps[index]
+        if not pump.has_valve():
+            return None
+        valve = pump.get_valve()
+        if int(valve.number_of_valve_positions()) != 2:
+            raise RuntimeError(f"Pump {index + 1} valve is not a two-position valve")
+        return int(valve.actual_valve_position()) + 1
+
+    def set_valve_position(self, index: int, position: int) -> int:
+        if position not in (1, 2):
+            raise ValueError("Built-in valve position must be 1 or 2")
+        if self.read_status(index):
+            raise RuntimeError("Stop pump flow before switching its built-in valve")
+        current = self.read_valve_position(index)
+        if current is None:
+            raise RuntimeError(f"Pump {index + 1} has no built-in valve")
+        self._pumps[index].get_valve().switch_valve_to_position(position - 1)
+        observed = self.read_valve_position(index)
+        if observed != position:
+            raise RuntimeError(f"Pump {index + 1} valve reports position {observed}, expected {position}")
+        return observed
+
 
 class SimulatedPumpBank:
     """Offline bank matching the Qmix-discovered bank contract."""
@@ -98,6 +121,7 @@ class SimulatedPumpBank:
             raise ValueError("unit_count must be within 1..4")
         self._pumps = [SimulatedPump() for _ in range(unit_count)]
         self.configuration_path: Path | None = None
+        self._valve_positions = [1] * unit_count
 
     def set_configuration_path(self, path: Path) -> None:
         self.configuration_path = path
@@ -125,3 +149,11 @@ class SimulatedPumpBank:
     def configure_flow_unit(self, index: int, unit: str) -> None: self._pump(index).configure_flow_unit(unit)
     def start_reference_move(self, index: int) -> None: self._pump(index).start_reference_move()
     def reference_move_finished(self, index: int) -> bool: return self._pump(index).reference_move_finished()
+    def read_valve_position(self, index: int) -> int | None: return self._valve_positions[index]
+    def set_valve_position(self, index: int, position: int) -> int:
+        if position not in (1, 2):
+            raise ValueError("Built-in valve position must be 1 or 2")
+        if self.read_status(index):
+            raise RuntimeError("Stop pump flow before switching its built-in valve")
+        self._valve_positions[index] = position
+        return position

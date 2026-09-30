@@ -9,14 +9,24 @@ from typing import Any, Callable
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from ..domain.models import ConnectionState, DeviceId, PumpReadback
+from ..domain.models import ConnectionState, DeviceId
 from .commands import (
     Ad2ExperimentDigitalArgs, CameraConfigureRoiArgs, CameraConfigureSequenceArgs,
     CameraConfigureSnapshotArgs, CameraSequenceTriggerArgs, CameraTriggerActive,
     CameraTriggerPolarity,
     CameraTriggerSource, DeviceCommand, DeviceOperation, NoArguments, PumpUnitArgs,
 )
-from .experiments import validate_definition
+from .experiments import Expansion, validate_definition
+
+
+def camera_preflight_fingerprint(expansion: Expansion) -> str:
+    """Only camera configuration and its trigger timing invalidate camera proof."""
+    combinations = set()
+    for item in expansion.experiments:
+        camera = next(step["args"] for step in item.steps if step["type"] == "camera_configure")
+        dio = next(step["args"]["dio"] for step in item.steps if step["type"] == "ad2_configure")
+        combinations.add(json.dumps((camera, dio), sort_keys=True, allow_nan=False))
+    return json.dumps(sorted(combinations), allow_nan=False)
 
 
 class SimpleSeriesPreflight(QObject):
@@ -49,14 +59,14 @@ class SimpleSeriesPreflight(QObject):
             raise RuntimeError("Stop the experiment batch before count preflight")
         expansion = validate_definition(definition)
         statuses = self.controller.statuses()
-        for device in (DeviceId.CAMERA, DeviceId.AD2, DeviceId.PUMP, DeviceId.VALVE):
+        for device in (DeviceId.CAMERA, DeviceId.AD2):
             if statuses[device].connection is not ConnectionState.CONNECTED:
                 raise RuntimeError(f"Required device is not connected: {device.value}")
         ad2 = statuses[DeviceId.AD2].readback
         if ad2 is not None and (getattr(ad2, "waveform_running", False)
                                 or getattr(ad2, "digital_output_running", False)):
             raise RuntimeError("Stop manual AD2 outputs before count preflight")
-        fingerprint = json.dumps(definition, sort_keys=True, allow_nan=False)
+        fingerprint = camera_preflight_fingerprint(expansion)
         unique: dict[str, tuple[dict, dict]] = {}
         for item in expansion.experiments:
             camera = next(step["args"] for step in item.steps if step["type"] == "camera_configure")
@@ -66,39 +76,7 @@ class SimpleSeriesPreflight(QObject):
         self._fingerprint = fingerprint
         self._active = True
         self.controller.count_preflight_active = True
-        flushes: dict[int, float] = {}
-        def visit(steps: Any) -> None:
-            for step in steps:
-                if step["type"] == "flush":
-                    args = step["args"]
-                    index = args["unit_index"]
-                    flushes[index] = flushes.get(index, 0) + args["volume_ml"]
-                elif step["type"] == "experiment":
-                    visit(step["steps"])
-                elif step["type"] == "parallel":
-                    for branch in step["branches"]:
-                        visit(branch)
-        visit(expansion.steps)
-        tasks = deque(index for index in sorted(flushes))
-        def refresh() -> None:
-            if not tasks:
-                readback = self.controller.statuses()[DeviceId.PUMP].readback
-                units = {unit.unit_index: unit for unit in readback.units} if isinstance(readback, PumpReadback) else {}
-                for index, total in flushes.items():
-                    unit = units.get(index)
-                    if unit is None or unit.fill_level_ml is None or unit.is_pumping:
-                        self._finish(False, f"Pump unit {index + 1} has no idle, readable syringe level")
-                        return
-                    if unit.fill_level_ml < total:
-                        self._finish(False, f"Pump unit {index + 1} needs {total:g} mL; available {unit.fill_level_ml:g} mL")
-                        return
-                self._next_pair()
-                return
-            index = tasks.popleft()
-            self._send(DeviceId.PUMP, DeviceOperation.PUMP_STATUS_READ, PumpUnitArgs(index),
-                       lambda _value: self._send(DeviceId.PUMP, DeviceOperation.PUMP_FILL_LEVEL_READ,
-                                                 PumpUnitArgs(index), lambda _value: refresh()))
-        refresh()
+        self._next_pair()
 
     def abort_for_panic(self) -> None:
         """Relinquish camera/AD2 ownership; the controller performs urgent stops."""

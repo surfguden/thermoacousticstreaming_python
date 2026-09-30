@@ -168,7 +168,7 @@ def test_panic_requires_confirmation_and_reports_failed_stop(monkeypatch):
         controller.shutdown()
 
 
-def test_queue_preflight_badge_invalidates_with_syringe_level(tmp_path):
+def test_queue_camera_and_syringe_badges_invalidate_independently(tmp_path):
     QApplication.instance() or QApplication(["test-batch-badge"])
     controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
     manager = controller.experiments
@@ -176,12 +176,16 @@ def test_queue_preflight_badge_invalidates_with_syringe_level(tmp_path):
     manager.queue(definition, tmp_path)
     pump = controller._statuses[DeviceId.PUMP]
     controller._statuses[DeviceId.PUMP] = replace(pump, readback=PumpReadback(
-        units=(PumpUnitReadback(0, fill_level_ml=1.0),)))
-    fingerprint = json.dumps(definition, sort_keys=True, allow_nan=False)
-    assert not manager.status()["series"][0]["preflight_passed"]
-    manager.record_simple_preflight(fingerprint, 0, 1.0)
-    assert manager.status()["series"][0]["preflight_passed"]
+        units=(PumpUnitReadback(0, fill_level_ml=1.0, is_pumping=False),)))
+    assert not manager.status()["series"][0]["camera_preflight_passed"]
+    from thermo_acoustic.application.simple_preflight import camera_preflight_fingerprint
+    from thermo_acoustic.application.experiments import validate_definition
+    manager.record_camera_preflight(camera_preflight_fingerprint(validate_definition(definition)))
+    manager._syringe_preflight_levels = {0: 1.0}
+    assert manager.status()["series"][0]["camera_preflight_passed"]
+    assert manager.status()["series"][0]["syringe_preflight_passed"]
     controller._statuses[DeviceId.PUMP] = replace(pump, readback=PumpReadback(
-        units=(PumpUnitReadback(0, fill_level_ml=0.5),)))
-    assert not manager.status()["series"][0]["preflight_passed"]
+        units=(PumpUnitReadback(0, fill_level_ml=0.5, is_pumping=False),)))
+    assert manager.status()["series"][0]["camera_preflight_passed"]
+    assert not manager.status()["series"][0]["syringe_preflight_passed"]
     controller.shutdown()

@@ -119,6 +119,7 @@ def test_each_panel_builds_every_typed_device_operation(qt_app, device):
             DeviceOperation.ABORT_ACTIVE, DeviceOperation.SAFE_STOP,
             DeviceOperation.PUMP_REFILL, DeviceOperation.PUMP_EMPTY,
             DeviceOperation.PUMP_FLOW_STOP, DeviceOperation.PUMP_REFERENCE_MOVE,
+                DeviceOperation.PUMP_VALVE_POSITION_READ,
         }
     assert operations == expected
 
