@@ -108,8 +108,20 @@ def _values(spec: Any, label: str) -> tuple[Any, ...]:
     else:
         raise ValueError(f"{label} must be a nonempty list or numeric range")
     for value in values:
+        if isinstance(value, dict):
+            # A flat, string-keyed object of finite numbers -- e.g. one point
+            # of an independently-varying multi-field parameter (per-channel
+            # TEC targets that do not move in lockstep). Not interpreted
+            # here; whatever the swept value is substituted into validates
+            # its own shape (e.g. tec_set/tec_wait_stable's target map check).
+            if not value or any(not isinstance(key, str) for key in value):
+                raise ValueError(f"{label} object values must be nonempty with string keys")
+            for item in value.values():
+                if isinstance(item, bool) or not isinstance(item, (int, float)) or not math.isfinite(item):
+                    raise ValueError(f"{label} object values must map to finite numbers")
+            continue
         if isinstance(value, bool) or not isinstance(value, (str, int, float)):
-            raise ValueError(f"{label} values must be strings or finite numbers")
+            raise ValueError(f"{label} values must be strings, finite numbers, or flat numeric objects")
         if isinstance(value, (int, float)) and not math.isfinite(value):
             raise ValueError(f"{label} values must be finite")
     return values
@@ -251,6 +263,9 @@ def _action(step: dict[str, Any]) -> None:
 
 
 def _leaf_name(value: Any) -> str:
+    if isinstance(value, dict):
+        value = "_".join(f"{key}-{item:g}" if isinstance(item, float) else f"{key}-{item}"
+                         for key, item in sorted(value.items()))
     token = _PATH_TOKEN.sub("_", str(value)).strip("._")[:64]
     return token or "value"
 

@@ -499,3 +499,126 @@ def test_save_failure_waits_for_already_started_flush_cleanup(tmp_path):
         assert controller.statuses()[DeviceId.VALVE].readback.confirmed_position == 2
     finally:
         controller.shutdown()
+
+
+def _minimal_experiment_steps(frame_count: int = 2) -> list[dict]:
+    return [
+        {"type": "camera_configure", "args": {"frame_count": frame_count, "exposure_ms": 1, "global_exposure": False}},
+        {"type": "ad2_configure", "args": {
+            "ultrasound": {"enabled": True, "start_s": 0, "run_s": 1, "frequency_hz": 2000000, "amplitude_v": 1.0, "offset_v": 0},
+            "laser": {"enabled": False, "start_s": 0, "run_s": 1, "on_voltage_v": 0},
+            "dio": {"frame_rate_hz": 10, "camera_delay_s": 0.1, "frame_count": frame_count},
+            "output_timeout_s": 10}},
+        {"type": "camera_arm", "args": {}}, {"type": "ad2_arm", "args": {}},
+        {"type": "pc_trigger", "args": {}}, {"type": "await_frames", "args": {}},
+        {"type": "parallel", "branches": [
+            [{"type": "save_frames", "args": {}}],
+            [{"type": "wait_outputs", "args": {}}],
+        ]},
+    ]
+
+
+def test_temperature_point_series_runs_each_point_in_order(tmp_path):
+    # A TEC multi-point temperature series (set -> wait for stability -> hold
+    # -> run an experiment group, repeated per point) needs no new execution
+    # machinery: it composes entirely from tec_set/tec_wait_stable/wait/
+    # experiment nodes already supported by the sweep mechanism. This is the
+    # common "locked" case (both channels follow the same point list).
+    app = QApplication.instance() or QApplication(["test-experiments"])
+    controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
+    results = []
+    controller.command_result.connect(results.append)
+    events = []
+    controller.command_event.connect(events.append)
+    controller.start()
+    try:
+        for device in (DeviceId.AD2, DeviceId.CAMERA, DeviceId.TEC):
+            controller.submit(DeviceCommand(device, DeviceOperation.CONNECT))
+        until(app, lambda: sum(result.operation is DeviceOperation.CONNECT and result.ok
+                               for result in results) == 3)
+        definition = {
+            "version": 1, "name": "temperature_series", "description": "Temperature series test",
+            "preflight": False, "tiff_format": "frames",
+            "steps": [{
+                "type": "sweep", "parameters": {"temperature_c": [20.0, 25.0]},
+                "steps": [
+                    {"type": "tec_set", "args": {"target_temperature_c":
+                        {"1": {"$param": "temperature_c"}, "2": {"$param": "temperature_c"}}}},
+                    {"type": "tec_wait_stable", "args": {"target_temperature_c":
+                        {"1": {"$param": "temperature_c"}, "2": {"$param": "temperature_c"}},
+                        "tolerance_c": 0.5, "min_settle_s": 0, "max_wait_s": 5}},
+                    {"type": "wait", "args": {"seconds": 0}},
+                    {"type": "repeat", "count": 1, "steps": [
+                        {"type": "experiment", "steps": _minimal_experiment_steps()},
+                    ]},
+                ],
+            }],
+        }
+        folder = controller.experiments.queue(definition, tmp_path)
+        assert controller.experiments.start()
+        until(app, lambda: controller.experiments.status()["state"] in {"completed", "failed"}, timeout=15)
+        status = controller.experiments.status()
+        assert status["state"] == "completed", status
+        assert status["planned_experiments"] == 2
+        manifest = json.loads((folder / "metadata" / "manifest.json").read_text())
+        assert [item["parameters"]["temperature_c"] for item in manifest["experiments"]] == [20.0, 25.0]
+        tec_set_values = [event.arguments.target_temperature_c for event in events
+                          if event.operation is DeviceOperation.TEC_SETPOINTS_APPLY and event.state == "completed"]
+        assert tec_set_values == [{1: 20.0, 2: 20.0}, {1: 25.0, 2: 25.0}]
+        tec_set_index = [i for i, e in enumerate(events) if e.operation is DeviceOperation.TEC_SETPOINTS_APPLY
+                         and e.state == "completed"]
+        arm_index = [i for i, e in enumerate(events) if e.operation is DeviceOperation.CAMERA_SEQUENCE_ARM
+                    and e.state == "completed"]
+        assert tec_set_index[0] < arm_index[0] < tec_set_index[1] < arm_index[1]
+        for item in manifest["experiments"]:
+            leaf = folder / item["relative_path"]
+            record = json.loads((leaf / "experiment.json").read_text())
+            assert record["frame_count"] == 2
+    finally:
+        controller.shutdown()
+
+
+def test_temperature_point_series_supports_independent_per_channel_targets(tmp_path):
+    # The "unlocked" case: channels 1 and 2 follow different point lists in
+    # lockstep, expressed as one sweep parameter whose values are themselves
+    # per-channel target objects (not a cartesian cross-product of two
+    # separate parameters, which would wrongly combine every ch1 value with
+    # every ch2 value).
+    app = QApplication.instance() or QApplication(["test-experiments"])
+    controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
+    results = []
+    controller.command_result.connect(results.append)
+    events = []
+    controller.command_event.connect(events.append)
+    controller.start()
+    try:
+        for device in (DeviceId.AD2, DeviceId.CAMERA, DeviceId.TEC):
+            controller.submit(DeviceCommand(device, DeviceOperation.CONNECT))
+        until(app, lambda: sum(result.operation is DeviceOperation.CONNECT and result.ok
+                               for result in results) == 3)
+        points = [{"1": 20.0, "2": 24.0}, {"1": 21.0, "2": 23.0}]
+        definition = {
+            "version": 1, "name": "temperature_series_unlocked", "description": "Unlocked temperature series test",
+            "preflight": False, "tiff_format": "frames",
+            "steps": [{
+                "type": "sweep", "parameters": {"temperature_point": points},
+                "steps": [
+                    {"type": "tec_set", "args": {"target_temperature_c": {"$param": "temperature_point"}}},
+                    {"type": "tec_wait_stable", "args": {"target_temperature_c": {"$param": "temperature_point"},
+                        "tolerance_c": 0.5, "min_settle_s": 0, "max_wait_s": 5}},
+                    {"type": "wait", "args": {"seconds": 0}},
+                    {"type": "repeat", "count": 1, "steps": [
+                        {"type": "experiment", "steps": _minimal_experiment_steps()},
+                    ]},
+                ],
+            }],
+        }
+        folder = controller.experiments.queue(definition, tmp_path)
+        assert controller.experiments.start()
+        until(app, lambda: controller.experiments.status()["state"] in {"completed", "failed"}, timeout=15)
+        assert controller.experiments.status()["state"] == "completed", controller.experiments.status()
+        tec_set_values = [event.arguments.target_temperature_c for event in events
+                          if event.operation is DeviceOperation.TEC_SETPOINTS_APPLY and event.state == "completed"]
+        assert tec_set_values == [{1: 20.0, 2: 24.0}, {1: 21.0, 2: 23.0}]
+    finally:
+        controller.shutdown()
