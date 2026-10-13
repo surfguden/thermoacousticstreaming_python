@@ -46,6 +46,16 @@ def write_json(path: Path, value: Any) -> None:
     temporary.replace(path)
 
 
+# A `status()` call using one of these `state` strings ends the series: no
+# further experiment in it will start. Recorded once, in status.json, as
+# `finalized_outcome`/`finalized_utc` -- the one place to look for "how far
+# did this series get and how did it end" without replaying events.jsonl.
+TERMINAL_OUTCOMES = frozenset({
+    "completed", "stopped_after_current", "failed", "aborted",
+    "cancelled", "removed_from_queue",
+})
+
+
 class SeriesStorage:
     def __init__(self, root: Path, expansion: Expansion, image_format: str,
                  *, continuing_batch: bool = False) -> None:
@@ -73,6 +83,12 @@ class SeriesStorage:
         self.metadata.mkdir()
         self.image_format = image_format
         self.events = self.metadata / "events.jsonl"
+        self.requested_experiments = len(expansion.experiments)
+        self.experiments_started = 0
+        self.experiments_completed = 0
+        self.experiments_failed = 0
+        self.finalized_outcome: str | None = None
+        self.finalized_utc: str | None = None
         write_json(self.metadata / "definition.json", expansion.definition)
         write_json(self.metadata / "manifest.json", {
             "schema_version": 1,
@@ -84,10 +100,20 @@ class SeriesStorage:
         })
         self.status("queued", {})
 
+    def record_experiment_started(self) -> None:
+        self.experiments_started += 1
+
+    def record_experiment_completed(self) -> None:
+        self.experiments_completed += 1
+
+    def record_experiment_failed(self) -> None:
+        self.experiments_failed += 1
+
     def update_definition(self, expansion: Expansion) -> None:
         """Replace only the queued plan; no acquired data may be present."""
         if any(path.is_dir() for path in self.folder.iterdir() if path != self.metadata):
             raise RuntimeError("Cannot edit a series after acquisition has created output")
+        self.requested_experiments = len(expansion.experiments)
         write_json(self.metadata / "definition.json", expansion.definition)
         write_json(self.metadata / "manifest.json", {
             "schema_version": 1,
@@ -100,8 +126,21 @@ class SeriesStorage:
         self.status("queued", {"edited": True})
 
     def status(self, state: str, detail: dict[str, Any]) -> None:
+        if state in TERMINAL_OUTCOMES and self.finalized_outcome is None:
+            # First terminal state wins -- a late, redundant status() call
+            # (e.g. cleanup code running twice) must not overwrite the
+            # record of how the series actually ended.
+            self.finalized_outcome = state
+            self.finalized_utc = datetime.now(timezone.utc).isoformat()
         write_json(self.metadata / "status.json", {
-            "state": state, "updated_utc": datetime.now(timezone.utc).isoformat(), **detail,
+            "state": state, "updated_utc": datetime.now(timezone.utc).isoformat(),
+            "requested_experiments": self.requested_experiments,
+            "experiments_started": self.experiments_started,
+            "experiments_completed": self.experiments_completed,
+            "experiments_failed": self.experiments_failed,
+            "finalized_outcome": self.finalized_outcome,
+            "finalized_utc": self.finalized_utc,
+            **detail,
         })
 
     def event(self, kind: str, **detail: Any) -> None:

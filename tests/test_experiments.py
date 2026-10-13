@@ -149,6 +149,74 @@ def test_failure_discards_only_unfinished_experiment(tmp_path):
     assert manager.status()["state"] == "failed"
 
 
+def test_series_lifecycle_marks_in_progress_experiment_failed_and_finalizes_once(tmp_path):
+    # Mirrors the setup of test_failure_discards_only_unfinished_experiment
+    # but asserts the lifecycle record itself: the completed repeat counts
+    # once, the interrupted one counts as failed (even though its own folder
+    # never existed to discard), and the first terminal outcome sticks even
+    # if status() is called again afterward.
+    QApplication.instance() or QApplication(["test-experiments"])
+    definition = default_definition()
+    definition["steps"][1]["steps"][0]["count"] = 2
+    expansion = validate_definition(definition)
+    storage = SeriesStorage(tmp_path, expansion, "frames")
+    storage.record_experiment_started()
+    storage.record_experiment_completed()
+    storage.record_experiment_started()
+    controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
+    manager = controller.experiments
+    manager._current = (expansion, storage)
+    manager._experiment = expansion.experiments[1]
+    manager._failure_reason = "simulated later failure"
+    manager._state = "stopping"
+    manager._completed = 1
+    manager._finish_failure_when_safe()
+    recorded = json.loads((storage.folder / "metadata" / "status.json").read_text())
+    assert recorded["requested_experiments"] == 2
+    assert recorded["experiments_started"] == 2
+    assert recorded["experiments_completed"] == 1
+    assert recorded["experiments_failed"] == 1
+    assert recorded["finalized_outcome"] == "failed"
+    first_finalized_utc = recorded["finalized_utc"]
+    assert first_finalized_utc
+    storage.status("completed", {})
+    recorded = json.loads((storage.folder / "metadata" / "status.json").read_text())
+    assert recorded["finalized_outcome"] == "failed"
+    assert recorded["finalized_utc"] == first_finalized_utc
+
+
+def test_series_lifecycle_counts_and_outcome_on_completion(tmp_path):
+    app = QApplication.instance() or QApplication(["test-experiments"])
+    controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
+    results = []
+    controller.command_result.connect(results.append)
+    controller.start()
+    try:
+        for device in (DeviceId.AD2, DeviceId.CAMERA):
+            controller.submit(DeviceCommand(device, DeviceOperation.CONNECT))
+        until(app, lambda: sum(result.operation is DeviceOperation.CONNECT and result.ok
+                               for result in results) == 2)
+        definition = described_default_definition()
+        definition["steps"] = [definition["steps"][1]]
+        experiment = definition["steps"][0]["steps"][0]["steps"][0]["steps"]
+        experiment[-1]["branches"][1] = [{"type": "wait_outputs", "args": {}}]
+        experiment[0]["args"]["frame_count"] = 2
+        experiment[1]["args"]["dio"]["frame_count"] = 2
+        folder = controller.experiments.queue(definition, tmp_path)
+        assert controller.experiments.start()
+        until(app, lambda: controller.experiments.status()["state"] in {"completed", "failed"})
+        assert controller.experiments.status()["state"] == "completed"
+        recorded = json.loads((folder / "metadata" / "status.json").read_text())
+        assert recorded["requested_experiments"] == 1
+        assert recorded["experiments_started"] == 1
+        assert recorded["experiments_completed"] == 1
+        assert recorded["experiments_failed"] == 0
+        assert recorded["finalized_outcome"] == "completed"
+        assert recorded["finalized_utc"]
+    finally:
+        controller.shutdown()
+
+
 def test_dio_experiment_configuration_calculates_divider_and_initial_delay_without_hardware():
     class FakeDwf:
         def FDwfDigitalOutCounterInfo(self, _handle, _channel, minimum, maximum):

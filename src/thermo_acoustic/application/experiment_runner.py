@@ -792,6 +792,7 @@ class ExperimentManager(QObject):
             self._settings = {}
             self._applied = {}
             storage.event("experiment_started", experiment_id=self._experiment.experiment_id)
+            storage.record_experiment_started()
             self._publish()
             def finished() -> None:
                 try:
@@ -807,6 +808,7 @@ class ExperimentManager(QObject):
                 self._completed += 1
                 self._phase = "Experiment completed"
                 storage.event("experiment_completed", experiment_id=self._experiment.experiment_id)
+                storage.record_experiment_completed()
                 self._experiment = None
                 self._publish()
                 if self._stop_after_current:
@@ -1114,6 +1116,7 @@ class ExperimentManager(QObject):
         reason = self._failure_reason
         if self._current is not None and self._experiment is not None:
             storage = self._current[1]
+            storage.record_experiment_failed()
             incomplete = (storage.folder / self._experiment.relative_path).resolve()
             if not incomplete.is_relative_to(storage.folder.resolve()):
                 reason += "; unsafe unfinished experiment path could not be discarded"
