@@ -1907,6 +1907,12 @@ class TecPanel(DevicePanel):
         controls_layout.addWidget(group, 0, 0)
         self.table = QTableWidget(2, 6)
         self.table.setHorizontalHeaderLabels(("Channel", "Current °C", "Target °C", "Output", "Ready", "Fault"))
+        self.table.horizontalHeaderItem(2).setToolTip(
+            "The controller's own reported target, not necessarily this panel's last "
+            "requested setpoint above -- the controller can report no target here even "
+            "while genuinely ready and outputting; that is a protocol characteristic, "
+            "not an error."
+        )
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         controls_layout.addWidget(self.table, 0, 1)
         controls_layout.setColumnStretch(0, 1)
@@ -2011,7 +2017,7 @@ class TecPanel(DevicePanel):
                 channel.fault or "",
             )
             for column, value in enumerate(values):
-                self.table.setItem(row, column, QTableWidgetItem(str(value)))
+                self.table.setItem(row, column, QTableWidgetItem("—" if value is None else str(value)))
 
 
 class ZStagePanel(DevicePanel):

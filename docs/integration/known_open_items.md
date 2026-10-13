@@ -86,25 +86,41 @@ this branch's actual files).
 
 ## Open, software-only (closeable by review/small change)
 
-- **Valve `VALVE_WAIT_READY` return semantics**: `ValveReadyResult(ready=
-  False, ...)` is returned as a normal `command_succeeded` result
-  (`hal/valve.py:77-84`), not a failure. Confirmed NOT used by the automated
-  flush path (`FlushWorkflow` uses `valve.readback` directly, with its own
-  timeout/recovery — see `decision_log.md`). No concrete caller mishandling
-  this was found. Low priority; needs a targeted look at whatever manual UI
-  panel calls `VALVE_WAIT_READY` directly before deciding whether anything
-  needs to change.
-- **TEC Prepare-tab readback display**: junjiebranch's Prepare tab shows the
-  software's requested TEC target separately from the controller's own
-  readback (a real protocol characteristic: controller can report ready/
-  output-on with `target_temperature_c=None`). Whether ola-branch's
-  `TecPanel` (`ui/device_panels.py:1847`) already separates these two values
-  has not been checked. Blocks: any UI work in this area.
-- **Chronology-ordered Prepare checklist**: junjiebranch's
-  `lessons_learned.md` §7.1-7.2 records a UX principle (order
-  preparation steps by operator chronology, not subsystem ownership). Which
-  ola-branch panel plays the "Prepare" role and its current field order has
-  not been checked. Blocks: any UX-ordering change.
+- **Valve `VALVE_WAIT_READY` return semantics — verified, no operator-visible
+  gap found.** The command itself reports `ok=True` even when
+  `ValveReadyResult.ready=False` (`hal/valve.py:77-84`), confirmed. But the
+  one caller (`ui/device_panels.py:1453`, the manual Valve panel's "Wait
+  until ready" button) reads `readback.ready`/`readback.status_note` via
+  `update_readback()` (`device_panels.py:1496-1503`), which the same HAL
+  handler updates with the true `ready`/`status_note` state regardless of
+  the command's own ok/fail framing — so the operator-visible label
+  ("Ready: No" + status note) is correct even though the button's own
+  success/fail styling would show green. No silent failure reaches the
+  operator. **Closed, no change made.**
+- **TEC Prepare-tab readback display — resolved, small fix applied.**
+  ola-branch's `TecPanel` already separates the two values structurally:
+  the input fields (`target`/`target_1`/`target_2`) show the software's
+  last successfully-applied setpoint, while the status table's "Target °C"
+  column shows the controller's own readback. What was missing was the
+  display handling a `None` controller-reported target (a real protocol
+  characteristic junjiebranch found) clearly: it rendered the literal
+  string `"None"`. Fixed to use the panel's existing "—" convention (same
+  as Pump/Valve panels) plus a tooltip on the column header explaining the
+  characteristic. Test: `test_tec_table_shows_dash_not_literal_none_for_an_
+  unreported_target`.
+- **Chronology-ordered Prepare checklist — insufficient evidence to act,
+  deferred.** junjiebranch's `lessons_learned.md` §7.1-7.2 records a UX
+  principle (order by operator chronology, not subsystem ownership),
+  arrived at from real operator feedback on their specific workflow.
+  `ui/simple_series_panel.py`'s current group order is Output/acquisition →
+  Hardware timing → Ultrasound → Temperature → Camera → Flush. Whether this
+  matches *this* lab's actual operating chronology (e.g., should fluidics
+  prep happen before temperature/camera setup?) cannot be determined from
+  code alone — junjiebranch's own reordering was driven by real operator
+  observation, which this round has none of. **Not reordered.** Needs an
+  actual operator's input on the real workflow sequence before any change;
+  marking this unknown rather than assuming either the current order or a
+  reordering is correct.
 - **Z-stack algorithm parity** (not UI parity, which is resolved — see
   `decision_log.md`): `application/z_stack.py`'s stepping algorithm has not
   been compared against junjiebranch's `piezo_zscan.py`

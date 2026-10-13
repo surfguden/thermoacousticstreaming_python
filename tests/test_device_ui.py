@@ -57,11 +57,13 @@ from thermo_acoustic.domain.models import (
     OperatingMode,
     PumpReadback,
     PumpUnitReadback,
+    TecChannelReadback,
+    TecReadback,
 )
 from thermo_acoustic.hal.registry import DeviceRegistry
 from thermo_acoustic.hal.ad2 import AD2Worker
 from thermo_acoustic.drivers.ad2.simulated import SimulatedAD2
-from thermo_acoustic.ui.device_panels import Ad2Panel, CameraPanel, PANEL_TYPES, PumpPanel
+from thermo_acoustic.ui.device_panels import Ad2Panel, CameraPanel, PANEL_TYPES, PumpPanel, TecPanel
 from thermo_acoustic.ui.main_window import MainWindow
 
 
@@ -169,6 +171,22 @@ def test_pump_tile_shows_observed_state_and_syringe(qt_app):
     tile = show(PumpUnitReadback(0, is_pumping=True, is_faulted=True))
     assert "Error" in tile.state_label.text()
     assert "#c62828" in tile.state_label.styleSheet()
+
+
+def test_tec_table_shows_dash_not_literal_none_for_an_unreported_target(qt_app):
+    # The controller can report ready/output-on with no target readback at
+    # all (a real protocol characteristic, not an error) -- the table must
+    # not render that as the literal string "None".
+    del qt_app
+    panel = TecPanel()
+    panel.set_status(DeviceStatus(DeviceId.TEC, ConnectionState.CONNECTED,
+        readback=TecReadback(channels=(
+            TecChannelReadback(1, current_temperature_c=24.5, target_temperature_c=None,
+                              output_enabled=True, ready=True),
+        ))))
+    assert panel.table.item(0, 2).text() == "—"
+    assert panel.table.item(0, 1).text() == "24.5"
+    assert "protocol characteristic" in panel.table.horizontalHeaderItem(2).toolTip()
 
 
 def test_duplicate_operation_is_blocked_across_ad2_subtabs(qt_app):
