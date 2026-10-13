@@ -118,6 +118,22 @@ recorded but **not approved for implementation yet**.
 
 ---
 
+## 2026-10-13 — Software restrictions reviewed this round (register)
+
+Per the authorization's "identify and simplify unnecessary restrictions"
+item, each restriction actually examined during Batches 1-6, what it limits,
+its basis, and the disposition:
+
+| Restriction | Limits | Basis | Redundant with another check? | Disposition |
+|---|---|---|---|---|
+| `experiments.py` `_values()` sweep elements limited to bare str/int/float | Could not express a per-point dict of independent per-channel TEC targets | Original design predates any multi-field sweep need | No | **Simplified**: relaxed to also accept a flat numeric object, generically (Batch 3) |
+| `FlushWorkflow` trusted the raw `PUMP_FILL_LEVEL_READ` reading | Nothing, previously — this was a gap, not an over-restriction | — | — | **Added** a narrow check (Batch 2), not a simplification; recorded here only to confirm it was not layered on top of an already-sufficient check |
+| `PumpWorker.set_fill_level()`'s target-range validation (`hal/pump.py:88-91`) | A target outside `0..max_volume_ml` | Protects the SDK call itself | Yes, but by design | **Kept distinct from Batch 2's new check** — different failure mode (untrustworthy reading vs. out-of-range target); not merged, not removed |
+| `ExperimentManager.queue()` requires a non-empty `description` | Queueing a batch without a human-readable label | Operator record-keeping (keeps batches identifiable later) | No | **Kept as-is** — reasonable operator-facing policy, not incidental friction; just needed adding to test definitions this round |
+| `_validate_experiment()`'s `tec_set`/`tec_wait_stable`/`stage_move` must precede camera arm (`experiments.py:433`) | Where TEC/stage nodes may appear inside an experiment block | Camera arming must not race TEC/stage positioning | No | **Kept** — a real ordering constraint, not incidental |
+
+No restriction was found and left unexamined as "probably fine" without a stated reason; none were removed without an equivalent check taking their place.
+
 ## 2026-10-13 — Full implementation authorization granted
 
 User authorized autonomous implementation of the integration work (not just
