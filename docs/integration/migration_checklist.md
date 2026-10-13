@@ -8,7 +8,7 @@ a plan can be written), `deferred` (decision owner needed, not a code task).
 |---|---|---|
 | Pump driver safety logic (fault-clear, position-sensing gate) | done | Carried from junjiebranch's `qmix_backend.py` into `drivers/pump/cetoni.py`, verified near-identical |
 | Pump capacity: batch-budget check | done | `experiment_runner.py:492 _check_capacity`, distinct purpose, correct as-is |
-| Pump capacity: fresh-read-at-flush plausibility | planned (Phase 1) | `application/workflows.py` `FlushWorkflow.LEVEL_READ` — see `decision_log.md` for exact scope/constraints; NOT approved yet |
+| Pump capacity: fresh-read-at-flush plausibility | done | `application/workflows.py` `FlushWorkflow._implausible_reading()`/`_unit_capacity_ml()`, called from `LEVEL_READ`; distrusts the raw reading (non-finite, or exceeds `PumpReadback.units[unit_index].max_volume_ml`), distinct from `PumpWorker.set_fill_level()`'s pre-existing target-range validation. 4 new tests in `tests/test_workflows.py`, full suite 143/143 passing |
 | TEC driver (connect/setpoint/Static-OFF) | done | `drivers/tec/controller.py`, equivalent to junjiebranch's `tec.py` |
 | TEC multi-point scan algorithm (`TemperatureSeries` equivalent) | open | Confirmed gap; no design written yet |
 | TEC Prepare-tab readback display (requested vs. controller) | open | Not checked against `ui/device_panels.py:1847 TecPanel` yet |

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
+from math import isfinite
 from time import monotonic
 from typing import Callable
 
@@ -128,6 +129,15 @@ class FlushWorkflow(QObject):
         elif state is FlushState.LEVEL_READ:
             if not isinstance(value, PumpFillLevelResult):
                 self._fail("Pump did not return a fill level")
+            elif (implausible := self._implausible_reading(value.fill_level_ml)) is not None:
+                # A raw SDK reading can itself be untrustworthy independent of
+                # what this software last commanded (e.g. a stale/invalid
+                # value after a syringe reconfiguration) -- distinct from,
+                # and checked before, PumpWorker.set_fill_level()'s own
+                # target-range validation, which only protects the *target*
+                # this workflow is about to compute and send, not the
+                # reading it computes that target from.
+                self._fail(implausible)
             else:
                 target = value.fill_level_ml - self.args.volume_ml
                 if target < 0:
@@ -183,6 +193,36 @@ class FlushWorkflow(QObject):
         else:
             self._fail(f"Unexpected flush response in state {state.value}")
         return True
+
+    def _unit_capacity_ml(self) -> float | None:
+        readback = self._statuses()[DeviceId.PUMP].readback
+        if not isinstance(readback, PumpReadback) or self.args.unit_index >= len(readback.units):
+            return None
+        return readback.units[self.args.unit_index].max_volume_ml
+
+    def _implausible_reading(self, fill_level_ml: float) -> str | None:
+        """Distrust the raw fill-level reading itself, not the computed target.
+
+        Returns a failure message if the reading cannot be trusted, else
+        None. A reading is only judged implausible against a capacity this
+        workflow can actually name; an unknown capacity is not evidence of
+        anything and is not treated as a failure here.
+        """
+        if not isfinite(fill_level_ml):
+            return (
+                f"Pump {self.args.unit_index + 1} reported a non-finite fill level "
+                f"({fill_level_ml!r}); refusing to compute a flush target from it."
+            )
+        capacity = self._unit_capacity_ml()
+        if capacity is not None and fill_level_ml > capacity + 1e-9:
+            return (
+                f"Pump {self.args.unit_index + 1} reported fill level {fill_level_ml:g} mL, "
+                f"which exceeds its configured capacity {capacity:g} mL; refusing to compute a "
+                "flush target from an implausible reading. The reading is stale or was taken "
+                "under a different syringe configuration -- refill or re-sync the pump (and "
+                "consider a fresh reference move) before continuing."
+            )
+        return None
 
     def _pump_faulted(self) -> bool:
         pump = self._statuses()[DeviceId.PUMP]

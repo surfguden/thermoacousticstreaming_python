@@ -85,6 +85,87 @@ def test_flush_rejects_negative_target_and_cancels_later_queue(qt_app):
         controller.shutdown()
 
 
+def test_flush_rejects_implausible_reading_even_when_it_would_also_be_negative(qt_app):
+    # The reading itself is untrustworthy (10 ml on a 1 ml default-capacity
+    # unit) and would also have produced a negative target under the
+    # pre-existing target<0 check -- confirm the new, more diagnosable
+    # message fires, not the old "cannot flush" one, and that failure still
+    # runs the normal stop/valve-recovery path to a final failed state.
+    controller, results, events = connected_controller(qt_app)
+    try:
+        pump = controller.registry.by_id(DeviceId.PUMP).device
+        pump._pump(0).fill_level_ml = 10.0
+        flush = WorkflowCommand(WorkflowOperation.FLUSH, FlushArgs(0, 20.0, 1000, 0))
+        controller.submit(flush)
+        until(qt_app, lambda: any(result.request_id == flush.request_id for result in results))
+        result = next(result for result in results if result.request_id == flush.request_id)
+        assert not result.ok
+        assert "exceeds its configured capacity" in result.error
+        assert "cannot flush" not in result.error
+        # The recovery path (stop pump -> confirm idle -> close valve) only
+        # reaches a confirmed-closed valve if PUMP_FLOW_STOP actually ran and
+        # the pump was confirmed idle afterwards -- this is the same proof
+        # pattern test_flush_rejects_negative_target_and_cancels_later_queue
+        # already uses for the pre-existing target<0 failure path.
+        assert controller.statuses()[DeviceId.VALVE].readback.confirmed_position == 2
+    finally:
+        controller.shutdown()
+
+
+def test_flush_rejects_implausible_reading_even_when_computed_target_is_in_range(qt_app):
+    # 10 ml reading minus a 0.1 ml flush leaves a positive, in-range target
+    # (9.9 ml) that the pre-existing target<0 check would have let through --
+    # only the new plausibility check catches this, and it must do so before
+    # ever attempting to send PUMP_FILL_LEVEL_SET for that implausible target.
+    controller, results, events = connected_controller(qt_app)
+    try:
+        pump = controller.registry.by_id(DeviceId.PUMP).device
+        pump._pump(0).fill_level_ml = 10.0
+        flush = WorkflowCommand(WorkflowOperation.FLUSH, FlushArgs(0, 0.1, 1000, 0))
+        controller.submit(flush)
+        until(qt_app, lambda: any(result.request_id == flush.request_id for result in results))
+        result = next(result for result in results if result.request_id == flush.request_id)
+        assert not result.ok
+        assert "exceeds its configured capacity" in result.error
+        assert not any(event.operation is DeviceOperation.PUMP_FILL_LEVEL_SET for event in events)
+        assert controller.statuses()[DeviceId.VALVE].readback.confirmed_position == 2
+    finally:
+        controller.shutdown()
+
+
+def test_flush_succeeds_with_a_legitimate_fill_level_reading(qt_app):
+    controller, results, events = connected_controller(qt_app)
+    try:
+        controller.submit(parse_command("pump refill"))
+        until(qt_app, lambda: any(result.operation is DeviceOperation.PUMP_REFILL for result in results))
+        flush = WorkflowCommand(WorkflowOperation.FLUSH, FlushArgs(0, 0.1, 1000, 0))
+        controller.submit(flush)
+        until(qt_app, lambda: any(result.request_id == flush.request_id for result in results))
+        result = next(result for result in results if result.request_id == flush.request_id)
+        assert result.ok
+    finally:
+        controller.shutdown()
+
+
+def test_flush_capacity_check_uses_the_selected_units_own_capacity(qt_app):
+    # Unit 1 is given a larger capacity (5 ml) than unit 0's 1 ml default; a
+    # 2 ml reading on unit 1 would be implausible against unit 0's capacity
+    # but is legitimate against unit 1's own -- proves the check reads
+    # PumpReadback.units[unit_index], not unit 0 or a fixed default.
+    controller, results, events = connected_controller(qt_app)
+    try:
+        pump = controller.registry.by_id(DeviceId.PUMP).device
+        pump._pump(1).max_volume_ml = 5.0
+        pump._pump(1).fill_level_ml = 2.0
+        flush = WorkflowCommand(WorkflowOperation.FLUSH, FlushArgs(1, 0.1, 1000, 0))
+        controller.submit(flush)
+        until(qt_app, lambda: any(result.request_id == flush.request_id for result in results))
+        result = next(result for result in results if result.request_id == flush.request_id)
+        assert result.ok
+    finally:
+        controller.shutdown()
+
+
 def test_wait_is_queue_barrier_and_cli_accepts_workflows(qt_app):
     controller, results, events = connected_controller(qt_app)
     try:
