@@ -114,10 +114,19 @@ class SimpleSeriesPanel(QWidget):
         self.tec_channel.addItem("Channel 1", 1)
         self.tec_channel.addItem("Channel 2", 2)
         self.temperature = self._range(form, "Temperature (°C)", 25, 25, minimum=0, maximum=80)
+        self.temperature_wait_for_stability = QCheckBox(
+            "Wait for the controller to confirm stability (instead of a fixed duration alone)")
+        self.temperature_tolerance = number(0.2, 0, 100)
+        self.temperature_min_settle = number(5, 0, 86_400)
+        self.temperature_max_wait = number(300, 0.001, 86_400)
         self.temp_wait = number(30, 0, 86_400)
         form.insertRow(0, self.temperature_control)
         form.addRow("Controlled channel", self.tec_channel)
-        form.addRow("Wait after setpoint change (s)", self.temp_wait)
+        form.addRow(self.temperature_wait_for_stability)
+        form.addRow("Tolerance (°C)", self.temperature_tolerance)
+        form.addRow("Minimum time within tolerance (s)", self.temperature_min_settle)
+        form.addRow("Maximum wait for stability (s)", self.temperature_max_wait)
+        form.addRow("Additional hold once stable, or fixed wait (s)", self.temp_wait)
         form.addRow(self.temperature_logging)
         grid.addWidget(temperature, 1, 1)
 
@@ -196,9 +205,11 @@ class SimpleSeriesPanel(QWidget):
         self.controller.panic_changed.connect(self._panic_changed)
         self.sweep_enabled.toggled.connect(self._enabled)
         self.temperature_control.toggled.connect(self._enabled)
+        self.temperature_wait_for_stability.toggled.connect(self._enabled)
         for widget in self.findChildren(QSpinBox) + self.findChildren(QDoubleSpinBox):
             widget.valueChanged.connect(self._preview)
-        for widget in (self.sweep_enabled, self.temperature_control, self.temperature_logging):
+        for widget in (self.sweep_enabled, self.temperature_control, self.temperature_logging,
+                       self.temperature_wait_for_stability):
             widget.toggled.connect(self._preview)
         self.description.textChanged.connect(self._preview)
         self._enabled()
@@ -251,6 +262,10 @@ class SimpleSeriesPanel(QWidget):
             temperature_control=self.temperature_control.isChecked(), tec_channel=self.tec_channel.currentData(),
             temperature_c=self._values(self.temperature), temperature_wait_s=self.temp_wait.value(),
             temperature_logging=self.temperature_logging.isChecked(), tiff_format=self.tiff_format.currentData(),
+            temperature_wait_for_stability=self.temperature_wait_for_stability.isChecked(),
+            temperature_tolerance_c=self.temperature_tolerance.value(),
+            temperature_min_settle_s=self.temperature_min_settle.value(),
+            temperature_max_wait_s=self.temperature_max_wait.value(),
         )
 
     def _apply_settings(self, settings: SimpleSeriesSettings) -> None:
@@ -264,6 +279,9 @@ class SimpleSeriesPanel(QWidget):
             (self.volume, settings.flush_volume_ml), (self.flow, settings.flush_flow_ul_min),
             (self.wait_after_flush, settings.flush_wait_after_s),
             (self.sweep_period, settings.sweep_period_ms), (self.temp_wait, settings.temperature_wait_s),
+            (self.temperature_tolerance, settings.temperature_tolerance_c),
+            (self.temperature_min_settle, settings.temperature_min_settle_s),
+            (self.temperature_max_wait, settings.temperature_max_wait_s),
         ):
             widget.setValue(value)
         for controls, values in ((self.frequency, settings.frequency_hz),
@@ -277,6 +295,7 @@ class SimpleSeriesPanel(QWidget):
         self.sweep_enabled.setChecked(settings.sweep_enabled)
         self.temperature_control.setChecked(settings.temperature_control)
         self.temperature_logging.setChecked(settings.temperature_logging)
+        self.temperature_wait_for_stability.setChecked(settings.temperature_wait_for_stability)
         self.pump_unit.setCurrentIndex(self.pump_unit.findData(settings.flush_unit_index))
         self.tec_channel.setCurrentIndex(self.tec_channel.findData(settings.tec_channel))
         self.tiff_format.setCurrentIndex(self.tiff_format.findData(settings.tiff_format))
@@ -304,8 +323,12 @@ class SimpleSeriesPanel(QWidget):
     def _enabled(self, *_args) -> None:
         for widget in (*self.sweep_width, self.sweep_period):
             widget.setEnabled(self.sweep_enabled.isChecked())
-        for widget in (*self.temperature, self.tec_channel, self.temp_wait):
-            widget.setEnabled(self.temperature_control.isChecked())
+        control = self.temperature_control.isChecked()
+        for widget in (*self.temperature, self.tec_channel, self.temp_wait,
+                      self.temperature_wait_for_stability):
+            widget.setEnabled(control)
+        for widget in (self.temperature_tolerance, self.temperature_min_settle, self.temperature_max_wait):
+            widget.setEnabled(control and self.temperature_wait_for_stability.isChecked())
 
     def _choose_root(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Experiment base folder", self.output_root.text())

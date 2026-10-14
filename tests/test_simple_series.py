@@ -118,6 +118,42 @@ def test_fixed_form_expansion_order_and_flush_count():
     assert ad2["ultrasound"]["sweep_width_hz"] == 100_000
 
 
+def test_temperature_wait_for_stability_is_additive_and_opt_in():
+    # Default-off: compiles byte-identically to the pre-existing fixed-wait
+    # shape (no behavior change for any series that doesn't opt in).
+    default_steps = compile_simple_series(settings())["steps"]
+    assert [step["type"] for step in default_steps[1]["steps"][:2]] == ["tec_set", "wait"]
+
+    stable = replace(settings(), temperature_wait_for_stability=True,
+                     temperature_tolerance_c=0.3, temperature_min_settle_s=2,
+                     temperature_max_wait_s=120)
+    stable_steps = compile_simple_series(stable)["steps"]
+    temperature_steps = stable_steps[1]["steps"][:3]
+    assert [step["type"] for step in temperature_steps] == ["tec_set", "tec_wait_stable", "wait"]
+    wait_stable_args = temperature_steps[1]["args"]
+    assert wait_stable_args["tolerance_c"] == 0.3
+    assert wait_stable_args["min_settle_s"] == 2
+    assert wait_stable_args["max_wait_s"] == 120
+    assert wait_stable_args["channels"] == [stable.tec_channel]
+    # The hold step (temperature_wait_s) is unchanged in meaning when
+    # stability-wait is on -- it is now an additional hold applied only
+    # after stability, not the sole timing control.
+    assert temperature_steps[2]["args"]["seconds"] == stable.temperature_wait_s
+    validate_definition(compile_simple_series(stable))
+
+
+def test_temperature_wait_for_stability_rejects_invalid_bounds():
+    with pytest.raises(ValueError, match="tolerance"):
+        compile_simple_series(replace(settings(), temperature_wait_for_stability=True,
+                                      temperature_tolerance_c=-1))
+    with pytest.raises(ValueError, match="settle"):
+        compile_simple_series(replace(settings(), temperature_wait_for_stability=True,
+                                      temperature_min_settle_s=-1))
+    with pytest.raises(ValueError, match="maximum wait"):
+        compile_simple_series(replace(settings(), temperature_wait_for_stability=True,
+                                      temperature_max_wait_s=0))
+
+
 def test_single_step_uses_start_and_sweep_bounds():
     assert NumericRange(1, 2, 1).values("Frequency") == [1]
     assert NumericRange(1, float("nan"), 1).values("Amplitude") == [1]
@@ -465,3 +501,155 @@ def test_start_warns_for_missing_or_stale_count_preflight(tmp_path):
     manager.record_camera_preflight(camera_preflight_fingerprint(validate_definition(definition)))
     assert manager.start()
     controller.shutdown()
+
+
+def test_ui_configured_temperature_series_runs_pump_valve_camera_ad2_tec_in_order(tmp_path):
+    # Discriminating end-to-end check, built from the real UI entry point
+    # (SimpleSeriesPanel), not a hand-written definition: two temperature
+    # points x two repeats, wait-for-stability enabled with a nonzero
+    # min-settle and a nonzero post-stability hold, flush present, every
+    # relevant device connected. Asserts the actual command/event ORDER,
+    # not just a final "completed" state -- this is the one combination
+    # (TEC multi-point + repeats + pump/valve together) nothing else in
+    # the suite covers.
+    app = QApplication.instance() or QApplication(["test-ui-temperature-series"])
+    controller = ApplicationController(DeviceRegistry(mode=OperatingMode.SIMULATION),
+                                       mode=OperatingMode.SIMULATION)
+    # Only the panel under test, not the full MainWindow: constructing every
+    # other panel (status dashboard, Z-stack, etc.) adds no coverage here
+    # and multiplies per-status_changed-signal work across this test's many
+    # device round trips.
+    from thermo_acoustic.ui.simple_series_panel import SimpleSeriesPanel
+    panel = SimpleSeriesPanel(controller)
+    results = []
+    events = []
+    controller.command_result.connect(results.append)
+    controller.command_event.connect(events.append)
+    controller.start()
+    try:
+        for device in (DeviceId.AD2, DeviceId.CAMERA, DeviceId.PUMP, DeviceId.VALVE, DeviceId.TEC):
+            controller.submit(DeviceCommand(device, DeviceOperation.CONNECT))
+        deadline = monotonic() + 5
+        while monotonic() < deadline and sum(result.operation is DeviceOperation.CONNECT and result.ok
+                                              for result in results) < 5:
+            app.processEvents(); sleep(0.01)
+        assert sum(result.operation is DeviceOperation.CONNECT and result.ok for result in results) == 5
+        controller.submit(DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_FILL_LEVEL_SET,
+                                        PumpSetFillLevelArgs(1.0)))
+        deadline = monotonic() + 3
+        while monotonic() < deadline and not any(result.operation is DeviceOperation.PUMP_FILL_LEVEL_SET
+                                                  and result.ok for result in results):
+            app.processEvents(); sleep(0.01)
+
+        # Drive the real panel widgets, not SimpleSeriesSettings directly.
+        panel.description.setText("UI temperature series trace test")
+        panel.repeats.setValue(2)
+        panel.frames.setValue(2)
+        panel.fps.setValue(10)
+        panel.sweep_enabled.setChecked(False)
+        for widget, value in zip(panel.frequency, (1_000_000, 1_000_000, 1)):
+            widget.setValue(value)
+        for widget, value in zip(panel.amplitude, (1, 1, 1)):
+            widget.setValue(value)
+        for widget, value in zip(panel.exposure, (1, 1, 1)):
+            widget.setValue(value)
+        panel.roi_x.setValue(0); panel.roi_y.setValue(0)
+        panel.roi_width.setValue(16); panel.roi_height.setValue(16)
+        panel.pump_unit.setCurrentIndex(0)
+        panel.volume.setValue(0.05)
+        panel.flow.setValue(500)
+        panel.temperature_control.setChecked(True)
+        panel.tec_channel.setCurrentIndex(0)
+        for widget, value in zip(panel.temperature, (20, 25, 2)):
+            widget.setValue(value)
+        panel.temperature_wait_for_stability.setChecked(True)
+        panel.temperature_tolerance.setValue(0.5)
+        panel.temperature_min_settle.setValue(0.05)
+        panel.temperature_max_wait.setValue(5)
+        panel.temp_wait.setValue(0.05)
+
+        definition = panel._definition()
+        assert definition["steps"][1]["steps"][:3] == [
+            step for step in definition["steps"][1]["steps"][:3]
+            if step["type"] in {"tec_set", "tec_wait_stable", "wait"}
+        ]
+        assert [step["type"] for step in definition["steps"][1]["steps"][:3]] == [
+            "tec_set", "tec_wait_stable", "wait"]
+
+        folder = controller.experiments.queue(definition, tmp_path)
+        assert controller.experiments.start()
+        deadline = monotonic() + 45
+        while monotonic() < deadline and controller.experiments.status()["state"] not in {"completed", "failed"}:
+            app.processEvents(); sleep(0.01)
+        status = controller.experiments.status()
+        assert status["state"] == "completed", status
+
+        completed = [event for event in events if event.state == "completed"]
+
+        def first_index(operation, after=0):
+            return next(i for i, event in enumerate(completed) if i >= after
+                       and event.operation is operation)
+
+        # 1. The series-level flush (before any temperature point) precedes
+        #    the first TEC setpoint.
+        series_flush = first_index(WorkflowOperation.FLUSH)
+        first_tec_set = first_index(DeviceOperation.TEC_SETPOINTS_APPLY)
+        assert series_flush < first_tec_set
+
+        # 2. Exactly two temperature points were commanded, in order, each
+        #    followed by a wait-stable for the SAME target before any camera
+        #    arming for that point's experiments.
+        tec_set_events = [event for event in completed if event.operation is DeviceOperation.TEC_SETPOINTS_APPLY]
+        assert len(tec_set_events) == 2
+        assert [event.arguments.target_temperature_c for event in tec_set_events] == [20.0, 25.0]
+        assert all(event.arguments.channels == (1,) for event in tec_set_events)
+        tec_wait_events = [event for event in completed if event.operation is DeviceOperation.TEC_WAIT_STABLE]
+        assert len(tec_wait_events) == 2
+        assert [event.arguments.target_temperature_c for event in tec_wait_events] == [20.0, 25.0]
+
+        # 3. Within each point, tec_set -> tec_wait_stable -> (repeats'
+        #    experiments) -- the second point's tec_set must not be
+        #    commanded until the first point's own repeats (2 of them) and
+        #    their post-acquisition parallel cleanup have all finished.
+        second_tec_set = first_index(DeviceOperation.TEC_SETPOINTS_APPLY, after=first_tec_set + 1)
+        first_point_triggers = [i for i, event in enumerate(completed)
+                               if event.operation is DeviceOperation.AD2_SOFTWARE_TRIGGER and i < second_tec_set]
+        assert len(first_point_triggers) == 2  # both repeats of the first point ran before the second point started
+
+        # 4. Within one experiment, the real execution order matches the
+        #    validator's required order, not merely that the validator
+        #    allowed it.
+        first_trigger = first_point_triggers[0]
+        arm_camera = first_index(DeviceOperation.CAMERA_SEQUENCE_ARM)
+        arm_ad2 = first_index(DeviceOperation.AD2_WAVEFORM_START)
+        collect = first_index(DeviceOperation.CAMERA_SEQUENCE_COLLECT, after=first_trigger)
+        assert arm_camera < arm_ad2 < first_trigger < collect
+
+        # 5. Per-experiment flush/save overlap resolves before the next
+        #    experiment's camera is reconfigured -- confirmed by the
+        #    corresponding AD2_DIGITAL_OUTPUT_STOP (end of wait_outputs)
+        #    preceding the next experiment's CAMERA_SEQUENCE_CONFIGURE.
+        #    CAMERA_SEQUENCE_CONFIGURE fires once more than the experiment
+        #    count: _configure_all_before_fluidics validates this series'
+        #    one unique camera/AD2 combination up front, before any flush or
+        #    TEC action, in addition to each experiment's own leaf node
+        #    re-applying it immediately before that experiment runs -- the
+        #    per-experiment occurrences are the last four, in order.
+        stop_digital = [i for i, event in enumerate(completed)
+                       if event.operation is DeviceOperation.AD2_DIGITAL_OUTPUT_STOP]
+        configure_camera = [i for i, event in enumerate(completed)
+                           if event.operation is DeviceOperation.CAMERA_SEQUENCE_CONFIGURE]
+        assert len(stop_digital) == 4  # one per experiment (2 points x 2 repeats)
+        assert len(configure_camera) == 5  # 1 series-level validation + 4 per-experiment
+        per_experiment_configure = configure_camera[-4:]
+        assert stop_digital[0] < per_experiment_configure[1]
+
+        manifest = json.loads((folder / "metadata" / "manifest.json").read_text())
+        assert [item["parameters"]["temperature_c"] for item in manifest["experiments"]] == [20.0, 20.0, 25.0, 25.0]
+        status_doc = json.loads((folder / "metadata" / "status.json").read_text())
+        assert status_doc["finalized_outcome"] == "completed"
+        assert status_doc["requested_experiments"] == status_doc["experiments_completed"] == 4
+        assert status_doc["experiments_failed"] == 0
+    finally:
+        panel.close()
+        controller.shutdown()

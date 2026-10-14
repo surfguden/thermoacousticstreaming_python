@@ -57,6 +57,18 @@ class SimpleSeriesSettings:
     temperature_wait_s: float = 0.0
     temperature_logging: bool = False
     tiff_format: str = "frames"
+    # Additive, optional capability: when False (the default), every existing
+    # series compiles exactly as before -- tec_set followed by a fixed
+    # temperature_wait_s. When True, a tec_wait_stable step is inserted
+    # between them, gating on the controller's own reading rather than a
+    # guessed duration; temperature_wait_s then becomes an additional hold
+    # applied only after stability is confirmed (distinct from min_settle_s,
+    # which is how long the reading must already have been within tolerance
+    # to call it "stable" in the first place).
+    temperature_wait_for_stability: bool = False
+    temperature_tolerance_c: float = 0.2
+    temperature_min_settle_s: float = 5.0
+    temperature_max_wait_s: float = 300.0
 
 
 def compile_simple_series(settings: SimpleSeriesSettings) -> dict[str, Any]:
@@ -73,6 +85,13 @@ def compile_simple_series(settings: SimpleSeriesSettings) -> dict[str, Any]:
         raise ValueError("Repeats and frame count must be positive")
     if settings.temperature_wait_s < 0:
         raise ValueError("Temperature wait must be nonnegative")
+    if settings.temperature_control and settings.temperature_wait_for_stability:
+        if settings.temperature_tolerance_c < 0:
+            raise ValueError("Temperature tolerance must be nonnegative")
+        if settings.temperature_min_settle_s < 0:
+            raise ValueError("Temperature minimum settle time must be nonnegative")
+        if settings.temperature_max_wait_s <= 0:
+            raise ValueError("Temperature maximum wait must be positive")
     if not 0 <= settings.flush_wait_after_s <= 100:
         raise ValueError("Wait after flush must be within 0..100 s")
     if settings.sweep_enabled and (settings.sweep_period_ms <= 0 or any(width <= 0 for width in widths)):
@@ -121,10 +140,25 @@ def compile_simple_series(settings: SimpleSeriesSettings) -> dict[str, Any]:
                                   ("exposure_ms", exposures))):
         if values:
             body = [{"type": "sweep", "parameters": {name: values}, "steps": body}]
-    temperature_steps = ([{"type": "tec_set", "args": {"target_temperature_c":
-                          {"$param": "temperature_c"}, "channels": [settings.tec_channel]}},
-                          {"type": "wait", "args": {"seconds": settings.temperature_wait_s}}]
-                         if settings.temperature_control else [])
+    if settings.temperature_control and settings.temperature_wait_for_stability:
+        temperature_steps = [
+            {"type": "tec_set", "args": {"target_temperature_c":
+                {"$param": "temperature_c"}, "channels": [settings.tec_channel]}},
+            {"type": "tec_wait_stable", "args": {"target_temperature_c":
+                {"$param": "temperature_c"}, "channels": [settings.tec_channel],
+                "tolerance_c": settings.temperature_tolerance_c,
+                "min_settle_s": settings.temperature_min_settle_s,
+                "max_wait_s": settings.temperature_max_wait_s}},
+            {"type": "wait", "args": {"seconds": settings.temperature_wait_s}},
+        ]
+    elif settings.temperature_control:
+        temperature_steps = [
+            {"type": "tec_set", "args": {"target_temperature_c":
+                {"$param": "temperature_c"}, "channels": [settings.tec_channel]}},
+            {"type": "wait", "args": {"seconds": settings.temperature_wait_s}},
+        ]
+    else:
+        temperature_steps = []
     body = [{"type": "sweep", "parameters": {"temperature_c": temperatures},
              "steps": [*temperature_steps, *body]}]
     definition = {"version": 1, "name": "simple_series", "description": settings.description.strip(),

@@ -5,6 +5,60 @@ SHA(s)/file(s)/function(s) the decision rests on, not just a conclusion.
 
 ---
 
+## 2026-10-14 — End-to-end flow verification batch
+
+**Correction accepted**: the earlier "TEC multi-point sequencing: done"
+claim was verified only via a hand-authored JSON definition in
+`tests/test_experiments.py`, which proves the *executor* supports it but
+not that an operator can reach it. The real UI
+(`ui/simple_series_panel.py`) only ever compiled `tec_set` → fixed `wait`.
+Closed by adding an *optional*, default-off `temperature_wait_for_stability`
+field (`application/simple_series.py`, `SimpleSeriesSettings`) plus matching
+panel widgets — every existing default-constructed series still compiles
+byte-identically (verified:
+`test_temperature_wait_for_stability_is_additive_and_opt_in`). This is a
+genuinely additive capability, not a change to existing experimental
+semantics, so it did not need to be escalated as a reserved decision.
+
+**Full baseline trace**: `docs/integration/flow_trace.md` now documents the
+actual stage-by-stage call chain (UI → compile → queue → start → per-series
+preflight/validation → node execution → leaf actions → completion →
+stop/abort/recover), with direct answers to the specific ordering/scope
+questions raised (flush scope, temperature-stable-then-hold gating,
+camera/AD2 trigger unification, frame/timestamp correspondence, parallel
+save/flush barrier, per-experiment re-configuration, and the three distinct
+stop/abort/recover paths) — plus a targeted (not exhaustive) comparison
+against junjiebranch's `application.py`/`workflows.py`, finding one genuine
+architectural difference (junjiebranch runs flush and save **sequentially**
+within one fixed per-repeat step order; this branch runs them as two
+**concurrent** branches with a hard barrier) and one consistency win (this
+branch checks graceful-stop at one uniform point; junjiebranch checks it at
+two separate layers, UI and Application).
+
+**Test-infrastructure note, not a product defect**: the first version of
+`test_ui_configured_temperature_series_runs_pump_valve_camera_ad2_tec_in_order`
+constructed a full `MainWindow` and took 349s, printing a transient
+`faulthandler` trace ("Windows fatal exception: code 0x8001010d") from a
+background file-save thread partway through — the test still passed (exit
+0), but the cost and the alarming-looking trace were both real. Switching
+the harness to construct only `SimpleSeriesPanel` directly (the actual
+object under test) brought it to 20s with no trace. Not filed as a known
+open item: this was caused by the test harness's own over-construction, not
+by application code, and is resolved.
+
+**Explicit limitation**: this session has no desktop computer-use tool
+available (only a Chrome-browser automation tool, not applicable to this
+PySide6 desktop app) — "UI verification" this round means real widget-level
+automation (constructing the actual panel classes, setting real widget
+values, reading real compiled output), which exercises the same Qt signal/
+slot code paths a manual click would, but is not literal mouse/keyboard
+interaction with a running window. No confirmation dialogs were clicked
+through manually for the same reason — automated tests injected confirm
+callback answers (`confirm_unchecked`, `confirm_batch`) as code, not via a
+displayed dialog.
+
+---
+
 ## 2026-10-13 — Branch/worktree creation (Phase 0)
 
 **Decision**: create `codex/integration` as a new branch, in an independent

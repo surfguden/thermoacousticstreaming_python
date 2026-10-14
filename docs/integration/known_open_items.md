@@ -7,6 +7,26 @@ this branch's actual files).
 
 ## Reserved for user+Codex decision (per authorization scope)
 
+- **No crash/restart reconciliation for an abandoned "running" series.**
+  `SeriesStorage.status()` writes `status.json` atomically on every real
+  transition (this part is reliable), but nothing in the codebase ever reads
+  `status.json` back (confirmed: `grep -rl "status.json" src/` matches only
+  `experiment_storage.py` itself). A `SeriesStorage`/`ExperimentManager`'s
+  live state exists only in the running process; if the process crashes or
+  is killed mid-series, the last-written `status.json` is left at
+  `state: "running"` indefinitely, discoverable only by manually opening the
+  file and noticing a stale `updated_utc`. This is the exact problem
+  junjiebranch's `SeriesLifecycleManifest` was built to make visible, and
+  the counting/schema half of that intent is now done here — the
+  reconciliation half is not. Options: (1) a read-only startup scan under
+  the configured output root for `status.json` files whose `state` is
+  non-terminal, surfaced to the operator (requires a UI decision: where/how
+  to show it, and whether to offer an action); (2) leave it to manual
+  inspection, documented as the operating procedure; (3) something
+  in between (e.g. log a warning on startup, no UI). **Not decided or
+  implemented here** — it's a UI-surfacing decision, not a backend-only
+  patch, and matches the authorization's "new mechanism" caution.
+
 - **Z-stage closed-loop mode switch has no operator confirmation gate; a
   separate motion-authorization gate is absent entirely.** junjiebranch's
   `piezo_zscan.py` `ZScanCalibration` requires two independent, explicit
