@@ -152,6 +152,13 @@ def test_temperature_wait_for_stability_rejects_invalid_bounds():
     with pytest.raises(ValueError, match="maximum wait"):
         compile_simple_series(replace(settings(), temperature_wait_for_stability=True,
                                       temperature_max_wait_s=0))
+    # Below the fixed TEC poll interval (1 s): TecWaitStableArgs itself
+    # would reject this once the series actually reached that step, as an
+    # uncaught exception rather than a clean validation error -- caught
+    # here, at compile time, instead.
+    with pytest.raises(ValueError, match="poll interval"):
+        compile_simple_series(replace(settings(), temperature_wait_for_stability=True,
+                                      temperature_max_wait_s=0.5))
 
 
 def test_single_step_uses_start_and_sweep_bounds():
@@ -503,6 +510,77 @@ def test_start_warns_for_missing_or_stale_count_preflight(tmp_path):
     controller.shutdown()
 
 
+def _connected_temperature_series_harness(app, *, repeats=2, hold_s=0.3):
+    # Shared setup for the discriminating end-to-end tests below: connects
+    # every relevant device, then drives the real panel widgets (not
+    # SimpleSeriesSettings directly) to a two-temperature-point,
+    # wait-for-stability series with a nonzero min-settle and a nonzero
+    # post-stability hold and a flush present. Returns
+    # (controller, panel, results, events) already connected; callers queue
+    # + start + assert their own scenario.
+    controller = ApplicationController(DeviceRegistry(mode=OperatingMode.SIMULATION),
+                                       mode=OperatingMode.SIMULATION)
+    # Only the panel under test, not the full MainWindow: constructing every
+    # other panel (status dashboard, Z-stack, etc.) adds no coverage here
+    # and multiplies per-status_changed-signal work across this test's many
+    # device round trips -- an earlier version of this harness built the
+    # full MainWindow and took 5+ minutes per test; this takes ~20s.
+    from thermo_acoustic.ui.simple_series_panel import SimpleSeriesPanel
+    panel = SimpleSeriesPanel(controller)
+    results = []
+    events = []
+    controller.command_result.connect(results.append)
+    controller.command_event.connect(events.append)
+    controller.start()
+    for device in (DeviceId.AD2, DeviceId.CAMERA, DeviceId.PUMP, DeviceId.VALVE, DeviceId.TEC):
+        controller.submit(DeviceCommand(device, DeviceOperation.CONNECT))
+    deadline = monotonic() + 5
+    while monotonic() < deadline and sum(result.operation is DeviceOperation.CONNECT and result.ok
+                                          for result in results) < 5:
+        app.processEvents(); sleep(0.01)
+    assert sum(result.operation is DeviceOperation.CONNECT and result.ok for result in results) == 5
+    controller.submit(DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_FILL_LEVEL_SET,
+                                    PumpSetFillLevelArgs(1.0)))
+    deadline = monotonic() + 3
+    while monotonic() < deadline and not any(result.operation is DeviceOperation.PUMP_FILL_LEVEL_SET
+                                              and result.ok for result in results):
+        app.processEvents(); sleep(0.01)
+
+    panel.description.setText("UI temperature series trace test")
+    panel.repeats.setValue(repeats)
+    panel.frames.setValue(2)
+    panel.fps.setValue(10)
+    panel.sweep_enabled.setChecked(False)
+    for widget, value in zip(panel.frequency, (1_000_000, 1_000_000, 1)):
+        widget.setValue(value)
+    for widget, value in zip(panel.amplitude, (1, 1, 1)):
+        widget.setValue(value)
+    for widget, value in zip(panel.exposure, (1, 1, 1)):
+        widget.setValue(value)
+    panel.roi_x.setValue(0); panel.roi_y.setValue(0)
+    panel.roi_width.setValue(16); panel.roi_height.setValue(16)
+    panel.pump_unit.setCurrentIndex(0)
+    panel.volume.setValue(0.05)
+    panel.flow.setValue(500)
+    panel.temperature_control.setChecked(True)
+    panel.tec_channel.setCurrentIndex(0)
+    for widget, value in zip(panel.temperature, (20, 25, 2)):
+        widget.setValue(value)
+    panel.temperature_wait_for_stability.setChecked(True)
+    panel.temperature_tolerance.setValue(0.5)
+    panel.temperature_min_settle.setValue(0.05)
+    panel.temperature_max_wait.setValue(5)
+    panel.temp_wait.setValue(hold_s)
+    return controller, panel, results, events
+
+
+def _wait_until_terminal(app, controller, timeout=45):
+    deadline = monotonic() + timeout
+    while monotonic() < deadline and controller.experiments.status()["state"] not in {"completed", "failed"}:
+        app.processEvents(); sleep(0.01)
+    return controller.experiments.status()
+
+
 def test_ui_configured_temperature_series_runs_pump_valve_camera_ad2_tec_in_order(tmp_path):
     # Discriminating end-to-end check, built from the real UI entry point
     # (SimpleSeriesPanel), not a hand-written definition: two temperature
@@ -513,75 +591,15 @@ def test_ui_configured_temperature_series_runs_pump_valve_camera_ad2_tec_in_orde
     # (TEC multi-point + repeats + pump/valve together) nothing else in
     # the suite covers.
     app = QApplication.instance() or QApplication(["test-ui-temperature-series"])
-    controller = ApplicationController(DeviceRegistry(mode=OperatingMode.SIMULATION),
-                                       mode=OperatingMode.SIMULATION)
-    # Only the panel under test, not the full MainWindow: constructing every
-    # other panel (status dashboard, Z-stack, etc.) adds no coverage here
-    # and multiplies per-status_changed-signal work across this test's many
-    # device round trips.
-    from thermo_acoustic.ui.simple_series_panel import SimpleSeriesPanel
-    panel = SimpleSeriesPanel(controller)
-    results = []
-    events = []
-    controller.command_result.connect(results.append)
-    controller.command_event.connect(events.append)
-    controller.start()
+    controller, panel, results, events = _connected_temperature_series_harness(app)
     try:
-        for device in (DeviceId.AD2, DeviceId.CAMERA, DeviceId.PUMP, DeviceId.VALVE, DeviceId.TEC):
-            controller.submit(DeviceCommand(device, DeviceOperation.CONNECT))
-        deadline = monotonic() + 5
-        while monotonic() < deadline and sum(result.operation is DeviceOperation.CONNECT and result.ok
-                                              for result in results) < 5:
-            app.processEvents(); sleep(0.01)
-        assert sum(result.operation is DeviceOperation.CONNECT and result.ok for result in results) == 5
-        controller.submit(DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_FILL_LEVEL_SET,
-                                        PumpSetFillLevelArgs(1.0)))
-        deadline = monotonic() + 3
-        while monotonic() < deadline and not any(result.operation is DeviceOperation.PUMP_FILL_LEVEL_SET
-                                                  and result.ok for result in results):
-            app.processEvents(); sleep(0.01)
-
-        # Drive the real panel widgets, not SimpleSeriesSettings directly.
-        panel.description.setText("UI temperature series trace test")
-        panel.repeats.setValue(2)
-        panel.frames.setValue(2)
-        panel.fps.setValue(10)
-        panel.sweep_enabled.setChecked(False)
-        for widget, value in zip(panel.frequency, (1_000_000, 1_000_000, 1)):
-            widget.setValue(value)
-        for widget, value in zip(panel.amplitude, (1, 1, 1)):
-            widget.setValue(value)
-        for widget, value in zip(panel.exposure, (1, 1, 1)):
-            widget.setValue(value)
-        panel.roi_x.setValue(0); panel.roi_y.setValue(0)
-        panel.roi_width.setValue(16); panel.roi_height.setValue(16)
-        panel.pump_unit.setCurrentIndex(0)
-        panel.volume.setValue(0.05)
-        panel.flow.setValue(500)
-        panel.temperature_control.setChecked(True)
-        panel.tec_channel.setCurrentIndex(0)
-        for widget, value in zip(panel.temperature, (20, 25, 2)):
-            widget.setValue(value)
-        panel.temperature_wait_for_stability.setChecked(True)
-        panel.temperature_tolerance.setValue(0.5)
-        panel.temperature_min_settle.setValue(0.05)
-        panel.temperature_max_wait.setValue(5)
-        panel.temp_wait.setValue(0.05)
-
         definition = panel._definition()
-        assert definition["steps"][1]["steps"][:3] == [
-            step for step in definition["steps"][1]["steps"][:3]
-            if step["type"] in {"tec_set", "tec_wait_stable", "wait"}
-        ]
         assert [step["type"] for step in definition["steps"][1]["steps"][:3]] == [
             "tec_set", "tec_wait_stable", "wait"]
 
         folder = controller.experiments.queue(definition, tmp_path)
         assert controller.experiments.start()
-        deadline = monotonic() + 45
-        while monotonic() < deadline and controller.experiments.status()["state"] not in {"completed", "failed"}:
-            app.processEvents(); sleep(0.01)
-        status = controller.experiments.status()
+        status = _wait_until_terminal(app, controller)
         assert status["state"] == "completed", status
 
         completed = [event for event in events if event.state == "completed"]
@@ -606,6 +624,8 @@ def test_ui_configured_temperature_series_runs_pump_valve_camera_ad2_tec_in_orde
         tec_wait_events = [event for event in completed if event.operation is DeviceOperation.TEC_WAIT_STABLE]
         assert len(tec_wait_events) == 2
         assert [event.arguments.target_temperature_c for event in tec_wait_events] == [20.0, 25.0]
+        hold_events = [event for event in completed if event.operation is WorkflowOperation.WAIT]
+        assert len(hold_events) == 2  # one post-stability hold per temperature point
 
         # 3. Within each point, tec_set -> tec_wait_stable -> (repeats'
         #    experiments) -- the second point's tec_set must not be
@@ -618,12 +638,24 @@ def test_ui_configured_temperature_series_runs_pump_valve_camera_ad2_tec_in_orde
 
         # 4. Within one experiment, the real execution order matches the
         #    validator's required order, not merely that the validator
-        #    allowed it.
+        #    allowed it: tec_wait_stable, then the hold, both complete
+        #    before camera/AD2 are armed, and digital output is armed
+        #    before the trigger fires, not merely "sometime before".
         first_trigger = first_point_triggers[0]
+        first_tec_wait = completed.index(tec_wait_events[0])
+        first_hold = completed.index(hold_events[0])
         arm_camera = first_index(DeviceOperation.CAMERA_SEQUENCE_ARM)
-        arm_ad2 = first_index(DeviceOperation.AD2_WAVEFORM_START)
+        arm_waveform = first_index(DeviceOperation.AD2_WAVEFORM_START)
+        arm_digital = first_index(DeviceOperation.AD2_DIGITAL_OUTPUT_START)
         collect = first_index(DeviceOperation.CAMERA_SEQUENCE_COLLECT, after=first_trigger)
-        assert arm_camera < arm_ad2 < first_trigger < collect
+        assert first_tec_set < first_tec_wait < first_hold < arm_camera
+        assert arm_camera < arm_waveform < arm_digital < first_trigger < collect
+
+        # 4b. The post-stability hold actually occupied wall-clock time --
+        #     not merely that the "wait" step appeared in the compiled
+        #     definition and was skipped or short-circuited.
+        elapsed = (hold_events[0].timestamp - tec_wait_events[0].timestamp).total_seconds()
+        assert elapsed >= 0.3 * 0.8  # generous margin against scheduling jitter
 
         # 5. Per-experiment flush/save overlap resolves before the next
         #    experiment's camera is reconfigured -- confirmed by the
@@ -650,6 +682,136 @@ def test_ui_configured_temperature_series_runs_pump_valve_camera_ad2_tec_in_orde
         assert status_doc["finalized_outcome"] == "completed"
         assert status_doc["requested_experiments"] == status_doc["experiments_completed"] == 4
         assert status_doc["experiments_failed"] == 0
+    finally:
+        panel.close()
+        controller.shutdown()
+
+
+def test_stability_wait_failure_stops_series_before_any_point_starts(tmp_path):
+    # Failure injection #1: the TEC never reaches tolerance (simulated
+    # controller is monkeypatched to hold an unreachable reading), so
+    # tec_wait_stable times out during the FIRST temperature point, before
+    # any "experiment" node has even begun. No experiment should ever
+    # start, the second point's tec_set must never fire, and the series
+    # must end failed with a consistent (all-zero) experiment count --
+    # not silently advancing, and not miscounting a failure that happened
+    # before any experiment existed as an "experiment failure".
+    app = QApplication.instance() or QApplication(["test-stability-wait-failure"])
+    controller, panel, results, events = _connected_temperature_series_harness(app)
+    try:
+        tec_device = controller.registry.by_id(DeviceId.TEC).device
+        original_read_status = tec_device.read_status
+        def stuck_read_status(channels=None):
+            result = original_read_status(channels)
+            # Reported temperature never moves, regardless of target --
+            # within_tolerance can never become true.
+            return {channel: status.__class__(channel=status.channel, current_temperature_c=999.0,
+                                              target_temperature_c=status.target_temperature_c,
+                                              output_stage_static_on=status.output_stage_static_on,
+                                              ready=status.ready)
+                   for channel, status in result.items()}
+        tec_device.read_status = stuck_read_status
+
+        panel.temperature_max_wait.setValue(1.0)  # the minimum valid value (fixed TEC poll interval)
+        definition = panel._definition()
+        folder = controller.experiments.queue(definition, tmp_path)
+        assert controller.experiments.start()
+        status = _wait_until_terminal(app, controller, timeout=10)
+        assert status["state"] == "failed", status
+
+        completed_ops = [event.operation for event in events if event.state == "completed"]
+        assert DeviceOperation.TEC_SETPOINTS_APPLY in completed_ops
+        assert completed_ops.count(DeviceOperation.TEC_SETPOINTS_APPLY) == 1  # second point's tec_set never fired
+        assert DeviceOperation.CAMERA_SEQUENCE_ARM not in completed_ops
+        assert DeviceOperation.AD2_SOFTWARE_TRIGGER not in completed_ops
+
+        # ExperimentManager.status()["failure_reason"] is only populated
+        # transiently while _finish_failure_when_safe() runs -- it is reset
+        # to None once the series has fully finalized, which has already
+        # happened by this point (status["state"] == "failed" above). The
+        # persisted status.json is the durable record of why it failed.
+        status_doc = json.loads((folder / "metadata" / "status.json").read_text())
+        assert "did not stabilize" in status_doc["error"]
+        assert status_doc["finalized_outcome"] == "failed"
+        assert status_doc["experiments_started"] == 0
+        assert status_doc["experiments_completed"] == 0
+        assert status_doc["experiments_failed"] == 0  # no experiment had started yet to fail
+    finally:
+        panel.close()
+        controller.shutdown()
+
+
+def test_acquisition_failure_within_a_series_stops_before_the_next_repeat(tmp_path):
+    # Failure injection #2: the first repeat's camera acquisition fails
+    # (reusing the same missing-timestamp-style fault as the pre-existing
+    # test_missing_sdk_timestamp_fails_acquisition_without_saving_frames,
+    # but inside a multi-repeat/multi-point series instead of a
+    # single-experiment one, which that test does not cover). Must stop
+    # before the second repeat and before the second temperature point --
+    # not just before the next queued SERIES, which
+    # test_save_failure_stops_later_queued_series_without_overwriting
+    # already covers at the series level.
+    app = QApplication.instance() or QApplication(["test-acquisition-failure"])
+    controller, panel, results, events = _connected_temperature_series_harness(app)
+    try:
+        camera = controller.registry.by_id(DeviceId.CAMERA).device
+        camera.finish_buffered_sequence = lambda: (camera.stop_capture(), ())[1]
+
+        definition = panel._definition()
+        folder = controller.experiments.queue(definition, tmp_path)
+        assert controller.experiments.start()
+        status = _wait_until_terminal(app, controller)
+        assert status["state"] == "failed", status
+
+        completed_ops = [event.operation for event in events if event.state == "completed"]
+        assert completed_ops.count(DeviceOperation.CAMERA_SEQUENCE_CONFIGURE) <= 2  # series-level validation + 1 experiment, never a 2nd repeat
+        assert completed_ops.count(DeviceOperation.TEC_SETPOINTS_APPLY) == 1  # second point never started
+
+        manifest = json.loads((folder / "metadata" / "manifest.json").read_text())
+        leaf = folder / manifest["experiments"][0]["relative_path"]
+        assert not leaf.exists()  # incomplete experiment discarded
+        assert not list(folder.rglob("*.tif"))
+
+        status_doc = json.loads((folder / "metadata" / "status.json").read_text())
+        assert status_doc["finalized_outcome"] == "failed"
+        assert status_doc["experiments_started"] == 1
+        assert status_doc["experiments_completed"] == 0
+        assert status_doc["experiments_failed"] == 1
+    finally:
+        panel.close()
+        controller.shutdown()
+
+
+def test_save_failure_within_a_series_stops_before_the_next_repeat(tmp_path):
+    # Failure injection #3: the first experiment's file save fails
+    # (reusing the fault-injection pattern from the pre-existing
+    # test_save_failure_stops_later_queued_series_without_overwriting,
+    # which only checks the next-QUEUED-SERIES case -- this checks the
+    # next-experiment-WITHIN-the-same-series case, which that test does
+    # not cover).
+    app = QApplication.instance() or QApplication(["test-save-failure"])
+    controller, panel, results, events = _connected_temperature_series_harness(app)
+    try:
+        definition = panel._definition()
+        folder = controller.experiments.queue(definition, tmp_path)
+        storage = controller.experiments._queued[0][1]
+        def fail_save(*_args, **_kwargs):
+            raise OSError("simulated disk failure")
+        storage.save_frames = fail_save
+        assert controller.experiments.start()
+        status = _wait_until_terminal(app, controller)
+        assert status["state"] == "failed", status
+
+        completed_ops = [event.operation for event in events if event.state == "completed"]
+        assert completed_ops.count(DeviceOperation.CAMERA_SEQUENCE_CONFIGURE) <= 2
+        assert completed_ops.count(DeviceOperation.TEC_SETPOINTS_APPLY) == 1
+
+        status_doc = json.loads((folder / "metadata" / "status.json").read_text())
+        assert status_doc["finalized_outcome"] == "failed"
+        assert "simulated disk failure" in status_doc["error"]
+        assert status_doc["experiments_started"] == 1
+        assert status_doc["experiments_completed"] == 0
+        assert status_doc["experiments_failed"] == 1
     finally:
         panel.close()
         controller.shutdown()

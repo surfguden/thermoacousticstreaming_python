@@ -92,6 +92,17 @@ def compile_simple_series(settings: SimpleSeriesSettings) -> dict[str, Any]:
             raise ValueError("Temperature minimum settle time must be nonnegative")
         if settings.temperature_max_wait_s <= 0:
             raise ValueError("Temperature maximum wait must be positive")
+        # TecWaitStableArgs' own poll_interval_s defaults to 1.0 s and is not
+        # exposed as a separate field here (the compiled "tec_wait_stable"
+        # step never sets it) -- its own __post_init__ requires
+        # poll_interval_s <= max_wait_s, so a smaller max_wait would fail
+        # only once the series actually reached that step, as an uncaught
+        # exception inside the execution callback chain rather than a clean
+        # validation error at queue time. Catch it here instead.
+        if settings.temperature_max_wait_s < 1.0:
+            raise ValueError(
+                "Temperature maximum wait must be at least 1 s (the fixed TEC poll interval)"
+            )
     if not 0 <= settings.flush_wait_after_s <= 100:
         raise ValueError("Wait after flush must be within 0..100 s")
     if settings.sweep_enabled and (settings.sweep_period_ms <= 0 or any(width <= 0 for width in widths)):

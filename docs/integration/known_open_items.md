@@ -5,27 +5,56 @@ came from and what would close it. Categories borrowed loosely from
 junjiebranch's own `known_open_items.md` (not copied verbatim — remapped to
 this branch's actual files).
 
-## Reserved for user+Codex decision (per authorization scope)
+## Series-lifecycle persistence — split A/B/C per explicit instruction
 
-- **No crash/restart reconciliation for an abandoned "running" series.**
-  `SeriesStorage.status()` writes `status.json` atomically on every real
-  transition (this part is reliable), but nothing in the codebase ever reads
-  `status.json` back (confirmed: `grep -rl "status.json" src/` matches only
-  `experiment_storage.py` itself). A `SeriesStorage`/`ExperimentManager`'s
-  live state exists only in the running process; if the process crashes or
-  is killed mid-series, the last-written `status.json` is left at
-  `state: "running"` indefinitely, discoverable only by manually opening the
-  file and noticing a stale `updated_utc`. This is the exact problem
-  junjiebranch's `SeriesLifecycleManifest` was built to make visible, and
-  the counting/schema half of that intent is now done here — the
-  reconciliation half is not. Options: (1) a read-only startup scan under
-  the configured output root for `status.json` files whose `state` is
-  non-terminal, surfaced to the operator (requires a UI decision: where/how
-  to show it, and whether to offer an action); (2) leave it to manual
-  inspection, documented as the operating procedure; (3) something
-  in between (e.g. log a warning on startup, no UI). **Not decided or
-  implemented here** — it's a UI-surfacing decision, not a backend-only
-  patch, and matches the authorization's "new mechanism" caution.
+**A. Real-time persistence of in-progress state — done, verified.**
+`SeriesStorage.status()` writes `status.json` atomically
+(`write_json()`'s temp-file-then-rename pattern) on every real state
+transition — `queued`, `preflight`, `running`, per-experiment counts via
+`record_experiment_started/completed/failed()`, and every terminal state.
+This was already true before this round; re-confirmed, not re-implemented.
+**No code path ever marks an abnormally-ended record as successful**: there
+is no reconciliation logic at all (see C below), so a "running" record
+simply stays "running" — it is never rewritten to "completed" by anything
+other than the same process's own `_complete_series()` actually finishing.
+
+**B. Crash state interpretation — documented procedure for manual
+inspection, not code, per this round's explicit instruction.** To
+determine whether a given `experiment_batch_NNNN/metadata/status.json` on
+disk represents a series that is *genuinely still running* or one whose
+owning process *died without finishing it*:
+1. Check `state`. A terminal value (`completed`, `failed`, `aborted`,
+   `stopped_after_current`, `cancelled`, `removed_from_queue`) means the
+   series ended and this file is the authoritative final record — nothing
+   further to interpret.
+2. A non-terminal value (`queued`, `preflight`, `running`) is ambiguous by
+   itself: it could be a series genuinely in progress right now, or one
+   whose process crashed. Compare `updated_utc` against the current time —
+   a `running` record whose `updated_utc` is more than a few polling
+   intervals old (this architecture polls/updates frequently during an
+   active run) **and** no application process is currently attached to
+   that output root is strong evidence of an abandoned run.
+3. If abandoned: `experiments_started`/`experiments_completed`/
+   `experiments_failed` give the exact counts reached before the process
+   died — these are reliable (per A) even though no `finalized_outcome` was
+   ever written. Cross-reference `manifest.json` (the planned experiment
+   list) and the experiment subfolders actually present on disk (an
+   experiment folder only exists once `finalize_experiment()` has written
+   its `experiment.json` — see `experiment_runner.py:797-799`) to see
+   exactly which repeats/points completed.
+4. **Never treat an abandoned non-terminal record as evidence of success or
+   failure on its own** — it is evidence only that the record is stale;
+   whether the underlying hardware was left in a safe state is a separate,
+   unanswered question this procedure does not address.
+This procedure is manual (an operator or a support engineer reads the
+file), not a UI feature — appropriate for this round's scope.
+
+**C. Automatic resume/reconciliation — explicitly out of scope this
+round**, per instruction. Not designed, not stubbed, not implemented. If
+wanted later, the starting point is the same options recorded in the prior
+draft of this entry: a read-only startup scan surfaced to the operator, or
+something more automatic — a UI-surfacing and workflow decision for
+you/Codex, not sized or chosen here.
 
 - **Z-stage closed-loop mode switch has no operator confirmation gate; a
   separate motion-authorization gate is absent entirely.** junjiebranch's
@@ -52,29 +81,17 @@ this branch's actual files).
   also no separate motion-authorization gate anywhere for
   `Z_STAGE_POSITION_SET`/`Z_STAGE_POSITION_RELATIVE`.
 
-  **This is reserved, not decided here**, per the authorization's "removing
-  a protection with explicit device-constraint or real-incident basis,
-  without equivalent coverage" clause — discovering this gap during Z-axis
-  parity verification is not the same as authorization to add or decline a
-  confirmation mechanism unilaterally.
-
-  Options for your/Codex's decision:
-  1. Add a `confirm_operation` call for `Z_STAGE_CLOSED_LOOP_ENABLE`,
-     mirroring the existing `PUMP_REFERENCE_MOVE` pattern exactly (same
-     mechanism already in the codebase, not a new one) — would require
-     updating the existing test's `assert confirmations == []` assertion,
-     which should not happen without your sign-off since it's an explicit,
-     currently-passing safety-relevant assertion.
-  2. Add a second, independent confirmation specifically before the first
-     `Z_STAGE_POSITION_SET`/`_RELATIVE` of a session (mirrors junjiebranch's
-     `confirm_motion` more precisely) — more code, more faithful to the
-     original two-gate design.
-  3. Decide the existing single-gate design (closed-loop state alone,
-     confirmed read-then-enable) is sufficient for this architecture's
-     actual physical risk profile, and leave it as-is, documenting this
-     explicitly as an accepted divergence rather than a gap.
-  **Blocks**: any Z-axis real-hardware motion work; does not block anything
-  else (Z-axis offline/simulated work, TEC work, UI work are independent).
+  **Decided this round: keep the current single-gate design as-is.** You
+  and Codex reviewed the three options previously recorded here (add a
+  `confirm_operation` call mirroring `PUMP_REFERENCE_MOVE`; add a second,
+  independent motion-confirmation gate mirroring junjiebranch's
+  `confirm_motion` more precisely; or accept the current design) and chose
+  to accept the current design — recorded here as a **documented strategy
+  difference from junjiebranch, not an open gap to close**. No code change
+  made. If real Z-stage hardware work is ever authorized, this is the
+  decision that was made and why (physical risk profile judged acceptable
+  with the single closed-loop-state gate); revisit only on new evidence,
+  not by rediscovering this same comparison again.
 
 ## Open, device/SDK-level (not closeable by software alone)
 
