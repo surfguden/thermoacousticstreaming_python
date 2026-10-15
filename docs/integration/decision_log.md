@@ -5,6 +5,38 @@ SHA(s)/file(s)/function(s) the decision rests on, not just a conclusion.
 
 ---
 
+## 2026-10-15 — `max_wait_s` actually fixed, superseding the prior entry's "removed, relies on graceful failure"
+
+The prior round's fix (below, "The `temperature_max_wait_s >= 1.0` floor
+was reviewed") only changed a compile-time rejection into a run-time
+failure — a value under 1s still could not actually be *used*, and worse,
+it would fail only after the series-level flush had already run (fluid
+already moved before the bad parameter was discovered). Not acceptable as
+"fixed."
+
+**Real fix**: `experiment_runner.py`'s `_run_action()`, `"tec_wait_stable"`
+branch, now computes `poll_interval_s = min(1.0, max_wait_s)` before
+constructing `TecWaitStableArgs`, instead of leaving it at the fixed 1.0s
+default. Any `max_wait_s` is now self-consistent by construction — there
+is no longer an invalid combination reachable through the declarative
+step pipeline, for any value above the existing `> 0` requirement. Proven
+by actually completing a series with `max_wait_s=0.1`, not by asserting it
+compiles or fails cleanly: `test_tec_wait_stable_with_a_sub_one_second_
+max_wait_actually_runs` (raw definition) and
+`test_ui_configured_short_max_wait_actually_completes` (real panel path).
+
+The prior round's `test_tec_wait_stable_argument_construction_failure_
+reports_cleanly` tested a scenario that can no longer occur (poll_interval_s
+exceeding max_wait_s) — replaced with
+`test_tec_wait_stable_with_a_sub_one_second_max_wait_actually_runs` above.
+The general exception-propagation fix in `_run_action()` (catching any
+command-argument construction error, not just this one) stays — it's
+still correct defensive code, just no longer the *only* thing standing
+between a short `max_wait_s` and a crash, because there's no longer an
+error case to fall back to it for in this specific scenario.
+
+---
+
 ## 2026-10-15 — Mission recalibration: proportionate complexity, not parity
 
 This is a lab hardware-control algorithm project. The goal is to run
@@ -21,7 +53,7 @@ things follow from that, recorded here rather than in a new file.
 |---|---|---|---|---|
 | `FlushWorkflow._implausible_reading()` (pump) | Computing a flush target from a stale/implausible SDK fill-level reading | None — `PumpWorker.set_fill_level()`'s target-range check is a different thing (protects the target, not the reading) | None on a legitimate reading; only engages on genuinely implausible data | **Keep** — real documented incident (`-513` SDK rejection on junjiebranch), not speculative |
 | `_run_action()`'s whole-dispatch try/except | An exception while building a command's own arguments crashing uncaught into the Qt callback chain | None — `_submit()`'s try/except never covered this | None — only engages on a genuine construction error | **Keep** — general correctness fix, not a restriction on normal use at all |
-| `temperature_max_wait_s` compile-time floor (removed this round) | Nothing a real device needs — the 1.0s came from `TecWaitStableArgs.poll_interval_s`, a software polling default | The propagation fix above already reports the same inconsistency gracefully at run time | Forced every operator to learn and respect an arbitrary number with no physical meaning | **Removed** — exactly the "software default dressed as a device requirement" this review was asked to find |
+| `temperature_max_wait_s` compile-time floor (removed this round) | Nothing a real device needs — the 1.0s came from `TecWaitStableArgs.poll_interval_s`, a software polling default | The propagation fix above already reports the same inconsistency gracefully at run time | Forced every operator to learn and respect an arbitrary number with no physical meaning | **Removed** — exactly the "software default dressed as a device requirement" this review was asked to find. **Superseded by the entry above this one**: "reports it gracefully" was still not the same as "actually works" — the poll interval now adapts instead, so there's no failure case left to report |
 | Z-stage two-tier operator confirmation (junjiebranch had it, this branch doesn't) | A real device-constraint concern (piezo motion without explicit authorization) | None currently | Would add a second confirmation dialog to every Z move | **Not added** (decided previously) — real device constraint, but no real Z-stage work is authorized yet to need it; revisit if/when real Z motion is actually planned, not speculatively now |
 | TEC `temperature_wait_for_stability` (optional, default off) | Nothing when unused — the default path compiles identically to before it existed | N/A | Zero cost unless explicitly enabled | **Keep** — proportionate: it's an opt-in capability add, not a forced complexity increase |
 

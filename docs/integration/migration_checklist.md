@@ -4,6 +4,42 @@ Status values: `done` (already true on this branch, no action), `planned`
 (Phase 1, recorded and awaiting approval), `open` (needs investigation before
 a plan can be written), `deferred` (decision owner needed, not a code task).
 
+## Quick reference: running a simulated experiment, and where to change things
+
+**Running one, via the UI** (`src/thermo_acoustic/ui/simple_series_panel.py`,
+`SimpleSeriesPanel`, wired into `MainWindow` as `experiment_panel`):
+1. Launch in simulation mode (the default — `main.py --mode simulation`, or
+   just omit `--mode`).
+2. Connect AD2/Camera/Pump/Valve/TEC as needed for the steps you'll use
+   (device panels on the left; each has its own Connect button).
+3. Fill in the Simple Series panel: a series descriptor is required;
+   output/acquisition, timing, ultrasound, temperature (optional), and
+   camera groups each have their own fields with tooltips on the
+   multi-value (start/stop/steps) ones.
+4. "Queue series", then "Start batch". Status/phase updates live in the
+   panel; `stop_after_current`/abort/panic are available once running.
+5. Output lands under the chosen experiment base folder, one
+   `experiment_batch_NNNN/` per queued series, with `metadata/status.json`
+   (live progress + final outcome), `manifest.json` (the plan), and one
+   TIFF (or stacked TIFF) + `experiment.json` per completed repeat.
+
+**Where common changes go** (verified against current code, not
+estimated — full detail with file/function names in `decision_log.md`'s
+2026-10-15 "day-to-day modification cost" entry):
+- **Temperature strategy** (tolerance/settle/hold, locked vs. unlocked):
+  `application/simple_series.py` + `ui/simple_series_panel.py`'s
+  Temperature group.
+- **Parameter sweeps** (new scan axis): `application/experiments.py`'s
+  `_values()`/`walk()`; one coupling point — the folder-naming `labels`
+  dict needs a matching entry for a new named parameter.
+- **Acquisition timing**: three intentionally separate layers —
+  `experiments.py`'s `_validate_experiment()` (schema), `experiment_runner.py`'s
+  `_after_camera_timing()` (live-SDK sanity), `_configure_all_before_fluidics()`
+  (applied-value sanity). Not redundant; don't collapse them.
+- **A new experiment-step kind**: `experiments.py`'s `ACTION_RESOURCES`/
+  `_action()` (schema) + `experiment_runner.py`'s `_run_action()`
+  (execution) — a deliberate validation/execution split.
+
 | Module | Status | Note |
 |---|---|---|
 | Pump driver safety logic (fault-clear, position-sensing gate) | done | Carried from junjiebranch's `qmix_backend.py` into `drivers/pump/cetoni.py`, verified near-identical |
@@ -28,7 +64,7 @@ a plan can be written), `deferred` (decision owner needed, not a code task).
 | Stop/abort/panic semantics **while a series is actively running** | done | Correction: an earlier round found zero tests for `stop_after_current()`/`abort()`/`panic_abort()` and over-generalized that into "panic is zero-coverage" — missed that `test_panic_stops_connected_outputs_without_moving_valve` already exercises `controller.panic_stop()`→`experiments.panic_abort()`, just with no series running. Added the specific in-series case for all three: `test_stop_after_current_finishes_active_experiment_then_stops_before_next_point`, `test_abort_during_a_running_series_stops_without_starting_the_next_experiment`, `test_panic_stop_during_a_running_series_ends_the_batch_without_moving_the_valve`. Each checks the next experiment/point does not start and `status.json` stays internally consistent (`experiments_completed <= experiments_started`), without re-asserting the already-covered single-device SAFE_STOP facts. |
 | Parallel save/flush barrier — **direct** evidence | done | Correction: the prior test used `AD2_DIGITAL_OUTPUT_STOP` as a stand-in for "both branches done," which is wrong — that event precedes the per-experiment flush in the same branch, and says nothing about the independent save branch. Replaced with two tests that each deliberately slow one branch (a monkeypatched `save_frames` delay; a real nonzero `wait_after_s` on the flush) and measure that the wall-clock gap to the next experiment is at least that delay: `test_parallel_barrier_blocks_next_experiment_until_save_completes`, `test_parallel_barrier_blocks_next_experiment_until_flush_completes`. |
 | Whole-series flush-capacity sum across placements | done | Three scenarios confirm `_check_capacity`'s rejection message cites the correct total regardless of where flush nodes sit in the tree: `test_flush_budget_sums_a_series_level_only_flush`, `test_flush_budget_sums_a_per_repeat_only_flush_across_two_repeats`, `test_flush_budget_sums_a_mixed_series_and_per_repeat_placement`. |
-| Exception propagation from command-argument construction | done | Found while building the stability-wait failure test: `_run_action()` let an exception raised while *building* a command's arguments (e.g. `TecWaitStableArgs.__post_init__`) escape uncaught into the Qt callback chain — `_submit()`'s try/except only covers the submit call, not the construction one line above it. Fixed generally (wraps the whole dispatch, not just the TEC case) so any action kind's bad arguments become an ordinary reported series failure. Test: `test_tec_wait_stable_argument_construction_failure_reports_cleanly`. |
+| Exception propagation from command-argument construction | done, kept as defensive code | Found while building the stability-wait failure test: `_run_action()` let an exception raised while *building* a command's arguments (e.g. `TecWaitStableArgs.__post_init__`) escape uncaught into the Qt callback chain — `_submit()`'s try/except only covers the submit call, not the construction one line above it. Fixed generally (wraps the whole dispatch, not just the TEC case). The specific scenario that motivated it (`max_wait_s` below the poll interval) was later fixed a different way (the poll interval now adapts — see below), so there is currently no concrete scenario reaching this path through the declarative pipeline; kept as general protection, not exercised by a dedicated test. |
 | `temperature_max_wait_s` compile-time floor — reviewed again, removed | **removed** (corrected from "kept" in the prior round) | On further review the floor was exactly "a software default dressed as a device requirement" — the 1.0s came from `TecWaitStableArgs.poll_interval_s`, which has no physical meaning and isn't even user-settable. Removed entirely; the exception-propagation fix already reports an inconsistent value gracefully at run time, so no replacement restriction was added. Test: `test_temperature_max_wait_below_one_second_compiles_without_a_software_floor`. |
 | Fault-reason surfacing in UI | done | `event_formatting.py:42` already includes `event.message` on every failure |
 | Chronology-ordered Prepare checklist (UX principle) | deferred | `simple_series_panel.py` identified as the analogous panel; its current group order was reviewed but not changed — no real-operator evidence on this lab's actual chronology to act on, per authorization's "mark unknown, don't assume" instruction |

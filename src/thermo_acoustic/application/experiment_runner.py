@@ -878,8 +878,19 @@ class ExperimentManager(QObject):
                               TecApplySetpointsArgs(**self._tec_args(args)),
                               lambda value: self._record("tec_set", args, value, done))
             elif kind == "tec_wait_stable":
+                tec_args = self._tec_args(args)
+                # poll_interval_s is not part of the declarative schema (no
+                # caller can set it) and TecWaitStableArgs requires
+                # poll_interval_s <= max_wait_s -- rather than reject a
+                # short max_wait_s, make the poll interval consistent with
+                # whatever max_wait_s actually is. A real device still gets
+                # at least one check at t=0 (hal/tec.py's defer_operation
+                # starts its timer at 0) and, for a sub-1s max_wait_s, one
+                # more at the deadline; this is not a new framework, just
+                # computing one already-existing field from another.
+                tec_args["poll_interval_s"] = min(1.0, tec_args["max_wait_s"])
                 self._command(DeviceId.TEC, DeviceOperation.TEC_WAIT_STABLE,
-                              TecWaitStableArgs(**self._tec_args(args)),
+                              TecWaitStableArgs(**tec_args),
                               lambda value: self._record("tec_wait_stable", args, value, done))
             elif kind == "stage_move":
                 self._command(DeviceId.Z_STAGE, DeviceOperation.Z_STAGE_POSITION_SET,

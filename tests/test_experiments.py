@@ -646,14 +646,16 @@ def test_temperature_point_series_runs_each_point_in_order(tmp_path):
         controller.shutdown()
 
 
-def test_tec_wait_stable_argument_construction_failure_reports_cleanly(tmp_path):
-    # validate_definition() only checks max_wait_s > 0 -- it has no way to
-    # know TecWaitStableArgs' own poll_interval_s default (1.0 s, a software
-    # polling choice, not part of the declarative JSON schema), so a
-    # definition with max_wait_s below that passes validation and used to
-    # reach TecWaitStableArgs(**args) inside _run_action as an uncaught
-    # exception in the middle of a Qt callback chain. Confirms it now fails
-    # as an ordinary, reported series failure instead.
+def test_tec_wait_stable_with_a_sub_one_second_max_wait_actually_runs(tmp_path):
+    # Correction: a max_wait_s below TecWaitStableArgs' own poll_interval_s
+    # default (1.0s) used to be only "fails more cleanly" (an uncaught
+    # exception, then a reported series failure) -- neither is actually
+    # executing the request. _run_action's "tec_wait_stable" branch now
+    # computes poll_interval_s = min(1.0, max_wait_s) instead of leaving it
+    # at the fixed default, so a short max_wait_s is genuinely executable,
+    # not merely rejected less badly. Proven by actually completing a
+    # series with max_wait_s=0.1, not by asserting it compiles or fails
+    # cleanly.
     app = QApplication.instance() or QApplication(["test-experiments"])
     controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
     controller.start()
@@ -661,16 +663,18 @@ def test_tec_wait_stable_argument_construction_failure_reports_cleanly(tmp_path)
         for device in (DeviceId.AD2, DeviceId.CAMERA, DeviceId.TEC):
             controller.submit(DeviceCommand(device, DeviceOperation.CONNECT))
         results = []
+        events = []
         controller.command_result.connect(results.append)
+        controller.command_event.connect(events.append)
         until(app, lambda: sum(result.operation is DeviceOperation.CONNECT and result.ok
                                for result in results) == 3)
         definition = {
-            "version": 1, "name": "bad_poll_interval", "description": "Bad poll interval test",
+            "version": 1, "name": "short_max_wait", "description": "Short max_wait_s test",
             "preflight": False, "tiff_format": "frames",
             "steps": [
                 {"type": "tec_set", "args": {"target_temperature_c": 20.0}},
                 {"type": "tec_wait_stable", "args": {"target_temperature_c": 20.0,
-                    "tolerance_c": 0.5, "min_settle_s": 0, "max_wait_s": 0.1}},  # below the 1.0s poll interval
+                    "tolerance_c": 0.5, "min_settle_s": 0, "max_wait_s": 0.1}},
                 {"type": "repeat", "count": 1, "steps": [
                     {"type": "experiment", "steps": _minimal_experiment_steps()},
                 ]},
@@ -678,10 +682,12 @@ def test_tec_wait_stable_argument_construction_failure_reports_cleanly(tmp_path)
         }
         folder = controller.experiments.queue(definition, tmp_path)
         assert controller.experiments.start()
-        until(app, lambda: controller.experiments.status()["state"] == "failed", timeout=10)
+        until(app, lambda: controller.experiments.status()["state"] in {"completed", "failed"}, timeout=10)
         status_doc = json.loads((folder / "metadata" / "status.json").read_text())
-        assert "rejected its own arguments" in status_doc["error"]
-        assert "poll_interval_s" in status_doc["error"]
+        assert controller.experiments.status()["state"] == "completed", status_doc
+        wait_stable = next(event for event in events
+                           if event.operation is DeviceOperation.TEC_WAIT_STABLE and event.state == "completed")
+        assert wait_stable.arguments.poll_interval_s == 0.1
     finally:
         controller.shutdown()
 

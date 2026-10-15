@@ -1,4 +1,13 @@
-"""Offline checks for the fixed-form series and temperature record."""
+"""Offline checks for the fixed-form series and temperature record.
+
+Tests that construct `SimpleSeriesPanel` directly (not `MainWindow`) are
+panel-level automation: they drive the same Qt widgets and signal/slot
+paths a human click would, but are not literal mouse/keyboard input into
+the running application window, and no other panel (status dashboard,
+Z-stack, menus) is present. Do not read a passing panel-level test as
+proof that a full-window operator session behaves identically in every
+respect.
+"""
 
 from __future__ import annotations
 
@@ -154,21 +163,39 @@ def test_temperature_wait_for_stability_rejects_invalid_bounds():
                                       temperature_max_wait_s=0))
 
 
-def test_temperature_max_wait_below_one_second_compiles_without_a_software_floor(tmp_path):
+def test_temperature_max_wait_below_one_second_compiles_without_a_software_floor():
     # No compile-time floor tied to TecWaitStableArgs' own poll_interval_s
     # default -- that default is a software polling choice, not a device
     # requirement, and packaging it as a rule this field must obey would be
-    # exactly the kind of unnecessary restriction this project avoids. A
-    # value this low (0.5s) still compiles; if it is also inconsistent with
-    # the fixed poll interval at the dataclass level, that is reported as
-    # an ordinary series failure at run time instead -- see
-    # test_tec_wait_stable_argument_construction_failure_reports_cleanly in
-    # test_experiments.py for that path, exercised directly against the
-    # engine rather than duplicated here against the compiler.
+    # exactly the kind of unnecessary restriction this project avoids.
     definition = compile_simple_series(replace(settings(), temperature_wait_for_stability=True,
                                                 temperature_max_wait_s=0.5))
     temperature_steps = definition["steps"][1]["steps"][:3]
     assert temperature_steps[1]["args"]["max_wait_s"] == 0.5
+
+
+def test_ui_configured_short_max_wait_actually_completes(tmp_path):
+    # The execution-level proof that a sub-1s max_wait_s is genuinely
+    # executable (not just compilable), through the real UI panel path
+    # this time, not a hand-authored definition -- see
+    # test_tec_wait_stable_with_a_sub_one_second_max_wait_actually_runs in
+    # test_experiments.py for the same fix proven against a raw definition.
+    app = QApplication.instance() or QApplication(["test-short-max-wait"])
+    controller, panel, results, events = _connected_temperature_series_harness(app, repeats=1)
+    try:
+        panel.temperature[2].setValue(1)  # one temperature point, simplifies this check
+        panel.temperature_max_wait.setValue(0.1)
+        definition = panel._definition()
+        folder = controller.experiments.queue(definition, tmp_path)
+        assert controller.experiments.start()
+        status = _wait_until_terminal(app, controller, timeout=15)
+        assert status["state"] == "completed", status
+        wait_stable = next(event for event in events
+                           if event.operation is DeviceOperation.TEC_WAIT_STABLE and event.state == "completed")
+        assert wait_stable.arguments.poll_interval_s == 0.1
+    finally:
+        panel.close()
+        controller.shutdown()
 
 
 def test_single_step_uses_start_and_sweep_bounds():
@@ -599,6 +626,49 @@ def _wait_until_n_experiments_completed(app, controller, n, timeout=30):
     while monotonic() < deadline and controller.experiments.status()["batch_completed_experiments"] < n:
         app.processEvents(); sleep(0.01)
     assert controller.experiments.status()["batch_completed_experiments"] >= n, controller.experiments.status()
+
+
+def test_ui_configured_parameter_sweep_with_repeats_runs_every_combination(tmp_path):
+    # Representative check #2 (parameter sweep + repeats, through the real
+    # panel): distinct from the main trace test below, which uses a single
+    # frequency/amplitude/exposure value throughout and varies only the
+    # temperature axis. A genuine multi-value sweep (2 frequencies) x 2
+    # repeats x 1 temperature point must run all 4 combinations, in the
+    # folder-naming order the compiler promises, via real device dispatch
+    # -- not only via the structural (no-device) cartesian-expansion checks
+    # in test_fixed_form_expansion_order_and_flush_count.
+    #
+    # PANEL-LEVEL AUTOMATION, NOT A FULL-WINDOW OPERATION: this constructs
+    # SimpleSeriesPanel directly and sets its widgets programmatically. It
+    # exercises the same Qt signal/slot code a human click would (widget
+    # valueChanged -> _preview()/_settings(), button click ->
+    # controller.submit()), but it is not literal mouse/keyboard input into
+    # a running MainWindow, and no other panel (status dashboard, Z-stack,
+    # menus) is present or exercised. Do not read this as proof that a
+    # human operating the actual application window would see identical
+    # behavior in every respect (e.g. window-level event filters, focus
+    # handling, or cross-panel interactions are untouched by this test).
+    app = QApplication.instance() or QApplication(["test-ui-parameter-sweep"])
+    controller, panel, results, events = _connected_temperature_series_harness(app, repeats=2)
+    try:
+        panel.temperature[2].setValue(1)  # one temperature point, isolates the sweep axis
+        for widget, value in zip(panel.frequency, (1_000_000, 2_000_000, 2)):
+            widget.setValue(value)
+        definition = panel._definition()
+        folder = controller.experiments.queue(definition, tmp_path)
+        assert controller.experiments.start()
+        status = _wait_until_terminal(app, controller)
+        assert status["state"] == "completed", status
+
+        manifest = json.loads((folder / "metadata" / "manifest.json").read_text())
+        assert [item["parameters"]["frequency_hz"] for item in manifest["experiments"]] == [
+            1_000_000.0, 1_000_000.0, 2_000_000.0, 2_000_000.0]  # 2 frequencies x 2 repeats, in order
+        status_doc = json.loads((folder / "metadata" / "status.json").read_text())
+        assert status_doc["finalized_outcome"] == "completed"
+        assert status_doc["requested_experiments"] == status_doc["experiments_completed"] == 4
+    finally:
+        panel.close()
+        controller.shutdown()
 
 
 def test_ui_configured_temperature_series_runs_pump_valve_camera_ad2_tec_in_order(tmp_path):

@@ -5,6 +5,83 @@ came from and what would close it. Categories borrowed loosely from
 junjiebranch's own `known_open_items.md` (not copied verbatim — remapped to
 this branch's actual files).
 
+## Minimal real-hardware verification plan — PLAN ONLY, not executed
+
+Per explicit instruction: no hardware was connected or operated to produce
+this; it names what each stage would do, so authorization and execution can
+happen separately, later, with this as the starting checklist. Each stage
+only proceeds once the one before it is confirmed. Every action stays
+inside the existing `hardware_tests/` manual-only, confirm-token-gated
+convention — nothing here proposes a new access path.
+
+### Stage 1 — single-device necessary actions only
+
+- **Pump**: connect, read status/fill level (no motion). Expected: a real
+  fill level and fault state come back; no `-513`-style SDK rejection on a
+  plain read. Stop condition: any fault or disconnect — do not proceed to
+  Stage 2 until a clean connect+read is observed.
+- **Valve**: connect on its real COM port, query status, command one
+  position change (P01 or P02), confirm the status reply matches. Expected:
+  the same `01`/`02`/`**` token sequence already observed in the pre-existing
+  2026-09-25 log (see `investigation_log.md`). Stop condition: no reply, or
+  a reply that doesn't match the requested position.
+- **TEC**: connect, read-only status (current/target temperature, output
+  enable, ready) — no setpoint write yet. Expected: plausible current
+  temperature, `output_stage_static_on` matching whatever state the device
+  was already in. Stop condition: any read error or an implausible reading
+  (e.g. far outside a sane lab range).
+- **Camera**: connect, read capabilities/current settings — no capture.
+  **AD2**: connect, read capabilities — no output.
+- **Z-stage**: connect, read the closed-loop confirmation requirement only
+  — do not enable closed-loop or move, pending the reserved decision
+  already recorded (two-tier confirmation kept as-is).
+
+### Stage 2 — synchronized acquisition, no fluidics or temperature control
+
+- Configure camera (small ROI, few frames) + AD2 (one channel, short,
+  bounded run) exactly as `_configure_all_before_fluidics()` would for a
+  minimal experiment. Arm camera, arm AD2, one software trigger, collect.
+  Expected: exact requested frame count with every SDK timestamp present
+  (the same check `await_frames` already enforces in simulation).
+  Observe, if physically accessible: the camera's external-trigger input
+  actually responds to AD2's DIO0 edge — this is the one claim in
+  `flow_trace.md` marked `[UNVERIFIED ON REAL HARDWARE]`. Stop condition:
+  frame/timestamp mismatch, or no observable trigger response.
+
+### Stage 3 — minimal complete experiment (single point, single repeat)
+
+- One flush (small volume, conservative flow rate) → one TEC setpoint
+  (read-only-confirmed channel, modest target) → `tec_wait_stable` with a
+  short but real `max_wait_s` (now genuinely executable at any value, not
+  just a long one — see this file's TEC section) → one acquisition
+  (as Stage 2) → save + post-acquisition flush, in parallel, as the engine
+  already does. Expected: the same ordering already proven in simulation
+  (`flow_trace.md`'s "Leaf actions" section) now holds with one real device
+  at each step. Stop condition: any step's device-level result disagrees
+  with its simulated counterpart's contract (e.g. the pump capacity guard
+  firing on a real implausible reading — confirm it fires correctly rather
+  than hoping it doesn't need to).
+
+### Stage 4 — expand to sweep and repeats, only after Stage 3 is clean
+
+- Two repeats of Stage 3's experiment, then (separately) two points of a
+  temperature sweep, each still minimal in scope (small volumes, short
+  waits, few frames). Expected: the same whole-series flush-capacity sum,
+  parallel-barrier, and stop/abort/panic behaviors already proven in
+  simulation, now against real devices for the first time. This is where
+  the real device-level consequence of `abort()`/`panic_stop()` (SAFE_STOP
+  reaching real hardware, not just a simulated worker) gets its first real
+  check.
+
+### What this plan deliberately does not include
+
+Z-stage motion (blocked on the reserved confirmation-gate decision), the
+acoustic-chain/AD2-JP4 electrical characterization (`hardware_notes.md` —
+needs a powered-down physical inspection first, not a software action), and
+anything resembling the original "count preflight" dry-run at larger
+scale — this plan stays deliberately smaller than that existing mechanism
+until Stage 3 is clean.
+
 ## Series-lifecycle persistence — split A/B/C per explicit instruction
 
 **A. Real-time persistence of in-progress state — done, fixed this round

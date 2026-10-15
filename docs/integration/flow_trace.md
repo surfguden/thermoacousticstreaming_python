@@ -215,20 +215,21 @@ structured to do," not "this has been confirmed to happen."
 Added to `tests/test_simple_series.py`, extending the same multi-point/
 multi-repeat harness as the main trace test (not a new framework) —
 `_connected_temperature_series_harness()` factors the shared setup.
-Also added `test_tec_wait_stable_argument_construction_failure_reports_cleanly`
-(`tests/test_experiments.py`) covering a related general fix found while
-building these: `_run_action()` previously let an exception raised while
-*constructing* a command's arguments (not just submitting it) escape
-uncaught into the Qt callback chain — `_submit()`'s own try/except only
-wraps `controller.submit(command)`, not building `command` as an argument
-to it one line above. The whole dispatch in `_run_action()` is now wrapped
-in one try/except reporting any such failure through the normal `_fail()`
-path, for every action kind uniformly (not one at a time as each is
-found). `compile_simple_series()`'s `temperature_max_wait_s` floor (see
-`decision_log.md` for why it stayed as a compile-time check, now
-referencing `TecWaitStableArgs`' own default instead of a duplicated
-constant) is a secondary, earlier-and-clearer error for the one specific
-case this surfaced through, not the only thing preventing a crash anymore.
+A related general fix was found while building these: `_run_action()`
+previously let an exception raised while *constructing* a command's
+arguments (not just submitting it) escape uncaught into the Qt callback
+chain — `_submit()`'s own try/except only wraps `controller.submit(command)`,
+not building `command` as an argument to it one line above. The whole
+dispatch in `_run_action()` is now wrapped in one try/except reporting any
+such failure through the normal `_fail()` path, for every action kind
+uniformly. The specific scenario that surfaced this
+(`temperature_max_wait_s` below `TecWaitStableArgs`' fixed `poll_interval_s`)
+was later fixed a different way, in a subsequent round: `_run_action()`'s
+`"tec_wait_stable"` branch now computes `poll_interval_s = min(1.0,
+max_wait_s)`, so that combination is never invalid in the first place —
+see `decision_log.md`'s later entry correcting this one. The propagation
+fix itself stays as defensive code with no concrete scenario currently
+reaching it through the declarative pipeline.
 
 - **`test_stability_wait_failure_stops_series_before_any_point_starts`**:
   forces `tec_wait_stable` to time out (simulated TEC target held
