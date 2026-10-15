@@ -5,6 +5,93 @@ SHA(s)/file(s)/function(s) the decision rests on, not just a conclusion.
 
 ---
 
+## 2026-10-15 — Reusing historical real-hardware evidence instead of blocking on "no new log on this branch"; corrects a real overstatement about Z-stage
+
+Per explicit instruction: this round does not treat "the integration
+branch itself has no new real-hardware log" as a blocker, and does not
+default to re-verifying every device from zero. It targets specific
+capabilities, checks whether the implementation and conditions behind
+existing evidence have materially changed, and reuses what still applies.
+No hardware was touched to produce this entry — it is a documentation
+correction from reading `junjiebranch`'s `docs/claude_code_change_log.md`
+(via `git show`, read-only) and this branch's own tracked
+`hardware_tests/wfg_dc_sine_idle_test/results/`.
+
+**The real correction, not just an addition:** `acceptance_table.md` and
+`known_open_items.md` previously said "junjiebranch's own real motion
+attempt failed, neither branch has a working real [Z-stage] run." That
+was wrong. `claude_code_change_log.md` Session 48 (first real PPC001 +
+C15440-20UP scan — a real bug was found first, a `System.Decimal`/
+`float()` incompatibility, fixed and then the scan succeeded: 6/6 frames,
+measured positions within 0.05-0.18um of target) and Session 54 (the
+same scan repeated through the actual UI buttons, plus a real mid-scan
+abort producing the exact designed "PARTIAL" message) both succeeded.
+The likely source of the error: `investigation_log.md` had cited a single
+`FAIL cmd='...' error=Failed to connect` line from a broad 2-month
+hardware-transactions log and read it as "Z-stage doesn't work," without
+checking whether a later session in the same project fixed the problem
+it represents — it did, dated after that log's window closes. This
+branch was not reading its own cited evidence closely enough before this
+correction; `investigation_log.md` itself has been corrected with a note
+so this isn't repeated. **Consequence for `known_open_items.md`'s
+real-hardware plan**: Z-stage motion stays excluded from the current
+minimal plan, but for a narrower, accurate reason — this branch's own
+`z_stack.py`/`hal/z_stage.py`/UI combination has never been run against
+real hardware, not because real Z motion is unproven. The exact fix that
+made junjiebranch's scan work (`_decimal_to_float()`) already exists in
+this branch's `drivers/z_stage/thorlabs_piezo.py`, confirmed by direct
+code read — carried over correctly, nothing to redo there.
+
+**Other evidence reused this round, correctly this time:**
+- **Pump motion**: Session 54 Scenario 2 real-hardware-verified the
+  reject/accept shape (`target = fill_level_ml - volume_ml`; reject
+  before motion if negative, real readback/valve unchanged on reject;
+  real measured drop on accept) that this branch's `FlushWorkflow`
+  implements with the same logic, on the same Qmix SDK family this
+  branch's pump driver is already "verified near-identical" to. Cited as
+  supporting precedent for the general pattern in `acceptance_table.md`;
+  NOT claimed as proof of this branch's own newly-added
+  `_implausible_reading()` layer, which Session 54 did not exercise and
+  which stays 待实机.
+- **AD2 real output**: this branch's own tracked
+  `hardware_tests/wfg_dc_sine_idle_test/results/` (4 runs, 2026-09-24,
+  real scope captures) already shows the production `AnalogDiscovery2`
+  class — the same one `hal/registry.py` constructs for the real
+  experiment path, confirmed by direct code read, not a separate probe
+  copy — configuring a carrier, arming, PC-triggering a bounded run, and
+  reading back correctly. Added as a new `acceptance_table.md` row,
+  scoped precisely (single-channel, PC-trigger only; multi-channel and
+  the DIO0 camera cross-trigger remain unverified).
+- **Serial `readline()`/`\r` timing bug (junjiebranch Session 54/55)**
+  and the **pump `read_fill_level()`-at-connect gap (Session 56)**:
+  checked against this branch's own code, not assumed. The first is
+  already fixed here — `drivers/common/serial.py`'s `query()` already
+  uses `read_until(expected=self.line_ending...)`, with a comment citing
+  Session 54 directly. The second doesn't apply here at all: this
+  branch's `PumpWorker._refresh()` continuously polls `read_fill_level()`
+  from the real device on every poll cycle (not just a one-time
+  dataclass default), so the specific "stale `0.0` after a restart" gap
+  Session 56 fixed was architecturally avoided from the start, not fixed
+  reactively.
+- **TEC**: no real-hardware evidence exists on either branch, and none
+  was claimed. junjiebranch's own MeCom/TEC protocol was never
+  implemented, by explicit design ("to avoid inventing hardware commands
+  without a reviewed client," Session 54's entry) — there is no history
+  to reuse here, only the absence correctly recorded as absence.
+- **Camera**: junjiebranch's own exposure/trigger-source/FPS-budget work
+  (Sessions 13, 19, 20) is explicitly self-described as "not
+  hardware-verified" in every case — no real camera was exercised for any
+  of it. The existing "simulated only" claim for this branch's camera
+  driver was already accurate; nothing to correct there.
+
+**What this does not do, per explicit instruction**: no new tests, no
+new protections, no new hardware access, no restoration of junjiebranch's
+full historical documentation set. The corrections above replace
+inaccurate conclusions with accurate ones using evidence that already
+existed; they do not expand what this round claims to have verified.
+
+---
+
 ## 2026-10-15 — Terminology correction: "locked"/"unlocked" retired for this branch's TEC panel; `max_wait_s` claim narrowed to software-only
 
 Two imprecise claims, found while doing a documentation-accuracy pass

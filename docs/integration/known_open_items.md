@@ -31,24 +31,62 @@ convention — nothing here proposes a new access path.
   was already in. Stop condition: any read error or an implausible reading
   (e.g. far outside a sane lab range).
 - **Camera**: connect, read capabilities/current settings — no capture.
-  **AD2**: connect, read capabilities — no output.
+- **AD2**: connect, read capabilities — no output. Note: real single-channel
+  WFG output (configure a carrier, arm, PC-trigger, run a bounded duration,
+  read back, clean up) already has real-hardware evidence on the production
+  `AnalogDiscovery2` class — see the AD2 row in `acceptance_table.md`. This
+  stage stays read-only anyway so it lines up with the other single-device
+  checks here; it is not re-proving something already unproven.
 - **Z-stage**: connect, read the closed-loop confirmation requirement only
   — do not enable closed-loop or move. This is not pending any decision:
   the confirmation-gate design question is already decided (single-gate
-  design kept as-is — see "Decided this round" below). Z motion is
-  excluded from this stage because neither branch has a working real
-  motion run on record (junjiebranch's own attempt failed), so it needs
-  its own dedicated verification before it belongs in a general flow,
-  not because anything about the gate is still open.
+  design kept as-is — see "Decided this round" below). **Z motion itself is
+  not an open question** — junjiebranch's real PPC001 + C15440-20UP scan
+  succeeded (Session 48: 6/6 real frames, measured positions within
+  0.05-0.18um of target; Session 54: the same scan plus a real mid-scan
+  abort, driven through the actual UI buttons, not just the CLI) after a
+  real bug was found and fixed (`System.Decimal` not supporting Python's
+  `float()` — junjiebranch's `_decimal_to_float()` helper). **That exact
+  fix already exists in this branch**:
+  `drivers/z_stage/thorlabs_piezo.py`'s `_decimal_to_float()`, used in
+  every `Get*()` call site, confirmed by direct code read. What's actually
+  unverified is narrower: this branch's own `application/z_stack.py` +
+  `hal/z_stage.py` + UI driving that already-fixed, already-proven
+  `PiezoStage` class has never itself been run against real hardware —
+  a different integration layer around the same lower-level class, not a
+  different, unproven physical-motion primitive. Excluded from this stage
+  because that specific combination needs its own dedicated check, not
+  because real Z motion in general is unproven.
 
 ### Stage 2 — pump motion alone, bounded, in isolation (nothing else running)
 
-Neither branch has any recorded real pump motion — the only real-hardware
-pump log on file (`investigation_log.md`'s 2026-09-25 session) is
-read-only: 8,661 fill-level reads, constant at 1.068 mL, zero motion
-commands. This stage exists specifically to produce the first one. It is
-separated from Stage 5's combined experiment so a motion problem is
-isolated to the pump alone, not entangled with TEC/camera/AD2 timing.
+This branch's own worktree has no recorded real pump motion — the only
+real-hardware pump log on file here (`investigation_log.md`'s 2026-09-25
+session) is read-only: 8,661 fill-level reads, constant at 1.068 mL, zero
+motion commands. **junjiebranch does have real pump motion on record**
+(`docs/claude_code_change_log.md` Session 54, Scenario 2, same Qmix SDK
+family this branch's `drivers/pump/cetoni.py` is "verified near-identical"
+to per `migration_checklist.md`): a real syringe confirmed at `~0.10`ml via
+the SDK's own `get_fill_level()`, a request for `0.15`ml correctly
+rejected before reaching the SDK (`ValueError`, real readback and real
+valve position both unchanged before/after — proving the reject happens
+before any real motion, not just that an exception fired), and a request
+for `0.05`ml correctly succeeded with a real, measured fill-level drop.
+This is the same reject/accept shape this branch's own
+`FlushWorkflow` (`target = fill_level_ml - volume_ml; if target < 0:
+reject`) implements — so the **general pattern** (trust the real SDK
+readback, reject before motion when insufficient, leave device state
+untouched on reject) has real-hardware precedent on the same device
+family. What is still genuinely new and untested here: this branch's
+own `_implausible_reading()` layer (non-finite / exceeds-configured-capacity
+checks, added this integration round, not present in junjiebranch's
+version) and `HW-PUMP-FILL-GEOMETRY-001`'s underlying SDK question —
+neither was exercised by the Session 54 run above. This stage exists to
+produce this branch's own first real pump-motion record and to exercise
+those two untested pieces specifically, not to re-establish that pump
+motion in general works. It is separated from Stage 5's combined
+experiment so a motion problem is isolated to the pump alone, not
+entangled with TEC/camera/AD2 timing.
 
 **Must be confirmed before running, not assumed:**
 - Which physical syringe/unit is addressed by the `unit_index` this
@@ -169,9 +207,13 @@ separately cleared first.
 
 ### What this plan deliberately does not include
 
-Z-stage motion (excluded because neither branch has a working real motion
-run on record yet — not because the confirmation-gate design is
-undecided; that was already decided, see below), the
+Z-stage motion (excluded because this branch's own `z_stack.py`/
+`hal/z_stage.py`/UI combination has never itself been run against real
+hardware — not because real Z motion is unproven in general: junjiebranch
+already has a working real scan, and this branch already carries the exact
+fix that made it work; see Stage 1's Z-stage bullet above. Also not
+because the confirmation-gate design is undecided; that was already
+decided, see below), the
 acoustic-chain/AD2-JP4 electrical characterization (`hardware_notes.md` —
 needs a powered-down physical inspection first, not a software action), and
 anything resembling the original "count preflight" dry-run at larger

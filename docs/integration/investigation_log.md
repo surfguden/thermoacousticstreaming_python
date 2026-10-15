@@ -105,7 +105,18 @@ weak.
   2026-09-07, junjiebranch era) contains 305 non-OK lines, including real
   Hamamatsu camera faults/timeouts and a real Thorlabs piezo connect
   failure (`FAIL cmd='44533854' error=Failed to connect... Device is not
-  connected`).
+  connected`). **This single FAIL line must not be read as "Z-stage never
+  worked on junjiebranch"** — it is one entry from a broad 2-month,
+  305-non-OK-line window, and `docs/claude_code_change_log.md`'s own
+  Session 45-48 (standalone PPC001 verification, driver wrapper, a real
+  bug found and fixed) and Session 54 (the same real scan repeated
+  through the UI, plus a real mid-scan abort) show the device later
+  connecting and scanning successfully, dated after this log's window
+  closes (2026-09-07). Likely an earlier-session wiring/driver state this
+  log's window happens to include, not a standing failure — see the
+  "ola-branch-specific findings" section below for the corrected summary
+  and `known_open_items.md`'s Stage 1 Z-stage entry for what this means
+  for this branch.
 
 ## ola-branch-specific findings (condensed)
 
@@ -128,7 +139,16 @@ weak.
   (`logs/20260925T144218712126Z_real/hardware_transactions.log`, 98 lines)
   shows a **real physical valve transition**: `write cmd='P01'` ->
   `query resp='01\r'`, and the reverse for P02. **No TEC or Z-stage
-  real-hardware log entries were found anywhere.**
+  real-hardware log entries exist in ola-branch's own logs.** (This is
+  about ola-branch's own log files specifically, not a claim that no such
+  evidence exists anywhere: junjiebranch has real Z-stage motion evidence
+  in its own change log — `claude_code_change_log.md` Sessions 45-48/54 —
+  described above and corrected in `acceptance_table.md`/
+  `known_open_items.md`. TEC output has no real-hardware evidence on
+  either branch — junjiebranch's own MeCom/TEC protocol was never
+  implemented "by explicit design, to avoid inventing hardware commands
+  without a reviewed client" per Session 54's entry, so there was never a
+  real TEC run to find.)
 - `ui/z_stack_panel.py` was compared field-by-field against junjiebranch's
   Z-Scan tab this round: ola's panel already has start/stop Z, points,
   step, exposure, 4-field ROI, position tolerance, position timeout, output
