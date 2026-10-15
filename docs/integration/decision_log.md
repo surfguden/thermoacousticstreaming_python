@@ -5,6 +5,74 @@ SHA(s)/file(s)/function(s) the decision rests on, not just a conclusion.
 
 ---
 
+## 2026-10-15 — Residual flush-unit defect, found independently by Codex, fixed
+
+Per explicit instruction: close out the pump-unit fix properly, this
+time with the scenario Codex's own independent simulation actually
+exercised. No hardware touched; no new confirmation dialog or framework
+added, per instruction.
+
+**The residual bug, precisely.** The prior fix (same day, earlier entry)
+correctly restored `flush_unit_index` once a *matching* unit appeared in
+`pump_unit`, and correctly remembered it as pending otherwise. What it
+missed: when `_devices()` repopulates the combo and *no* unit matches
+either the previous selection or the pending one (e.g. the pump connects
+but only offers unit 0, and the saved value was unit 1), the
+`clear()`/`addItem()` loop still ran unguarded. `QComboBox` makes the
+first added item "current" by default as soon as items exist, so this
+fired a real `currentIndexChanged` event with unit 0 now genuinely
+selected — and `_settings()`'s fallback-to-pending logic only kicks in
+when `currentData() is None`, so that spurious, Qt-chosen value won
+outright. `pump_unit_notice` still said "not matched" (correctly), but
+the value `_settings()` actually returned, and what would have compiled
+and queued, was unit 0 anyway — a silent, wrong substitution the notice
+was supposed to prevent.
+
+**Fix** (`ui/simple_series_panel.py`):
+- `_devices()`'s whole pump `clear()`/`addItem()`/select sequence now
+  runs inside `pump_unit.blockSignals(True)`/`finally: blockSignals(False)`.
+  When neither the previous selection nor the pending value matches
+  anything now offered, it explicitly calls `setCurrentIndex(-1)` rather
+  than leaving Qt's default in place.
+- `_apply_flush_unit_index()`'s own no-match branch does the same, for
+  the symmetric case where the pump is *already* connected (with the
+  wrong units) at load time, not only "not connected yet."
+- A new `pump_unit.currentIndexChanged` → `_pump_unit_selected()`
+  connection clears the pending value exactly when the operator makes a
+  genuine, different choice (any event where the resulting
+  `currentData()` is not `None`) -- safe precisely because the
+  `blockSignals` guard above means this handler never fires for Qt's
+  own default-selection noise during repopulation, only for a real
+  resolution (restore-to-pending or a genuine user pick).
+
+**Verified the new tests actually catch the regression**, same
+discipline as every other finding this round: temporarily reverted the
+`blockSignals`/explicit-`-1` change, reran the three flush-unit tests --
+all three failed as expected (the two new ones plus the existing
+load-before-connect test, which turned out to also rely on the fix
+being correct, not just the earlier, narrower one); restored immediately
+after and reran clean.
+
+**2 new tests**, both using a 1-unit simulated pump bank
+(`DeviceRegistry(factories={DeviceId.PUMP: lambda: SimulatedPumpBank(unit_count=1)})`,
+confirming the saved unit index 1 can never become available, not "not
+yet"):
+`test_experiment_tab_flush_unit_stays_unselected_when_the_saved_unit_never_appears`
+(connects anyway; `pump_unit.currentData()` stays `None`, the notice
+stays visible, `_settings(require_pump_unit=False)` still reports the
+pending value for a re-save, and `_definition()` still correctly
+refuses with "Select a configured pump unit" rather than silently
+compiling against unit 0) and
+`..._notice_clears_once_the_user_picks_a_different_unit` (the operator
+explicitly selects the one real unit; the notice clears, `_definition()`
+now succeeds, and the abandoned pending value does not resurface even
+if `_devices()` runs again afterward for an unrelated reason). The
+existing `test_experiment_tab_flush_unit_selection_survives_a_load_before_connect`
+test (the "unit appears later" happy path) is unchanged and still
+passes, per explicit instruction to keep it.
+
+---
+
 ## 2026-10-15 — Fixed a real flush-unit restore defect found right after the settings-profile feature landed; added the pre-run preview
 
 Per explicit instruction: close out the settings-profile batch properly

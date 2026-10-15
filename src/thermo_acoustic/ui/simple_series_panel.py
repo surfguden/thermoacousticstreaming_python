@@ -221,6 +221,7 @@ class SimpleSeriesPanel(QWidget):
                        self.temperature_wait_for_stability):
             widget.toggled.connect(self._preview)
         self.description.textChanged.connect(self._preview)
+        self.pump_unit.currentIndexChanged.connect(self._pump_unit_selected)
         self._enabled()
         self._devices(controller.statuses())
         self._preview()
@@ -321,19 +322,37 @@ class SimpleSeriesPanel(QWidget):
     def _apply_flush_unit_index(self, flush_unit_index: int | None) -> None:
         # The pump_unit combo only has items while the pump is connected
         # (see _devices() below) -- if the saved unit isn't among them
-        # right now (most commonly: nothing connected yet), selecting it
-        # directly would silently do nothing and Qt would leave whatever
-        # item it happens to default to as "current". Remember the saved
-        # value instead and restore it once _devices() repopulates the
-        # combo with a matching entry; show an explicit notice meanwhile
-        # rather than letting a wrong unit look selected.
+        # right now (most commonly: nothing connected yet, or connected
+        # with a different set of units than when this was saved),
+        # selecting it directly would silently do nothing. Remember the
+        # saved value instead and restore it once _devices() repopulates
+        # the combo with a matching entry; show an explicit notice
+        # meanwhile. Critically, force the combo to "nothing selected"
+        # (-1) in the no-match case rather than leaving whatever it
+        # already showed -- a stale selection from before this load must
+        # not be mistaken for the loaded one, and must not silently
+        # become the unit an experiment compiles/queues against.
         if flush_unit_index is not None and self.pump_unit.findData(flush_unit_index) >= 0:
             self.pump_unit.setCurrentIndex(self.pump_unit.findData(flush_unit_index))
             self._pending_flush_unit_index = None
-            self.pump_unit_notice.setText("")
         else:
             self._pending_flush_unit_index = flush_unit_index
-            self._update_pump_unit_notice()
+            self.pump_unit.setCurrentIndex(-1)
+        self._update_pump_unit_notice()
+
+    def _pump_unit_selected(self) -> None:
+        # Fires on every currentIndexChanged, including _devices()'s own
+        # restore -- but that already clears _pending_flush_unit_index
+        # itself, and _devices() blocks this signal while repopulating
+        # the combo (see below), so the only case this still needs to
+        # handle is a genuine user pick of an available (but different
+        # from any pending) unit: clear the stale pending value so it
+        # doesn't resurface and silently override a deliberate choice
+        # later, and update the notice/preview to match.
+        if self.pump_unit.currentData() is not None:
+            self._pending_flush_unit_index = None
+        self._update_pump_unit_notice()
+        self._preview()
 
     def _update_pump_unit_notice(self) -> None:
         if self._pending_flush_unit_index is None:
@@ -577,18 +596,36 @@ class SimpleSeriesPanel(QWidget):
                          for index in range(self.pump_unit.count())]
         if desired_pumps != current_pumps:
             current = self.pump_unit.currentData()
-            self.pump_unit.clear()
-            for label, index in desired_pumps:
-                self.pump_unit.addItem(label, index)
-            if current is not None and self.pump_unit.findData(current) >= 0:
-                self.pump_unit.setCurrentIndex(self.pump_unit.findData(current))
-            elif self._pending_flush_unit_index is not None and self.pump_unit.findData(
-                self._pending_flush_unit_index) >= 0:
-                # A loaded setting's unit just became available (the pump
-                # connected). Restore it rather than leaving Qt's own
-                # "first item is current by default" behavior in place.
-                self.pump_unit.setCurrentIndex(self.pump_unit.findData(self._pending_flush_unit_index))
-                self._pending_flush_unit_index = None
+            # Signals blocked for the whole clear()/addItem()/select dance:
+            # Qt makes the first added item "current" by default as items
+            # go in, which would otherwise fire currentIndexChanged (and
+            # this panel's own _pump_unit_selected()) with a unit nobody
+            # actually chose -- that self-inflicted event was the residual
+            # bug Codex's independent simulation caught: it looked like a
+            # real selection and silently became the one _settings()
+            # reported, even though the "not matched" notice still (and
+            # now, correctly) said otherwise.
+            self.pump_unit.blockSignals(True)
+            try:
+                self.pump_unit.clear()
+                for label, index in desired_pumps:
+                    self.pump_unit.addItem(label, index)
+                if current is not None and self.pump_unit.findData(current) >= 0:
+                    self.pump_unit.setCurrentIndex(self.pump_unit.findData(current))
+                elif self._pending_flush_unit_index is not None and self.pump_unit.findData(
+                    self._pending_flush_unit_index) >= 0:
+                    # A loaded setting's unit just became available (the
+                    # pump connected). Restore it.
+                    self.pump_unit.setCurrentIndex(self.pump_unit.findData(self._pending_flush_unit_index))
+                    self._pending_flush_unit_index = None
+                else:
+                    # Neither the previous selection nor any pending saved
+                    # value is available right now -- explicitly select
+                    # nothing. Never let whichever unit Qt would otherwise
+                    # default to stand in as "the experiment's flush unit."
+                    self.pump_unit.setCurrentIndex(-1)
+            finally:
+                self.pump_unit.blockSignals(False)
             self._update_pump_unit_notice()
         tec = statuses[DeviceId.TEC].readback
         if isinstance(tec, TecReadback) and tec.channels:

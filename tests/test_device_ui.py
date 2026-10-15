@@ -64,6 +64,7 @@ from thermo_acoustic.domain.models import (
 from thermo_acoustic.hal.registry import DeviceRegistry
 from thermo_acoustic.hal.ad2 import AD2Worker
 from thermo_acoustic.drivers.ad2.simulated import SimulatedAD2
+from thermo_acoustic.drivers.pump import SimulatedPumpBank
 from thermo_acoustic.ui.device_panels import Ad2Panel, CameraPanel, PANEL_TYPES, PumpPanel, TecPanel
 from thermo_acoustic.ui.main_window import MainWindow
 
@@ -1185,6 +1186,112 @@ def test_experiment_tab_flush_unit_selection_survives_a_load_before_connect(qt_a
     finally:
         window1.close()
         controller1.shutdown()
+
+
+def test_experiment_tab_flush_unit_stays_unselected_when_the_saved_unit_never_appears(qt_app, tmp_path):
+    # Regression test for a residual defect found by an independent
+    # simulation after the first fix above landed: connecting a pump that
+    # genuinely never offers the saved unit (not just "not yet, until
+    # connected") must not silently fall back to whichever unit Qt would
+    # otherwise default the freshly-populated combo to. The saved unit
+    # must stay unresolved -- pending, visibly flagged, and excluded from
+    # anything that would actually run an experiment -- not quietly
+    # swapped for a different real pump.
+    del qt_app
+    controller1 = ApplicationController(DeviceRegistry(mode=OperatingMode.SIMULATION), mode=OperatingMode.SIMULATION)
+    window1 = MainWindow(controller1)
+    document = window1.profile_document()
+    document["experiment"]["flush_unit_index"] = 1
+    path = tmp_path / "unit-1.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    window1.close()
+    controller1.shutdown()
+
+    app = QApplication.instance() or QApplication(["test-flush-unit-never-appears"])
+    # Only one unit (index 0) ever exists for this controller -- unit 1,
+    # the saved value, can never become available no matter what connects.
+    controller2 = ApplicationController(
+        DeviceRegistry(mode=OperatingMode.SIMULATION,
+                       factories={DeviceId.PUMP: lambda: SimulatedPumpBank(unit_count=1)}),
+        mode=OperatingMode.SIMULATION)
+    results2 = []
+    controller2.command_result.connect(results2.append)
+    controller2.start()
+    window2 = MainWindow(controller2)
+    try:
+        panel2 = window2.experiment_panel
+        window2.load_profile(path)
+        assert panel2.pump_unit.currentData() is None
+        assert "unit 2" in panel2.pump_unit_notice.text().lower()
+
+        _connect_pump_via_real_button(app, window2, results2)
+        # The only real unit (0) must NOT have been silently adopted --
+        # neither as the combo's visible selection nor as what an
+        # experiment would actually compile/queue against.
+        assert panel2.pump_unit.count() == 1
+        assert panel2.pump_unit.currentData() is None
+        assert "unit 2" in panel2.pump_unit_notice.text().lower()
+        assert "not available" in panel2.pump_unit_notice.text().lower()
+        assert panel2._settings(require_pump_unit=False).flush_unit_index == 1  # still pending, not silently 0
+        with pytest.raises(ValueError, match="Select a configured pump unit"):
+            panel2._definition()  # must refuse to compile against the wrong unit, not succeed on unit 0
+
+        # Still recoverable by saving again -- the pending value isn't
+        # lost just because it turned out to be permanently unavailable
+        # on this particular setup.
+        resaved_path = tmp_path / "resaved.json"
+        window2.save_profile(resaved_path)
+        resaved_document = json.loads(resaved_path.read_text(encoding="utf-8"))
+        assert resaved_document["experiment"]["flush_unit_index"] == 1
+    finally:
+        window2.close()
+        controller2.shutdown()
+
+
+def test_experiment_tab_flush_unit_notice_clears_once_the_user_picks_a_different_unit(qt_app, tmp_path):
+    # Complementary scenario to the one above: the saved unit is
+    # unavailable, but the operator deliberately picks one of the units
+    # that *is* available instead of waiting for the saved one. That
+    # explicit choice must take over cleanly -- the stale pending value
+    # must not resurface later and override it (e.g. if a different pump
+    # bank happens to be connected afterward).
+    app = QApplication.instance() or QApplication(["test-flush-unit-explicit-reselect"])
+    controller = ApplicationController(
+        DeviceRegistry(mode=OperatingMode.SIMULATION,
+                       factories={DeviceId.PUMP: lambda: SimulatedPumpBank(unit_count=1)}),
+        mode=OperatingMode.SIMULATION)
+    results = []
+    controller.command_result.connect(results.append)
+    controller.start()
+    window = MainWindow(controller)
+    try:
+        panel = window.experiment_panel
+        document = window.profile_document()
+        document["experiment"]["flush_unit_index"] = 1  # never available on this controller's 1-unit bank
+        path = tmp_path / "unit-1.json"
+        path.write_text(json.dumps(document), encoding="utf-8")
+        window.load_profile(path)
+
+        _connect_pump_via_real_button(app, window, results)
+        assert panel.pump_unit.currentData() is None
+        assert panel.pump_unit_notice.text() != ""
+
+        # The operator explicitly selects the one available unit (0) --
+        # a real combo interaction, not an internal call.
+        panel.pump_unit.setCurrentIndex(panel.pump_unit.findData(0))
+        assert panel.pump_unit.currentData() == 0
+        assert panel.pump_unit_notice.text() == ""  # the stale notice must not linger
+        assert panel._settings(require_pump_unit=False).flush_unit_index == 0
+        assert panel._definition()  # now compiles cleanly against the chosen unit
+
+        # The abandoned pending value must not come back on its own --
+        # not even if _devices() runs again for an unrelated reason (the
+        # same pump reporting updated status, say).
+        panel._devices(controller.statuses())
+        assert panel.pump_unit.currentData() == 0
+    finally:
+        window.close()
+        controller.shutdown()
 
 
 def test_experiment_tab_settings_profile_is_optional_for_backward_compatibility(qt_app, tmp_path):
