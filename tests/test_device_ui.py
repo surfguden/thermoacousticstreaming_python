@@ -1365,6 +1365,57 @@ def test_experiment_tab_settings_profile_rejects_malformed_experiment_data(qt_ap
     with pytest.raises(ValueError, match="must be an object"):
         window.load_profile(path)
 
+    # Regression case for a real defect found by an independent simulation
+    # (Codex): a profile with a new, otherwise-legal repeats value but a
+    # wrong-typed frame_count used to raise a TypeError from deep inside
+    # _apply_settings()'s widget-setting loop -- AFTER repeats had already
+    # been applied to the real widget, since SimpleSeriesSettings and
+    # NumericRange are plain dataclasses that never checked field types at
+    # construction time. The fix validates every field's type up front, in
+    # simple_series_settings_from_profile(), before _apply_settings() is
+    # ever called -- so a rejected load leaves every field, including the
+    # ones listed earlier in the widget-setting loop, exactly as they were.
+    document = window.profile_document()
+    document["experiment"]["repeats"] = original_repeats + 5
+    document["experiment"]["frame_count"] = "two"  # wrong type, not just an unknown field
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ValueError, match="frame_count must be an integer"):
+        window.load_profile(path)
+    assert window.experiment_panel.repeats.value() == original_repeats  # not the new value
+
+
+def test_experiment_tab_valid_non_default_profile_still_round_trips_after_the_type_check(qt_app, tmp_path):
+    # Confirms the new up-front type validation (added alongside the fix
+    # above) does not reject a genuinely valid, non-default configuration
+    # -- every field type used across the test suite's other non-default
+    # profiles (ints, floats, bools, strings, NumericRange objects, a
+    # 4-element roi, and a null flush_unit_index/tec_channel) must still
+    # pass.
+    del qt_app
+    controller = ApplicationController(DeviceRegistry(mode=OperatingMode.SIMULATION), mode=OperatingMode.SIMULATION)
+    window = MainWindow(controller)
+    panel = window.experiment_panel
+    panel.description.setText("Valid non-default configuration")
+    panel.repeats.setValue(4)
+    panel.frames.setValue(6)
+    panel.fps.setValue(15)
+    panel.sweep_enabled.setChecked(True)
+    for widget, value in zip(panel.sweep_width, (50_000, 150_000, 3)):
+        widget.setValue(value)
+    panel.temperature_control.setChecked(True)
+    for widget, value in zip(panel.temperature, (15, 35, 3)):
+        widget.setValue(value)
+    panel.temperature_logging.setChecked(True)
+    panel.temperature_wait_for_stability.setChecked(True)
+
+    path = tmp_path / "valid-non-default.json"
+    window.save_profile(path)
+    window.load_profile(path)  # must not raise
+    assert panel.repeats.value() == 4
+    assert panel.frames.value() == 6
+    assert panel.sweep_enabled.isChecked() is True
+    assert panel.temperature_wait_for_stability.isChecked() is True
+
 
 def test_previous_waveform_profile_keys_still_load(qt_app, tmp_path):
     del qt_app

@@ -85,10 +85,36 @@ def simple_series_settings_to_profile(settings: SimpleSeriesSettings) -> dict[st
     return data
 
 
+_INT_FIELDS = ("repeats", "frame_count")
+_INT_OR_NONE_FIELDS = ("flush_unit_index", "tec_channel")
+_NUMBER_FIELDS = ("camera_fps", "sound_start_s", "sound_run_s", "laser_start_s", "laser_run_s",
+                  "camera_start_s", "flush_volume_ml", "flush_flow_ul_min", "flush_wait_after_s",
+                  "sweep_period_ms", "temperature_wait_s", "temperature_tolerance_c",
+                  "temperature_min_settle_s", "temperature_max_wait_s")
+_BOOL_FIELDS = ("sweep_enabled", "temperature_control", "temperature_logging",
+                "temperature_wait_for_stability")
+_STR_FIELDS = ("description",)
+_TIFF_FORMATS = ("frames", "stacked")
+
+
+def _is_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def simple_series_settings_from_profile(data: object) -> SimpleSeriesSettings:
     """Inverse of simple_series_settings_to_profile(); raises ValueError on
     anything that isn't a well-formed experiment-settings object, matching
-    the device-settings profile's own validation style."""
+    the device-settings profile's own validation style.
+
+    Every field's type is checked here, up front -- dataclasses (both
+    SimpleSeriesSettings and NumericRange) do not validate field types at
+    construction time on their own, so a malformed value would otherwise
+    only surface later, as a Qt binding TypeError partway through
+    SimpleSeriesPanel._apply_settings()'s field-by-field widget-setting
+    loop, after some earlier fields in that same loop have already been
+    applied -- exactly the "half-applied settings" defect this function
+    exists to prevent.
+    """
     if not isinstance(data, dict):
         raise ValueError("Experiment settings must be an object")
     known = {field.name for field in fields(SimpleSeriesSettings)}
@@ -96,20 +122,42 @@ def simple_series_settings_from_profile(data: object) -> SimpleSeriesSettings:
     if unknown:
         raise ValueError(f"Unknown experiment setting(s): {', '.join(sorted(unknown))}")
     values = dict(data)
+    for key in _INT_FIELDS:
+        if key in values and (isinstance(values[key], bool) or not isinstance(values[key], int)):
+            raise ValueError(f"{key} must be an integer")
+    for key in _INT_OR_NONE_FIELDS:
+        if key in values and values[key] is not None and (
+                isinstance(values[key], bool) or not isinstance(values[key], int)):
+            raise ValueError(f"{key} must be an integer or null")
+    for key in _NUMBER_FIELDS:
+        if key in values and not _is_number(values[key]):
+            raise ValueError(f"{key} must be a number")
+    for key in _BOOL_FIELDS:
+        if key in values and not isinstance(values[key], bool):
+            raise ValueError(f"{key} must be true or false")
+    for key in _STR_FIELDS:
+        if key in values and not isinstance(values[key], str):
+            raise ValueError(f"{key} must be text")
+    if "tiff_format" in values:
+        if values["tiff_format"] not in _TIFF_FORMATS:
+            raise ValueError(f"tiff_format must be one of {', '.join(_TIFF_FORMATS)}")
     for key in _NUMERIC_RANGE_FIELDS:
         if key not in values:
             continue
         range_value = values[key]
         if not isinstance(range_value, dict) or set(range_value) != {"start", "stop", "steps"}:
             raise ValueError(f"{key} must be a start/stop/steps object")
-        try:
-            values[key] = NumericRange(**range_value)
-        except TypeError as exc:
-            raise ValueError(f"{key} is not a valid start/stop/steps object: {exc}") from exc
+        if not _is_number(range_value["start"]) or not _is_number(range_value["stop"]):
+            raise ValueError(f"{key}'s start/stop must be numbers")
+        if isinstance(range_value["steps"], bool) or not isinstance(range_value["steps"], int):
+            raise ValueError(f"{key}'s steps must be an integer")
+        values[key] = NumericRange(**range_value)
     if "roi" in values:
         roi = values["roi"]
         if not (isinstance(roi, (list, tuple)) and len(roi) == 4):
             raise ValueError("roi must be a 4-element array")
+        if any(isinstance(item, bool) or not isinstance(item, int) for item in roi):
+            raise ValueError("roi elements must be integers")
         values["roi"] = tuple(roi)
     try:
         return SimpleSeriesSettings(**values)
