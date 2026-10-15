@@ -7,16 +7,25 @@ this branch's actual files).
 
 ## Series-lifecycle persistence — split A/B/C per explicit instruction
 
-**A. Real-time persistence of in-progress state — done, verified.**
-`SeriesStorage.status()` writes `status.json` atomically
-(`write_json()`'s temp-file-then-rename pattern) on every real state
-transition — `queued`, `preflight`, `running`, per-experiment counts via
-`record_experiment_started/completed/failed()`, and every terminal state.
-This was already true before this round; re-confirmed, not re-implemented.
-**No code path ever marks an abnormally-ended record as successful**: there
-is no reconciliation logic at all (see C below), so a "running" record
-simply stays "running" — it is never rewritten to "completed" by anything
-other than the same process's own `_complete_series()` actually finishing.
+**A. Real-time persistence of in-progress state — done, fixed this round
+(was not actually done before, despite an earlier claim that it was).**
+`record_experiment_started/completed/failed()` previously only incremented
+in-memory counters on `SeriesStorage` — they never called `status()`, so
+`status.json` was not rewritten between the series' own `status("running")`
+call (at `_begin_steps()`) and its next real transition (the final terminal
+call). A crash between two experiments would have left `status.json`
+showing stale, pre-increment counts, which is exactly the opposite of what
+"real-time persistence" is supposed to mean. **Fixed**: each of the three
+methods now calls `self.status("running", {})` immediately after
+incrementing (`"running"` is correct — these are only ever called while the
+series is actively running). **Verified by reading `status.json` from disk
+while the series has not yet reached a terminal state**
+(`tests/test_simple_series.py::test_lifecycle_counts_are_persisted_before_the_series_ends`),
+not only by checking the final file, per explicit instruction. No code path
+ever marks an abnormally-ended record as successful: there is no
+reconciliation logic at all (see C below), so a "running" record simply
+stays "running" — it is never rewritten to "completed" by anything other
+than the same process's own `_complete_series()` actually finishing.
 
 **B. Crash state interpretation — documented procedure for manual
 inspection, not code, per this round's explicit instruction.** To

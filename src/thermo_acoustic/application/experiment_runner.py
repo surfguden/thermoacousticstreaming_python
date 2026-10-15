@@ -856,51 +856,63 @@ class ExperimentManager(QObject):
                 "save_frames": "Saving frames",
             }.get(kind, kind)
             self._publish()
-        if kind == "flush":
-            command = WorkflowCommand(WorkflowOperation.FLUSH,
-                                      FlushArgs(**args), source="experiment")
-            self._submit(command, lambda value: self._record("flush", args, value, done))
-        elif kind == "wait":
-            self._submit(WorkflowCommand(WorkflowOperation.WAIT, WaitArgs(**args), source="experiment"),
-                         lambda _value: done())
-        elif kind == "tec_set":
-            self._command(DeviceId.TEC, DeviceOperation.TEC_SETPOINTS_APPLY,
-                          TecApplySetpointsArgs(**self._tec_args(args)),
-                          lambda value: self._record("tec_set", args, value, done))
-        elif kind == "tec_wait_stable":
-            self._command(DeviceId.TEC, DeviceOperation.TEC_WAIT_STABLE,
-                          TecWaitStableArgs(**self._tec_args(args)),
-                          lambda value: self._record("tec_wait_stable", args, value, done))
-        elif kind == "stage_move":
-            self._command(DeviceId.Z_STAGE, DeviceOperation.Z_STAGE_POSITION_SET,
-                          ZStageSetPositionArgs(**args), lambda value: self._record("stage_move", args, value, done))
-        elif kind == "camera_configure":
-            self._settings[kind] = args
-            self._configure_camera(args, lambda _value: done())
-        elif kind == "ad2_configure":
-            self._settings[kind] = args
-            self._command(DeviceId.AD2, DeviceOperation.AD2_WAVEFORM_CONFIGURE,
-                          self._waveform_args(args, self._laser_frequency_hz),
-                          lambda value: self._ad2_digital_after_waveform(args, value, done))
-        elif kind == "camera_arm":
-            self._command(DeviceId.CAMERA, DeviceOperation.CAMERA_SEQUENCE_ARM, NoArguments(),
-                          lambda _value: done())
-        elif kind == "ad2_arm":
-            self._command(DeviceId.AD2, DeviceOperation.AD2_WAVEFORM_START, NoArguments(),
-                          lambda _value: self._command(DeviceId.AD2, DeviceOperation.AD2_DIGITAL_OUTPUT_START,
-                                                       NoArguments(), lambda _value: done()))
-        elif kind == "pc_trigger":
-            self._command(DeviceId.AD2, DeviceOperation.AD2_SOFTWARE_TRIGGER, NoArguments(),
-                          lambda _value: self._mark_trigger(done))
-        elif kind == "await_frames":
-            self._command(DeviceId.CAMERA, DeviceOperation.CAMERA_SEQUENCE_COLLECT, NoArguments(),
-                          lambda value: self._frames_collected(value, done))
-        elif kind == "wait_outputs":
-            self._wait_outputs(done)
-        elif kind == "save_frames":
-            self._save_frames(done)
-        else:
-            self._fail(f"Unsupported execution action {kind}")
+        # Building a command's arguments (not just submitting the command)
+        # can itself raise -- e.g. a dataclass __post_init__ invariant that
+        # the declarative JSON schema does not separately encode (such as
+        # TecWaitStableArgs' poll_interval_s <= max_wait_s). _submit()'s own
+        # try/except only covers controller.submit(command), not building
+        # `command` as an argument to it one line above -- that exception
+        # previously reached Qt's callback chain uncaught. One try/except
+        # around the whole dispatch catches that class of error uniformly,
+        # for every action kind, rather than one at a time as each is found.
+        try:
+            if kind == "flush":
+                command = WorkflowCommand(WorkflowOperation.FLUSH,
+                                          FlushArgs(**args), source="experiment")
+                self._submit(command, lambda value: self._record("flush", args, value, done))
+            elif kind == "wait":
+                self._submit(WorkflowCommand(WorkflowOperation.WAIT, WaitArgs(**args), source="experiment"),
+                             lambda _value: done())
+            elif kind == "tec_set":
+                self._command(DeviceId.TEC, DeviceOperation.TEC_SETPOINTS_APPLY,
+                              TecApplySetpointsArgs(**self._tec_args(args)),
+                              lambda value: self._record("tec_set", args, value, done))
+            elif kind == "tec_wait_stable":
+                self._command(DeviceId.TEC, DeviceOperation.TEC_WAIT_STABLE,
+                              TecWaitStableArgs(**self._tec_args(args)),
+                              lambda value: self._record("tec_wait_stable", args, value, done))
+            elif kind == "stage_move":
+                self._command(DeviceId.Z_STAGE, DeviceOperation.Z_STAGE_POSITION_SET,
+                              ZStageSetPositionArgs(**args), lambda value: self._record("stage_move", args, value, done))
+            elif kind == "camera_configure":
+                self._settings[kind] = args
+                self._configure_camera(args, lambda _value: done())
+            elif kind == "ad2_configure":
+                self._settings[kind] = args
+                self._command(DeviceId.AD2, DeviceOperation.AD2_WAVEFORM_CONFIGURE,
+                              self._waveform_args(args, self._laser_frequency_hz),
+                              lambda value: self._ad2_digital_after_waveform(args, value, done))
+            elif kind == "camera_arm":
+                self._command(DeviceId.CAMERA, DeviceOperation.CAMERA_SEQUENCE_ARM, NoArguments(),
+                              lambda _value: done())
+            elif kind == "ad2_arm":
+                self._command(DeviceId.AD2, DeviceOperation.AD2_WAVEFORM_START, NoArguments(),
+                              lambda _value: self._command(DeviceId.AD2, DeviceOperation.AD2_DIGITAL_OUTPUT_START,
+                                                           NoArguments(), lambda _value: done()))
+            elif kind == "pc_trigger":
+                self._command(DeviceId.AD2, DeviceOperation.AD2_SOFTWARE_TRIGGER, NoArguments(),
+                              lambda _value: self._mark_trigger(done))
+            elif kind == "await_frames":
+                self._command(DeviceId.CAMERA, DeviceOperation.CAMERA_SEQUENCE_COLLECT, NoArguments(),
+                              lambda value: self._frames_collected(value, done))
+            elif kind == "wait_outputs":
+                self._wait_outputs(done)
+            elif kind == "save_frames":
+                self._save_frames(done)
+            else:
+                self._fail(f"Unsupported execution action {kind}")
+        except Exception as exc:
+            self._fail(f"{kind} step rejected its own arguments: {exc}")
 
     def _record(self, name: str, requested: Any, applied: Any, done: Callable[[], None]) -> None:
         if name == "flush":

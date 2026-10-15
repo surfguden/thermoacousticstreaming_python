@@ -13,7 +13,7 @@ from PIL import Image
 from PySide6.QtWidgets import QApplication
 
 from thermo_acoustic.application.controller import ApplicationController
-from thermo_acoustic.application.commands import Ad2AnalogOutputIdle, Ad2WaveformFunction, CameraConfigureRoiArgs, CameraSequenceResult, DeviceCommand, DeviceOperation, PumpMoveArgs
+from thermo_acoustic.application.commands import Ad2AnalogOutputIdle, Ad2WaveformFunction, CameraConfigureRoiArgs, CameraSequenceResult, DeviceCommand, DeviceOperation, PumpMoveArgs, PumpSetFillLevelArgs
 from thermo_acoustic.application.experiments import default_definition, validate_definition
 from thermo_acoustic.application.experiment_storage import SeriesStorage
 from thermo_acoustic.application.experiment_runner import ExperimentManager
@@ -646,6 +646,46 @@ def test_temperature_point_series_runs_each_point_in_order(tmp_path):
         controller.shutdown()
 
 
+def test_tec_wait_stable_argument_construction_failure_reports_cleanly(tmp_path):
+    # validate_definition() only checks max_wait_s > 0 -- it has no way to
+    # know TecWaitStableArgs' own poll_interval_s default (1.0 s, a software
+    # polling choice, not part of the declarative JSON schema), so a
+    # definition with max_wait_s below that passes validation and used to
+    # reach TecWaitStableArgs(**args) inside _run_action as an uncaught
+    # exception in the middle of a Qt callback chain. Confirms it now fails
+    # as an ordinary, reported series failure instead.
+    app = QApplication.instance() or QApplication(["test-experiments"])
+    controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
+    controller.start()
+    try:
+        for device in (DeviceId.AD2, DeviceId.CAMERA, DeviceId.TEC):
+            controller.submit(DeviceCommand(device, DeviceOperation.CONNECT))
+        results = []
+        controller.command_result.connect(results.append)
+        until(app, lambda: sum(result.operation is DeviceOperation.CONNECT and result.ok
+                               for result in results) == 3)
+        definition = {
+            "version": 1, "name": "bad_poll_interval", "description": "Bad poll interval test",
+            "preflight": False, "tiff_format": "frames",
+            "steps": [
+                {"type": "tec_set", "args": {"target_temperature_c": 20.0}},
+                {"type": "tec_wait_stable", "args": {"target_temperature_c": 20.0,
+                    "tolerance_c": 0.5, "min_settle_s": 0, "max_wait_s": 0.1}},  # below the 1.0s poll interval
+                {"type": "repeat", "count": 1, "steps": [
+                    {"type": "experiment", "steps": _minimal_experiment_steps()},
+                ]},
+            ],
+        }
+        folder = controller.experiments.queue(definition, tmp_path)
+        assert controller.experiments.start()
+        until(app, lambda: controller.experiments.status()["state"] == "failed", timeout=10)
+        status_doc = json.loads((folder / "metadata" / "status.json").read_text())
+        assert "rejected its own arguments" in status_doc["error"]
+        assert "poll_interval_s" in status_doc["error"]
+    finally:
+        controller.shutdown()
+
+
 def test_temperature_point_series_supports_independent_per_channel_targets(tmp_path):
     # The "unlocked" case: channels 1 and 2 follow different point lists in
     # lockstep, expressed as one sweep parameter whose values are themselves
@@ -690,3 +730,70 @@ def test_temperature_point_series_supports_independent_per_channel_targets(tmp_p
         assert tec_set_values == [{1: 20.0, 2: 24.0}, {1: 21.0, 2: 23.0}]
     finally:
         controller.shutdown()
+
+
+def _capacity_check_rejects_below_whole_series_total(app, tmp_path, definition, expected_total_ml):
+    # Shared body for the three placement scenarios below: connects the
+    # devices _check_capacity needs, sets the pump's fill level to just
+    # under the EXPECTED whole-series total (not the test author's own
+    # arithmetic alone -- the assertion on the rejection message is what
+    # actually proves the engine computed the same total), and confirms
+    # the series is rejected before any flush runs, citing that exact
+    # number.
+    controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
+    results = []
+    events = []
+    controller.command_result.connect(results.append)
+    controller.command_event.connect(events.append)
+    controller.start()
+    try:
+        for device in (DeviceId.AD2, DeviceId.CAMERA, DeviceId.PUMP, DeviceId.VALVE):
+            controller.submit(DeviceCommand(device, DeviceOperation.CONNECT))
+        until(app, lambda: sum(result.operation is DeviceOperation.CONNECT and result.ok
+                               for result in results) == 4)
+        controller.submit(DeviceCommand(DeviceId.CAMERA, DeviceOperation.CAMERA_ROI_CONFIGURE,
+                                        CameraConfigureRoiArgs(0, 0, 16, 16)))
+        controller.submit(DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_FILL_LEVEL_SET,
+                                        PumpSetFillLevelArgs(expected_total_ml - 0.03)))
+        until(app, lambda: any(result.operation is DeviceOperation.PUMP_FILL_LEVEL_SET and result.ok
+                               for result in results))
+        folder = controller.experiments.queue(definition, tmp_path)
+        assert controller.experiments.start()
+        until(app, lambda: controller.experiments.status()["state"] == "failed", timeout=10)
+        status_doc = json.loads((folder / "metadata" / "status.json").read_text())
+        assert f"{expected_total_ml:g} mL total flush volume" in status_doc["error"], status_doc["error"]
+        assert not any(event.operation.value == "workflow.flush" and event.source == "experiment"
+                       for event in events)  # rejected before any flush ran, regardless of placement
+    finally:
+        controller.shutdown()
+
+
+def test_flush_budget_sums_a_series_level_only_flush(tmp_path):
+    # Placement 1: one flush outside any sweep/repeat -- associated with
+    # the whole series by construction, not just by the capacity check.
+    app = QApplication.instance() or QApplication(["test-experiments"])
+    definition = described_default_definition()
+    experiment = definition["steps"][1]["steps"][0]["steps"][0]["steps"]
+    experiment[-1]["branches"][1] = [{"type": "wait_outputs", "args": {}}]  # remove the per-experiment flush
+    _capacity_check_rejects_below_whole_series_total(app, tmp_path, definition, expected_total_ml=0.1)
+
+
+def test_flush_budget_sums_a_per_repeat_only_flush_across_two_repeats(tmp_path):
+    # Placement 2: no series-level flush; two repeats, each with its own
+    # flush inside its experiment's parallel branch -- the capacity check
+    # must sum both repeats' flushes, not count the per-repeat flush once.
+    app = QApplication.instance() or QApplication(["test-experiments"])
+    definition = described_default_definition()
+    definition["steps"] = [definition["steps"][1]]  # drop the series-level flush entirely
+    definition["steps"][0]["steps"][0]["count"] = 2  # two repeats
+    _capacity_check_rejects_below_whole_series_total(app, tmp_path, definition, expected_total_ml=0.2)
+
+
+def test_flush_budget_sums_a_mixed_series_and_per_repeat_placement(tmp_path):
+    # Placement 3: a series-level flush AND two repeats each with their own
+    # per-experiment flush -- the capacity check must add all three
+    # together regardless of where in the tree each one sits.
+    app = QApplication.instance() or QApplication(["test-experiments"])
+    definition = described_default_definition()
+    definition["steps"][1]["steps"][0]["count"] = 2  # two repeats, keep the series-level flush
+    _capacity_check_rejects_below_whole_series_total(app, tmp_path, definition, expected_total_ml=0.3)

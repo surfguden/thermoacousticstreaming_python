@@ -101,13 +101,22 @@ class SeriesStorage:
         self.status("queued", {})
 
     def record_experiment_started(self) -> None:
+        # Persist immediately, not just increment in memory: a crash
+        # between this call and the series' next status() call must not
+        # leave status.json showing stale (pre-increment) counts. "running"
+        # is correct here -- these three methods are only ever called while
+        # the series is actively running, between _begin_steps()'s initial
+        # status("running") and the series' own terminal status() call.
         self.experiments_started += 1
+        self.status("running", {})
 
     def record_experiment_completed(self) -> None:
         self.experiments_completed += 1
+        self.status("running", {})
 
     def record_experiment_failed(self) -> None:
         self.experiments_failed += 1
+        self.status("running", {})
 
     def update_definition(self, expansion: Expansion) -> None:
         """Replace only the queued plan; no acquired data may be present."""

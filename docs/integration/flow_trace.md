@@ -83,14 +83,17 @@ structured to do," not "this has been confirmed to happen."
     code's behalf — it is the code's own documented limitation.
 11. **Begin** (`_begin_steps():751`). **[CODE]**.
 12. **Node execution** (`_run_nodes():776`): `stop_after_current` is
-    checked only at the experiment-completion boundary. **[CODE]** — this
-    specific claim (never mid-experiment) is a reading of where the check
-    appears in source; **no test in this repository exercises
-    `ExperimentManager.stop_after_current()`, `abort()`, or
-    `panic_abort()` at all** (confirmed: `grep -rn
-    "experiments.abort\|experiments.stop_after_current\|panic_abort" tests/`
-    returns zero matches, checked this round). Treat every claim in step 15
-    below as **[CODE, UNTESTED]** for this reason.
+    checked only at the experiment-completion boundary. **[TESTED:
+    test_stop_after_current_finishes_active_experiment_then_stops_before_next_point]**
+    — correction from an earlier round, which found zero tests calling
+    `ExperimentManager.stop_after_current()`/`abort()`/`panic_abort()` at
+    all (a real gap at the time) and then incorrectly generalized that into
+    "panic is zero-coverage," missing that
+    `tests/test_application_status.py::test_panic_stops_connected_outputs_without_moving_valve`
+    already exercises `controller.panic_stop()` → `experiments.panic_abort()`
+    indirectly — just not with a series actually running. This round adds
+    the specific case that test cannot cover (stop/abort/panic **while an
+    experiment series is active**) — see step 15.
 13. **Leaf actions**, in the order `_validate_experiment()` enforces:
     `camera_configure` → `ad2_configure` → `camera_arm` → `ad2_arm` →
     `pc_trigger` → `await_frames`, then a `parallel` block of
@@ -126,39 +129,59 @@ structured to do," not "this has been confirmed to happen."
       confirming save completes before `experiment_completed` for a
       single-experiment series.
     - **The parallel block's two branches must both finish before the next
-      top-level step runs**:
-      **[TESTED: test_ui_configured_temperature_series_runs_pump_valve_camera_ad2_tec_in_order]**
-      — asserts the first experiment's `AD2_DIGITAL_OUTPUT_STOP` completion
-      precedes the *second* experiment's own `CAMERA_SEQUENCE_CONFIGURE`
-      completion (by command-event index, not merely "eventually").
+      top-level step runs**: **[TESTED, directly, this round]** —
+      correction from an earlier round, which only checked that
+      `AD2_DIGITAL_OUTPUT_STOP` (the end of `wait_outputs` alone) precedes
+      the next experiment's reconfiguration. That is **not** evidence
+      either branch, let alone both, had actually finished: the
+      per-experiment flush runs *after* `wait_outputs` in the same branch
+      (per `_validate_experiment()`'s own ordering rule), so
+      `AD2_DIGITAL_OUTPUT_STOP` is emitted *before* that branch's own flush
+      even starts, and says nothing about the independent `save_frames`
+      branch at all. Replaced with two tests that directly control one
+      branch's duration and measure the real wall-clock gap to the next
+      experiment: `test_parallel_barrier_blocks_next_experiment_until_save_completes`
+      (an artificially slow `save_frames`) and
+      `test_parallel_barrier_blocks_next_experiment_until_flush_completes`
+      (a real, nonzero `wait_after_s` on the flush, not a monkeypatch).
+      Both assert the gap between the triggering experiment's
+      `AD2_SOFTWARE_TRIGGER` and the next experiment's own
+      `CAMERA_SEQUENCE_CONFIGURE` is at least the deliberately-introduced
+      delay — if the barrier did not hold, that gap would be far shorter.
 14. **Series completion** (`_complete_series():755`). **[CODE]** for the
     temperature-recorder drain-retry detail specifically; completion itself
     is **[TESTED]** throughout the suite.
-15. **Stop/abort/recover — three code paths with no test coverage at all**
-    (see step 12's note): `stop_after_current()` (`:361`), `abort()`
+15. **Stop/abort/recover — four code paths, now each tested specifically
+    for the in-series case.** `stop_after_current()` (`:361`), `abort()`
     (`:367`), a normal command failure via `_fail()` (`:1081`,
-    `stop_outputs=True`), and `panic_abort()` (`:383`,
-    `stop_outputs=False`) are each structurally distinct in source — read
-    and summarized accurately as *code*, but **none of the four has a test
-    exercising it** anywhere in this repository as of this round. This
-    document's earlier claim that these were "code-confirmed" conflated
-    "I read the code carefully" with "this was verified" — corrected here:
-    they are **[CODE, UNTESTED]**, full stop. The three *failure-injection*
-    tests added this round (stability-wait failure, acquisition failure,
-    save/flush failure — see "Failure-injection coverage" below) exercise
-    the **ordinary command-failure path** (`_fail()`/
-    `_finish_failure_when_safe()`), which is the one of these four paths
-    that real device errors actually trigger — `abort()`/
-    `stop_after_current()`/`panic_abort()` are operator-initiated and
-    remain untested.
+    `stop_outputs=True`), and `controller.panic_stop()` →
+    `panic_abort()` (`:383`, `stop_outputs=False`) are structurally
+    distinct in source. Device-level facts for `abort`/`panic` (which
+    devices get `SAFE_STOP`, that the valve is never moved by panic) were
+    already covered with no series running
+    (`test_panic_stops_connected_outputs_without_moving_valve`, pre-existing)
+    — this round adds the series-level consequence that test cannot cover:
+    **[TESTED: test_stop_after_current_finishes_active_experiment_then_stops_before_next_point]**
+    (lets the active experiment finish, then stops before the next point);
+    **[TESTED: test_abort_during_a_running_series_stops_without_starting_the_next_experiment]**
+    (the second repeat never starts; final counts stay internally
+    consistent); **[TESTED: test_panic_stop_during_a_running_series_ends_the_batch_without_moving_the_valve]**
+    (same, for `controller.panic_stop()`, re-confirming no `VALVE_POSITION_SET`
+    reaches the device even with a real series' own valve usage in play);
+    **[TESTED: the three failure-injection tests]** for the ordinary
+    command-failure path specifically.
 
 ## Direct answers to the specific questions raised
 
 - **Does flush belong to the whole series, a temperature group, or a single
   repeat?** Placement in the JSON step tree determines *association*; the
   capacity check sums flush volumes via a full recursive tree walk
-  regardless of placement. **[CODE]** — not tested across different
-  placements (see step 7).
+  regardless of placement.
+  **[TESTED: test_flush_budget_sums_a_series_level_only_flush,
+  test_flush_budget_sums_a_per_repeat_only_flush_across_two_repeats,
+  test_flush_budget_sums_a_mixed_series_and_per_repeat_placement]** —
+  three placements, each confirming the capacity-check rejection message
+  cites the correct whole-series total for that specific placement.
 - **When is temperature considered stable, when is it held, when is
   acquisition allowed?** `tec_wait_stable` → separate `wait` (hold) →
   `experiment` block, in that sibling order.
@@ -176,20 +199,36 @@ structured to do," not "this has been confirmed to happen."
   **[UNVERIFIED ON REAL HARDWARE]** for DIO0 edge count, by the code's own
   admission.
 - **When may the next experiment start after save+flush overlap?**
-  **[TESTED]** — see step 13's parallel-barrier bullet.
+  **[TESTED, directly]** — see step 13's parallel-barrier bullet; this is
+  the specific claim an earlier round's test did not actually establish
+  (it used `AD2_DIGITAL_OUTPUT_STOP` as a proxy, which precedes the
+  per-experiment flush, not after it).
 - **Which configuration must be re-applied on parameter change?**
   **[CODE]**, with indirect supporting evidence from the configure-count
   assertion in step 9.
 - **What do "stop current experiment," "stop now," and "exception
-  recovery" each mean?** **[CODE, UNTESTED]** for the first two (operator
-  actions); the third (ordinary command failure) now has three dedicated
-  failure-injection tests — see below.
+  recovery" each mean?** **[TESTED]** for all three, for the in-series
+  case specifically — see step 15.
 
 ## Failure-injection coverage (this round)
 
 Added to `tests/test_simple_series.py`, extending the same multi-point/
 multi-repeat harness as the main trace test (not a new framework) —
-`_connected_simple_series_harness()` factors the shared setup:
+`_connected_temperature_series_harness()` factors the shared setup.
+Also added `test_tec_wait_stable_argument_construction_failure_reports_cleanly`
+(`tests/test_experiments.py`) covering a related general fix found while
+building these: `_run_action()` previously let an exception raised while
+*constructing* a command's arguments (not just submitting it) escape
+uncaught into the Qt callback chain — `_submit()`'s own try/except only
+wraps `controller.submit(command)`, not building `command` as an argument
+to it one line above. The whole dispatch in `_run_action()` is now wrapped
+in one try/except reporting any such failure through the normal `_fail()`
+path, for every action kind uniformly (not one at a time as each is
+found). `compile_simple_series()`'s `temperature_max_wait_s` floor (see
+`decision_log.md` for why it stayed as a compile-time check, now
+referencing `TecWaitStableArgs`' own default instead of a duplicated
+constant) is a secondary, earlier-and-clearer error for the one specific
+case this surfaced through, not the only thing preventing a crash anymore.
 
 - **`test_stability_wait_failure_stops_series_before_any_point_starts`**:
   forces `tec_wait_stable` to time out (simulated TEC target held

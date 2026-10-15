@@ -5,6 +5,63 @@ SHA(s)/file(s)/function(s) the decision rests on, not just a conclusion.
 
 ---
 
+## 2026-10-15 — Corrections from Codex's review of 6a0a8a5
+
+Five corrections accepted and acted on, not just acknowledged:
+
+1. **Real-time persistence was not actually done.** `record_experiment_
+   started/completed/failed()` only incremented in-memory counters;
+   `status.json` was never rewritten between the series' "running" call and
+   its terminal one. Fixed: each now calls `status("running", {})`
+   immediately. Verified by reading `status.json` from disk **while the
+   series is still running** (`test_lifecycle_counts_are_persisted_before_
+   the_series_ends`), not only at the end — the specific thing the prior
+   claim of "done" had not actually checked.
+2. **Panic was not zero-coverage** — `test_panic_stops_connected_outputs_
+   without_moving_valve` already exercises `controller.panic_stop()` →
+   `experiments.panic_abort()`, just with no series running. Re-scoped the
+   gap correctly: stop/abort/panic semantics **while a series is actively
+   running** had no coverage, and still needed `stop_after_current()`/
+   `abort()` added regardless. Three new tests cover all three for the
+   in-series case, each checking only the series-level consequence (next
+   experiment doesn't start, final counts stay consistent) without
+   re-asserting the already-covered single-device SAFE_STOP facts.
+3. **The parallel-barrier test was not actually evidence of the barrier.**
+   It used `AD2_DIGITAL_OUTPUT_STOP` as a proxy for "both branches done,"
+   but that event precedes the per-experiment flush in the same branch and
+   says nothing about the independent save branch at all. Replaced with
+   two tests that each deliberately slow one branch by a controlled,
+   known amount and measure that the real wall-clock gap to the next
+   experiment is at least that amount.
+4. **The `temperature_max_wait_s >= 1.0` floor was reviewed, not just
+   defended.** The 1.0s came from `TecWaitStableArgs.poll_interval_s`'s
+   *software* default, not a hardware fact. Considered: keep the check
+   (clearer, earlier error) vs. make `poll_interval_s` itself adapt to
+   `max_wait_s` (would require widening the "tec_wait_stable" JSON schema
+   to accept it, a bigger change for a narrow benefit) vs. rely solely on
+   graceful runtime failure. Chose to **fix the actual safety problem
+   first** (exception propagation from command-argument construction,
+   `experiment_runner.py`'s `_run_action()` — general fix, not
+   TEC-specific) and **keep** the compile-time check only as a secondary,
+   now-honestly-labeled convenience (reads the real default via
+   `TecWaitStableArgs.__dataclass_fields__`, not a second hardcoded "1.0"),
+   since the propagation fix means it's no longer the only thing standing
+   between a bad value and a crash.
+5. **Added the explicitly-requested whole-series flush-budget tests**: 3
+   placements (series-level only, per-repeat only, mixed), each confirming
+   `_check_capacity`'s rejection message cites the correct total.
+
+Also: `TEC multi-point (unlocked)`, junjiebranch's temperature-point-level
+counters, and the data-format decision are kept in `migration_checklist.md`
+with their actual use case and implementation scope spelled out, per
+instruction not to let "keep TIFF+JSON" read as "external compatibility
+resolved" — it isn't; the external LabVIEW consumer was never checked.
+
+Full suite after all fixes: see the commit this entry ships with for the
+exact pass count.
+
+---
+
 ## 2026-10-14 — End-to-end flow verification batch
 
 **Correction accepted**: the earlier "TEC multi-point sequencing: done"

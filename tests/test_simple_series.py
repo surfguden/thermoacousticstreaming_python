@@ -574,11 +574,21 @@ def _connected_temperature_series_harness(app, *, repeats=2, hold_s=0.3):
     return controller, panel, results, events
 
 
+_TERMINAL_STATES = {"completed", "failed", "stopped", "aborted"}
+
+
 def _wait_until_terminal(app, controller, timeout=45):
     deadline = monotonic() + timeout
-    while monotonic() < deadline and controller.experiments.status()["state"] not in {"completed", "failed"}:
+    while monotonic() < deadline and controller.experiments.status()["state"] not in _TERMINAL_STATES:
         app.processEvents(); sleep(0.01)
     return controller.experiments.status()
+
+
+def _wait_until_n_experiments_completed(app, controller, n, timeout=30):
+    deadline = monotonic() + timeout
+    while monotonic() < deadline and controller.experiments.status()["batch_completed_experiments"] < n:
+        app.processEvents(); sleep(0.01)
+    assert controller.experiments.status()["batch_completed_experiments"] >= n, controller.experiments.status()
 
 
 def test_ui_configured_temperature_series_runs_pump_valve_camera_ad2_tec_in_order(tmp_path):
@@ -812,6 +822,224 @@ def test_save_failure_within_a_series_stops_before_the_next_repeat(tmp_path):
         assert status_doc["experiments_started"] == 1
         assert status_doc["experiments_completed"] == 0
         assert status_doc["experiments_failed"] == 1
+    finally:
+        panel.close()
+        controller.shutdown()
+
+
+def test_lifecycle_counts_are_persisted_before_the_series_ends(tmp_path):
+    # Correction: record_experiment_started/completed/failed() previously
+    # only incremented in-memory counters -- status.json was not rewritten
+    # until the series' own next status() call (the initial "running" or
+    # the final terminal one), so a crash between experiments would leave
+    # status.json showing stale, pre-increment counts. Fixed: each of the
+    # three now re-persists immediately. Proven here by reading status.json
+    # from disk WHILE the series is still "running", not only afterward.
+    app = QApplication.instance() or QApplication(["test-mid-run-persistence"])
+    controller, panel, results, events = _connected_temperature_series_harness(app, repeats=2)
+    try:
+        definition = panel._definition()
+        folder = controller.experiments.queue(definition, tmp_path)
+        assert controller.experiments.start()
+        _wait_until_n_experiments_completed(app, controller, 1, timeout=30)
+        # The series has not finished (4 experiments total) -- read the
+        # live file now, mid-series, not after completion.
+        live_status = controller.experiments.status()
+        assert live_status["state"] == "running", live_status
+        on_disk = json.loads((folder / "metadata" / "status.json").read_text())
+        assert on_disk["state"] == "running"
+        assert on_disk["experiments_started"] >= 1
+        assert on_disk["experiments_completed"] == 1
+        assert on_disk["finalized_outcome"] is None  # not finished yet -- must not be set early
+        final_status = _wait_until_terminal(app, controller)
+        assert final_status["state"] == "completed", final_status
+    finally:
+        panel.close()
+        controller.shutdown()
+
+
+def test_stop_after_current_finishes_active_experiment_then_stops_before_next_point(tmp_path):
+    # Stop semantics #1 (stop_after_current): lets the in-flight experiment
+    # run to full completion (including its own parallel save/flush), then
+    # stops -- the second temperature point's tec_set must never fire.
+    app = QApplication.instance() or QApplication(["test-stop-after-current"])
+    controller, panel, results, events = _connected_temperature_series_harness(app, repeats=1)
+    try:
+        definition = panel._definition()
+        folder = controller.experiments.queue(definition, tmp_path)
+        assert controller.experiments.start()
+        # Call stop_after_current() while the first (only) experiment is
+        # still mid-flight -- the check happens synchronously at the very
+        # end of that experiment's own completion callback, with no gap
+        # afterward for a test to intercept; waiting for
+        # batch_completed_experiments==1 would already be too late with
+        # only one repeat per point; there is no second experiment to wait
+        # through before the series moves on to the next point.
+        deadline = monotonic() + 30
+        while monotonic() < deadline and not any(
+            event.operation is DeviceOperation.AD2_SOFTWARE_TRIGGER and event.state == "completed"
+            for event in events
+        ):
+            app.processEvents(); sleep(0.01)
+        controller.experiments.stop_after_current()
+        status = _wait_until_terminal(app, controller)
+        assert status["state"] == "stopped", status
+
+        completed_ops = [event.operation for event in events if event.state == "completed"]
+        assert completed_ops.count(DeviceOperation.TEC_SETPOINTS_APPLY) == 1  # second point never started
+        assert completed_ops.count(DeviceOperation.CAMERA_SEQUENCE_COLLECT) == 1  # exactly the one experiment ran
+
+        status_doc = json.loads((folder / "metadata" / "status.json").read_text())
+        assert status_doc["finalized_outcome"] == "stopped_after_current"
+        assert status_doc["experiments_started"] == status_doc["experiments_completed"] == 1
+        assert status_doc["experiments_failed"] == 0
+    finally:
+        panel.close()
+        controller.shutdown()
+
+
+def test_abort_during_a_running_series_stops_without_starting_the_next_experiment(tmp_path):
+    # Stop semantics #2 (abort, "stop now"): unlike stop_after_current, does
+    # not wait for the current experiment -- but the specific device-level
+    # behavior (SAFE_STOP to all four devices, active-flush cancellation) is
+    # already covered at the controller level by
+    # test_panic_stops_connected_outputs_without_moving_valve and similar;
+    # this test checks only the series-level consequence that test cannot:
+    # the second repeat never starts, and the final record is consistent.
+    app = QApplication.instance() or QApplication(["test-abort"])
+    controller, panel, results, events = _connected_temperature_series_harness(app, repeats=2)
+    try:
+        definition = panel._definition()
+        folder = controller.experiments.queue(definition, tmp_path)
+        assert controller.experiments.start()
+        _wait_until_n_experiments_completed(app, controller, 1, timeout=30)
+        controller.experiments.abort()
+        status = _wait_until_terminal(app, controller)
+        assert status["state"] == "aborted", status
+
+        completed_ops = [event.operation for event in events if event.state == "completed"]
+        # The second repeat of the first point must never have reached
+        # acquisition -- at most the one experiment that had already
+        # finished before abort() was called.
+        assert completed_ops.count(DeviceOperation.CAMERA_SEQUENCE_COLLECT) == 1
+        assert completed_ops.count(DeviceOperation.TEC_SETPOINTS_APPLY) == 1
+
+        status_doc = json.loads((folder / "metadata" / "status.json").read_text())
+        assert status_doc["finalized_outcome"] == "aborted"
+        assert status_doc["experiments_completed"] == 1
+        # The second repeat's incomplete experiment, if any was in flight
+        # when abort() landed, must not be miscounted as completed.
+        assert status_doc["experiments_completed"] <= status_doc["experiments_started"]
+    finally:
+        panel.close()
+        controller.shutdown()
+
+
+def test_panic_stop_during_a_running_series_ends_the_batch_without_moving_the_valve(tmp_path):
+    # Stop semantics #3 (controller.panic_stop(), which calls
+    # experiments.panic_abort() internally): the device-level facts (no
+    # VALVE_POSITION_SET, which devices get SAFE_STOP) are already covered
+    # by test_panic_stops_connected_outputs_without_moving_valve for the
+    # no-series-running case; this test checks the one thing that case
+    # cannot, with a real series actually running: the batch stops, the
+    # next experiment never starts, and the valve is still never moved by
+    # panic specifically (re-asserted here because it is the one
+    # panic-specific device fact that interacts with a live series' own
+    # valve usage, unlike the device connect/SAFE_STOP facts which don't).
+    app = QApplication.instance() or QApplication(["test-panic-during-series"])
+    controller, panel, results, events = _connected_temperature_series_harness(app, repeats=2)
+    try:
+        definition = panel._definition()
+        folder = controller.experiments.queue(definition, tmp_path)
+        assert controller.experiments.start()
+        _wait_until_n_experiments_completed(app, controller, 1, timeout=30)
+        before = len(events)
+        controller.panic_stop()
+        deadline = monotonic() + 15
+        while monotonic() < deadline and controller.panic_status()["state"] == "stopping":
+            app.processEvents(); sleep(0.01)
+        assert controller.panic_status()["state"] == "completed"
+        status = _wait_until_terminal(app, controller)
+        assert status["state"] == "aborted", status
+
+        completed_ops = [event.operation for event in events if event.state == "completed"]
+        assert completed_ops.count(DeviceOperation.CAMERA_SEQUENCE_COLLECT) == 1
+        assert not any(event.operation is DeviceOperation.VALVE_POSITION_SET for event in events[before:])
+
+        status_doc = json.loads((folder / "metadata" / "status.json").read_text())
+        assert status_doc["finalized_outcome"] == "aborted"
+        assert status_doc["experiments_completed"] <= status_doc["experiments_started"]
+    finally:
+        panel.close()
+        controller.shutdown()
+
+
+def test_parallel_barrier_blocks_next_experiment_until_save_completes(tmp_path):
+    # Direct test of the parallel barrier, not inferred from
+    # AD2_DIGITAL_OUTPUT_STOP (which only marks wait_outputs' own
+    # completion, strictly before the flush step in the same branch runs --
+    # it is not evidence that EITHER branch, let alone both, has finished).
+    # Makes save deliberately slow and measures that the wall-clock gap
+    # between the first experiment's trigger and the second experiment's
+    # own camera reconfiguration is at least the artificial save delay --
+    # if the barrier did not hold, that gap would be far shorter (bounded
+    # only by the fast simulated wait_outputs/flush branch).
+    app = QApplication.instance() or QApplication(["test-barrier-save"])
+    controller, panel, results, events = _connected_temperature_series_harness(app, repeats=2)
+    try:
+        panel.temperature[2].setValue(1)  # one temperature point only, simplifies timing
+        definition = panel._definition()
+        folder = controller.experiments.queue(definition, tmp_path)
+        storage = controller.experiments._queued[0][1]
+        original_save = storage.save_frames
+        delay_s = 0.6
+        def slow_save(*args, **kwargs):
+            sleep(delay_s)
+            return original_save(*args, **kwargs)
+        storage.save_frames = slow_save
+        assert controller.experiments.start()
+        status = _wait_until_terminal(app, controller)
+        assert status["state"] == "completed", status
+
+        completed = [event for event in events if event.state == "completed"]
+        triggers = [i for i, event in enumerate(completed) if event.operation is DeviceOperation.AD2_SOFTWARE_TRIGGER]
+        configures = [i for i, event in enumerate(completed)
+                     if event.operation is DeviceOperation.CAMERA_SEQUENCE_CONFIGURE]
+        assert len(triggers) == 2
+        first_trigger_time = completed[triggers[0]].timestamp
+        second_configure_time = completed[configures[-1]].timestamp  # the 2nd experiment's own reconfigure
+        elapsed = (second_configure_time - first_trigger_time).total_seconds()
+        assert elapsed >= delay_s * 0.8
+    finally:
+        panel.close()
+        controller.shutdown()
+
+
+def test_parallel_barrier_blocks_next_experiment_until_flush_completes(tmp_path):
+    # Same barrier, isolating the flush side instead of save: a real
+    # (not monkeypatched) nonzero wait_after_s on the flush extends that
+    # branch's own completion deterministically, with save left fast.
+    app = QApplication.instance() or QApplication(["test-barrier-flush"])
+    controller, panel, results, events = _connected_temperature_series_harness(app, repeats=2)
+    try:
+        panel.temperature[2].setValue(1)
+        wait_after_s = 0.6
+        panel.wait_after_flush.setValue(wait_after_s)
+        definition = panel._definition()
+        folder = controller.experiments.queue(definition, tmp_path)
+        assert controller.experiments.start()
+        status = _wait_until_terminal(app, controller)
+        assert status["state"] == "completed", status
+
+        completed = [event for event in events if event.state == "completed"]
+        triggers = [i for i, event in enumerate(completed) if event.operation is DeviceOperation.AD2_SOFTWARE_TRIGGER]
+        configures = [i for i, event in enumerate(completed)
+                     if event.operation is DeviceOperation.CAMERA_SEQUENCE_CONFIGURE]
+        assert len(triggers) == 2
+        first_trigger_time = completed[triggers[0]].timestamp
+        second_configure_time = completed[configures[-1]].timestamp
+        elapsed = (second_configure_time - first_trigger_time).total_seconds()
+        assert elapsed >= wait_after_s * 0.8
     finally:
         panel.close()
         controller.shutdown()

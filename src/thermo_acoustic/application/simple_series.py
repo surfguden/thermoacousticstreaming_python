@@ -6,8 +6,17 @@ from dataclasses import dataclass
 import math
 from typing import Any
 
+from .commands import TecWaitStableArgs
 from .experiments import validate_definition
 from ..drivers.tec.controller import validate_tec_target_temperature
+
+# TecWaitStableArgs' own poll_interval_s is not exposed through the
+# declarative "tec_wait_stable" JSON schema (experiments.py never lists it
+# as an allowed field), so every compiled step gets this dataclass default
+# -- a software polling choice, not a hardware fact. Read it from the
+# dataclass itself rather than duplicating the number here, so this stays
+# correct if that default is ever changed.
+_TEC_WAIT_STABLE_POLL_INTERVAL_S = TecWaitStableArgs.__dataclass_fields__["poll_interval_s"].default
 
 
 @dataclass(frozen=True)
@@ -92,16 +101,20 @@ def compile_simple_series(settings: SimpleSeriesSettings) -> dict[str, Any]:
             raise ValueError("Temperature minimum settle time must be nonnegative")
         if settings.temperature_max_wait_s <= 0:
             raise ValueError("Temperature maximum wait must be positive")
-        # TecWaitStableArgs' own poll_interval_s defaults to 1.0 s and is not
-        # exposed as a separate field here (the compiled "tec_wait_stable"
-        # step never sets it) -- its own __post_init__ requires
-        # poll_interval_s <= max_wait_s, so a smaller max_wait would fail
-        # only once the series actually reached that step, as an uncaught
-        # exception inside the execution callback chain rather than a clean
-        # validation error at queue time. Catch it here instead.
-        if settings.temperature_max_wait_s < 1.0:
+        # TecWaitStableArgs' own poll_interval_s (a software polling choice,
+        # not a hardware fact -- see _TEC_WAIT_STABLE_POLL_INTERVAL_S above)
+        # is not exposed as a separate field here, so every compiled step
+        # gets that fixed default; its own __post_init__ requires
+        # poll_interval_s <= max_wait_s. A smaller max_wait_s is now also
+        # caught gracefully at runtime (experiment_runner.py's _run_action
+        # wraps command-argument construction and reports it as an ordinary
+        # series failure, not an uncaught exception) -- this check exists
+        # only to give a clearer error earlier, at queue time, before any
+        # device is touched; it does not need to be stricter than that.
+        if settings.temperature_max_wait_s < _TEC_WAIT_STABLE_POLL_INTERVAL_S:
             raise ValueError(
-                "Temperature maximum wait must be at least 1 s (the fixed TEC poll interval)"
+                f"Temperature maximum wait must be at least "
+                f"{_TEC_WAIT_STABLE_POLL_INTERVAL_S:g} s (the TEC wait-stable poll interval)"
             )
     if not 0 <= settings.flush_wait_after_s <= 100:
         raise ValueError("Wait after flush must be within 0..100 s")
