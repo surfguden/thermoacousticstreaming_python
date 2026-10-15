@@ -677,29 +677,51 @@ class ExperimentManager(QObject):
                 # experiment-specific configuration this round.
                 achieved_interval = 1 / value.achieved_frame_rate_hz
                 def checked(timing):
-                    if camera["exposure_ms"] / 1000 >= achieved_interval:
-                        self._fail(
-                            f"Achieved frame interval {achieved_interval:g}s (AD2 rounded the "
-                            f"requested {ad2['dio']['frame_rate_hz']:g} Hz to {value.achieved_frame_rate_hz:g} Hz) "
-                            f"does not leave room for the {camera['exposure_ms']:g} ms exposure")
-                        return
-                    minimum = timing.minimum_trigger_interval_s
-                    if minimum is not None and achieved_interval < minimum:
-                        self._fail(
-                            f"Achieved frame interval {achieved_interval:g}s is below the live SDK "
-                            f"minimum {minimum:g}s, even though the requested rate "
-                            f"{ad2['dio']['frame_rate_hz']:g} Hz was not -- the AD2's own clock division "
-                            f"rounded the achieved rate to {value.achieved_frame_rate_hz:g} Hz")
-                        return
-                    if timing.readout_time_s is not None and achieved_interval < timing.readout_time_s:
-                        self._fail(
-                            f"Achieved frame interval {achieved_interval:g}s is below this "
-                            f"ROI/exposure's readout time {timing.readout_time_s:g}s (achieved rate "
-                            f"{value.achieved_frame_rate_hz:g} Hz)")
-                        return
-                    storage.event("configuration_preflight", camera=camera, ad2=ad2,
-                                  applied_digital=json_ready(value), applied_camera_timing=json_ready(timing))
-                    configure_next()
+                    # Read the exposure actually applied, not the
+                    # requested camera["exposure_ms"] dict value -- DCAM
+                    # (and camera SDKs generally) can quantize a requested
+                    # exposure to a different real value (confirmed on
+                    # real hardware previously: a 15.0ms request read back
+                    # as 15.00025ms). Reuses the existing
+                    # CAMERA_SETTINGS_READ/read_exposure_time() round-trip;
+                    # not a new check path.
+                    def with_applied_exposure(readback):
+                        applied_exposure_ms = readback.exposure_ms
+                        if applied_exposure_ms is None:
+                            # Backend doesn't report a real readback (no
+                            # read_exposure_time()) -- nothing to check
+                            # against but the request; not silently
+                            # treated as "no exposure," which would pass
+                            # every interval.
+                            applied_exposure_ms = camera["exposure_ms"]
+                        if applied_exposure_ms / 1000 >= achieved_interval:
+                            self._fail(
+                                f"Achieved frame interval {achieved_interval:g}s (AD2 rounded the "
+                                f"requested {ad2['dio']['frame_rate_hz']:g} Hz to "
+                                f"{value.achieved_frame_rate_hz:g} Hz) does not leave room for the "
+                                f"actually-applied {applied_exposure_ms:g} ms exposure (requested "
+                                f"{camera['exposure_ms']:g} ms)")
+                            return
+                        minimum = timing.minimum_trigger_interval_s
+                        if minimum is not None and achieved_interval < minimum:
+                            self._fail(
+                                f"Achieved frame interval {achieved_interval:g}s is below the live SDK "
+                                f"minimum {minimum:g}s, even though the requested rate "
+                                f"{ad2['dio']['frame_rate_hz']:g} Hz was not -- the AD2's own clock "
+                                f"division rounded the achieved rate to {value.achieved_frame_rate_hz:g} Hz")
+                            return
+                        if timing.readout_time_s is not None and achieved_interval < timing.readout_time_s:
+                            self._fail(
+                                f"Achieved frame interval {achieved_interval:g}s is below this "
+                                f"ROI/exposure's readout time {timing.readout_time_s:g}s (achieved rate "
+                                f"{value.achieved_frame_rate_hz:g} Hz)")
+                            return
+                        storage.event("configuration_preflight", camera=camera, ad2=ad2,
+                                      applied_digital=json_ready(value), applied_camera_timing=json_ready(timing),
+                                      applied_exposure_ms=applied_exposure_ms)
+                        configure_next()
+                    self._command(DeviceId.CAMERA, DeviceOperation.CAMERA_SETTINGS_READ,
+                                  NoArguments(), with_applied_exposure)
                 self._command(DeviceId.CAMERA, DeviceOperation.CAMERA_TIMING_READ, NoArguments(), checked)
             self._configure_camera(camera,
                            lambda _value: self._command(DeviceId.AD2,
@@ -822,6 +844,15 @@ class ExperimentManager(QObject):
         self._close_temperature_recorder(lambda: self._finish_series_completed(storage))
 
     def _finish_series_completed(self, storage: SeriesStorage) -> None:
+        if self._failed or self._abort_requested:
+            # Something (panic/abort/a failure) finalized this batch while
+            # this callback's own recorder-drain wait (_close_temperature_recorder(),
+            # scheduled before that happened) was still pending.
+            # _finish_failure_when_safe() is already the authoritative
+            # finalizer for this series now -- writing "completed" here
+            # too would leave disk and memory disagreeing about how the
+            # series actually ended.
+            return
         storage.status("completed", {"completed_experiments":
                                       self._completed - self._series_completed_at_start})
         self._series_states[storage.folder] = "completed"
@@ -873,6 +904,14 @@ class ExperimentManager(QObject):
                 self._publish()
                 if self._stop_after_current:
                     def finish_stop() -> None:
+                        if self._failed or self._abort_requested:
+                            # Same reasoning as _finish_series_completed():
+                            # panic/abort/a failure already finalized this
+                            # batch while this callback's own recorder-drain
+                            # wait was pending -- do not also write
+                            # "stopped_after_current" over whatever
+                            # _finish_failure_when_safe() already recorded.
+                            return
                         storage.status("stopped_after_current", {"completed_experiments":
                                                                  self._completed - self._series_completed_at_start})
                         self._series_states[storage.folder] = "stopped"
@@ -1204,7 +1243,18 @@ class ExperimentManager(QObject):
     def _finish_failure_when_safe(self) -> None:
         if self._failure_reason is None:
             return
-        if (self.controller._flush is not None or any(not future.done() for future in self._file_futures)
+        # self._file_futures must be genuinely EMPTY here, not merely
+        # "every future is done()". A save Future can finish on its
+        # background thread (future.done() == True) before _save_frames()'s
+        # own poll() callback -- the only thing that sets
+        # self._experiment_frames_saved and removes the future from this
+        # set -- has actually run; that callback is only scheduled, not
+        # guaranteed to have executed yet, at the moment a failure on the
+        # OTHER parallel branch (e.g. the post-acquisition flush) reaches
+        # here. Checking future.done() instead of set membership would
+        # read _experiment_frames_saved before poll() had a chance to set
+        # it, and wrongly discard data that genuinely exists.
+        if (self.controller._flush is not None or bool(self._file_futures)
                 or (self._recorder is not None and not self._recorder.drained())):
             QTimer.singleShot(100, self._finish_failure_when_safe)
             return

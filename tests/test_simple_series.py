@@ -1097,6 +1097,14 @@ def test_images_already_saved_survive_a_later_flush_failure(tmp_path):
     # rmtree()'d the "incomplete" experiment path on any failure while
     # self._experiment was still set, with no check for whether its data
     # had actually finished writing.
+    #
+    # ORDERING A: the save's own poll() callback (which sets
+    # self._experiment_frames_saved and removes the future from
+    # self._file_futures) has already run and finished BEFORE the flush
+    # fails -- this test waits for that flag directly. See the sibling
+    # test below (ORDERING B) for the narrower race where the flush fails
+    # in the gap between the save's background thread finishing and that
+    # callback actually running.
     app = QApplication.instance() or QApplication(["test-save-then-flush-failure"])
     controller = ApplicationController(DeviceRegistry(mode=OperatingMode.SIMULATION),
                                        mode=OperatingMode.SIMULATION)
@@ -1191,6 +1199,97 @@ def test_images_already_saved_survive_a_later_flush_failure(tmp_path):
         controller.shutdown()
 
 
+def test_images_already_saved_survive_a_flush_failure_racing_the_save_callback(tmp_path):
+    # ORDERING B (see the sibling test above for ORDERING A): the save
+    # Future's background thread has already finished -- future.done()
+    # is True -- but _save_frames()'s own poll() callback, the only code
+    # that sets self._experiment_frames_saved and removes the future from
+    # self._file_futures, has not run yet (it is merely scheduled via
+    # QTimer.singleShot(0, poll), not yet reached by the Qt event loop).
+    # A failure injected in exactly this gap must still be recognized as
+    # "data already exists" -- this is the specific scenario the first
+    # fix's readiness check (future.done() per-future) missed, and the
+    # follow-up fix (checking self._file_futures is genuinely empty)
+    # exists to close. Constructed deterministically by hand rather than
+    # hoping real thread/timer scheduling lands in this exact window.
+    app = QApplication.instance() or QApplication(["test-save-race-ordering-b"])
+    controller = ApplicationController(DeviceRegistry(mode=OperatingMode.SIMULATION),
+                                       mode=OperatingMode.SIMULATION)
+    results = []
+    events = []
+    controller.command_result.connect(results.append)
+    controller.command_event.connect(events.append)
+    controller.start()
+    try:
+        for device in (DeviceId.AD2, DeviceId.CAMERA, DeviceId.PUMP, DeviceId.VALVE):
+            controller.submit(DeviceCommand(device, DeviceOperation.CONNECT))
+        deadline = monotonic() + 5
+        while monotonic() < deadline and sum(result.operation is DeviceOperation.CONNECT and result.ok
+                                              for result in results) < 4:
+            app.processEvents(); sleep(0.01)
+        assert sum(result.operation is DeviceOperation.CONNECT and result.ok for result in results) == 4
+        controller.submit(DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_FILL_LEVEL_SET,
+                                        PumpSetFillLevelArgs(1.0)))
+        deadline = monotonic() + 3
+        while monotonic() < deadline and not any(result.operation is DeviceOperation.PUMP_FILL_LEVEL_SET
+                                                  and result.ok for result in results):
+            app.processEvents(); sleep(0.01)
+
+        manager = controller.experiments
+        real_submit = manager._file_worker.submit
+        def eager_submit(storage, experiment, capture, metadata):
+            # Block for the real (fast, simulated) background save to
+            # finish before returning -- so by the time _save_frames()
+            # itself returns, future.done() is already True.
+            future = real_submit(storage, experiment, capture, metadata)
+            future.result()
+            return future
+        manager._file_worker.submit = eager_submit
+
+        real_save_frames = manager._save_frames
+        triggered = {"done": False}
+        def intercepted_save_frames(done):
+            real_save_frames(done)
+            if triggered["done"]:
+                return
+            triggered["done"] = True
+            # The race window: the future just added to self._file_futures
+            # is already done() (eager_submit blocked for it above), but
+            # poll() -- scheduled via QTimer.singleShot, not run -- has not
+            # processed it yet. Fail the OTHER parallel branch right here,
+            # synchronously, before any app.processEvents() lets poll() run.
+            assert manager._experiment_frames_saved is False, (
+                "test setup broke: the save callback already ran, this is no longer ordering B")
+            manager._fail("simulated post-acquisition flush failure (ordering B)")
+        manager._save_frames = intercepted_save_frames
+
+        definition = compile_simple_series(replace(settings(), repeats=1, frame_count=2,
+            frequency_hz=NumericRange(1_000_000, 1_000_000, 1),
+            amplitude_v=NumericRange(1, 1, 1), exposure_ms=NumericRange(1, 1, 1),
+            sweep_enabled=False, temperature_control=False, temperature_logging=False,
+            roi=(0, 0, 16, 16), flush_unit_index=0))
+        folder = controller.experiments.queue(definition, tmp_path)
+        assert controller.experiments.start()
+        status = _wait_until_terminal(app, controller)
+        assert status["state"] == "failed", status
+        assert triggered["done"], "the save path was never exercised -- test did not run the race at all"
+
+        manifest = json.loads((folder / "metadata" / "manifest.json").read_text())
+        leaf = folder / manifest["experiments"][0]["relative_path"]
+        assert leaf.is_dir()
+        assert len(list(leaf.glob("*.tif"))) == 2
+        record = json.loads((leaf / "experiment.json").read_text())
+        assert record["post_acquisition"]["outcome"] == "failed"
+        assert "ordering B" in record["post_acquisition"]["error"]
+
+        status_doc = json.loads((folder / "metadata" / "status.json").read_text())
+        assert status_doc["finalized_outcome"] == "failed"
+        assert status_doc["experiments_completed"] == 0
+        assert status_doc["experiments_failed"] == 1
+    finally:
+        controller.shutdown()
+
+
 def test_configuration_preflight_rejects_an_achieved_interval_the_requested_one_would_pass(tmp_path):
     # Discriminating case for a real gap: _after_camera_timing() only ever
     # compared the REQUESTED frame rate against live camera limits. The
@@ -1252,6 +1351,65 @@ def test_configuration_preflight_rejects_an_achieved_interval_the_requested_one_
 
         # No flush and no acquisition command reached the devices -- this
         # preflight runs, and must reject, before any of that.
+        assert not any(result.operation is DeviceOperation.CAMERA_SEQUENCE_ARM for result in results)
+    finally:
+        controller.shutdown()
+
+
+def test_configuration_preflight_rejects_exposure_quantized_beyond_the_frame_interval(tmp_path):
+    # Discriminating case for a second real gap in the same check: it
+    # used the REQUESTED camera["exposure_ms"] dict value, not the
+    # actually-applied exposure read back from the camera. Real DCAM
+    # hardware quantizes a requested exposure to a different real value
+    # (already confirmed once on real hardware: a 15.0ms request read
+    # back as 15.00025ms) -- the simulated camera instead echoes the
+    # request verbatim via read_exposure_time(), so this test injects the
+    # one piece of divergence real hardware could introduce on its own.
+    #
+    # Numbers: camera_fps=400 -> interval 0.0025s, legal for the
+    # requested 1ms exposure (0.001s < 0.0025s) and legal against the
+    # simulated camera's own limits (same as the sibling test above) --
+    # the AD2 is NOT made to diverge this time, isolating this check from
+    # the achieved-frame-rate one. The camera is made to report back an
+    # applied exposure of 3ms (0.003s), which is *not* less than the
+    # 0.0025s interval -- only reachable by reading the applied value,
+    # not the requested one.
+    app = QApplication.instance() or QApplication(["test-quantized-exposure"])
+    controller = ApplicationController(DeviceRegistry(mode=OperatingMode.SIMULATION),
+                                       mode=OperatingMode.SIMULATION)
+    results = []
+    controller.command_result.connect(results.append)
+    controller.start()
+    try:
+        for device in (DeviceId.AD2, DeviceId.CAMERA, DeviceId.PUMP, DeviceId.VALVE):
+            controller.submit(DeviceCommand(device, DeviceOperation.CONNECT))
+        deadline = monotonic() + 5
+        while monotonic() < deadline and sum(result.operation is DeviceOperation.CONNECT and result.ok
+                                              for result in results) < 4:
+            app.processEvents(); sleep(0.01)
+        assert sum(result.operation is DeviceOperation.CONNECT and result.ok for result in results) == 4
+        controller.submit(DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_FILL_LEVEL_SET,
+                                        PumpSetFillLevelArgs(1.0)))
+        deadline = monotonic() + 3
+        while monotonic() < deadline and not any(result.operation is DeviceOperation.PUMP_FILL_LEVEL_SET
+                                                  and result.ok for result in results):
+            app.processEvents(); sleep(0.01)
+
+        camera_device = controller.registry.by_id(DeviceId.CAMERA).device
+        camera_device.read_exposure_time = lambda: 3.0  # quantized up from the requested 1ms, simulated
+
+        definition = compile_simple_series(replace(settings(), repeats=1, frame_count=2, camera_fps=400,
+            frequency_hz=NumericRange(1_000_000, 1_000_000, 1),
+            amplitude_v=NumericRange(1, 1, 1), exposure_ms=NumericRange(1, 1, 1),
+            sweep_enabled=False, temperature_control=False, temperature_logging=False,
+            roi=(0, 0, 16, 16), flush_unit_index=0))
+        controller.experiments.queue(definition, tmp_path)
+        assert controller.experiments.start()
+        status = _wait_until_terminal(app, controller)
+        assert status["state"] == "failed", status
+        assert "actually-applied 3" in status["phase"]  # names the real, applied exposure
+        assert "requested 1" in status["phase"]  # distinct from the requested value, both kept
+
         assert not any(result.operation is DeviceOperation.CAMERA_SEQUENCE_ARM for result in results)
     finally:
         controller.shutdown()
@@ -1479,6 +1637,81 @@ def test_panic_stop_during_a_running_series_ends_the_batch_without_moving_the_va
         status_doc = json.loads((folder / "metadata" / "status.json").read_text())
         assert status_doc["finalized_outcome"] == "aborted"
         assert status_doc["experiments_completed"] <= status_doc["experiments_started"]
+    finally:
+        panel.close()
+        controller.shutdown()
+
+
+def test_panic_during_temperature_log_drain_does_not_overwrite_the_abort_with_completed(tmp_path):
+    # Regression test for a real defect found by an independent
+    # simulation (Codex): _complete_series() waits for the series'
+    # TemperatureRecorder to drain (_close_temperature_recorder()),
+    # rescheduling itself every 50ms while it isn't. If panic_abort()
+    # fires in that exact window -- after the last experiment finished,
+    # but before the recorder has finished draining -- the PRE-FIX code's
+    # deferred completion callback (_finish_series_completed()) had no
+    # way to know the batch had since been aborted: once the recorder
+    # eventually did drain, it unconditionally wrote "completed" to disk
+    # and to self._series_states, racing (and sometimes winning) against
+    # _finish_failure_when_safe()'s own "aborted" write for the exact
+    # same series -- disk and memory could end up disagreeing about how
+    # the series actually ended.
+    app = QApplication.instance() or QApplication(["test-panic-during-drain"])
+    controller, panel, results, events = _connected_temperature_series_harness(app, repeats=1)
+    try:
+        panel.temperature_logging.setChecked(True)
+        panel.temperature[2].setValue(1)  # one temperature point -- the series completes after one experiment
+        definition = panel._definition()
+        folder = controller.experiments.queue(definition, tmp_path)
+        assert controller.experiments.start()
+
+        # Let the recorder exist, then make it (and only it) refuse to
+        # report "drained" until this test says so -- deterministically
+        # constructing the race window, not hoping real timing lands in
+        # it.
+        deadline = monotonic() + 15
+        while monotonic() < deadline and controller.experiments._recorder is None:
+            app.processEvents(); sleep(0.01)
+        recorder = controller.experiments._recorder
+        assert recorder is not None
+        stuck = {"active": True}
+        real_drained = recorder.drained
+        recorder.drained = lambda: False if stuck["active"] else real_drained()
+
+        # Wait for the one experiment to finish and _complete_series() to
+        # actually reach its own drain-wait loop (recorder.close() already
+        # called -- _closed is set True on the very first call -- but
+        # drained() keeps saying no, by construction above).
+        deadline = monotonic() + 30
+        while monotonic() < deadline and not (
+            controller.experiments._recorder is recorder and recorder._closed
+        ):
+            app.processEvents(); sleep(0.01)
+        assert recorder._closed, "the series never reached its own recorder-drain wait"
+        # Still "running" in memory at this exact point -- the series
+        # hasn't been able to declare itself complete yet.
+        assert controller.experiments._state == "running"
+
+        controller.panic_stop()
+        # Give _fail()/_finish_failure_when_safe() a few real ticks to
+        # start running (and get stuck on the very same still-undrained
+        # recorder) before letting draining actually finish for both
+        # waiters at once.
+        for _ in range(5):
+            app.processEvents(); sleep(0.02)
+        stuck["active"] = False
+
+        status = _wait_until_terminal(app, controller)
+        assert status["state"] == "aborted", status
+
+        # Disk must agree with memory -- not "completed" left over from
+        # the stale pre-panic completion callback.
+        status_doc = json.loads((folder / "metadata" / "status.json").read_text())
+        assert status_doc["finalized_outcome"] == "aborted"
+        event_names = [event["event"] for event in
+                      (json.loads(line) for line in
+                       (folder / "metadata" / "events.jsonl").read_text().splitlines())]
+        assert "series_completed" not in event_names
     finally:
         panel.close()
         controller.shutdown()
