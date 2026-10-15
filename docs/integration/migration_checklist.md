@@ -6,16 +6,37 @@ a plan can be written), `deferred` (decision owner needed, not a code task).
 
 ## Quick reference: running a simulated experiment, and where to change things
 
-**Running one, via the UI** (`src/thermo_acoustic/ui/simple_series_panel.py`,
-`SimpleSeriesPanel`, wired into `MainWindow` as `experiment_panel`):
-1. Launch in simulation mode (the default — `main.py --mode simulation`, or
-   just omit `--mode`).
-2. Connect AD2/Camera/Pump/Valve/TEC as needed for the steps you'll use
-   (device panels on the left; each has its own Connect button).
-3. Fill in the Simple Series panel: a series descriptor is required;
-   output/acquisition, timing, ultrasound, temperature (optional), and
-   camera groups each have their own fields with tooltips on the
-   multi-value (start/stop/steps) ones.
+**Launching the simulated app** (verified by actually running it from this
+branch's worktree, not estimated): the package is not pip-installed in
+this worktree, so the `thermo-acoustic-ui` console script
+(`pyproject.toml`'s `[project.scripts]`) is not on PATH unless you install
+it first. The command below needs no install step and was confirmed to
+print a normal `--help` usage line with no import errors:
+```
+cd src
+python -m thermo_acoustic.main --mode simulation
+```
+`--mode simulation` is also the default — `python -m thermo_acoustic.main`
+with no arguments launches the same way. `--mode real` is the only other
+value `main.py` accepts, and is out of scope here (hardware access is not
+authorized).
+
+**Shortest path to one representative experiment, via the UI**
+(`src/thermo_acoustic/ui/simple_series_panel.py`, `SimpleSeriesPanel`,
+wired into `MainWindow` as `experiment_panel`):
+1. Launch as above.
+2. Connect only the devices the steps you'll use actually need (device
+   panels on the left, each with its own Connect button). For the
+   smallest possible representative run — one flush, one acquisition, no
+   temperature control — that's Pump, Valve, Camera, AD2; leave TEC
+   disconnected and the Temperature group's checkbox unticked (it's
+   optional and defaults off, so leaving it off doesn't require touching
+   any temperature field at all).
+3. In the Simple Series panel, the only field that must be filled by hand
+   is the series descriptor (`self.description`) — queuing without one
+   raises `"Enter a series descriptor before preflight"`. Every other
+   group (output/acquisition, timing, ultrasound, camera) has usable
+   defaults; leave them unless you specifically need different values.
 4. "Queue series", then "Start batch". Status/phase updates live in the
    panel; `stop_after_current`/abort/panic are available once running.
 5. Output lands under the chosen experiment base folder, one
@@ -26,9 +47,11 @@ a plan can be written), `deferred` (decision owner needed, not a code task).
 **Where common changes go** (verified against current code, not
 estimated — full detail with file/function names in `decision_log.md`'s
 2026-10-15 "day-to-day modification cost" entry):
-- **Temperature strategy** (tolerance/settle/hold, locked vs. unlocked):
-  `application/simple_series.py` + `ui/simple_series_panel.py`'s
-  Temperature group.
+- **Temperature strategy** (tolerance/settle/hold, which single channel is
+  addressed): `application/simple_series.py` + `ui/simple_series_panel.py`'s
+  Temperature group. The panel always drives exactly one TEC channel per
+  point — see the table row below before assuming "locked"/"unlocked"
+  terminology applies here.
 - **Parameter sweeps** (new scan axis): `application/experiments.py`'s
   `_values()`/`walk()`; one coupling point — the folder-naming `labels`
   dict needs a matching entry for a new named parameter.
@@ -46,8 +69,8 @@ estimated — full detail with file/function names in `decision_log.md`'s
 | Pump capacity: batch-budget check | done | `experiment_runner.py:492 _check_capacity`, distinct purpose, correct as-is |
 | Pump capacity: fresh-read-at-flush plausibility | done | `application/workflows.py` `FlushWorkflow._implausible_reading()`/`_unit_capacity_ml()`, called from `LEVEL_READ`; distrusts the raw reading (non-finite, or exceeds `PumpReadback.units[unit_index].max_volume_ml`), distinct from `PumpWorker.set_fill_level()`'s pre-existing target-range validation. 4 new tests in `tests/test_workflows.py`, full suite 143/143 passing |
 | TEC driver (connect/setpoint/Static-OFF) | done | `drivers/tec/controller.py`, equivalent to junjiebranch's `tec.py` |
-| TEC multi-point scan, **locked** (single/shared target per point) | done — normal UI usable | Reachable through the real `SimpleSeriesPanel` (`temperature_control` + `temperature_wait_for_stability` checkboxes + tolerance/min-settle/max-wait spinboxes). Verified end-to-end through the actual panel widgets in `tests/test_simple_series.py::test_ui_configured_temperature_series_runs_pump_valve_camera_ad2_tec_in_order` plus the three failure-injection tests added this round. |
-| TEC multi-point scan, **unlocked** (independent per-channel targets per point) | definition-file only, **not UI-usable** | **Actual use case**: an experiment where channel 1 and channel 2 must follow two *different* temperature sequences in lockstep (e.g. a controlled differential between two sample locations) rather than both tracking one shared set point. The engine supports it (`experiments.py`'s dict-valued sweep parameter, confirmed in `tests/test_experiments.py::test_temperature_point_series_supports_independent_per_channel_targets`), but `ui/simple_series_panel.py` exposes only **one** `tec_channel` selector — there is no UI path to author a per-point list of independent ch1/ch2 target pairs. An operator can only reach this by hand-authoring a JSON definition and loading/editing it outside the panel. **Implementation scope if pursued**: a second channel selector plus a per-point-pair input widget in the Temperature group, and a compiler path that emits the dict-valued sweep parameter instead of the single-channel one — not built this round, flagged per explicit instruction rather than letting the engine-level test imply UI-readiness. |
+| TEC multi-point scan, single channel (operator picks the channel) | done — normal UI usable | `compile_simple_series()` always emits `"channels": [settings.tec_channel]` — exactly one channel, chosen by the panel's single `tec_channel` combo. Reachable through the real `SimpleSeriesPanel` (`temperature_control` + `temperature_wait_for_stability` checkboxes + tolerance/min-settle/max-wait spinboxes). Verified end-to-end through the actual panel widgets in `tests/test_simple_series.py::test_ui_configured_temperature_series_runs_pump_valve_camera_ad2_tec_in_order` plus the three failure-injection tests added this round. **Terminology note**: this is not "locked" in junjiebranch's sense (ch2 mirroring ch1's value automatically) — there is no mirroring here, only a single addressed channel. Avoid the "locked" label for this panel. |
+| TEC multi-point scan, both channels from one definition (same or independent per-point targets) | definition-file only, **not UI-usable** | **Actual use case**: an experiment where channel 1 and channel 2 must follow two *different* temperature sequences in lockstep (e.g. a controlled differential between two sample locations), or where both channels should simply move together. The engine supports both via `experiments.py`'s dict-valued sweep parameter or a plain scalar target with `channels: [1, 2]` (confirmed in `tests/test_experiments.py::test_temperature_point_series_supports_independent_per_channel_targets`), but `ui/simple_series_panel.py` exposes only **one** `tec_channel` selector — there is no UI path to author a per-point pair of ch1/ch2 targets, matching or different. An operator can only reach this by hand-authoring a JSON definition and loading/editing it outside the panel. **Implementation scope if pursued**: a second channel selector plus a per-point-pair input widget in the Temperature group, and a compiler path that emits the dict-valued (or multi-channel) sweep parameter instead of the single-channel one — not built this round, flagged per explicit instruction rather than letting the engine-level test imply UI-readiness. |
 | junjiebranch's temperature-**point**-level lifecycle counters (`SeriesLifecycleManifest.tec_point_started`/`tec_point_completed`) | not yet integrated | **Actual use case**: answering "how many of the N temperature points did this series reach" independently of "how many individual experiments/repeats completed" — useful when repeats-per-point varies or when the point-level progress matters more than the repeat-level detail. ola/integration's `SeriesStorage` counts only `experiments_started`/`_completed`/`_failed` (per-experiment/per-repeat granularity); there is no separate point-level counter. **Implementation scope if pursued**: a `temperature_points_started`/`_completed` pair on `SeriesStorage`, incremented from the `tec_set`/next-point-boundary logic in `experiment_runner.py` the same way the per-experiment counters are — not built this round, distinct from the general lifecycle-manifest work above (which does not include it). |
 | TEC Prepare-tab readback display (requested vs. controller) | done | Both values already shown separately; fixed `None` rendering (was literal `"None"`, now house "—" convention) plus a clarifying tooltip |
 | Valve driver + automated flush confirmation | done | `FlushWorkflow` already confirms `ValveReadback.ready`+`confirmed_position` with timeout+recovery; no gap |

@@ -33,10 +33,94 @@ convention — nothing here proposes a new access path.
 - **Camera**: connect, read capabilities/current settings — no capture.
   **AD2**: connect, read capabilities — no output.
 - **Z-stage**: connect, read the closed-loop confirmation requirement only
-  — do not enable closed-loop or move, pending the reserved decision
-  already recorded (two-tier confirmation kept as-is).
+  — do not enable closed-loop or move. This is not pending any decision:
+  the confirmation-gate design question is already decided (single-gate
+  design kept as-is — see "Decided this round" below). Z motion is
+  excluded from this stage because neither branch has a working real
+  motion run on record (junjiebranch's own attempt failed), so it needs
+  its own dedicated verification before it belongs in a general flow,
+  not because anything about the gate is still open.
 
-### Stage 2 — synchronized acquisition, no fluidics or temperature control
+### Stage 2 — pump motion alone, bounded, in isolation (nothing else running)
+
+Neither branch has any recorded real pump motion — the only real-hardware
+pump log on file (`investigation_log.md`'s 2026-09-25 session) is
+read-only: 8,661 fill-level reads, constant at 1.068 mL, zero motion
+commands. This stage exists specifically to produce the first one. It is
+separated from Stage 5's combined experiment so a motion problem is
+isolated to the pump alone, not entangled with TEC/camera/AD2 timing.
+
+**Must be confirmed before running, not assumed:**
+- Which physical syringe/unit is addressed by the `unit_index` this
+  branch's driver will use, and that unit's actual mounted syringe
+  capacity (`max_volume_ml`) as installed right now — not whatever value
+  happens to be cached from a prior session.
+- That the pump's outlet is either disconnected from the fluidic path or
+  connected to a safe-to-discard reservoir for this stage, so a motion
+  command cannot push or pull against the real experiment chamber.
+- The valve's current physical position (confirmed via its own status
+  reply, per Stage 1), since pump motion direction/effect depends on it.
+
+**What to run**: a single, small, reference-move-anchored motion command
+(e.g. `PUMP_REFERENCE_MOVE` then one bounded `set_fill_level()` step) —
+**no specific volume or flow-rate value is given here**, because no
+evidence on file establishes a safe one for the currently-mounted syringe;
+whoever runs this stage must set a value from the syringe's actual rated
+capacity and the lab's own judgment, not from this document.
+
+**Observation method**: watch `hardware_transactions.log` for the command
+round-trip (request → SDK ack, the same log format the 2026-09-25 session
+used) *and* visually confirm the plunger/syringe actually moved by the
+commanded amount — a successful SDK transaction log is not, by itself,
+evidence of real physical motion (this is the same distinction the
+`-513` SDK-rejection incident already showed matters: log success and
+device truth aren't guaranteed to agree without a direct look).
+
+**Stop condition**: any SDK fault, any visible motion that doesn't match
+the commanded direction/amount, or any sign of resistance (binding,
+unexpected pressure) — treat as a reason to stop and investigate, not to
+retry with a larger command.
+
+### Stage 3 — TEC output alone, bounded, in isolation (nothing else running)
+
+Symmetric reasoning to Stage 2: no real TEC setpoint write exists in any
+log on either branch (Stage 1's TEC check is read-only by design). This
+stage produces the first one, isolated from everything else.
+
+**Must be confirmed before running, not assumed:**
+- Which physical channel index (1 or 2, per `hal/tec.py`'s `channels`
+  parameter) corresponds to which physical TEC/sample location on the
+  bench right now — this mapping is not recorded anywhere in the repo and
+  must be confirmed by inspection/wiring trace, not guessed.
+- The TEC's current actual temperature and `output_stage_static_on` state
+  (read in Stage 1) — a setpoint should move from a known, sane starting
+  point, not an unknown one.
+- Whatever the device/sample's real thermal limits are (safe min/max for
+  whatever is mounted) — **not stated here**, because no evidence on file
+  establishes them; this must come from the device's own documentation or
+  the lab's existing safe-operating knowledge, not from this plan.
+
+**What to run**: one bounded `tec_set` to a single channel, followed by
+`tec_wait_stable` with a conservative (not aggressively short)
+`max_wait_s` — the point of this stage is to observe a *real* settling
+time for the first time, which is exactly the number this plan cannot
+supply in advance (see "no invented values" above). **No specific target
+temperature or wait duration is given here** for the same reason as
+Stage 2's volume.
+
+**Observation method**: an independent temperature reading if one is
+available (e.g. a secondary probe or the TEC's own separate sense
+channel if it has one) compared against what the driver reports — the
+goal is to confirm the driver's reported "stable" actually corresponds to
+a real settled temperature, not just that the polling loop returned.
+Absent an independent probe, at minimum visually/physically confirm the
+TEC feels like it is actively heating/cooling in the expected direction.
+
+**Stop condition**: implausible reading, output enable not reflecting
+the commanded state, or no observable physical effect within a
+generous multiple of whatever wait was chosen.
+
+### Stage 4 — synchronized acquisition, no fluidics or temperature control
 
 - Configure camera (small ROI, few frames) + AD2 (one channel, short,
   bounded run) exactly as `_configure_all_before_fluidics()` would for a
@@ -48,25 +132,35 @@ convention — nothing here proposes a new access path.
   `flow_trace.md` marked `[UNVERIFIED ON REAL HARDWARE]`. Stop condition:
   frame/timestamp mismatch, or no observable trigger response.
 
-### Stage 3 — minimal complete experiment (single point, single repeat)
+### Stage 5 — minimal complete experiment (single point, single repeat)
 
-- One flush (small volume, conservative flow rate) → one TEC setpoint
-  (read-only-confirmed channel, modest target) → `tec_wait_stable` with a
-  short but real `max_wait_s` (now genuinely executable at any value, not
-  just a long one — see this file's TEC section) → one acquisition
-  (as Stage 2) → save + post-acquisition flush, in parallel, as the engine
-  already does. Expected: the same ordering already proven in simulation
-  (`flow_trace.md`'s "Leaf actions" section) now holds with one real device
-  at each step. Stop condition: any step's device-level result disagrees
-  with its simulated counterpart's contract (e.g. the pump capacity guard
-  firing on a real implausible reading — confirm it fires correctly rather
-  than hoping it doesn't need to).
+Only after Stages 2 and 3 have each independently produced a clean,
+observed result — this stage is the first time pump motion, TEC output,
+and acquisition run together, and a problem here should already be
+distinguishable from a single-device problem because each device was
+separately cleared first.
 
-### Stage 4 — expand to sweep and repeats, only after Stage 3 is clean
+- One flush (volume/flow rate carried over from whatever Stage 2 showed
+  was safe on the actually-mounted syringe — not a new guessed value) →
+  one TEC setpoint (channel confirmed in Stage 3, target informed by
+  Stage 3's observed real settling behavior) → `tec_wait_stable` with a
+  `max_wait_s` consistent with what Stage 3 actually observed (now
+  genuinely executable at any value, not just a long one — see this
+  file's TEC section) → one acquisition (as Stage 4) → save +
+  post-acquisition flush, in parallel, as the engine already does.
+  Expected: the same ordering already proven in simulation
+  (`flow_trace.md`'s "Leaf actions" section) now holds with one real
+  device at each step. Stop condition: any step's device-level result
+  disagrees with its simulated counterpart's contract (e.g. the pump
+  capacity guard firing on a real implausible reading — confirm it fires
+  correctly rather than hoping it doesn't need to).
 
-- Two repeats of Stage 3's experiment, then (separately) two points of a
+### Stage 6 — expand to sweep and repeats, only after Stage 5 is clean
+
+- Two repeats of Stage 5's experiment, then (separately) two points of a
   temperature sweep, each still minimal in scope (small volumes, short
-  waits, few frames). Expected: the same whole-series flush-capacity sum,
+  waits, few frames, values carried over from what earlier stages showed
+  was safe). Expected: the same whole-series flush-capacity sum,
   parallel-barrier, and stop/abort/panic behaviors already proven in
   simulation, now against real devices for the first time. This is where
   the real device-level consequence of `abort()`/`panic_stop()` (SAFE_STOP
@@ -75,12 +169,14 @@ convention — nothing here proposes a new access path.
 
 ### What this plan deliberately does not include
 
-Z-stage motion (blocked on the reserved confirmation-gate decision), the
+Z-stage motion (excluded because neither branch has a working real motion
+run on record yet — not because the confirmation-gate design is
+undecided; that was already decided, see below), the
 acoustic-chain/AD2-JP4 electrical characterization (`hardware_notes.md` —
 needs a powered-down physical inspection first, not a software action), and
 anything resembling the original "count preflight" dry-run at larger
 scale — this plan stays deliberately smaller than that existing mechanism
-until Stage 3 is clean.
+until Stage 5 is clean.
 
 ## Series-lifecycle persistence — split A/B/C per explicit instruction
 
@@ -249,10 +345,16 @@ you/Codex, not sized or chosen here.
   been compared against junjiebranch's `piezo_zscan.py`
   `ZScanCalibration.run()` logic. Only the UI *fields* were compared this
   round. Blocks: any claim that Z-axis is fully at parity.
-- **TEC multi-point temperature-scan sequencing**: junjiebranch's
-  `TemperatureSeries` (dual-channel independent targets, tolerance/settle/
-  hold) has no ola-branch equivalent. Confirmed gap, not yet designed.
-  Blocks: any multi-point TEC experiment capability on this branch.
+- **TEC multi-point temperature-scan sequencing** — stale entry, superseded:
+  this originally claimed junjiebranch's `TemperatureSeries` (independent
+  per-channel targets, tolerance/settle/hold) had no ola-branch equivalent
+  and blocked any multi-point TEC capability. That is no longer true.
+  Single-channel multi-point scanning (tolerance/settle/hold included) is
+  now UI-usable through `SimpleSeriesPanel` — see `migration_checklist.md`.
+  What remains genuinely missing is only the UI path for addressing both
+  channels from one definition (same or independent per-point targets);
+  the engine already supports it, see `acceptance_table.md`'s
+  corresponding row. Not a blocker for any current experiment.
 
 ## Z-axis algorithm parity — resolved findings (not reserved)
 

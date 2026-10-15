@@ -5,6 +5,41 @@ SHA(s)/file(s)/function(s) the decision rests on, not just a conclusion.
 
 ---
 
+## 2026-10-15 — Terminology correction: "locked"/"unlocked" retired for this branch's TEC panel; `max_wait_s` claim narrowed to software-only
+
+Two imprecise claims, found while doing a documentation-accuracy pass
+(no code changed):
+
+1. **"Locked"/"unlocked" TEC phrasing (used below, in the 2026-10-15
+   "Mission recalibration" entry, and in `acceptance_table.md`/
+   `migration_checklist.md` before this correction) misdescribed what
+   `SimpleSeriesPanel` actually does.** That vocabulary is junjiebranch's,
+   for a ch1/ch2 broadcast relationship ("locked" = ch2 mirrors ch1
+   automatically). This branch's panel has no such relationship at all:
+   `compile_simple_series()` always emits `"channels":
+   [settings.tec_channel]` — exactly one channel, chosen by the panel's
+   single `tec_channel` combo box. There is no UI path that addresses
+   both channels, matching or not. `acceptance_table.md` and
+   `migration_checklist.md` are corrected to describe this as
+   "single-channel, operator-selected" instead of "locked," and to
+   describe the engine-only dict-valued/multi-channel capability as
+   "both channels from one definition" instead of "unlocked." The
+   historical entries below keep the old wording since they describe
+   what was true/claimed at the time; this entry is the correction of
+   record.
+2. **A short `temperature_max_wait_s` being executable is not evidence
+   that a real TEC can physically stabilize that fast.** The entry
+   immediately below proved `max_wait_s=0.1` runs to completion without
+   error — true, but only because `SimulatedTec` reaches its setpoint
+   instantly with zero thermal lag. On real hardware a short window would
+   likely (and correctly) fail the tolerance check instead of succeeding,
+   since real thermal settling takes real time that hasn't been measured
+   on either branch. `acceptance_table.md`'s corresponding row now states
+   this explicitly, so "executable" is not read as "physically sensible to
+   use."
+
+---
+
 ## 2026-10-15 — `max_wait_s` actually fixed, superseding the prior entry's "removed, relies on graceful failure"
 
 The prior round's fix (below, "The `temperature_max_wait_s >= 1.0` floor
