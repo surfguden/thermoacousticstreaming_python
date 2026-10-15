@@ -220,18 +220,21 @@ def test_main_window_routes_panel_commands_and_terminal_events(qt_app):
     controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
     window = MainWindow(controller)
     controller.start()
-    pump = window.panels[DeviceId.PUMP]
+    try:
+        pump = window.panels[DeviceId.PUMP]
 
-    pump._buttons["connect"].click()
-    wait(qt_app)
-    assert pump.connection_label.text() == "Connected"
-    assert pump._pending == {}
+        pump._buttons["connect"].click()
+        wait(qt_app)
+        assert pump.connection_label.text() == "Connected"
+        assert pump._pending == {}
 
-    pump._buttons["refill_0"].click()
-    wait(qt_app, 650)
-    assert controller.statuses()[DeviceId.PUMP].readback.units[0].fill_level_ml == 1.0
-    assert pump._pending == {}
-    window.close()
+        pump._buttons["refill_0"].click()
+        wait(qt_app, 650)
+        assert controller.statuses()[DeviceId.PUMP].readback.units[0].fill_level_ml == 1.0
+        assert pump._pending == {}
+    finally:
+        window.close()
+        controller.shutdown()
 
 
 def test_main_window_uses_fixed_minimum_and_separate_detailed_log(qt_app):
@@ -351,21 +354,24 @@ def test_main_window_routes_waveform_sdk_readback_to_both_channels(qt_app):
     controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
     window = MainWindow(controller)
     controller.start()
-    ad2 = window.panels[DeviceId.AD2]
+    try:
+        ad2 = window.panels[DeviceId.AD2]
 
-    ad2._buttons["connect"].click()
-    wait(qt_app)
-    ad2.wave_channels[1].enabled.setChecked(True)
-    ad2.wave_channels[1].single_frequency.setValue(2500.0)
-    ad2._buttons["wave_config"].click()
-    wait(qt_app)
+        ad2._buttons["connect"].click()
+        wait(qt_app)
+        ad2.wave_channels[1].enabled.setChecked(True)
+        ad2.wave_channels[1].single_frequency.setValue(2500.0)
+        ad2._buttons["wave_config"].click()
+        wait(qt_app)
 
-    readback = controller.statuses()[DeviceId.AD2].readback
-    assert len(readback.waveform_channels) == 2
-    assert readback.waveform_channels[1].frequency_hz == 2500.0
-    assert "SDK applied" in ad2.wave_channels[0].applied_label.text()
-    assert "SDK applied" in ad2.wave_channels[1].applied_label.text()
-    window.close()
+        readback = controller.statuses()[DeviceId.AD2].readback
+        assert len(readback.waveform_channels) == 2
+        assert readback.waveform_channels[1].frequency_hz == 2500.0
+        assert "SDK applied" in ad2.wave_channels[0].applied_label.text()
+        assert "SDK applied" in ad2.wave_channels[1].applied_label.text()
+    finally:
+        window.close()
+        controller.shutdown()
 
 
 def test_console_waveform_configuration_updates_visible_ad2_controls(qt_app):
@@ -405,24 +411,27 @@ def test_ad2_connect_populates_sdk_capabilities_and_scope_limits(qt_app):
     controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
     window = MainWindow(controller)
     controller.start()
-    ad2 = window.panels[DeviceId.AD2]
+    try:
+        ad2 = window.panels[DeviceId.AD2]
 
-    ad2._buttons["connect"].click()
-    wait(qt_app)
+        ad2._buttons["connect"].click()
+        wait(qt_app)
 
-    capabilities = controller.statuses()[DeviceId.AD2].readback.capabilities
-    assert capabilities is not None
-    assert ad2.scope_controls.sample_rate.value() == capabilities.scope.sample_frequency_hz.maximum
-    assert tuple(
-        ad2.scope_controls.channel_range[0].itemData(index)
-        for index in range(ad2.scope_controls.channel_range[0].count())
-    ) == capabilities.scope.input_ranges_v
-    assert tuple(
-        ad2.wave_channels[0].single_function.itemData(index)
-        for index in range(ad2.wave_channels[0].single_function.count())
-    ) == capabilities.waveform_channels[0].carrier.functions
-    assert ad2.wave_channels[0].sweep_direction.itemData(0) == "Triangle"
-    window.close()
+        capabilities = controller.statuses()[DeviceId.AD2].readback.capabilities
+        assert capabilities is not None
+        assert ad2.scope_controls.sample_rate.value() == capabilities.scope.sample_frequency_hz.maximum
+        assert tuple(
+            ad2.scope_controls.channel_range[0].itemData(index)
+            for index in range(ad2.scope_controls.channel_range[0].count())
+        ) == capabilities.scope.input_ranges_v
+        assert tuple(
+            ad2.wave_channels[0].single_function.itemData(index)
+            for index in range(ad2.wave_channels[0].single_function.count())
+        ) == capabilities.waveform_channels[0].carrier.functions
+        assert ad2.wave_channels[0].sweep_direction.itemData(0) == "Triangle"
+    finally:
+        window.close()
+        controller.shutdown()
 
 
 def test_ad2_header_shows_each_instrument_state(qt_app):
@@ -792,26 +801,29 @@ def test_center_roi_restarts_live_simulated_continuous_capture(qt_app):
     controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
     window = MainWindow(controller)
     controller.start()
-    camera = window.panels[DeviceId.CAMERA]
-    camera._buttons["connect"].click()
-    wait(qt_app)
-    camera.roi_width.setValue(512)
-    camera.roi_height.setValue(256)
-    camera._buttons["continuous"].click()
-    wait(qt_app, 180)
-    assert camera.preview.has_image
+    try:
+        camera = window.panels[DeviceId.CAMERA]
+        camera._buttons["connect"].click()
+        wait(qt_app)
+        camera.roi_width.setValue(512)
+        camera.roi_height.setValue(256)
+        camera._buttons["continuous"].click()
+        wait(qt_app, 180)
+        assert camera.preview.has_image
 
-    camera._buttons["center_roi"].click()
-    wait(qt_app, 350)
+        camera._buttons["center_roi"].click()
+        wait(qt_app, 350)
 
-    readback = controller.statuses()[DeviceId.CAMERA].readback
-    assert readback.capture_active
-    assert readback.mode == "continuous"
-    assert readback.roi == CameraRoiReadback(768, 384, 512, 256)
-    camera._buttons["capture_stop"].click()
-    wait(qt_app)
-    camera.image_window.close()
-    window.close()
+        readback = controller.statuses()[DeviceId.CAMERA].readback
+        assert readback.capture_active
+        assert readback.mode == "continuous"
+        assert readback.roi == CameraRoiReadback(768, 384, 512, 256)
+        camera._buttons["capture_stop"].click()
+        wait(qt_app)
+        camera.image_window.close()
+    finally:
+        window.close()
+        controller.shutdown()
 
 
 @pytest.mark.parametrize("button, expected", [
@@ -841,25 +853,28 @@ def test_simulated_sequence_updates_popup_and_saves_tiff_with_settings(qt_app, t
     controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
     window = MainWindow(controller)
     controller.start()
-    camera = window.panels[DeviceId.CAMERA]
-    camera._buttons["connect"].click()
-    wait(qt_app)
-    camera.sequence_frames.setValue(3)
-    camera._buttons["sequence"].click()
-    wait(qt_app, 350)
+    try:
+        camera = window.panels[DeviceId.CAMERA]
+        camera._buttons["connect"].click()
+        wait(qt_app)
+        camera.sequence_frames.setValue(3)
+        camera._buttons["sequence"].click()
+        wait(qt_app, 350)
 
-    assert camera.preview.has_image
-    assert "3 frames" in camera.sequence_status.text()
-    camera.sequence_save_folder.setText(str(tmp_path))
-    camera._buttons["sequence_save"].click()
-    wait(qt_app, 150)
+        assert camera.preview.has_image
+        assert "3 frames" in camera.sequence_status.text()
+        camera.sequence_save_folder.setText(str(tmp_path))
+        camera._buttons["sequence_save"].click()
+        wait(qt_app, 150)
 
-    assert len(list(tmp_path.glob("frame_*.tiff"))) == 3
-    metadata = json.loads((tmp_path / "camera_settings.json").read_text(encoding="utf-8"))
-    assert metadata["sequence"]["frame_count"] == 3
-    assert metadata["properties"]
-    camera.image_window.close()
-    window.close()
+        assert len(list(tmp_path.glob("frame_*.tiff"))) == 3
+        metadata = json.loads((tmp_path / "camera_settings.json").read_text(encoding="utf-8"))
+        assert metadata["sequence"]["frame_count"] == 3
+        assert metadata["properties"]
+        camera.image_window.close()
+    finally:
+        window.close()
+        controller.shutdown()
 
 
 def test_camera_profile_migrates_removed_enable_checkboxes(qt_app, tmp_path):
@@ -1382,6 +1397,30 @@ def test_experiment_tab_settings_profile_rejects_malformed_experiment_data(qt_ap
     with pytest.raises(ValueError, match="frame_count must be an integer"):
         window.load_profile(path)
     assert window.experiment_panel.repeats.value() == original_repeats  # not the new value
+
+    # Residual gap found by an independent simulation (Codex), right after
+    # the type-check fix above landed: a correctly-TYPED but out-of-range
+    # integer (frame_count's QSpinBox only goes up to 100_000) is not
+    # caught by simple_series_settings_from_profile() at all -- that
+    # function has no widget to check a range against. QSpinBox.setValue()
+    # does not reject such a value gracefully either: a merely-too-large
+    # one (confirmed directly: 50_000 against a 1..1_000 range) is
+    # silently CLAMPED, not rejected, which would have quietly accepted a
+    # value the profile never actually asked for; one beyond the C `int`
+    # range raises a raw OverflowError, reproducing the exact same
+    # "repeats already applied, frame_count blew up" half-application the
+    # earlier fix was supposed to close. Fixed with
+    # SimpleSeriesPanel._validate_settings_ranges(), called from
+    # load_profile() against this panel's own live widget ranges, before
+    # _apply_settings() runs.
+    document = window.profile_document()
+    document["experiment"]["repeats"] = original_repeats + 5
+    document["experiment"]["frame_count"] = 999_999_999  # correctly typed, far outside the QSpinBox's 1..100_000
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ValueError, match="frame_count"):
+        window.load_profile(path)
+    assert window.experiment_panel.repeats.value() == original_repeats  # not the new value
+    assert window.experiment_panel.frames.value() != 999_999_999  # not silently clamped into looking accepted
 
 
 def test_experiment_tab_valid_non_default_profile_still_round_trips_after_the_type_check(qt_app, tmp_path):

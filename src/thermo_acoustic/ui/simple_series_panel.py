@@ -319,6 +319,57 @@ class SimpleSeriesPanel(QWidget):
         self._enabled()
         self._preview()
 
+    def _validate_settings_ranges(self, settings: SimpleSeriesSettings) -> None:
+        """Called by MainWindow.load_profile() before _apply_settings():
+        simple_series_settings_from_profile() only checks each field's
+        *type*; a type-valid value can still be outside what the real
+        widget can represent (an integer far beyond a QSpinBox's own
+        range, for instance) -- setValue() does not reliably reject or
+        clamp that, so without this check it would only surface partway
+        through _apply_settings()'s widget-setting loop, after earlier
+        fields in that same loop had already been applied. Mirrors
+        DevicePanel.validate_profile()'s own min()/max() check, against
+        this panel's own live widgets instead of a generic registry."""
+        for widget, value, name in (
+            (self.repeats, settings.repeats, "repeats"),
+            (self.frames, settings.frame_count, "frame_count"),
+            (self.fps, settings.camera_fps, "camera_fps"),
+            (self.sound_start, settings.sound_start_s, "sound_start_s"),
+            (self.sound_run, settings.sound_run_s, "sound_run_s"),
+            (self.laser_start, settings.laser_start_s, "laser_start_s"),
+            (self.laser_run, settings.laser_run_s, "laser_run_s"),
+            (self.camera_start, settings.camera_start_s, "camera_start_s"),
+            (self.roi_x, settings.roi[0], "roi[0]"), (self.roi_y, settings.roi[1], "roi[1]"),
+            (self.roi_width, settings.roi[2], "roi[2]"), (self.roi_height, settings.roi[3], "roi[3]"),
+            (self.volume, settings.flush_volume_ml, "flush_volume_ml"),
+            (self.flow, settings.flush_flow_ul_min, "flush_flow_ul_min"),
+            (self.wait_after_flush, settings.flush_wait_after_s, "flush_wait_after_s"),
+            (self.sweep_period, settings.sweep_period_ms, "sweep_period_ms"),
+            (self.temp_wait, settings.temperature_wait_s, "temperature_wait_s"),
+            (self.temperature_tolerance, settings.temperature_tolerance_c, "temperature_tolerance_c"),
+            (self.temperature_min_settle, settings.temperature_min_settle_s, "temperature_min_settle_s"),
+            (self.temperature_max_wait, settings.temperature_max_wait_s, "temperature_max_wait_s"),
+        ):
+            if not widget.minimum() <= value <= widget.maximum():
+                raise ValueError(
+                    f"{name} ({value:g}) is outside the allowed range "
+                    f"[{widget.minimum():g}, {widget.maximum():g}]")
+        for controls, values, name in (
+            (self.frequency, settings.frequency_hz, "frequency_hz"),
+            (self.amplitude, settings.amplitude_v, "amplitude_v"),
+            (self.exposure, settings.exposure_ms, "exposure_ms"),
+            (self.sweep_width, settings.sweep_width_hz, "sweep_width_hz"),
+            (self.temperature, settings.temperature_c, "temperature_c"),
+        ):
+            start_widget, stop_widget, steps_widget = controls
+            for widget, value, suffix in ((start_widget, values.start, "start"),
+                                          (stop_widget, values.stop, "stop"),
+                                          (steps_widget, values.steps, "steps")):
+                if not widget.minimum() <= value <= widget.maximum():
+                    raise ValueError(
+                        f"{name}.{suffix} ({value:g}) is outside the allowed range "
+                        f"[{widget.minimum():g}, {widget.maximum():g}]")
+
     def _apply_flush_unit_index(self, flush_unit_index: int | None) -> None:
         # The pump_unit combo only has items while the pump is connected
         # (see _devices() below) -- if the saved unit isn't among them

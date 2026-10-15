@@ -445,6 +445,14 @@ class MainWindow(QMainWindow):
         experiment_settings = None
         if "experiment" in document:
             experiment_settings = simple_series_settings_from_profile(document["experiment"])
+            # simple_series_settings_from_profile() only checks field
+            # *types* -- it has no widget to check against. A type-valid
+            # value can still be outside what the real QSpinBox/
+            # QDoubleSpinBox can represent (an integer far beyond its
+            # range, for instance), which setValue() does not always
+            # reject gracefully; checked here, against this panel's own
+            # live widgets, before anything is applied.
+            self.experiment_panel._validate_settings_ranges(experiment_settings)
         for device, values in validated.items():
             self.panels[device].apply_profile(values)
         if experiment_settings is not None:
