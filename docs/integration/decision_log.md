@@ -5,6 +5,96 @@ SHA(s)/file(s)/function(s) the decision rests on, not just a conclusion.
 
 ---
 
+## 2026-10-15 — Codex's independent review did not pass final acceptance; five more real defects found and fixed
+
+Per explicit instruction: continue within the same four-item scope, no
+new features, no architecture changes. A fifth item (test-suite crash
+stability) was also in scope this round. Summary only -- full detail in
+each fix's own commit message.
+
+1. **Save-vs-failure race, ordering B**: the prior fix for "data
+   preservation on a later failure" checked `future.done()` per future,
+   not whether `self._file_futures` was genuinely empty. A save Future
+   can finish on its background thread before `_save_frames()`'s own
+   poll() callback (the only code that sets
+   `self._experiment_frames_saved` and removes the future from that set)
+   has actually run. A failure injected in exactly that gap read the
+   still-`False` flag and deleted real data. Fixed by checking
+   `bool(self._file_futures)` instead. The previous test only exercised
+   ordering A (poll already ran); a new, deterministically-constructed
+   test (eager-blocking submit + a wrapped `_save_frames()` that injects
+   the failure in the exact gap, not by waiting for a flag) exercises
+   ordering B specifically. Reverting either check independently
+   reproduces the corresponding failure.
+2. **Stale completion callback after panic/abort during a temperature-log
+   drain wait**: `_complete_series()`'s (and `stop_after_current`'s)
+   deferred completion callback had no way to notice that
+   `panic_abort()`/`abort()`/a failure had finalized the batch while its
+   own recorder-drain wait was still pending -- it unconditionally wrote
+   "completed"/"stopped_after_current" to disk once the recorder
+   eventually drained, regardless of what had happened to the batch in
+   the meantime, leaving disk and memory disagreeing. Fixed with a guard
+   at the top of both callbacks: bail out if `self._failed` or
+   `self._abort_requested` is already true. New test constructs the race
+   deterministically (stubs `recorder.drained()` to stay `False` until
+   the test says otherwise, confirms the series is stuck in its own
+   drain wait, panics, then lets draining finish) -- reverting the guard
+   reproduces disk showing "completed" while memory shows "aborted".
+3. **Camera exposure check used the requested value, not the applied
+   one**: the achieved-timing check (prior round) already used the AD2's
+   real achieved frame rate, but still compared it against
+   `camera["exposure_ms"]` (the request), not what the camera actually
+   applied -- DCAM quantization can make those differ (confirmed once on
+   real hardware: 15.0ms requested read back as 15.00025ms). Fixed by
+   reusing the existing `CAMERA_SETTINGS_READ`/`read_exposure_time()`
+   round-trip to read the real applied exposure before the final
+   comparison; both values are kept in the error message, never silently
+   reconciled. New discriminating test (simulated camera monkeypatched to
+   report a quantized-up exposure, isolated from the AD2 divergence the
+   sibling test already covers).
+4. **Settings-profile range validation**: the type-check fix (prior
+   round) only caught wrong-typed values; a correctly-typed but
+   out-of-range integer (e.g. `frame_count` far beyond its QSpinBox's
+   1..100,000) was not caught at all -- `QSpinBox.setValue()` silently
+   *clamps* a merely-too-large value (confirmed directly: 50,000 against
+   a 1..1,000 range lands at 1,000, no error) and raises a raw
+   `OverflowError` for one beyond the C `int` range, reproducing the same
+   half-applied-widget defect the type check was supposed to close, and
+   in the clamped case accepting a value nobody asked for with no error
+   at all. Fixed with `SimpleSeriesPanel._validate_settings_ranges()`,
+   checking every field against its own live widget's `minimum()`/
+   `maximum()` (mirroring `DevicePanel.validate_profile()`'s existing
+   style), called from `load_profile()` before `_apply_settings()` ever
+   runs. Extended the existing malformed-data test with this exact case.
+5. **Test-suite crash stability**: Codex's own full-suite run hit a
+   native "Fatal Python error: Aborted" inside this round's own new test,
+   at an `app.processEvents()` call, not reproducible when that test runs
+   alone. Investigated rather than suppressed: `tests/test_device_ui.py`
+   had 26 `ApplicationController` constructions but only 7 `shutdown()`
+   calls; 5 specific tests called `controller.start()` (which really
+   starts one `QThread` per simulated device) and never stopped them,
+   leaking live threads into the single shared `QApplication` for the
+   rest of the pytest process -- a plausible, timing-dependent cause of
+   exactly this class of native crash in a later, unrelated test. Fixed
+   by adding `try/finally: ...; controller.shutdown()` to all 5 (not a
+   new fixture or framework, just the same cleanup pattern already used
+   by this file's newer tests). Two independent full-suite reproduction
+   attempts on this machine did not trigger the crash either before or
+   after the fix -- consistent with a genuinely nondeterministic,
+   timing-dependent native fault, not proof either way on its own. The
+   leak itself is confirmed and real regardless of whether the exact
+   crash re-occurs; not treated as "fixed because unreproducible."
+
+**Verification discipline, same as every prior fix**: each of 1-4 was
+confirmed to actually reproduce its symptom with the fix reverted, then
+restored. Full offline regression suite run multiple times after all
+five changes.
+
+No hardware accessed, no push, no merge, ola-branch/junjiebranch/
+AGENTS.md untouched.
+
+---
+
 ## 2026-10-15 — Four real defects found by Codex's independent review of `3adc5a7`, fixed
 
 Full detail in each fix's own commit message and `acceptance_table.md`/
