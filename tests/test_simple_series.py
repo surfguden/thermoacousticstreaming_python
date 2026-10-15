@@ -628,6 +628,147 @@ def _wait_until_n_experiments_completed(app, controller, n, timeout=30):
     assert controller.experiments.status()["batch_completed_experiments"] >= n, controller.experiments.status()
 
 
+def test_full_main_window_operator_flow_queue_start_status_output_and_stop(tmp_path):
+    """The first genuine full-MainWindow acceptance test in this suite --
+    distinct from every test above and below, which are explicitly
+    PANEL-LEVEL AUTOMATION (construct `SimpleSeriesPanel` directly, or call
+    `controller.experiments.queue()`/`.start()` on the manager without a
+    window at all). This test constructs the real `MainWindow`, clicks the
+    real Connect buttons on the Pump/Valve/Camera/AD2 device panels, clicks
+    the real Preflight button, fills the real Experiment-tab widgets, clicks
+    the real Queue/Start buttons, watches the real Status dashboard and the
+    experiment panel's own state label update live, inspects the real output
+    folder on disk, then clicks the real Stop button on a second queued
+    series to confirm it genuinely halts the batch before that series'
+    second repeat. Every action below is a widget click or a widget value
+    set, the same calls a human operator would trigger -- not an internal
+    method call standing in for one. Simulation mode only; no hardware
+    accessed.
+    """
+    app = QApplication.instance() or QApplication(["test-full-main-window"])
+    controller = ApplicationController(DeviceRegistry(mode=OperatingMode.SIMULATION),
+                                       mode=OperatingMode.SIMULATION)
+    results = []
+    events = []
+    controller.command_result.connect(results.append)
+    controller.command_event.connect(events.append)
+    controller.start()
+    window = MainWindow(controller)
+    try:
+        # --- Device panels: real Connect buttons, not controller.submit() ---
+        for device in (DeviceId.PUMP, DeviceId.VALVE, DeviceId.CAMERA, DeviceId.AD2):
+            window.panels[device]._buttons["connect"].click()
+        deadline = monotonic() + 5
+        while monotonic() < deadline and sum(
+            result.operation is DeviceOperation.CONNECT and result.ok for result in results
+        ) < 4:
+            app.processEvents(); sleep(0.01)
+        assert sum(result.operation is DeviceOperation.CONNECT and result.ok for result in results) == 4
+        for device in (DeviceId.PUMP, DeviceId.VALVE, DeviceId.CAMERA, DeviceId.AD2):
+            assert window.panels[device].connection_label.text() == "Connected"
+        # Status dashboard reached by the same real status_changed signal.
+        app.processEvents()
+        assert "connected" in window.dashboard.rows[DeviceId.PUMP].text()
+
+        # Real Refill click -- the simulated pump starts at 0 mL, and the
+        # flush-capacity guard correctly refuses to queue a batch the pump
+        # cannot supply; a real operator would refill first too.
+        window.panels[DeviceId.PUMP]._buttons["refill_0"].click()
+        deadline = monotonic() + 5
+        while monotonic() < deadline and not any(
+            result.operation is DeviceOperation.PUMP_REFILL for result in results
+        ):
+            app.processEvents(); sleep(0.01)
+        assert any(result.operation is DeviceOperation.PUMP_REFILL and result.ok for result in results)
+
+        # --- Experiment tab: real widgets, a short representative series ---
+        panel = window.experiment_panel
+        panel.description.setText("Full-window acceptance: short representative series")
+        panel.output_root.setText(str(tmp_path))
+        panel.repeats.setValue(2)
+        panel.frames.setValue(2)
+        panel.fps.setValue(10)
+        panel.sweep_enabled.setChecked(False)
+        for widget, value in zip(panel.frequency, (1_000_000, 1_000_000, 1)):
+            widget.setValue(value)
+        for widget, value in zip(panel.amplitude, (1, 1, 1)):
+            widget.setValue(value)
+        for widget, value in zip(panel.exposure, (1, 1, 1)):
+            widget.setValue(value)
+        panel.roi_x.setValue(0); panel.roi_y.setValue(0)
+        panel.roi_width.setValue(16); panel.roi_height.setValue(16)
+        panel.pump_unit.setCurrentIndex(0)
+        panel.volume.setValue(0.01)
+        panel.flow.setValue(200)
+        panel.temperature_control.setChecked(False)
+
+        # Real Preflight click -- required so Start's own camera-preflight
+        # gate doesn't pop a real confirmation dialog once MainWindow has
+        # wired controller.experiments.confirm_unchecked to a QMessageBox.
+        panel.preflight_button.click()
+        deadline = monotonic() + 10
+        while monotonic() < deadline and not panel.state_label.text().startswith("Preflight passed"):
+            app.processEvents(); sleep(0.01)
+        assert panel.state_label.text().startswith("Preflight passed"), panel.state_label.text()
+
+        # --- Queue + Start: real buttons, two short series in one batch ---
+        panel.queue_button.click()
+        assert panel.state_label.text().startswith("Queued:"), panel.state_label.text()
+        panel.queue_button.click()  # second series, same settings -- the batch Stop will interrupt this one
+        batch_folders = sorted(tmp_path.glob("experiment_batch_*"))
+        assert len(batch_folders) == 2
+        first_folder, second_folder = batch_folders
+
+        panel.start_button.click()
+
+        # Series 1 runs to completion: confirm the dashboard and the output
+        # folder on disk, while the overall batch is still "running" (series
+        # 2 hasn't started yet) -- this is why the per-series status.json
+        # file is checked, not controller.experiments.status()["state"].
+        deadline = monotonic() + 15
+        status_path = first_folder / "metadata" / "status.json"
+        def _series_one_finalized() -> bool:
+            return status_path.exists() and json.loads(status_path.read_text(encoding="utf-8")).get(
+                "finalized_outcome") is not None
+        while monotonic() < deadline and not _series_one_finalized():
+            app.processEvents(); sleep(0.01)
+        assert _series_one_finalized(), "series 1 never reached a finalized status.json"
+        on_disk = json.loads(status_path.read_text(encoding="utf-8"))
+        assert on_disk["finalized_outcome"] == "completed"
+        assert on_disk["experiments_completed"] == 2
+        assert (first_folder / "metadata" / "manifest.json").exists()
+        assert len(list(first_folder.rglob("*.tif"))) == 4  # 2 frames/repeat x 2 repeats
+        app.processEvents()
+        assert "running" in window.dashboard.experiment.text().lower()
+
+        # --- Stop entry point: real Stop button, mid-way through series 2 ---
+        # Series 1 is already fully finalized above (2/2 experiments), so any
+        # *further* completed AD2_SOFTWARE_TRIGGER beyond that point belongs
+        # to series 2's own first repeat -- count the delta rather than
+        # trying to match an experiment identifier.
+        def _completed_triggers() -> int:
+            return sum(1 for event in events
+                       if event.operation is DeviceOperation.AD2_SOFTWARE_TRIGGER and event.state == "completed")
+        triggers_after_series_one = _completed_triggers()
+        deadline = monotonic() + 15
+        while monotonic() < deadline and _completed_triggers() <= triggers_after_series_one:
+            app.processEvents(); sleep(0.01)
+        assert _completed_triggers() > triggers_after_series_one, "series 2's first repeat never completed"
+        assert panel.stop_button.isEnabled()
+        panel.stop_button.click()
+        status = _wait_until_terminal(app, controller)
+        assert status["state"] == "stopped", status
+        assert not panel.stop_button.isEnabled()
+        assert not panel.abort_button.isEnabled()
+
+        second_status = json.loads((second_folder / "metadata" / "status.json").read_text(encoding="utf-8"))
+        assert second_status["finalized_outcome"] == "stopped_after_current"
+        assert second_status["experiments_completed"] == 1  # stopped before its second repeat
+    finally:
+        window.close()
+        controller.shutdown()
+
+
 def test_ui_configured_parameter_sweep_with_repeats_runs_every_combination(tmp_path):
     # Representative check #2 (parameter sweep + repeats, through the real
     # panel): distinct from the main trace test below, which uses a single

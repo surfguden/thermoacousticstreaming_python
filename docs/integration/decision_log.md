@@ -5,6 +5,112 @@ SHA(s)/file(s)/function(s) the decision rests on, not just a conclusion.
 
 ---
 
+## 2026-10-15 — First full-MainWindow acceptance test; found and fixed a real documentation gap in the "shortest path" steps
+
+Per explicit instruction: final usage acceptance for this round of
+integration. Added exactly one new test,
+`tests/test_simple_series.py::
+test_full_main_window_operator_flow_queue_start_status_output_and_stop`
+— the first test in this suite to drive the real `MainWindow` through
+actual widget clicks (`_buttons["connect"].click()`,
+`preflight_button.click()`, `queue_button.click()`, `start_button.click()`,
+`stop_button.click()`), not panel-level automation (`SimpleSeriesPanel`
+constructed directly) or a direct `controller.experiments.queue()`/
+`.start()` call bypassing the UI, which is what every existing test in
+this file already explicitly disclaims itself as being (see the module
+docstring). Confirms, through real clicks: device-panel Connect reaches
+the controller and updates both the panel's own `connection_label` and
+the Status tab's dashboard; the Experiment tab's Preflight/Queue/Start
+buttons reach the manager; a short 2-repeat series completes with a
+correct `metadata/status.json` (`finalized_outcome: "completed"`,
+`experiments_completed: 2`), `metadata/manifest.json`, and the right
+TIFF count on disk; and the real "Stop after current" button, clicked
+mid-flight on a second queued series, genuinely halts the batch before
+that series' second repeat (`finalized_outcome:
+"stopped_after_current"`, `experiments_completed: 1`), with the
+Stop/Abort buttons correctly disabled once terminal.
+
+**A real problem was found, not just confirmed-working**: the
+"Shortest path to one representative experiment" steps in
+`migration_checklist.md` (written in a prior round from reading the
+code, never actually run end-to-end) **did not work as written**. Two
+concrete gaps, both fixed in `migration_checklist.md` directly (this is
+a usage-affecting documentation bug, not a code defect — the underlying
+behavior in both cases is correct by design):
+1. The steps never mentioned clicking Refill on the Pump panel first.
+   The simulated pump (and, per `known_open_items.md`, a real one after
+   a restart) starts at 0 mL; queuing any series with a nonzero flush
+   volume then fails immediately with "Pump unit N needs X mL total
+   flush volume but currently has 0 mL" — correct guard behavior, but an
+   operator following the old steps literally would hit this and not
+   know why, since the steps never said it was required.
+2. Step 5 said `manifest.json` lives loose in the batch folder; it
+   actually lives at `metadata/manifest.json`, confirmed by listing the
+   real output directory this test produced.
+
+**No code changed.** Both gaps were documentation-only; the flush
+guard, the folder layout, and the Preflight/confirmation-dialog
+interaction are all working as designed, confirmed by this same test —
+this round's fix is entirely in `migration_checklist.md`, per the
+instruction not to add features or protections when nothing is actually
+broken in the software itself.
+
+---
+
+## 2026-10-15 — TEC correction: a real, reviewed MeCom client exists on both branches (the prior "never implemented" claim was wrong)
+
+Found while doing final usage acceptance on `codex/integration`, per
+explicit instruction to correct this "in passing" without opening a new
+protocol-implementation or hardware-reverification task. No code
+changed.
+
+**The error.** The entry below this one (same day, Z-stage/pump/AD2
+evidence-reuse pass) said: *"junjiebranch's own MeCom/TEC protocol was
+never implemented, by explicit design ('to avoid inventing hardware
+commands without a reviewed client'), Session 54's entry."* That is a
+real misread — Session 54's remark was true only at that point in
+junjiebranch's own history (no reviewed client existed yet to test
+COM4/COM6 against). junjiebranch's `docs/tec_verification_matrix.md`
+(Sessions 75-77, dated after Session 54) shows a real, reviewed
+`_PyMeComTecClient` (pyMeCom's `MeComSerial`) was built, with its own
+explicit "Independent-audit status (2026-08-05)" callout distinguishing
+solid retained evidence from historical self-reported claims:
+**retained**: 2026-08-28 real reads (Device Status 104, Object
+Temperature 1000, Output Enable Status 2010 — both channels, plausible
+room temperature) plus one real write (Output Enable=0, Static OFF,
+confirmed by readback, client closed cleanly); **not retained as
+current evidence**: Sessions 75-77's broader claims (real setpoint
+writes, "immediate thermal response") — the document itself calls these
+self-reported and not independently reproducible, and leaves real TEC
+*operation* (setpoint writes, Static ON) formally unauthorized pending
+bench review.
+
+**Confirmed this branch carries the same real client, not a
+reinvention.** `drivers/tec/controller.py`'s `_PyMeComTecClient` has the
+identical reviewed 5-parameter allow-list (104/105/1000/2010/3000), the
+same "Target Object Temperature" naming fix junjiebranch's Session 76
+found necessary, and the same write-restricted-to-2010/3000-by-name
+discipline — confirmed by direct code read, not assumed from the class
+name matching.
+
+**What this changes, precisely**: `acceptance_table.md` gets a new row
+stating a real TEC client exists on both branches, with junjiebranch's
+narrow retained real-I/O precedent cited accurately (read + OFF-write
+only, not setpoint writes). `known_open_items.md`'s real-hardware plan
+Stage 1 TEC bullet and Stage 3 intro are updated to cite this precedent
+without overclaiming it covers setpoint writes, which it doesn't.
+`investigation_log.md`'s TEC paragraph is corrected in place (it isn't
+an append-only history file in the same sense as this one).
+
+**What this does not do, per explicit instruction**: this is not a
+reason to build a new protocol implementation (one already exists and
+was already ported correctly) or to schedule a full TEC hardware
+reverification — the existing "待实机 for real setpoint operation"
+status is unchanged; only the "never implemented at all" framing was
+wrong and is now corrected.
+
+---
+
 ## 2026-10-15 — Reusing historical real-hardware evidence instead of blocking on "no new log on this branch"; corrects a real overstatement about Z-stage
 
 Per explicit instruction: this round does not treat "the integration

@@ -23,7 +23,14 @@ authorized).
 
 **Shortest path to one representative experiment, via the UI**
 (`src/thermo_acoustic/ui/simple_series_panel.py`, `SimpleSeriesPanel`,
-wired into `MainWindow` as `experiment_panel`):
+wired into `MainWindow` as `experiment_panel`). **Corrected this round**:
+the steps below were previously written from reading the code, not from
+an actual run — a full-`MainWindow` acceptance test
+(`tests/test_simple_series.py::
+test_full_main_window_operator_flow_queue_start_status_output_and_stop`,
+real widget clicks, not panel-level automation or direct manager calls)
+found this exact sequence genuinely failed as originally documented;
+corrected here against what that test actually proved works:
 1. Launch as above.
 2. Connect only the devices the steps you'll use actually need (device
    panels on the left, each with its own Connect button). For the
@@ -32,17 +39,39 @@ wired into `MainWindow` as `experiment_panel`):
    disconnected and the Temperature group's checkbox unticked (it's
    optional and defaults off, so leaving it off doesn't require touching
    any temperature field at all).
-3. In the Simple Series panel, the only field that must be filled by hand
+3. **Click Refill on the Pump panel (the unit you'll flush from) before
+   queuing.** The simulated pump (and a real one after a restart, per
+   `known_open_items.md`) starts at 0 mL fill level; queuing a series
+   with any flush volume fails immediately with "Pump unit N needs X mL
+   total flush volume but currently has 0 mL" otherwise — this is the
+   flush-capacity guard working correctly, not a bug, but it does mean
+   Refill is a required step for this shortest path, not an optional one.
+4. In the Simple Series panel, the only field that must be filled by hand
    is the series descriptor (`self.description`) — queuing without one
    raises `"Enter a series descriptor before preflight"`. Every other
    group (output/acquisition, timing, ultrasound, camera) has usable
    defaults; leave them unless you specifically need different values.
-4. "Queue series", then "Start batch". Status/phase updates live in the
-   panel; `stop_after_current`/abort/panic are available once running.
-5. Output lands under the chosen experiment base folder, one
-   `experiment_batch_NNNN/` per queued series, with `metadata/status.json`
-   (live progress + final outcome), `manifest.json` (the plan), and one
-   TIFF (or stacked TIFF) + `experiment.json` per completed repeat.
+5. **Click "Preflight camera settings" before Start.** Skipping it doesn't
+   block the run, but Start's own camera-preflight gate will instead pop
+   a confirmation dialog ("Camera preflight has not passed for N queued
+   series... Continue with standard Start validation?") the first time
+   through `MainWindow` — clicking Preflight first avoids that surprise
+   and is what a normal operator session would do anyway.
+6. "Queue series", then "Start queued batch". Status/phase updates live in
+   the panel and in the Status tab's dashboard; `stop_after_current`
+   ("Stop after current")/abort/panic are available once running, and
+   each reaches the manager through the same button a human would click
+   — confirmed directly, not assumed, by the acceptance test above
+   clicking "Stop after current" mid-batch and checking the batch
+   actually halted before its next repeat.
+7. Output lands under the chosen experiment base folder, one
+   `experiment_batch_NNNN/` per queued series, with
+   `metadata/status.json` (live progress + final outcome, confirmed
+   readable from disk mid-run, not only after completion),
+   `metadata/manifest.json` (the plan — **corrected**: this lives inside
+   `metadata/`, not loose in the batch folder root as a prior version of
+   this step said), and one TIFF (or stacked TIFF) + `experiment.json`
+   per completed repeat.
 
 **Where common changes go** (verified against current code, not
 estimated — full detail with file/function names in `decision_log.md`'s

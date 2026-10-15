@@ -29,7 +29,16 @@ convention — nothing here proposes a new access path.
   enable, ready) — no setpoint write yet. Expected: plausible current
   temperature, `output_stage_static_on` matching whatever state the device
   was already in. Stop condition: any read error or an implausible reading
-  (e.g. far outside a sane lab range).
+  (e.g. far outside a sane lab range). Note: junjiebranch's
+  `docs/tec_verification_matrix.md` has independently-retained real
+  evidence of exactly this read-only shape (2026-08-28: real Device
+  Status/Object Temperature/Output Enable reads, both channels plausible)
+  plus one real write limited to Output Enable=0 (Static OFF) — the same
+  `_PyMeComTecClient` class (ported into this branch's
+  `drivers/tec/controller.py`) was used for it. This stage would be this
+  branch's own first real TEC I/O, not a new kind of operation —
+  real setpoint writes (parameter 3000) remain unauthorized/unverified on
+  both branches, which is why this stage still stops short of one.
 - **Camera**: connect, read capabilities/current settings — no capture.
 - **AD2**: connect, read capabilities — no output. Note: real single-channel
   WFG output (configure a carrier, arm, PC-trigger, run a bounded duration,
@@ -121,9 +130,12 @@ retry with a larger command.
 
 ### Stage 3 — TEC output alone, bounded, in isolation (nothing else running)
 
-Symmetric reasoning to Stage 2: no real TEC setpoint write exists in any
-log on either branch (Stage 1's TEC check is read-only by design). This
-stage produces the first one, isolated from everything else.
+Symmetric reasoning to Stage 2: no real TEC *setpoint* (parameter 3000)
+write exists in any log on either branch — junjiebranch's retained
+2026-08-28 evidence (cited in Stage 1 above) goes as far as a real
+Output Enable=0 (Static OFF) write, not a target-temperature write or
+Static ON. This stage produces the first real setpoint write, isolated
+from everything else.
 
 **Must be confirmed before running, not assumed:**
 - Which physical channel index (1 or 2, per `hal/tec.py`'s `channels`

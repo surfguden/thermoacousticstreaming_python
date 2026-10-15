@@ -144,11 +144,34 @@ weak.
   evidence exists anywhere: junjiebranch has real Z-stage motion evidence
   in its own change log — `claude_code_change_log.md` Sessions 45-48/54 —
   described above and corrected in `acceptance_table.md`/
-  `known_open_items.md`. TEC output has no real-hardware evidence on
-  either branch — junjiebranch's own MeCom/TEC protocol was never
-  implemented "by explicit design, to avoid inventing hardware commands
-  without a reviewed client" per Session 54's entry, so there was never a
-  real TEC run to find.)
+  `known_open_items.md`. **TEC — correcting another overstatement**: a
+  prior pass here claimed junjiebranch's "MeCom/TEC protocol was never
+  implemented," citing Session 54's remark that no reviewed protocol
+  existed *at that point in the project's history* to test COM4/COM6
+  against. That was true only as of Session 54. junjiebranch's
+  `docs/tec_verification_matrix.md` (Sessions 75-77, dated after Session
+  54) shows a real, reviewed `_PyMeComTecClient` (pyMeCom's `MeComSerial`)
+  was built, with **independently retained** real-hardware evidence from
+  2026-08-28: real read-only queries (Device Status=104, Object
+  Temperature=1000, Output Enable Status=2010, both channels at plausible
+  room temperature) plus one authorized write — parameter 2010 set to 0
+  (Static OFF) on both channels, confirmed by real readback, client closed
+  cleanly. That document is explicit that this narrow read+OFF-write
+  record is the only evidence it still treats as solid; broader Session
+  75-77 claims (real setpoint writes, "immediate thermal response") are
+  self-reported and marked **not** independently reproducible, and real
+  TEC *operation* (setpoint writes, Static ON) was left formally
+  unapproved pending bench review. The same real client class exists in
+  this branch too — `drivers/tec/controller.py`'s `_PyMeComTecClient`
+  carries the identical 5-parameter allow-list (104/105/1000/2010/3000),
+  the same "Target Object Temperature" naming fix, and the same
+  write-restricted-to-2010/3000 discipline, confirmed by direct code
+  read; it was ported, not reinvented. **Net correction**: TEC is not "no
+  protocol ever built" — it is "a real, reviewed protocol client exists
+  on both branches, with narrow retained real-hardware read/OFF-write
+  evidence on junjiebranch and none yet on this branch; real *setpoint*
+  operation remains unauthorized/unverified on both," per
+  `acceptance_table.md`'s corrected TEC row.)
 - `ui/z_stack_panel.py` was compared field-by-field against junjiebranch's
   Z-Scan tab this round: ola's panel already has start/stop Z, points,
   step, exposure, 4-field ROI, position tolerance, position timeout, output
