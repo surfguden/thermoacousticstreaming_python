@@ -52,6 +52,13 @@ class ExperimentManager(QObject):
         self._approved = 0
         self._current: tuple[Expansion, SeriesStorage] | None = None
         self._experiment: PlannedExperiment | None = None
+        # True once _save_frames() has genuinely written this experiment's
+        # images to disk (storage.save_frames() has returned, not just
+        # been submitted) -- consulted by _finish_failure_when_safe() so a
+        # later failure (e.g. the post-acquisition flush) discards only a
+        # truly unfinished experiment directory, never one whose data is
+        # already real and on disk. Reset whenever a new experiment starts.
+        self._experiment_frames_saved = False
         self._capture: CameraSequenceResult | None = None
         self._triggered_at: float | None = None
         self._batch_output_root: Path | None = None
@@ -654,9 +661,46 @@ class ExperimentManager(QObject):
                 if value.global_run_s >= ad2["output_timeout_s"]:
                     self._fail("Achieved DigitalOut window exceeds the bounded output timeout")
                     return
-                storage.event("configuration_preflight", camera=camera, ad2=ad2,
-                              applied_digital=json_ready(value))
-                configure_next()
+                # _after_camera_timing()'s earlier check only compared the
+                # REQUESTED frame rate against live camera limits -- a
+                # legal request can still fail here, because the AD2's own
+                # clock division rounds the requested rate to whatever its
+                # hardware divider can actually produce, and the ACHIEVED
+                # rate (now known, from this same real configuration
+                # round-trip) can be higher than requested, shortening the
+                # real frame interval below what the camera can sustain.
+                # Reusing the existing CAMERA_TIMING_READ round-trip here
+                # (not a new check system) gets the limits that actually
+                # apply to this exposure/ROI, read fresh after
+                # _configure_camera() above has genuinely applied them --
+                # not whatever the camera happened to report before any
+                # experiment-specific configuration this round.
+                achieved_interval = 1 / value.achieved_frame_rate_hz
+                def checked(timing):
+                    if camera["exposure_ms"] / 1000 >= achieved_interval:
+                        self._fail(
+                            f"Achieved frame interval {achieved_interval:g}s (AD2 rounded the "
+                            f"requested {ad2['dio']['frame_rate_hz']:g} Hz to {value.achieved_frame_rate_hz:g} Hz) "
+                            f"does not leave room for the {camera['exposure_ms']:g} ms exposure")
+                        return
+                    minimum = timing.minimum_trigger_interval_s
+                    if minimum is not None and achieved_interval < minimum:
+                        self._fail(
+                            f"Achieved frame interval {achieved_interval:g}s is below the live SDK "
+                            f"minimum {minimum:g}s, even though the requested rate "
+                            f"{ad2['dio']['frame_rate_hz']:g} Hz was not -- the AD2's own clock division "
+                            f"rounded the achieved rate to {value.achieved_frame_rate_hz:g} Hz")
+                        return
+                    if timing.readout_time_s is not None and achieved_interval < timing.readout_time_s:
+                        self._fail(
+                            f"Achieved frame interval {achieved_interval:g}s is below this "
+                            f"ROI/exposure's readout time {timing.readout_time_s:g}s (achieved rate "
+                            f"{value.achieved_frame_rate_hz:g} Hz)")
+                        return
+                    storage.event("configuration_preflight", camera=camera, ad2=ad2,
+                                  applied_digital=json_ready(value), applied_camera_timing=json_ready(timing))
+                    configure_next()
+                self._command(DeviceId.CAMERA, DeviceOperation.CAMERA_TIMING_READ, NoArguments(), checked)
             self._configure_camera(camera,
                            lambda _value: self._command(DeviceId.AD2,
                                                         DeviceOperation.AD2_WAVEFORM_CONFIGURE,
@@ -752,17 +796,32 @@ class ExperimentManager(QObject):
         storage.status("running", {})
         self._preview(lambda: self._run_nodes(list(expansion.steps), lambda: self._complete_series(storage)))
 
+    def _close_temperature_recorder(self, done: Callable[[], None]) -> None:
+        """Drain, error-check, and close the series' TemperatureRecorder
+        (if one is open) before calling done(). Shared by normal series
+        completion and stop_after_current -- a series that just ended must
+        stop accepting further temperature samples (attach_temperature_monitor()'s
+        standing connection keeps delivering them regardless of series
+        state) and must not be left open for the next series' own
+        recorder to silently replace without ever closing it."""
+        if self._recorder is None:
+            done()
+            return
+        self._recorder.close()
+        if not self._recorder.drained():
+            QTimer.singleShot(50, lambda: self._close_temperature_recorder(done))
+            return
+        error = self._recorder.error()
+        self._recorder = None
+        if error:
+            self._fail(f"Temperature log write failed: {error}")
+            return
+        done()
+
     def _complete_series(self, storage: SeriesStorage) -> None:
-        if self._recorder is not None:
-            self._recorder.close()
-            if not self._recorder.drained():
-                QTimer.singleShot(50, lambda: self._complete_series(storage))
-                return
-            error = self._recorder.error()
-            self._recorder = None
-            if error:
-                self._fail(f"Temperature log write failed: {error}")
-                return
+        self._close_temperature_recorder(lambda: self._finish_series_completed(storage))
+
+    def _finish_series_completed(self, storage: SeriesStorage) -> None:
         storage.status("completed", {"completed_experiments":
                                       self._completed - self._series_completed_at_start})
         self._series_states[storage.folder] = "completed"
@@ -786,6 +845,7 @@ class ExperimentManager(QObject):
             expansion, storage = self._current
             self._experiment = next(item for item in expansion.experiments
                                     if item.experiment_id == node["experiment_id"])
+            self._experiment_frames_saved = False
             self._phase = "Configuring instruments"
             self._capture = None
             self._triggered_at = None
@@ -812,14 +872,26 @@ class ExperimentManager(QObject):
                 self._experiment = None
                 self._publish()
                 if self._stop_after_current:
-                    storage.status("stopped_after_current", {"completed_experiments":
-                                                             self._completed - self._series_completed_at_start})
-                    self._series_states[storage.folder] = "stopped"
-                    self._current = None
-                    self._approved = 0
-                    self._state = "stopped"
-                    self._phase = "Stopped after current experiment"
-                    self._publish()
+                    def finish_stop() -> None:
+                        storage.status("stopped_after_current", {"completed_experiments":
+                                                                 self._completed - self._series_completed_at_start})
+                        self._series_states[storage.folder] = "stopped"
+                        self._current = None
+                        self._approved = 0
+                        self._state = "stopped"
+                        self._phase = "Stopped after current experiment"
+                        self._publish()
+                    # Same reasoning as normal series completion
+                    # (_complete_series()): the series is done the moment
+                    # this experiment finishes, so its TemperatureRecorder
+                    # must stop accepting samples and be fully drained/
+                    # closed now -- not left open for
+                    # attach_temperature_monitor()'s standing connection to
+                    # keep writing into after the series is already
+                    # reported "stopped," and not silently overwritten,
+                    # unclosed, by whatever series starts next. This does
+                    # not touch TEC output itself -- only the log file.
+                    self._close_temperature_recorder(finish_stop)
                     return
                 continuation()
             self._run_nodes(node["steps"], finished)
@@ -1008,6 +1080,7 @@ class ExperimentManager(QObject):
                 return
             storage.event("frames_saved", experiment_id=record["experiment_id"],
                           frame_count=record["frame_count"])
+            self._experiment_frames_saved = True
             done()
         QTimer.singleShot(0, poll)
 
@@ -1140,16 +1213,39 @@ class ExperimentManager(QObject):
         if self._current is not None and self._experiment is not None:
             storage = self._current[1]
             storage.record_experiment_failed()
-            incomplete = (storage.folder / self._experiment.relative_path).resolve()
-            if not incomplete.is_relative_to(storage.folder.resolve()):
-                reason += "; unsafe unfinished experiment path could not be discarded"
-            elif incomplete.is_dir():
+            if self._experiment_frames_saved:
+                # Images/timestamps/parameters for this experiment are
+                # already genuinely written to disk (_save_frames()
+                # returned before this failure happened, e.g. a
+                # post-acquisition flush failing afterward) -- discarding
+                # the directory would destroy real, successfully-captured
+                # data over an unrelated later failure. record_experiment_failed()
+                # above already keeps this out of the "completed" count,
+                # so acquisition success and overall experiment success
+                # stay visibly distinct; the failed step/reason is recorded
+                # on the experiment's own existing metadata file rather
+                # than inventing a parallel record of it.
                 try:
-                    shutil.rmtree(incomplete)
-                    storage.event("incomplete_experiment_discarded",
-                                  experiment_id=self._experiment.experiment_id)
-                except OSError as exc:
-                    reason += f"; unfinished experiment files could not be discarded: {exc}"
+                    storage.finalize_experiment(self._experiment, {
+                        "completion_utc": datetime.now(timezone.utc).isoformat(),
+                        "outcome": "failed",
+                        "error": reason,
+                    })
+                except Exception as exc:
+                    reason += f"; failure outcome could not be recorded on the saved experiment: {exc}"
+                storage.event("experiment_preserved_after_later_failure",
+                              experiment_id=self._experiment.experiment_id, reason=reason)
+            else:
+                incomplete = (storage.folder / self._experiment.relative_path).resolve()
+                if not incomplete.is_relative_to(storage.folder.resolve()):
+                    reason += "; unsafe unfinished experiment path could not be discarded"
+                elif incomplete.is_dir():
+                    try:
+                        shutil.rmtree(incomplete)
+                        storage.event("incomplete_experiment_discarded",
+                                      experiment_id=self._experiment.experiment_id)
+                    except OSError as exc:
+                        reason += f"; unfinished experiment files could not be discarded: {exc}"
         self._state = "failed" if not self._abort_requested else "aborted"
         self._phase = f"Experiment series failed: {reason}"
         if self._current is not None:

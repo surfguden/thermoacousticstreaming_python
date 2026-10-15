@@ -1087,6 +1087,176 @@ def test_save_failure_within_a_series_stops_before_the_next_repeat(tmp_path):
         controller.shutdown()
 
 
+def test_images_already_saved_survive_a_later_flush_failure(tmp_path):
+    # Regression test for a real defect found by an independent
+    # simulation (Codex): once an experiment's frames are genuinely saved
+    # (_save_frames() has returned), a LATER failure in the same
+    # experiment's post-acquisition flush (the "parallel" node's other
+    # branch) must not discard the directory that already holds real,
+    # successfully-captured data. The pre-fix code unconditionally
+    # rmtree()'d the "incomplete" experiment path on any failure while
+    # self._experiment was still set, with no check for whether its data
+    # had actually finished writing.
+    app = QApplication.instance() or QApplication(["test-save-then-flush-failure"])
+    controller = ApplicationController(DeviceRegistry(mode=OperatingMode.SIMULATION),
+                                       mode=OperatingMode.SIMULATION)
+    results = []
+    events = []
+    controller.command_result.connect(results.append)
+    controller.command_event.connect(events.append)
+    controller.start()
+    try:
+        for device in (DeviceId.AD2, DeviceId.CAMERA, DeviceId.PUMP, DeviceId.VALVE):
+            controller.submit(DeviceCommand(device, DeviceOperation.CONNECT))
+        deadline = monotonic() + 5
+        while monotonic() < deadline and sum(result.operation is DeviceOperation.CONNECT and result.ok
+                                              for result in results) < 4:
+            app.processEvents(); sleep(0.01)
+        assert sum(result.operation is DeviceOperation.CONNECT and result.ok for result in results) == 4
+        controller.submit(DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_FILL_LEVEL_SET,
+                                        PumpSetFillLevelArgs(1.0)))
+        deadline = monotonic() + 3
+        while monotonic() < deadline and not any(result.operation is DeviceOperation.PUMP_FILL_LEVEL_SET
+                                                  and result.ok for result in results):
+            app.processEvents(); sleep(0.01)
+
+        # Intercept only the second flush command ever issued -- the first
+        # is this series' own series-level pre-batch flush (must succeed,
+        # so the series can reach its first experiment at all); the second
+        # is the first experiment's own post-acquisition flush, the one
+        # this test cares about. Intercepting it does not itself fail it
+        # yet: _save_frames() writes the file on a background thread pool,
+        # so failing the flush unconditionally the instant this call
+        # fires would race against that save rather than reliably
+        # reproducing "save succeeded, flush failed afterward" -- the
+        # test's own main flow below waits for
+        # self._experiment_frames_saved before triggering the failure.
+        call_count = {"n": 0}
+        real_start_flush = controller._start_flush
+        def fake_start_flush(command):
+            call_count["n"] += 1
+            if call_count["n"] == 2:
+                controller._flush_command = command
+                controller._flush = None
+                return
+            real_start_flush(command)
+        controller._start_flush = fake_start_flush
+
+        definition = compile_simple_series(replace(settings(), repeats=2, frame_count=2,
+            frequency_hz=NumericRange(1_000_000, 1_000_000, 1),
+            amplitude_v=NumericRange(1, 1, 1), exposure_ms=NumericRange(1, 1, 1),
+            sweep_enabled=False, temperature_control=False, temperature_logging=False,
+            roi=(0, 0, 16, 16), flush_unit_index=0))
+        folder = controller.experiments.queue(definition, tmp_path)
+        assert controller.experiments.start()
+        deadline = monotonic() + 15
+        while monotonic() < deadline and not (
+            call_count["n"] >= 2 and controller.experiments._experiment_frames_saved
+        ):
+            app.processEvents(); sleep(0.01)
+        assert call_count["n"] >= 2 and controller.experiments._experiment_frames_saved, (
+            "frames were never genuinely saved before the flush was intercepted")
+        controller._finish_flush(False, "simulated post-acquisition flush failure")
+        status = _wait_until_terminal(app, controller)
+        assert status["state"] == "failed", status
+
+        # The whole series stopped -- no second repeat, no retry/recovery.
+        completed_ops = [event.operation for event in events if event.state == "completed"]
+        assert completed_ops.count(DeviceOperation.CAMERA_SEQUENCE_CONFIGURE) <= 2  # series-level validation + 1 experiment, never a 2nd repeat
+
+        manifest = json.loads((folder / "metadata" / "manifest.json").read_text())
+        leaf = folder / manifest["experiments"][0]["relative_path"]
+        # The real, successfully-captured data is preserved, not discarded.
+        assert leaf.is_dir()
+        assert len(list(leaf.glob("*.tif"))) == 2  # frame_count=2
+        record = json.loads((leaf / "experiment.json").read_text())
+        assert record["post_acquisition"]["outcome"] == "failed"
+        assert "simulated post-acquisition flush failure" in record["post_acquisition"]["error"]
+
+        # Acquisition success and overall experiment success are reported
+        # separately -- the series/experiment counters must not treat
+        # this as a completed experiment just because its data exists.
+        status_doc = json.loads((folder / "metadata" / "status.json").read_text())
+        assert status_doc["finalized_outcome"] == "failed"
+        assert status_doc["experiments_started"] == 1
+        assert status_doc["experiments_completed"] == 0
+        assert status_doc["experiments_failed"] == 1
+
+        event_names = [event["event"] for event in
+                      (json.loads(line) for line in
+                       (folder / "metadata" / "events.jsonl").read_text().splitlines())]
+        assert "experiment_preserved_after_later_failure" in event_names
+        assert "incomplete_experiment_discarded" not in event_names
+    finally:
+        controller.shutdown()
+
+
+def test_configuration_preflight_rejects_an_achieved_interval_the_requested_one_would_pass(tmp_path):
+    # Discriminating case for a real gap: _after_camera_timing() only ever
+    # compared the REQUESTED frame rate against live camera limits. The
+    # AD2's own clock division can round a legal requested rate to a
+    # different, achieved one -- real hardware would do this on its own;
+    # the simulated driver instead echoes the request verbatim
+    # (achieved_frame_rate_hz == frame_rate_hz always), so this test
+    # injects the one piece of divergence real hardware could introduce
+    # on its own, to prove the fix actually uses the achieved value, not
+    # just the requested one it was already given.
+    #
+    # Numbers, tied directly to the simulated camera's own reported limits
+    # (drivers/camera/simulated.py): minimum_trigger_interval_s=0.002,
+    # readout_time_s=0.001. Requested camera_fps=400 -> requested interval
+    # 1/400=0.0025s, legal (above both limits) -- the requested-value
+    # check must pass. Achieved rate is made 600 Hz -> achieved interval
+    # 1/600=0.001667s, which is below the 0.002s SDK minimum -- only
+    # reachable by looking at the achieved value, not the requested one.
+    app = QApplication.instance() or QApplication(["test-achieved-timing"])
+    controller = ApplicationController(DeviceRegistry(mode=OperatingMode.SIMULATION),
+                                       mode=OperatingMode.SIMULATION)
+    results = []
+    controller.command_result.connect(results.append)
+    controller.start()
+    try:
+        for device in (DeviceId.AD2, DeviceId.CAMERA, DeviceId.PUMP, DeviceId.VALVE):
+            controller.submit(DeviceCommand(device, DeviceOperation.CONNECT))
+        deadline = monotonic() + 5
+        while monotonic() < deadline and sum(result.operation is DeviceOperation.CONNECT and result.ok
+                                              for result in results) < 4:
+            app.processEvents(); sleep(0.01)
+        assert sum(result.operation is DeviceOperation.CONNECT and result.ok for result in results) == 4
+        controller.submit(DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_FILL_LEVEL_SET,
+                                        PumpSetFillLevelArgs(1.0)))
+        deadline = monotonic() + 3
+        while monotonic() < deadline and not any(result.operation is DeviceOperation.PUMP_FILL_LEVEL_SET
+                                                  and result.ok for result in results):
+            app.processEvents(); sleep(0.01)
+
+        ad2_device = controller.registry.by_id(DeviceId.AD2).device
+        real_configure = ad2_device.experiment_digital_configure
+        def diverging_configure(frame_count, frame_rate_hz, camera_delay_s, led_enabled=True):
+            applied = real_configure(frame_count, frame_rate_hz, camera_delay_s, led_enabled)
+            applied["achieved_frame_rate_hz"] = 600.0  # real hardware's own clock division, simulated
+            return applied
+        ad2_device.experiment_digital_configure = diverging_configure
+
+        definition = compile_simple_series(replace(settings(), repeats=1, frame_count=2, camera_fps=400,
+            frequency_hz=NumericRange(1_000_000, 1_000_000, 1),
+            amplitude_v=NumericRange(1, 1, 1), exposure_ms=NumericRange(1, 1, 1),
+            sweep_enabled=False, temperature_control=False, temperature_logging=False,
+            roi=(0, 0, 16, 16), flush_unit_index=0))
+        controller.experiments.queue(definition, tmp_path)
+        assert controller.experiments.start()
+        status = _wait_until_terminal(app, controller)
+        assert status["state"] == "failed", status
+        assert "0.002" in status["phase"]  # the live SDK minimum, not the requested rate
+        assert "600" in status["phase"]  # names the achieved rate, not just "something is wrong"
+
+        # No flush and no acquisition command reached the devices -- this
+        # preflight runs, and must reject, before any of that.
+        assert not any(result.operation is DeviceOperation.CAMERA_SEQUENCE_ARM for result in results)
+    finally:
+        controller.shutdown()
+
+
 def test_lifecycle_counts_are_persisted_before_the_series_ends(tmp_path):
     # Correction: record_experiment_started/completed/failed() previously
     # only incremented in-memory counters -- status.json was not rewritten
@@ -1153,6 +1323,86 @@ def test_stop_after_current_finishes_active_experiment_then_stops_before_next_po
         assert status_doc["finalized_outcome"] == "stopped_after_current"
         assert status_doc["experiments_started"] == status_doc["experiments_completed"] == 1
         assert status_doc["experiments_failed"] == 0
+    finally:
+        panel.close()
+        controller.shutdown()
+
+
+def test_stop_after_current_closes_the_temperature_log_and_the_next_series_gets_its_own(tmp_path):
+    # Regression test for a real defect found by an independent simulation
+    # (Codex): stop_after_current's branch in _run_nodes()'s "experiment"
+    # handling set the series to "stopped" without ever touching
+    # self._recorder -- unlike normal series completion
+    # (_complete_series()), which drains/error-checks/closes it. Because
+    # attach_temperature_monitor()'s connection delivers samples regardless
+    # of series state, the still-open recorder kept accepting and writing
+    # new rows into a series already reported as finished, and the next
+    # series to run would silently overwrite self._recorder with its own,
+    # never closing (or even noticing) the still-open previous one.
+    app = QApplication.instance() or QApplication(["test-stop-closes-temp-log"])
+    controller, panel, results, events = _connected_temperature_series_harness(app, repeats=1)
+    try:
+        panel.temperature_logging.setChecked(True)
+        definition = panel._definition()
+        folder = controller.experiments.queue(definition, tmp_path)
+        assert controller.experiments.start()
+        deadline = monotonic() + 30
+        while monotonic() < deadline and not any(
+            event.operation is DeviceOperation.AD2_SOFTWARE_TRIGGER and event.state == "completed"
+            for event in events
+        ):
+            app.processEvents(); sleep(0.01)
+        controller.experiments.stop_after_current()
+        status = _wait_until_terminal(app, controller)
+        assert status["state"] == "stopped", status
+
+        # The fix: the recorder is actually closed, not left dangling.
+        assert controller.experiments._recorder is None
+
+        temperature_csv = folder / "metadata" / "temperature.csv"
+        rows_after_stop = temperature_csv.read_text(encoding="utf-8").count("\n")
+
+        # A sample arriving after the series is already "stopped" (exactly
+        # what attach_temperature_monitor()'s standing connection would
+        # keep delivering) must not be written to this series' file.
+        for _ in range(3):
+            controller.temperature_monitor.sample.emit({
+                "timestamp_utc": "2026-10-15T00:00:00+00:00", "monotonic_s": monotonic(),
+                "channel_1_c": 99.0, "channel_2_c": 99.0,
+                "channel_1_target_c": None, "channel_2_target_c": None, "error": "",
+            })
+        app.processEvents()
+        assert temperature_csv.read_text(encoding="utf-8").count("\n") == rows_after_stop
+
+        # The next series gets its own fresh recorder, not a silent
+        # overwrite of one still open -- and it is actually usable (not
+        # just non-None), confirmed by a real sample landing in its file.
+        definition2 = panel._definition()
+        tmp_path_2 = tmp_path / "series2"
+        tmp_path_2.mkdir()
+        folder2 = controller.experiments.queue(definition2, tmp_path_2)
+        assert controller.experiments.start()
+        deadline = monotonic() + 5
+        while monotonic() < deadline and controller.experiments._recorder is None:
+            app.processEvents(); sleep(0.01)
+        assert controller.experiments._recorder is not None
+        temperature_csv_2 = folder2 / "metadata" / "temperature.csv"
+        assert temperature_csv_2 != temperature_csv
+        controller.temperature_monitor.sample.emit({
+            "timestamp_utc": "2026-10-15T00:00:01+00:00", "monotonic_s": monotonic(),
+            "channel_1_c": 21.0, "channel_2_c": 22.0,
+            "channel_1_target_c": 25.0, "channel_2_target_c": 25.0, "error": "",
+        })
+        deadline = monotonic() + 3
+        while monotonic() < deadline and temperature_csv_2.read_text(encoding="utf-8").count("\n") <= 1:
+            app.processEvents(); sleep(0.01)
+        rows_2 = temperature_csv_2.read_text(encoding="utf-8").count("\n")
+        assert rows_2 > 1  # header/series_start row + the real sample just emitted
+        # Series 1's file is still exactly what it was -- no cross-write.
+        assert temperature_csv.read_text(encoding="utf-8").count("\n") == rows_after_stop
+
+        status2 = _wait_until_terminal(app, controller)
+        assert status2["state"] in {"completed", "stopped"}, status2
     finally:
         panel.close()
         controller.shutdown()
