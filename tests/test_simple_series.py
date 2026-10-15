@@ -152,13 +152,23 @@ def test_temperature_wait_for_stability_rejects_invalid_bounds():
     with pytest.raises(ValueError, match="maximum wait"):
         compile_simple_series(replace(settings(), temperature_wait_for_stability=True,
                                       temperature_max_wait_s=0))
-    # Below the fixed TEC poll interval (1 s): TecWaitStableArgs itself
-    # would reject this once the series actually reached that step, as an
-    # uncaught exception rather than a clean validation error -- caught
-    # here, at compile time, instead.
-    with pytest.raises(ValueError, match="poll interval"):
-        compile_simple_series(replace(settings(), temperature_wait_for_stability=True,
-                                      temperature_max_wait_s=0.5))
+
+
+def test_temperature_max_wait_below_one_second_compiles_without_a_software_floor(tmp_path):
+    # No compile-time floor tied to TecWaitStableArgs' own poll_interval_s
+    # default -- that default is a software polling choice, not a device
+    # requirement, and packaging it as a rule this field must obey would be
+    # exactly the kind of unnecessary restriction this project avoids. A
+    # value this low (0.5s) still compiles; if it is also inconsistent with
+    # the fixed poll interval at the dataclass level, that is reported as
+    # an ordinary series failure at run time instead -- see
+    # test_tec_wait_stable_argument_construction_failure_reports_cleanly in
+    # test_experiments.py for that path, exercised directly against the
+    # engine rather than duplicated here against the compiler.
+    definition = compile_simple_series(replace(settings(), temperature_wait_for_stability=True,
+                                                temperature_max_wait_s=0.5))
+    temperature_steps = definition["steps"][1]["steps"][:3]
+    assert temperature_steps[1]["args"]["max_wait_s"] == 0.5
 
 
 def test_single_step_uses_start_and_sweep_bounds():
@@ -722,7 +732,9 @@ def test_stability_wait_failure_stops_series_before_any_point_starts(tmp_path):
                    for channel, status in result.items()}
         tec_device.read_status = stuck_read_status
 
-        panel.temperature_max_wait.setValue(1.0)  # the minimum valid value (fixed TEC poll interval)
+        panel.temperature_max_wait.setValue(1.0)  # >= the fixed poll interval, so this exercises the
+                                                   # real timeout path, not the separate argument-
+                                                   # construction failure covered by the test above
         definition = panel._definition()
         folder = controller.experiments.queue(definition, tmp_path)
         assert controller.experiments.start()

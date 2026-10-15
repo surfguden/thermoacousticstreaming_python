@@ -5,6 +5,87 @@ SHA(s)/file(s)/function(s) the decision rests on, not just a conclusion.
 
 ---
 
+## 2026-10-15 — Mission recalibration: proportionate complexity, not parity
+
+This is a lab hardware-control algorithm project. The goal is to run
+experiments correctly and stay easy to adjust — not to fully replicate
+junjiebranch, clear every "unfinished" item, or cover every theoretical
+case. junjiebranch's documentation, restrictions, and protections are
+**material to evaluate**, not inherit by default: a lot of recorded
+planning there does not by itself mean this branch must carry it. Four
+things follow from that, recorded here rather than in a new file.
+
+### Restrictions reviewed against "what does it actually prevent"
+
+| Restriction | Prevents | Other-layer coverage | Cost on normal use | Verdict |
+|---|---|---|---|---|
+| `FlushWorkflow._implausible_reading()` (pump) | Computing a flush target from a stale/implausible SDK fill-level reading | None — `PumpWorker.set_fill_level()`'s target-range check is a different thing (protects the target, not the reading) | None on a legitimate reading; only engages on genuinely implausible data | **Keep** — real documented incident (`-513` SDK rejection on junjiebranch), not speculative |
+| `_run_action()`'s whole-dispatch try/except | An exception while building a command's own arguments crashing uncaught into the Qt callback chain | None — `_submit()`'s try/except never covered this | None — only engages on a genuine construction error | **Keep** — general correctness fix, not a restriction on normal use at all |
+| `temperature_max_wait_s` compile-time floor (removed this round) | Nothing a real device needs — the 1.0s came from `TecWaitStableArgs.poll_interval_s`, a software polling default | The propagation fix above already reports the same inconsistency gracefully at run time | Forced every operator to learn and respect an arbitrary number with no physical meaning | **Removed** — exactly the "software default dressed as a device requirement" this review was asked to find |
+| Z-stage two-tier operator confirmation (junjiebranch had it, this branch doesn't) | A real device-constraint concern (piezo motion without explicit authorization) | None currently | Would add a second confirmation dialog to every Z move | **Not added** (decided previously) — real device constraint, but no real Z-stage work is authorized yet to need it; revisit if/when real Z motion is actually planned, not speculatively now |
+| TEC `temperature_wait_for_stability` (optional, default off) | Nothing when unused — the default path compiles identically to before it existed | N/A | Zero cost unless explicitly enabled | **Keep** — proportionate: it's an opt-in capability add, not a forced complexity increase |
+
+No restriction was found this round that needed removing beyond the
+`max_wait_s` floor above. The pump/propagation items are not restrictions
+on normal use at all — they only ever engage on an actual error condition.
+
+### Day-to-day modification cost (where the common changes actually go)
+
+Checked against current code, not estimated:
+
+- **Temperature strategy** (tolerance, settle/hold durations, locked vs.
+  unlocked): `application/simple_series.py` (`SimpleSeriesSettings` fields
+  + `compile_simple_series()`'s `temperature_steps` construction) and
+  `ui/simple_series_panel.py` (the Temperature group widgets). The
+  underlying per-point gating mechanism itself (`tec_set`/`tec_wait_stable`
+  dispatch) is `experiment_runner.py`'s `_run_action()` + `_tec_args()`;
+  changing *values* never touches that file, only changing the *mechanism*
+  would. One real coupling point worth knowing: UI widget ↔
+  `SimpleSeriesSettings` field ↔ compiled JSON arg ↔ `TecApplySetpointsArgs`/
+  `TecWaitStableArgs` field is a consistent 1:1 chain with no duplicated
+  logic — changing a default means touching the UI default and the
+  dataclass default together (2 files), which is the minimum necessary,
+  not padding.
+- **Parameter sweep** (adding a new scan axis): `application/experiments.py`'s
+  `_values()` (value-list parsing) and `walk()`'s `"sweep"` handling
+  (cartesian expansion). One specific coupling point: the `labels` dict
+  inside `walk()` (around the sweep-parameter-name → folder-prefix mapping)
+  is hardcoded to recognize specific names for `simple_series` folder
+  naming — adding a new named sweep parameter through the simple-series
+  compiler means updating both `simple_series.py` and this dict, or the
+  new parameter's folders fall back to a generic `name=value` label. Small,
+  bounded, not worth refactoring away — a lookup table is the
+  proportionate solution for a handful of named parameters.
+- **Acquisition timing** (frame rate, exposure, trigger windows):
+  touches three places, each catching a *different* class of problem, not
+  redundant layers: `experiments.py`'s `_validate_experiment()` (static
+  schema/ordering correctness — can this JSON even make sense),
+  `experiment_runner.py`'s `_after_camera_timing()` (series-wide sanity
+  against *live* SDK-reported numbers — laser window, live minimum trigger
+  interval), and `_configure_all_before_fluidics()` (the actually-applied
+  value against the bounded output-timeout window). Collapsing these would
+  conflate "is this JSON internally consistent" with "does the live
+  hardware actually accept it," which are genuinely different questions —
+  not recommended.
+- **Adding a new experiment-step kind** (a new leaf action): touches
+  `experiments.py`'s `ACTION_RESOURCES` dict (resource declaration, for
+  `parallel`-block conflict checks) and `_action()`'s schema validation,
+  plus `experiment_runner.py`'s `_run_action()` dispatch (actual
+  execution), and possibly `_validate_experiment()` if the new kind has an
+  ordering constraint. A genuine 2-3-file touch, but it is the intentional
+  split between validation and execution this architecture was built
+  around — merging them back would reproduce the kind of monolithic
+  coupling junjiebranch's `qt_ui.py` had.
+
+**No simplification was made in this pass beyond removing the
+`max_wait_s` floor above.** The multi-file touch points found are
+intentional separation of concerns (schema vs. live-sanity vs. applied-value
+checks; validation vs. execution), not accidental duplication — forcing a
+refactor to reduce file count here would trade real clarity for a
+superficially smaller diff, which is the opposite of what was asked.
+
+---
+
 ## 2026-10-15 — Corrections from Codex's review of 6a0a8a5
 
 Five corrections accepted and acted on, not just acknowledged:
