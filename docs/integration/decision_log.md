@@ -5,6 +5,58 @@ SHA(s)/file(s)/function(s) the decision rests on, not just a conclusion.
 
 ---
 
+## 2026-10-15 — Four real defects found by Codex's independent review of `3adc5a7`, fixed
+
+Full detail in each fix's own commit message and `acceptance_table.md`/
+`migration_checklist.md`'s rows (not repeated here). Summary, since this
+entry's job is the decision trail, not another full writeup:
+
+1. **Data loss on a later failure**: a post-acquisition flush failing
+   after `_save_frames()` had already returned used to delete the
+   experiment's real, already-saved TIFFs/`experiment.json`. Fixed with
+   an `_experiment_frames_saved` flag gating the discard; the failure is
+   recorded on the experiment's own existing metadata file instead.
+   Acquisition success and overall experiment success stay distinct
+   (`record_experiment_failed()` still runs either way). Genuinely
+   incomplete experiments are still discarded, unchanged.
+2. **Open temperature log after a normal stop**: `stop_after_current`
+   never closed `self._recorder`, so the standing
+   `attach_temperature_monitor()` connection kept writing into an
+   already-"stopped" series, and the next series would silently
+   overwrite the still-open recorder. Fixed by extracting the
+   drain/close logic `_complete_series()` already had into
+   `_close_temperature_recorder()`, shared by both paths. TEC output
+   untouched.
+3. **Timing checked against the request, not the achieved result**: the
+   AD2's own clock division can round a legal requested frame rate to a
+   different achieved one; only the requested value was ever checked
+   against camera limits. Fixed by re-reading camera timing (reusing the
+   existing `CAMERA_TIMING_READ` round-trip) after the real AD2
+   configuration returns, and checking the achieved interval. Verified
+   with a deliberately discriminating case, since the simulated AD2
+   driver otherwise always echoes the request verbatim.
+4. **Half-applied settings-profile loads**: a wrong-typed scalar field
+   (plain dataclasses don't check field types) used to reach
+   `_apply_settings()`'s widget-setting loop and fail partway through as
+   a raw Qt `TypeError`, after earlier fields in that loop had already
+   been applied to the real widgets. Fixed with upfront per-field type
+   validation in `simple_series_settings_from_profile()`, before
+   `SimpleSeriesSettings` is constructed at all.
+
+**Verification discipline, applied to all four**: each fix's own test was
+confirmed to actually catch the defect (temporarily reverted, test failed
+as expected, restored) before being counted as done — not just "written
+and passing." Fix #1's own test also needed a second pass: its first
+version raced against `_save_frames()`'s background thread pool
+(deterministic locally, flaky under full-suite load) by failing the
+flush unconditionally the instant it was intercepted; corrected to wait
+for `_experiment_frames_saved` to actually become true first.
+
+No hardware accessed, no push, no merge, ola-branch/junjiebranch/
+AGENTS.md untouched.
+
+---
+
 ## 2026-10-15 — Residual flush-unit defect, found independently by Codex, fixed
 
 Per explicit instruction: close out the pump-unit fix properly, this
