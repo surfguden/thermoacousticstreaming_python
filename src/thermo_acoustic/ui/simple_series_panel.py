@@ -245,8 +245,13 @@ class SimpleSeriesPanel(QWidget):
     def _values(controls: tuple) -> NumericRange:
         return NumericRange(controls[0].value(), controls[1].value(), controls[2].value())
 
-    def _settings(self) -> SimpleSeriesSettings:
-        if self.pump_unit.currentData() is None:
+    def _settings(self, *, require_pump_unit: bool = True) -> SimpleSeriesSettings:
+        # require_pump_unit=False is for the settings-profile save path only
+        # (MainWindow.profile_document()): capturing every form input must
+        # not require a pump to be connected, unlike actually compiling or
+        # queuing an experiment, which still needs a real flush unit and
+        # keeps the default True behavior unchanged.
+        if require_pump_unit and self.pump_unit.currentData() is None:
             raise ValueError("Select a configured pump unit")
         return SimpleSeriesSettings(
             repeats=self.repeats.value(), frame_count=self.frames.value(), camera_fps=self.fps.value(),

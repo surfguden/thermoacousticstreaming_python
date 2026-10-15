@@ -33,6 +33,7 @@ from ..application.commands import (
     ConfirmationRequest,
 )
 from ..application.event_formatting import detailed_event_text, event_summary
+from ..application.simple_series import simple_series_settings_from_profile, simple_series_settings_to_profile
 from ..domain.models import ConnectionState, DeviceId, DeviceStatus, OperatingMode
 from .device_panels import DevicePanel, PANEL_TYPES
 from .workflow_panel import WorkflowPanel
@@ -378,6 +379,11 @@ class MainWindow(QMainWindow):
                 device.value: panel.profile_values()
                 for device, panel in self.panels.items()
             },
+            # require_pump_unit=False: saving the form must not require a
+            # pump to be connected, unlike actually running an experiment.
+            "experiment": simple_series_settings_to_profile(
+                self.experiment_panel._settings(require_pump_unit=False)
+            ),
         }
 
     def save_profile(self, path: str | Path) -> None:
@@ -433,8 +439,19 @@ class MainWindow(QMainWindow):
         for device, panel in self.panels.items():
             if device.value in devices:
                 validated[device] = panel.validate_profile(devices[device.value])
+        # Validate everything (including the experiment tab, if present)
+        # before applying anything -- a malformed "experiment" object must
+        # not leave the device panels half-applied, and vice versa.
+        experiment_settings = None
+        if "experiment" in document:
+            experiment_settings = simple_series_settings_from_profile(document["experiment"])
         for device, values in validated.items():
             self.panels[device].apply_profile(values)
+        if experiment_settings is not None:
+            # Pure input restoration: _apply_settings() only calls
+            # setValue()/setChecked()/setCurrentIndex() on widgets -- no
+            # device command, no queue, no start.
+            self.experiment_panel._apply_settings(experiment_settings)
 
     def _choose_save_profile(self) -> None:
         path, _selected_filter = QFileDialog.getSaveFileName(

@@ -23,14 +23,35 @@ authorized).
 
 **Shortest path to one representative experiment, via the UI**
 (`src/thermo_acoustic/ui/simple_series_panel.py`, `SimpleSeriesPanel`,
-wired into `MainWindow` as `experiment_panel`). **Corrected this round**:
-the steps below were previously written from reading the code, not from
-an actual run — a full-`MainWindow` acceptance test
+wired into `MainWindow` as `experiment_panel`). **Corrected this round
+(twice)**: the steps below were originally written from reading the code,
+not from an actual run — a full-`MainWindow` acceptance test
 (`tests/test_simple_series.py::
-test_full_main_window_operator_flow_queue_start_status_output_and_stop`,
-real widget clicks, not panel-level automation or direct manager calls)
-found this exact sequence genuinely failed as originally documented;
-corrected here against what that test actually proved works:
+test_full_main_window_operator_flow_queue_start_status_output_and_stop`)
+found the first version of this sequence genuinely failed. That test
+also, on its own terms, only proves two narrower things than the first
+correction implied, both tightened here:
+
+- **It used specific short values, not "the defaults."** The test sets
+  `repeats=2`, `frames=2`, `fps=10`, a single fixed frequency/amplitude/
+  exposure (`1`/`1`/`1`), a 16x16 ROI, `volume=0.01`, `flow=200`, sweep
+  and temperature control both off. It does **not** leave every field at
+  whatever the widget's own built-in default happens to be. Step 4 below
+  previously said "every other group... has usable defaults; leave them"
+  — that was not what the test checked, and is corrected below:
+  leaving fields at their raw widget defaults (rather than the specific
+  values just listed) is simply **untested** by this acceptance pass, not
+  confirmed safe.
+- **A programmatic click is not a human visual check.** The test drives
+  real `QPushButton.click()` calls, which do run the same Qt
+  signal/slot code a mouse click would — that is genuine evidence the
+  button-to-manager wiring works. It is not evidence about anything a
+  human would judge by looking at the running window (layout, label
+  wrapping, whether a control is visible without scrolling, whether the
+  right thing is focused). Nothing in this document claims a human has
+  visually reviewed the window during this acceptance pass; where that
+  distinction matters, it is called out explicitly below.
+
 1. Launch as above.
 2. Connect only the devices the steps you'll use actually need (device
    panels on the left, each with its own Connect button). For the
@@ -48,9 +69,12 @@ corrected here against what that test actually proved works:
    Refill is a required step for this shortest path, not an optional one.
 4. In the Simple Series panel, the only field that must be filled by hand
    is the series descriptor (`self.description`) — queuing without one
-   raises `"Enter a series descriptor before preflight"`. Every other
-   group (output/acquisition, timing, ultrasound, camera) has usable
-   defaults; leave them unless you specifically need different values.
+   raises `"Enter a series descriptor before preflight"`. **Every other
+   field's raw widget default is untested by the acceptance pass above**
+   (which used the specific short values listed in the correction note
+   above, not those defaults); use small, deliberately-chosen values for
+   a first run rather than assuming the out-of-the-box defaults are a
+   sane starting point.
 5. **Click "Preflight camera settings" before Start.** Skipping it doesn't
    block the run, but Start's own camera-preflight gate will instead pop
    a confirmation dialog ("Camera preflight has not passed for N queued
@@ -61,9 +85,9 @@ corrected here against what that test actually proved works:
    the panel and in the Status tab's dashboard; `stop_after_current`
    ("Stop after current")/abort/panic are available once running, and
    each reaches the manager through the same button a human would click
-   — confirmed directly, not assumed, by the acceptance test above
-   clicking "Stop after current" mid-batch and checking the batch
-   actually halted before its next repeat.
+   — confirmed by a programmatic click reaching the real signal/slot
+   path, per the distinction above; not confirmed by anyone looking at
+   the window while it ran.
 7. Output lands under the chosen experiment base folder, one
    `experiment_batch_NNNN/` per queued series, with
    `metadata/status.json` (live progress + final outcome, confirmed
@@ -102,6 +126,7 @@ estimated — full detail with file/function names in `decision_log.md`'s
 | TEC multi-point scan, both channels from one definition (same or independent per-point targets) | definition-file only, **not UI-usable** | **Actual use case**: an experiment where channel 1 and channel 2 must follow two *different* temperature sequences in lockstep (e.g. a controlled differential between two sample locations), or where both channels should simply move together. The engine supports both via `experiments.py`'s dict-valued sweep parameter or a plain scalar target with `channels: [1, 2]` (confirmed in `tests/test_experiments.py::test_temperature_point_series_supports_independent_per_channel_targets`), but `ui/simple_series_panel.py` exposes only **one** `tec_channel` selector — there is no UI path to author a per-point pair of ch1/ch2 targets, matching or different. An operator can only reach this by hand-authoring a JSON definition and loading/editing it outside the panel. **Implementation scope if pursued**: a second channel selector plus a per-point-pair input widget in the Temperature group, and a compiler path that emits the dict-valued (or multi-channel) sweep parameter instead of the single-channel one — not built this round, flagged per explicit instruction rather than letting the engine-level test imply UI-readiness. |
 | junjiebranch's temperature-**point**-level lifecycle counters (`SeriesLifecycleManifest.tec_point_started`/`tec_point_completed`) | not yet integrated | **Actual use case**: answering "how many of the N temperature points did this series reach" independently of "how many individual experiments/repeats completed" — useful when repeats-per-point varies or when the point-level progress matters more than the repeat-level detail. ola/integration's `SeriesStorage` counts only `experiments_started`/`_completed`/`_failed` (per-experiment/per-repeat granularity); there is no separate point-level counter. **Implementation scope if pursued**: a `temperature_points_started`/`_completed` pair on `SeriesStorage`, incremented from the `tec_set`/next-point-boundary logic in `experiment_runner.py` the same way the per-experiment counters are — not built this round, distinct from the general lifecycle-manifest work above (which does not include it). |
 | TEC Prepare-tab readback display (requested vs. controller) | done | Both values already shown separately; fixed `None` rendering (was literal `"None"`, now house "—" convention) plus a clarifying tooltip |
+| Experiment tab (Simple Series) settings save/load | done | Extends the existing per-device settings profile (`MainWindow.profile_document()`/`save_profile()`/`load_profile()`, same file, same File-menu entry point) with a sibling `"experiment"` key holding every `SimpleSeriesSettings` field (scan/sweep, repeats, acquisition timing, temperature, flush, output format) via new `simple_series_settings_to_profile()`/`_from_profile()` in `application/simple_series.py`. Loading only calls `SimpleSeriesPanel._apply_settings()` (`setValue()`/`setChecked()`/`setCurrentIndex()` — no device command, no queue, no start), confirmed directly by asserting zero new `command_result`s during the load call itself. Old settings files without an `"experiment"` key still load unchanged (the key is optional). Saving does not require a pump to be connected (`_settings(require_pump_unit=False)`, a new keyword-only parameter on the existing method; every other caller keeps the old required-pump behavior) — `flush_unit_index` simply saves as `null` if no pump is connected yet, same as the compiled-from-the-combo value does once one is. 4 new tests in `tests/test_device_ui.py` (round trip including a reconnected pump + full compiled-definition comparison; backward compatibility; disconnected-pump save; one test covering four malformed-input rejection cases in sequence), plus 1 existing test's assertion updated for the new document key. Full suite 172/172 passing (was 168; +4 new tests). |
 | Valve driver + automated flush confirmation | done | `FlushWorkflow` already confirms `ValveReadback.ready`+`confirmed_position` with timeout+recovery; no gap |
 | Valve `VALVE_WAIT_READY` return semantics (manual path only) | done (verified, no gap) | Command-level ok/fail framing conflates `ready=False` with success, but the operator-visible readback label already shows the true ready state/status note regardless — no silent failure reaches the operator |
 | AD2 driver incl. FM/sweep | done | `drivers/ad2/analog_discovery.py` carries fm_mod/sweep support |

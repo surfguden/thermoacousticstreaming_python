@@ -5,6 +5,74 @@ SHA(s)/file(s)/function(s) the decision rests on, not just a conclusion.
 
 ---
 
+## 2026-10-15 — Experiment-tab settings save/load, reusing the existing device-settings profile; and a correction to the "shortest path" doc's own evidence claims
+
+Per explicit instruction: the baseline from `1a888b5` stands; this batch
+adds exactly one capability (recipe save/restore for the Simple Series
+form) without adding generic protections or chasing junjiebranch feature
+parity, and separately tightens two overstated claims found while
+reviewing this round's own prior documentation.
+
+**Design, reusing what already exists rather than building a new
+framework**: `MainWindow` already has a per-device settings profile —
+`profile_document()`/`save_profile()`/`load_profile()`, one JSON file,
+one File-menu entry point, a `"devices"` key keyed by `DeviceId`. Device
+panels participate via a generic `register_profile()`/`profile_values()`/
+`apply_profile()` widget registry (`DevicePanel` base class). The
+Experiment tab (`SimpleSeriesPanel`) is not a `DevicePanel` and already
+has its own, simpler, dataclass-based round trip for this exact job —
+`_settings()` (widgets → `SimpleSeriesSettings`) and `_apply_settings()`
+(`SimpleSeriesSettings` → widgets, already used for queued-series
+editing). Rather than retrofitting the generic per-widget registry onto
+a panel that already has a cleaner dataclass-shaped one, or inventing a
+third mechanism, this adds:
+- `application/simple_series.py`: `simple_series_settings_to_profile()`/
+  `_from_profile()`, a JSON-safe serialize/deserialize pair for
+  `SimpleSeriesSettings` (handles the five `NumericRange` fields and the
+  `roi` tuple; validates unknown fields and malformed shapes the same
+  way `DevicePanel.validate_profile()` already does for device settings).
+- `ui/main_window.py`: `profile_document()` gains a sibling
+  `"experiment"` key; `load_profile()` validates it (if present) before
+  applying *anything* — same atomicity guarantee the existing devices
+  path already has — then calls `self.experiment_panel._apply_settings()`.
+  A file without `"experiment"` (every file saved before this round)
+  loads exactly as before; the key is optional, not versioned, since
+  adding it is purely additive to the document, not a breaking schema
+  change to the existing `"devices"` shape.
+- `ui/simple_series_panel.py`: `_settings()` gains a keyword-only
+  `require_pump_unit: bool = True` parameter. Every existing call site
+  (`_queue()`, `_preflight()`, `_definition()`, the queued-series editor)
+  keeps the default and therefore keeps raising "Select a configured
+  pump unit" exactly as before — compiling or running a series still
+  needs a real flush unit, unchanged. Only the new save path calls it
+  with `require_pump_unit=False`, because capturing the form's current
+  inputs must not require a pump to be connected (`flush_unit_index`
+  simply saves as `null` in that case, same as what the combo already
+  reports).
+
+**What this does not do, matching the explicit instruction**: no new
+state machine, no new confirmation dialog, no new generic config
+framework, and loading never connects a device, submits a command,
+queues, or starts anything — confirmed directly in the new tests by
+asserting the `command_result` list gains zero entries across the
+`load_profile()` call itself, not merely by the absence of an exception.
+
+**Correction to this round's own prior entry (`1a888b5`)**: the
+"shortest path" doc section said the full-`MainWindow` acceptance test
+proved "every other group... has usable defaults; leave them." That
+test actually configured specific short values (`repeats=2`, a single
+fixed frequency/amplitude/exposure, a 16x16 ROI, etc.), not the widgets'
+own untouched defaults — leaving fields at their raw defaults was never
+exercised and is now documented as untested, not as verified-safe. The
+same section also implied real human visual review by saying buttons
+were "confirmed" to work without separating that from what a
+programmatic `.click()` call actually proves (the signal/slot wiring
+runs; nothing about how the window looks or reads to a person). Both are
+corrected in `migration_checklist.md` directly; no code changed for
+either correction.
+
+---
+
 ## 2026-10-15 — First full-MainWindow acceptance test; found and fixed a real documentation gap in the "shortest path" steps
 
 Per explicit instruction: final usage acceptance for this round of

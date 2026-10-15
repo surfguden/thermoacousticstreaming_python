@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from time import monotonic, sleep
 
 import numpy as np
 import pytest
@@ -967,7 +968,7 @@ def test_profile_round_trip_is_input_only_and_submits_nothing(qt_app, tmp_path):
     window.save_profile(path)
 
     document = json.loads(path.read_text(encoding="utf-8"))
-    assert set(document) == {"schema_version", "devices"}
+    assert set(document) == {"schema_version", "devices", "experiment"}
     assert "connection" not in path.read_text(encoding="utf-8")
 
     assert document["devices"]["pump"] == {}
@@ -1002,6 +1003,188 @@ def test_profile_load_is_atomic_and_rejects_invalid_data(qt_app, tmp_path):
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="Non-finite"):
+        window.load_profile(path)
+
+
+def _connect_pump_via_real_button(app, window, results):
+    window.panels[DeviceId.PUMP]._buttons["connect"].click()
+    deadline = monotonic() + 5
+    while monotonic() < deadline and not any(
+        result.operation is DeviceOperation.CONNECT and result.device is DeviceId.PUMP and result.ok
+        for result in results
+    ):
+        app.processEvents(); sleep(0.01)
+    assert any(result.operation is DeviceOperation.CONNECT and result.device is DeviceId.PUMP and result.ok
+               for result in results)
+
+
+def test_experiment_tab_inputs_round_trip_through_the_settings_profile(qt_app, tmp_path):
+    # Extends the existing device-settings profile (same file, same
+    # save_profile()/load_profile() entry point -- see
+    # test_profile_round_trip_is_input_only_and_submits_nothing above) to
+    # also cover the Experiment tab's fixed-form inputs: scan (frequency/
+    # amplitude/exposure/sweep), repeats, acquisition timing, temperature,
+    # flush, and output (tiff_format) settings. Configures a non-default
+    # series on one window, saves, builds a *second*, independent MainWindow
+    # (fresh controller/registry, nothing connected yet), loads, and checks
+    # both the raw field values and the compiled experiment definition
+    # agree -- not just that loading didn't crash.
+    app = QApplication.instance() or QApplication(["test-experiment-profile"])
+    controller1 = ApplicationController(DeviceRegistry(mode=OperatingMode.SIMULATION), mode=OperatingMode.SIMULATION)
+    results1 = []
+    controller1.command_result.connect(results1.append)
+    controller1.start()
+    window1 = MainWindow(controller1)
+    try:
+        _connect_pump_via_real_button(app, window1, results1)
+        panel1 = window1.experiment_panel
+        panel1.description.setText("Non-default saved series")
+        panel1.repeats.setValue(3)
+        panel1.frames.setValue(5)
+        panel1.fps.setValue(12)
+        panel1.sweep_enabled.setChecked(True)
+        for widget, value in zip(panel1.frequency, (900_000, 1_100_000, 3)):
+            widget.setValue(value)
+        for widget, value in zip(panel1.amplitude, (0.5, 1.5, 2)):
+            widget.setValue(value)
+        for widget, value in zip(panel1.exposure, (2, 4, 2)):
+            widget.setValue(value)
+        for widget, value in zip(panel1.sweep_width, (50_000, 150_000, 2)):
+            widget.setValue(value)
+        panel1.sweep_period.setValue(5)
+        panel1.roi_x.setValue(10); panel1.roi_y.setValue(20)
+        panel1.roi_width.setValue(64); panel1.roi_height.setValue(48)
+        panel1.pump_unit.setCurrentIndex(0)
+        panel1.volume.setValue(0.07)
+        panel1.flow.setValue(350)
+        panel1.wait_after_flush.setValue(1.5)
+        panel1.temperature_control.setChecked(True)
+        panel1.tec_channel.setCurrentIndex(0)
+        for widget, value in zip(panel1.temperature, (18, 28, 3)):
+            widget.setValue(value)
+        panel1.temp_wait.setValue(2.5)
+        panel1.temperature_logging.setChecked(True)
+        panel1.temperature_wait_for_stability.setChecked(True)
+        panel1.temperature_tolerance.setValue(0.3)
+        panel1.temperature_min_settle.setValue(1.0)
+        panel1.temperature_max_wait.setValue(30)
+
+        saved_definition = panel1._definition()
+        path = tmp_path / "settings.json"
+        window1.save_profile(path)
+
+        document = json.loads(path.read_text(encoding="utf-8"))
+        assert document["experiment"]["description"] == "Non-default saved series"
+        assert document["experiment"]["repeats"] == 3
+        assert document["experiment"]["frequency_hz"] == {"start": 900_000, "stop": 1_100_000, "steps": 3}
+
+        # A brand-new window, independent controller/registry -- nothing
+        # connected at load time, matching "load only restores inputs, it
+        # does not connect devices."
+        controller2 = ApplicationController(DeviceRegistry(mode=OperatingMode.SIMULATION), mode=OperatingMode.SIMULATION)
+        results2 = []
+        controller2.command_result.connect(results2.append)
+        controller2.start()
+        window2 = MainWindow(controller2)
+        try:
+            commands_before_load = len(results2)
+            window2.load_profile(path)
+            assert len(results2) == commands_before_load  # no device command submitted by the load itself
+
+            panel2 = window2.experiment_panel
+            restored = panel2._settings(require_pump_unit=False)
+            original = panel1._settings(require_pump_unit=False)
+            for field in ("description", "repeats", "frame_count", "camera_fps", "sweep_enabled",
+                          "frequency_hz", "amplitude_v", "exposure_ms", "sweep_width_hz", "sweep_period_ms",
+                          "roi", "flush_volume_ml", "flush_flow_ul_min", "flush_wait_after_s",
+                          "temperature_control", "temperature_c", "temperature_wait_s",
+                          "temperature_logging", "temperature_wait_for_stability",
+                          "temperature_tolerance_c", "temperature_min_settle_s", "temperature_max_wait_s"):
+                assert getattr(restored, field) == getattr(original, field), field
+            # flush_unit_index/tec_channel are combo selections that only
+            # exist once the matching device is connected -- connecting the
+            # same pump unit here recovers them and lets the full compiled
+            # definition be compared, not just the individually-restored
+            # fields above.
+            _connect_pump_via_real_button(app, window2, results2)
+            assert panel2._definition() == saved_definition
+        finally:
+            window2.close()
+            controller2.shutdown()
+    finally:
+        window1.close()
+        controller1.shutdown()
+
+
+def test_experiment_tab_settings_profile_is_optional_for_backward_compatibility(qt_app, tmp_path):
+    # An existing device-settings file saved before this feature existed
+    # has no "experiment" key at all -- loading it must still work and
+    # must leave the Experiment tab's own inputs untouched, not reset them
+    # to defaults or raise.
+    del qt_app
+    controller = ApplicationController(DeviceRegistry(mode=OperatingMode.SIMULATION), mode=OperatingMode.SIMULATION)
+    window = MainWindow(controller)
+    panel = window.experiment_panel
+    panel.description.setText("Untouched by an old-format load")
+    panel.repeats.setValue(7)
+    before = panel._settings(require_pump_unit=False)
+
+    old_style_document = {"schema_version": 2, "devices": {}}
+    path = tmp_path / "old-style.json"
+    path.write_text(json.dumps(old_style_document), encoding="utf-8")
+
+    window.load_profile(path)  # must not raise
+    after = panel._settings(require_pump_unit=False)
+    assert after == before
+
+
+def test_experiment_tab_settings_profile_save_handles_a_disconnected_pump(qt_app, tmp_path):
+    # Saving the form must not require a pump to be connected, unlike
+    # actually compiling/queuing/running a series -- confirmed directly
+    # against the saved document, not just that save_profile() didn't raise.
+    del qt_app
+    controller = ApplicationController(DeviceRegistry(mode=OperatingMode.SIMULATION), mode=OperatingMode.SIMULATION)
+    window = MainWindow(controller)
+    assert window.experiment_panel.pump_unit.currentData() is None
+    with pytest.raises(ValueError, match="Select a configured pump unit"):
+        window.experiment_panel._definition()  # the behavior this test must NOT change
+
+    path = tmp_path / "settings.json"
+    window.save_profile(path)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    assert document["experiment"]["flush_unit_index"] is None
+
+
+def test_experiment_tab_settings_profile_rejects_malformed_experiment_data(qt_app, tmp_path):
+    del qt_app
+    controller = ApplicationController(DeviceRegistry(mode=OperatingMode.SIMULATION), mode=OperatingMode.SIMULATION)
+    window = MainWindow(controller)
+    original_repeats = window.experiment_panel.repeats.value()
+    path = tmp_path / "invalid-experiment.json"
+
+    document = window.profile_document()
+    document["experiment"]["not_a_real_field"] = 1
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ValueError, match="Unknown experiment setting"):
+        window.load_profile(path)
+    assert window.experiment_panel.repeats.value() == original_repeats
+
+    document = window.profile_document()
+    document["experiment"]["frequency_hz"] = {"start": 1, "stop": 2}  # missing "steps"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ValueError, match="start/stop/steps object"):
+        window.load_profile(path)
+
+    document = window.profile_document()
+    document["experiment"]["roi"] = [1, 2, 3]  # needs exactly 4 elements
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ValueError, match="roi must be a 4-element array"):
+        window.load_profile(path)
+
+    document = window.profile_document()
+    document["experiment"] = "not an object"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ValueError, match="must be an object"):
         window.load_profile(path)
 
 

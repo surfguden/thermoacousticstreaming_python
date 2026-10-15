@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields
 import math
 from typing import Any
 
@@ -69,6 +69,52 @@ class SimpleSeriesSettings:
     temperature_tolerance_c: float = 0.2
     temperature_min_settle_s: float = 5.0
     temperature_max_wait_s: float = 300.0
+
+
+_NUMERIC_RANGE_FIELDS = ("frequency_hz", "amplitude_v", "exposure_ms", "sweep_width_hz", "temperature_c")
+
+
+def simple_series_settings_to_profile(settings: SimpleSeriesSettings) -> dict[str, Any]:
+    """JSON-safe dict for every fixed-form experiment-tab input. Saved
+    alongside the existing per-device settings profile (same file, a
+    sibling top-level key) -- paired with simple_series_settings_from_profile()
+    for the round trip. `roi` becomes a list (JSON has no tuple type);
+    `NumericRange` fields become plain start/stop/steps objects via asdict()."""
+    data = asdict(settings)
+    data["roi"] = list(data["roi"])
+    return data
+
+
+def simple_series_settings_from_profile(data: object) -> SimpleSeriesSettings:
+    """Inverse of simple_series_settings_to_profile(); raises ValueError on
+    anything that isn't a well-formed experiment-settings object, matching
+    the device-settings profile's own validation style."""
+    if not isinstance(data, dict):
+        raise ValueError("Experiment settings must be an object")
+    known = {field.name for field in fields(SimpleSeriesSettings)}
+    unknown = set(data) - known
+    if unknown:
+        raise ValueError(f"Unknown experiment setting(s): {', '.join(sorted(unknown))}")
+    values = dict(data)
+    for key in _NUMERIC_RANGE_FIELDS:
+        if key not in values:
+            continue
+        range_value = values[key]
+        if not isinstance(range_value, dict) or set(range_value) != {"start", "stop", "steps"}:
+            raise ValueError(f"{key} must be a start/stop/steps object")
+        try:
+            values[key] = NumericRange(**range_value)
+        except TypeError as exc:
+            raise ValueError(f"{key} is not a valid start/stop/steps object: {exc}") from exc
+    if "roi" in values:
+        roi = values["roi"]
+        if not (isinstance(roi, (list, tuple)) and len(roi) == 4):
+            raise ValueError("roi must be a 4-element array")
+        values["roi"] = tuple(roi)
+    try:
+        return SimpleSeriesSettings(**values)
+    except TypeError as exc:
+        raise ValueError(f"Experiment settings are missing a required field: {exc}") from exc
 
 
 def compile_simple_series(settings: SimpleSeriesSettings) -> dict[str, Any]:
