@@ -611,6 +611,43 @@ def _connected_temperature_series_harness(app, *, repeats=2, hold_s=0.3):
     return controller, panel, results, events
 
 
+def test_run_preview_summarizes_the_compiled_plan_without_reimplementing_it(tmp_path):
+    # The preview text (self.summary) must come from the already-compiled,
+    # already-validated plan (expansion.experiments' actual parameter
+    # values), not a second, independent calculation -- this test changes
+    # a scan range and checks the preview reflects exactly what got
+    # compiled, including the one case compile_simple_series() has a
+    # non-obvious representation for (a disabled axis compiles to the
+    # literal string "NaN", not an absent key or a real number).
+    app = QApplication.instance() or QApplication(["test-run-preview"])
+    controller, panel, _results, _events = _connected_temperature_series_harness(app, repeats=3, hold_s=2.5)
+    try:
+        for widget, value in zip(panel.frequency, (1_000_000, 2_000_000, 3)):
+            widget.setValue(value)
+        panel.output_root.setText(str(tmp_path))
+        panel._preview()
+        text = panel.summary.text()
+
+        assert "Repeats per point: 3" in text
+        assert "Frequency (Hz): 1e+06 .. 2e+06 (3 values)" in text
+        assert "Amplitude (V): 1" in text  # single fixed value, no "x values" suffix
+        assert "Sweep width" not in text  # sweep disabled by the harness -- compiles to "NaN", must not show as a range
+        assert "Temperature strategy: wait for stability" in text
+        assert "±0.5" in text and "settled 0.05s" in text and "max wait 5s" in text and "hold 2.5s" in text
+        assert f"Output location: {tmp_path}" in text
+
+        panel.output_root.setText("")
+        panel._preview()
+        assert "Output location: not chosen yet" in panel.summary.text()
+
+        panel.temperature_control.setChecked(False)
+        panel._preview()
+        assert "Temperature" not in panel.summary.text()  # neither the range line nor the strategy line
+    finally:
+        panel.close()
+        controller.shutdown()
+
+
 _TERMINAL_STATES = {"completed", "failed", "stopped", "aborted"}
 
 

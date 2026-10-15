@@ -1054,7 +1054,13 @@ def test_experiment_tab_inputs_round_trip_through_the_settings_profile(qt_app, t
         panel1.sweep_period.setValue(5)
         panel1.roi_x.setValue(10); panel1.roi_y.setValue(20)
         panel1.roi_width.setValue(64); panel1.roi_height.setValue(48)
-        panel1.pump_unit.setCurrentIndex(0)
+        # Unit 1 (index 1), deliberately not unit 0 -- unit 0 happens to be
+        # Qt's own "first item becomes current" default for an empty-then-
+        # populated combo, so it would not actually exercise the pending-
+        # selection restore path below (see
+        # test_experiment_tab_flush_unit_selection_survives_a_load_before_connect).
+        assert panel1.pump_unit.findData(1) >= 0  # the simulated pump bank has >= 2 units
+        panel1.pump_unit.setCurrentIndex(panel1.pump_unit.findData(1))
         panel1.volume.setValue(0.07)
         panel1.flow.setValue(350)
         panel1.wait_after_flush.setValue(1.5)
@@ -1108,6 +1114,71 @@ def test_experiment_tab_inputs_round_trip_through_the_settings_profile(qt_app, t
             # fields above.
             _connect_pump_via_real_button(app, window2, results2)
             assert panel2._definition() == saved_definition
+        finally:
+            window2.close()
+            controller2.shutdown()
+    finally:
+        window1.close()
+        controller1.shutdown()
+
+
+def test_experiment_tab_flush_unit_selection_survives_a_load_before_connect(qt_app, tmp_path):
+    # Regression test for a real defect: loading a settings profile while
+    # the pump is disconnected calls _apply_settings() against an *empty*
+    # pump_unit combo. findData(flush_unit_index) on an empty combo always
+    # returns -1, so the saved unit was silently lost -- and because Qt
+    # makes the first item "current" by default once a combo is populated,
+    # connecting the pump afterward could default to unit 1 regardless of
+    # what was actually saved, with no indication anything was wrong.
+    app = QApplication.instance() or QApplication(["test-flush-unit-pending"])
+    controller1 = ApplicationController(DeviceRegistry(mode=OperatingMode.SIMULATION), mode=OperatingMode.SIMULATION)
+    results1 = []
+    controller1.command_result.connect(results1.append)
+    controller1.start()
+    window1 = MainWindow(controller1)
+    try:
+        _connect_pump_via_real_button(app, window1, results1)
+        panel1 = window1.experiment_panel
+        panel1.description.setText("Unit 1 selected")
+        assert panel1.pump_unit.findData(1) >= 0
+        panel1.pump_unit.setCurrentIndex(panel1.pump_unit.findData(1))
+        path = tmp_path / "settings.json"
+        window1.save_profile(path)
+        document = json.loads(path.read_text(encoding="utf-8"))
+        assert document["experiment"]["flush_unit_index"] == 1
+
+        controller2 = ApplicationController(DeviceRegistry(mode=OperatingMode.SIMULATION), mode=OperatingMode.SIMULATION)
+        results2 = []
+        controller2.command_result.connect(results2.append)
+        controller2.start()
+        window2 = MainWindow(controller2)
+        try:
+            panel2 = window2.experiment_panel
+            assert panel2.pump_unit.count() == 0  # nothing connected yet
+
+            window2.load_profile(path)
+            # Not silently replaced with "the first pump" (unit 0) or left
+            # looking like nothing was ever saved: an explicit notice names
+            # the saved-but-unavailable unit.
+            assert panel2.pump_unit.currentData() is None
+            assert "unit 2" in panel2.pump_unit_notice.text().lower()  # unit_index=1 is displayed as "Unit 2"
+            assert "not available" in panel2.pump_unit_notice.text().lower()
+
+            # Re-saving now (still disconnected) must not lose the pending
+            # selection -- it was never applied to the combo, but it must
+            # still be known.
+            resaved_path = tmp_path / "resaved.json"
+            window2.save_profile(resaved_path)
+            resaved_document = json.loads(resaved_path.read_text(encoding="utf-8"))
+            assert resaved_document["experiment"]["flush_unit_index"] == 1
+
+            # Connecting the pump now restores the saved selection and
+            # clears the notice -- the device list "appearing" is what
+            # resolves the pending value, not an automatic connect.
+            assert results2 == []
+            _connect_pump_via_real_button(app, window2, results2)
+            assert panel2.pump_unit.currentData() == 1
+            assert panel2.pump_unit_notice.text() == ""
         finally:
             window2.close()
             controller2.shutdown()

@@ -44,6 +44,13 @@ class SimpleSeriesPanel(QWidget):
         self.preflight = SimpleSeriesPreflight(controller, self)
         self._queued_settings: dict[str, SimpleSeriesSettings] = {}
         self._camera_import_request: str | None = None
+        # Set by _apply_settings() when a loaded flush_unit_index isn't
+        # among the pump_unit combo's current choices (most commonly:
+        # nothing is connected yet). Consumed by _devices() once the pump
+        # actually connects and the combo is repopulated -- restores the
+        # saved selection instead of silently leaving Qt's own "first item
+        # becomes current" default in place. Cleared once matched.
+        self._pending_flush_unit_index: int | None = None
         root = QVBoxLayout(self)
         root.addWidget(QLabel("Simple series · temperature → frequency → sweep width → amplitude → exposure → repeats"))
         scroll = QScrollArea()
@@ -149,10 +156,12 @@ class SimpleSeriesPanel(QWidget):
         fluidics = QGroupBox("Flush")
         form = QFormLayout(fluidics)
         self.pump_unit = QComboBox()
+        self.pump_unit_notice = QLabel("")
         self.volume = number(0.1, 0.000001, 1000)
         self.flow = number(500, 0.000001, 1_000_000)
         self.wait_after_flush = number(0, 0, 100, 3)
         form.addRow("Pump unit", self.pump_unit)
+        form.addRow(self.pump_unit_notice)
         form.addRow("Volume (mL)", self.volume)
         form.addRow("Flow (µL/min)", self.flow)
         form.addRow("Wait after flush (s)", self.wait_after_flush)
@@ -260,7 +269,9 @@ class SimpleSeriesPanel(QWidget):
             camera_start_s=self.camera_start.value(), frequency_hz=self._values(self.frequency),
             amplitude_v=self._values(self.amplitude), exposure_ms=self._values(self.exposure),
             roi=(self.roi_x.value(), self.roi_y.value(), self.roi_width.value(), self.roi_height.value()),
-            flush_unit_index=self.pump_unit.currentData(), flush_volume_ml=self.volume.value(),
+            flush_unit_index=(self.pump_unit.currentData()
+                              if self.pump_unit.currentData() is not None
+                              else self._pending_flush_unit_index), flush_volume_ml=self.volume.value(),
             flush_flow_ul_min=self.flow.value(), flush_wait_after_s=self.wait_after_flush.value(),
             description=self.description.text().strip(), sweep_enabled=self.sweep_enabled.isChecked(),
             sweep_width_hz=self._values(self.sweep_width), sweep_period_ms=self.sweep_period.value(),
@@ -301,11 +312,41 @@ class SimpleSeriesPanel(QWidget):
         self.temperature_control.setChecked(settings.temperature_control)
         self.temperature_logging.setChecked(settings.temperature_logging)
         self.temperature_wait_for_stability.setChecked(settings.temperature_wait_for_stability)
-        self.pump_unit.setCurrentIndex(self.pump_unit.findData(settings.flush_unit_index))
+        self._apply_flush_unit_index(settings.flush_unit_index)
         self.tec_channel.setCurrentIndex(self.tec_channel.findData(settings.tec_channel))
         self.tiff_format.setCurrentIndex(self.tiff_format.findData(settings.tiff_format))
         self._enabled()
         self._preview()
+
+    def _apply_flush_unit_index(self, flush_unit_index: int | None) -> None:
+        # The pump_unit combo only has items while the pump is connected
+        # (see _devices() below) -- if the saved unit isn't among them
+        # right now (most commonly: nothing connected yet), selecting it
+        # directly would silently do nothing and Qt would leave whatever
+        # item it happens to default to as "current". Remember the saved
+        # value instead and restore it once _devices() repopulates the
+        # combo with a matching entry; show an explicit notice meanwhile
+        # rather than letting a wrong unit look selected.
+        if flush_unit_index is not None and self.pump_unit.findData(flush_unit_index) >= 0:
+            self.pump_unit.setCurrentIndex(self.pump_unit.findData(flush_unit_index))
+            self._pending_flush_unit_index = None
+            self.pump_unit_notice.setText("")
+        else:
+            self._pending_flush_unit_index = flush_unit_index
+            self._update_pump_unit_notice()
+
+    def _update_pump_unit_notice(self) -> None:
+        if self._pending_flush_unit_index is None:
+            self.pump_unit_notice.setText("")
+            return
+        if self.pump_unit.findData(self._pending_flush_unit_index) >= 0:
+            self.pump_unit_notice.setText("")
+            return
+        self.pump_unit_notice.setText(
+            f"Loaded setting: unit {self._pending_flush_unit_index + 1} -- not available "
+            "yet (not a current choice). Connect the pump to restore it."
+        )
+        self.pump_unit_notice.setStyleSheet("color: #b71c1c; font-weight: 600")
 
     def _definition(self) -> dict:
         return compile_simple_series(self._settings())
@@ -313,10 +354,9 @@ class SimpleSeriesPanel(QWidget):
     def _preview(self, *_args) -> None:
         try:
             definition = self._definition()
-            count = len(validate_definition(definition).experiments)
-            self.summary.setText(f"{count} experiments · {count + 1} flushes · "
-                f"{(count + 1) * self.volume.value():g} mL total flush volume · "
-                f"{count * self.frames.value()} saved frames")
+            expansion = validate_definition(definition)
+            count = len(expansion.experiments)
+            self.summary.setText(self._run_preview_text(expansion, count))
             passed = self.manager.camera_preflighted(definition)
             self.camera_preflight_label.setText("Camera preflight: Yes" if passed else "Camera preflight: No")
             self.camera_preflight_label.setStyleSheet(
@@ -324,6 +364,48 @@ class SimpleSeriesPanel(QWidget):
         except (ValueError, ZeroDivisionError) as exc:
             self.summary.setText(f"Settings need attention: {exc}")
             self.camera_preflight_label.setText("Camera preflight: No")
+
+    def _run_preview_text(self, expansion, count: int) -> str:
+        """A read-only, before-you-click-Start summary, built entirely from
+        the already-compiled/validated plan (`expansion.experiments`'
+        actual parameter values, not re-derived from the NumericRange
+        widgets) plus a couple of scalar fields the compiled plan has no
+        reason to carry (temperature-wait strategy, the output folder) --
+        never a second implementation of compile_simple_series()'s own
+        logic."""
+        lines = [f"{count} experiments · {count + 1} flushes · "
+                 f"{(count + 1) * self.volume.value():g} mL total flush volume · "
+                 f"{count * self.frames.value()} saved frames"]
+        # repeat_index is 1-based (experiments.py's "repeat" node loop runs
+        # range(1, count + 1)), reset for each outer parameter combination
+        # -- not a running count across the whole plan.
+        repeats = max((experiment.repeat_index for experiment in expansion.experiments), default=0)
+        lines.append(f"Repeats per point: {repeats}")
+        for key, label in (("frequency_hz", "Frequency (Hz)"), ("amplitude_v", "Amplitude (V)"),
+                           ("exposure_ms", "Exposure (ms)"), ("sweep_width_hz", "Sweep width (Hz)"),
+                           ("temperature_c", "Temperature (°C)")):
+            # compile_simple_series() fills a disabled sweep/temperature
+            # axis with the literal string "NaN" (not a float, not an
+            # absent key) -- that's the compiled plan's own way of saying
+            # "not applicable this run," so it's excluded here rather than
+            # shown as a one-value range.
+            values = sorted({experiment.parameters[key] for experiment in expansion.experiments
+                             if key in experiment.parameters and experiment.parameters[key] != "NaN"})
+            if not values:
+                continue
+            lines.append(f"{label}: {values[0]:g}" if len(values) == 1
+                         else f"{label}: {values[0]:g} .. {values[-1]:g} ({len(values)} values)")
+        if self.temperature_control.isChecked():
+            if self.temperature_wait_for_stability.isChecked():
+                lines.append(
+                    f"Temperature strategy: wait for stability (±{self.temperature_tolerance.value():g}°C, "
+                    f"settled {self.temperature_min_settle.value():g}s, max wait "
+                    f"{self.temperature_max_wait.value():g}s), then hold {self.temp_wait.value():g}s")
+            else:
+                lines.append(f"Temperature strategy: fixed wait of {self.temp_wait.value():g}s, no stability check")
+        output_root = self.output_root.text().strip()
+        lines.append(f"Output location: {output_root}" if output_root else "Output location: not chosen yet")
+        return "\n".join(lines)
 
     def _enabled(self, *_args) -> None:
         for widget in (*self.sweep_width, self.sweep_period):
@@ -500,6 +582,14 @@ class SimpleSeriesPanel(QWidget):
                 self.pump_unit.addItem(label, index)
             if current is not None and self.pump_unit.findData(current) >= 0:
                 self.pump_unit.setCurrentIndex(self.pump_unit.findData(current))
+            elif self._pending_flush_unit_index is not None and self.pump_unit.findData(
+                self._pending_flush_unit_index) >= 0:
+                # A loaded setting's unit just became available (the pump
+                # connected). Restore it rather than leaving Qt's own
+                # "first item is current by default" behavior in place.
+                self.pump_unit.setCurrentIndex(self.pump_unit.findData(self._pending_flush_unit_index))
+                self._pending_flush_unit_index = None
+            self._update_pump_unit_notice()
         tec = statuses[DeviceId.TEC].readback
         if isinstance(tec, TecReadback) and tec.channels:
             desired_tec = [(f"Channel {channel.channel}", channel.channel) for channel in tec.channels]

@@ -5,6 +5,64 @@ SHA(s)/file(s)/function(s) the decision rests on, not just a conclusion.
 
 ---
 
+## 2026-10-15 — Fixed a real flush-unit restore defect found right after the settings-profile feature landed; added the pre-run preview
+
+Per explicit instruction: close out the settings-profile batch properly
+before moving on, then implement the pre-run preview as its own small,
+independent piece. Both done; no hardware touched.
+
+**The defect, precisely.** `_apply_settings()` restored `flush_unit_index`
+with `self.pump_unit.setCurrentIndex(self.pump_unit.findData(flush_unit_index))`.
+`pump_unit` is only populated while the pump is connected (`_devices()`),
+so loading a profile before connecting meant `findData()` always returned
+`-1` on an empty combo — the saved value was dropped with no error and no
+visible sign anything was wrong. Worse: Qt's `QComboBox` makes the first
+item "current" by default as soon as items are added to an empty one, so
+connecting the pump afterward could silently select unit 1 regardless of
+what was actually saved. The round-trip test added for the save/load
+feature itself used unit 0 for its saved value, which happens to be that
+same default -- so it passed without ever exercising the failure path.
+Caught by inspection, not by that test, and confirmed by a new test using
+unit 1 deliberately.
+
+**Fix** (`ui/simple_series_panel.py`): a new `_pending_flush_unit_index`
+field holds the saved value when the combo can't honor it yet, set by a
+new `_apply_flush_unit_index()` (called from `_apply_settings()` in place
+of the old direct `setCurrentIndex` call). `_devices()` -- already run on
+every device status change, including the pump actually connecting --
+checks this pending value once the combo is repopulated and restores the
+match if one now exists, clearing the pending state. A new
+`pump_unit_notice` label (same `QLabel` + red/bold styling convention
+already used for `camera_preflight_label`) names the saved-but-unavailable
+unit explicitly instead of leaving the combo looking like nothing was
+ever saved, or like a different unit genuinely was. `_settings(require_pump_unit=False)`
+(the save path) now falls back to the pending value when the combo has
+no current selection, so saving again before the pump ever connects does
+not lose the value either -- confirmed directly by the new test, not
+assumed. No change to `_settings(require_pump_unit=True)`'s existing
+"Select a configured pump unit" requirement for actually compiling or
+queuing a series.
+
+**Pre-run preview** (same file, `_run_preview_text()`, called from the
+existing `_preview()`): adds repeats-per-point, each varying scan
+parameter's actual compiled range, the temperature-wait strategy in
+plain words, and the chosen output location to the existing experiment/
+flush/frame-count summary. Deliberately reads the values from
+`expansion.experiments`' own compiled parameters rather than re-deriving
+them from the `NumericRange` widgets a second time, so the preview can
+never drift from what was actually compiled and validated. Caught its
+own bug before shipping: `compile_simple_series()` represents a
+*disabled* sweep or temperature axis as the literal string `"NaN"` (not
+an absent key, not a real number) -- the first draft tried to `:g`-format
+that string directly and would have crashed the preview the moment
+sweep or temperature control was turned off; the new test exercises
+exactly that case.
+
+Full suite run after both fixes: all passing, zero regressions (see
+`migration_checklist.md`'s corresponding rows for exact counts).
+
+---
+
 ## 2026-10-15 — Experiment-tab settings save/load, reusing the existing device-settings profile; and a correction to the "shortest path" doc's own evidence claims
 
 Per explicit instruction: the baseline from `1a888b5` stands; this batch
