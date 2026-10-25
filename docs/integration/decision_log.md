@@ -5,6 +5,42 @@ SHA(s)/file(s)/function(s) the decision rests on, not just a conclusion.
 
 ---
 
+## 2026-10-25 — Correcting an overstated claim about the test-thread-leak fix (`6e2af2e`)
+
+No code changed; this corrects what the prior entry's item 5 (and the
+matching `acceptance_table.md`/`migration_checklist.md` rows) claimed
+about it, per explicit instruction not to let the commit's own wording
+stand uncorrected in the live docs.
+
+**The actual facts, checked directly against `6e2af2e`'s diff**: all 5
+tests named in that commit already called `window.close()` at their
+end, *before* the fix. `MainWindow.closeEvent()` already calls
+`self.controller.shutdown()`. So on any normal, passing run, these
+tests' controllers and device threads were already being shut down —
+the claim that they "never called `shutdown()`" and leaked threads on
+every run was wrong. What the fix actually changed: that `window.close()`
+call ran unconditionally at the tail of the test function, not inside a
+`finally`, so a mid-test assertion failure would skip it and leave that
+one controller's threads running. Wrapping it in `try/finally` is a
+real, legitimate exception-safety improvement — just a much narrower
+one than "fixed a leak that was happening on every run."
+
+**Consequence**: the native "Fatal Python error: Aborted" Codex's own
+full-suite run hit is still **unexplained**. Three clean full-suite runs
+by Claude plus one by Codex after this change are stability *support*
+evidence — consistent with the crash being gone, or with it simply not
+recurring this time, which is exactly the nondeterminism native Qt/
+Shiboken object-lifetime faults are known for. Neither this round nor
+the prior one established what actually causes it. `acceptance_table.md`
+and `migration_checklist.md` are corrected to state this precisely
+instead of implying the leak was a demonstrated root cause.
+
+No new investigation was opened this round beyond stating the
+correction; if the crash recurs, the search needs to continue elsewhere
+(other `QObject`/thread lifetimes, not this specific leak).
+
+---
+
 ## 2026-10-15 — Codex's independent review did not pass final acceptance; five more real defects found and fixed
 
 Per explicit instruction: continue within the same four-item scope, no
