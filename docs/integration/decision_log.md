@@ -5,6 +5,71 @@ SHA(s)/file(s)/function(s) the decision rests on, not just a conclusion.
 
 ---
 
+## 2026-10-25 — Bidirectional gap check across the 8 task areas: no code fix required, four findings documented
+
+SHAs this round rests on: `junjiebranch` @ `2528c1c4120fd709c6ca2ee37a5ac777f03783de`,
+`origin/ola-branch` @ `5014fc8f479c058904e7e69f2f67384851ab88ce` (identical
+to `codex/integration`'s own branch point — confirmed no ola-branch work
+has landed since integration branched; the *local* `ola-branch` checkout
+in `C:\git\thermoacousticstreaming_python` is one commit behind this at
+`f381796`, a stale local ref, not a real divergence, and was not touched),
+`codex/integration` HEAD at the time of this check: `6160f38`.
+
+Per explicit instruction, this check did not rely solely on this
+project's own `migration_checklist.md` — a background investigation
+independently read junjiebranch's actual source (via `git show
+junjiebranch:<path>`, no checkout) across the 8 listed task areas and
+reported what it could not find an equivalent for after checking,
+not assumed from the docs. Four findings, all resolved without a code
+change:
+
+1. **Post-stability thermal hold** (`post_stable_hold_s` in junjiebranch) —
+   initially reported as missing, but checking it directly against
+   `application/simple_series.py` found this branch already has the same
+   capability under the name `temperature_wait_s` (applied via a `wait`
+   step immediately after `tec_wait_stable`, same stated purpose). Not a
+   gap — a naming difference the first pass missed.
+2. **Commissioning-trace / evidence-freshness subsystem** — a real,
+   UI-wired capability in junjiebranch (`runtime_truth.py`,
+   `commissioning_trace.py`, a toggle in `qt_ui_v3.py`). Explicitly **not
+   adopted**: in substance it is an audit/evidence-tracking framework,
+   which this round's own standing instruction says not to add. Recorded
+   in `known_open_items.md` so it isn't silently rediscovered as a "gap"
+   later.
+3. **Synchronous, unbounded-feeling shutdown on the UI thread** —
+   junjiebranch backgrounds `app.cleanup()` with a poll/timeout/
+   forced-close fallback; this branch's `MainWindow.closeEvent()` calls
+   `controller.shutdown()` directly on the UI thread (which does have its
+   own per-worker 2s bound, just no background thread or progress
+   feedback while it runs). Left as a documented difference, not
+   implemented — a real but non-trivial addition, and nothing in
+   simulation has ever made it matter; flagged for a real-hardware-driven
+   decision rather than built speculatively.
+4. **Automated runs reset MasterPulse camera properties to defaults**
+   regardless of the manual Camera tab's own live settings
+   (`experiment_runner.py`'s `_camera_args()` never passes
+   `masterpulse_mode`/`_source`/`_interval_s`/`_burst_times` through).
+   Confirmed functionally inert for the automated path itself (which
+   always triggers via `EXTERNAL`, never `MASTERPULSE`), but a real
+   automated run would silently overwrite an operator's separate manual
+   MasterPulse configuration. Not fixed — doing so means either coupling
+   the automated plan to manual-tab state (a real architectural choice,
+   not a trivial fix) or adding fields nothing currently asks for;
+   documented for awareness.
+
+Areas 2, 4 (beyond the one finding above), 5, 7, and 8 were also checked
+and turned up nothing beyond what `migration_checklist.md`/
+`acceptance_table.md`/`known_open_items.md` already record. junjiebranch's
+own dead code (`experiment_presets.py`, confirmed unreferenced anywhere in
+junjiebranch itself) was correctly not treated as a capability gap.
+
+**No code changed this entry** — all four findings are documentation
+only, per the explicit instruction that historical material is evidence
+to evaluate, not an automatic requirement, and that this round should not
+chase full parity or build anything speculative.
+
+---
+
 ## 2026-10-25 — Correcting an overstated claim about the test-thread-leak fix (`6e2af2e`)
 
 No code changed; this corrects what the prior entry's item 5 (and the

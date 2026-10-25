@@ -409,6 +409,73 @@ you/Codex, not sized or chosen here.
   channels from one definition (same or independent per-point targets);
   the engine already supports it, see `acceptance_table.md`'s
   corresponding row. Not a blocker for any current experiment.
+- **Post-stability thermal hold — checked, already equivalent, not a
+  gap.** junjiebranch's `workflows.py` `TemperatureSeries.post_stable_hold_s`
+  is a deliberate extra wait *after* the sensor is confirmed stable (distinct
+  from settle time, meant to let the real sample — not just the sensor —
+  thermally equilibrate). `application/simple_series.py`'s
+  `temperature_wait_s`, applied via a `wait` step placed immediately after
+  `tec_wait_stable` in the compiled plan (`compile_simple_series()`, the
+  `temperature_wait_for_stability` branch), is the same thing under a
+  different name — confirmed by reading both: same position in the
+  sequence (after stability confirmation, not instead of it), same stated
+  purpose in the surrounding comment. No code change needed.
+- **Commissioning-trace / evidence-freshness subsystem — reviewed,
+  explicitly not adopted this round.** junjiebranch has a real, UI-wired
+  pair of modules (`runtime_truth.py`'s `EvidenceBasis`/`VerificationScope`/
+  `RuntimeEvidenceSnapshot` taxonomy, `commissioning_trace.py`'s
+  `CommissioningTraceRecorder`, a toggle in `qt_ui_v3.py`) that labels
+  preflight findings by how fresh/verified their evidence is and can write
+  an optional `commissioning_trace.jsonl` audit file per series. This is a
+  real capability, not an abandoned experiment — but it is, in substance,
+  an audit/evidence-tracking framework, which this round's own standing
+  instruction says not to add ("不新增通用框架、自动恢复、审计体系或推测性保护").
+  Not ported. If a real commissioning need for this kind of evidence
+  trail comes up later, this is where to look, not a gap to close by
+  default.
+- **Exit/shutdown runs synchronously on the UI thread — known design
+  difference, not changed.** junjiebranch's `qt_ui.py` `closeEvent()`
+  defers to a background `daemon` thread for `app.cleanup()`, polls for
+  completion, and has its own timeout timer that force-closes the window
+  rather than hanging indefinitely. `ui/main_window.py`'s `closeEvent()`
+  calls `self.controller.shutdown()` directly on the UI thread;
+  `ApplicationController.shutdown()` does bound each device worker's wait
+  (`worker._thread.wait(2000)`, `controller.py:571`) and returns a list of
+  per-worker timeout errors rather than raising, but there is no
+  background thread and no "Shutting down..." feedback while real
+  hardware's `SAFE_STOP` calls run — the window simply freezes for however
+  long that takes (worst case, roughly 2s × 6 devices on real hardware if
+  every worker individually times out). This has never been observed to
+  actually matter in simulation (shutdown is always fast there) and
+  implementing junjiebranch's pattern would be a small but real new piece
+  of infrastructure (a background thread + a timeout timer + a
+  forced-close path), not a one-line fix. **Left as a documented
+  difference, not implemented** — whether real hardware's SAFE_STOP
+  behavior ever makes this worth doing is exactly the kind of thing only
+  real use can answer; flagged for you/Codex rather than built
+  speculatively.
+- **Automated camera runs always reset MasterPulse properties to
+  defaults, regardless of the manual Camera tab — known difference, not
+  changed.** `experiment_runner.py`'s `_camera_args()` always constructs
+  `CameraSequenceTriggerArgs` with explicit `source=EXTERNAL`/`polarity`/
+  `active`/`global_exposure` but never passes `masterpulse_mode`/`_source`/
+  `_interval_s`/`_burst_times`, so those four always fall back to the
+  dataclass defaults (`CONTINUOUS`/`SOFTWARE`/`0.01`/`1`) rather than
+  whatever the manual Camera panel (`ui/device_panels.py:1613-1623`, which
+  does have live, operator-settable widgets for all four) currently
+  shows. Confirmed on the real driver
+  (`drivers/camera/hamamatsu.py:280-291`) that these are written as
+  separate DCAM properties *regardless* of `trigger_source` — so this is
+  functionally inert for the automated path itself (which always uses
+  `EXTERNAL`, never `MASTERPULSE`, triggering), but a real automated run
+  would silently overwrite whatever MasterPulse configuration an operator
+  had set up on the manual tab for unrelated manual use. Not fixed: doing
+  so would mean either coupling the automated path to the manual tab's
+  live widget state (an architectural choice ola's own design otherwise
+  avoids — the automated plan is deliberately self-contained) or adding
+  explicit MasterPulse fields to `SimpleSeriesSettings` that nothing
+  currently needs. No evidence this has caused a real problem; documented
+  for awareness, not treated as a bug.
 
 ## Z-axis algorithm parity — resolved findings (not reserved)
 
