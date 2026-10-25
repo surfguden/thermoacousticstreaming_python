@@ -1088,3 +1088,51 @@ approval request, verbatim scope):
 
 **Status**: plan recorded, no code written, awaiting separate, explicit
 approval before any `src/` change.
+
+## 2026-10-25 — System feature survey, preview comparison, basic preview improvements
+
+Base `01cfe17`; code in `df7aa59`. No hardware, no push. Coverage of the survey: code/test/doc
+reading of both branches plus simulation runs; `reference/old-ui` not read. Unconfirmed items are
+marked (?).
+
+**Preview improvements made (display only; raw frame, saved data, camera settings, trigger order
+untouched).** Manual low/high + Apply (low<high enforced); "Robust auto (once)" = limits at the
+0.2% / 99.8% pixel quantiles of this frame (exact 65536-bin histogram, then held for later frames);
+existing Full range, Min–max (once) and per-frame Autoscale kept; Fit, 100%, Zoom ±, wheel zoom at
+cursor, drag pan (zoom never below fit; resets to fit when image size changes); state line
+(waiting / running / stopped / failed / disconnected / no new frame for N s), camera-readback
+exposure ("not reported" if none), image size, last frame time; a closed viewer stays closed until
+the operator starts an acquisition. Difference from junjie "90% Dynamic" (5%/95%): junjie's cuts
+5% per side and has an unexplained +1 on the lower index; for sparse bright tracer particles that
+would saturate real signal, so 0.2% is used (ImageJ Auto ≈ 0.35% total). Both choices unverified
+on lab images (?).
+
+| 功能或需求 | 来源证据 | 整合版现状 | 实验价值或问题 | 建议处置 | 验证程度 |
+|---|---|---|---|---|---|
+| Preview Full range / Min–max / per-frame autoscale | ola viewer; junjie `qt_ui.py` | 保留 (reachable from Camera panel) | baseline | 已充分保留 | simulated tests |
+| Fixed range, persists across frames | junjie "Fixed Range" | 新增 manual low/high; not persisted across restarts | needed to compare frames | 已补齐; restart persistence 有条件暂缓 | simulated tests |
+| Percentile stretch | junjie "90% Dynamic" | one-shot 0.2%/side (not per-frame) | hot-pixel robust | 已补齐 (parameters need lab eyes) | simulated; visual not done |
+| Zoom / pan / pixel readout | ScopePlot pattern; ImageJ | 新增, readout through the same transform | inspect particles | 已补齐 | simulated tests |
+| Preview state / readback / last frame | junjie status text (?) | 新增 | stopped vs failed was ambiguous | 已补齐 | simulated tests |
+| Shutdown flow | junjie background-thread + force close | sync on UI thread, see known_open_items | up to 12 s freeze if all hang; errors dropped | 明确缺陷 (small), policy → user | simulated delay/failure |
+| MasterPulse vs manual panel | engine `_camera_args` | panel mirrors last-applied | confusing, not silent | 有条件暂缓, options → user | simulated |
+| ROI + statistics, row/column profiles, frame review | Andor Solis; ImageJ | not present | plausible value for focus/signal checks | 评估: P1 ROI mean/SD/min/max on the current frame; P2 one row/column profile; P3 frame review slider over the in-memory sequence. Not implemented | plan only |
+| Audit/protection/config subsystems of junjie | change log | simple parts already ported (clear error reasons, readback checks) | rest is framework | 不采用 wholesale | reviewed in earlier rounds |
+| conftest autouse Qt cleanup / faulthandler | junjie tests | not ported | may help the unconfirmed native `Aborted` crash (root cause unconfirmed) | 有条件暂缓 → user | hypothesis only (?) |
+| Pump 0.1873 mL stall; camera TIMING1–3 outputs | junjie hardware notes | `hardware_notes.md` | need hardware | 待实机 | none |
+
+**Web comparison** (adopt minimum, no feature-count parity):
+- ImageJ [Brightness/Contrast](https://imagej.net/ij/docs/guide/146-28.html): 16-bit display range is
+  display-only, Reset/Set/Auto, Auto saturates a small tail; Apply is the only pixel-changing action.
+  Field problem: dark 16-bit images. Our need: same. Equivalent now: Full range / robust auto / fixed
+  range. Adopted: tail-based auto, display-only. Not adopted: Apply, cycling Auto. Cost: small.
+- Andor Solis ([iXon Ultra guide](https://andor.oxinst.com/downloads/uploads/iXon_Ultra_Software_User_Guide.pdf),
+  [iStar guide](https://andor.oxinst.com/downloads/uploads/istar-scmos-hardware-guide.pdf),
+  [Solis I](https://andor.oxinst.com/products/solis-software/solis-i)): Min..Max / 0..Max / fixed /
+  custom scaling, live autoscale, histogram-driven scaling, X/Y line profiles, image statistics.
+  Equivalent now: min–max, full range, custom range, histogram. Adopted: nothing new beyond the
+  above; profiles and statistics are the evaluated P1/P2. No Andor-specific hardware features.
+
+**Decisions needed from the user:** shutdown options (a)/(b)/(c); MasterPulse option; whether to
+add ROI statistics (P1) next; robust tail value after viewing real images; whether to port the
+Qt-cleanup fixture / faulthandler for the unconfirmed crash.

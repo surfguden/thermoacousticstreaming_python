@@ -434,48 +434,43 @@ you/Codex, not sized or chosen here.
   trail comes up later, this is where to look, not a gap to close by
   default.
 - **Exit/shutdown runs synchronously on the UI thread — known design
-  difference, not changed.** junjiebranch's `qt_ui.py` `closeEvent()`
-  defers to a background `daemon` thread for `app.cleanup()`, polls for
-  completion, and has its own timeout timer that force-closes the window
-  rather than hanging indefinitely. `ui/main_window.py`'s `closeEvent()`
-  calls `self.controller.shutdown()` directly on the UI thread;
-  `ApplicationController.shutdown()` does bound each device worker's wait
-  (`worker._thread.wait(2000)`, `controller.py:571`) and returns a list of
-  per-worker timeout errors rather than raising, but there is no
-  background thread and no "Shutting down..." feedback while real
-  hardware's `SAFE_STOP` calls run — the window simply freezes for however
-  long that takes (worst case, roughly 2s × 6 devices on real hardware if
-  every worker individually times out). This has never been observed to
-  actually matter in simulation (shutdown is always fast there) and
-  implementing junjiebranch's pattern would be a small but real new piece
-  of infrastructure (a background thread + a timeout timer + a
-  forced-close path), not a one-line fix. **Left as a documented
-  difference, not implemented** — whether real hardware's SAFE_STOP
-  behavior ever makes this worth doing is exactly the kind of thing only
-  real use can answer; flagged for you/Codex rather than built
-  speculatively.
-- **Automated camera runs always reset MasterPulse properties to
-  defaults, regardless of the manual Camera tab — known difference, not
-  changed.** `experiment_runner.py`'s `_camera_args()` always constructs
-  `CameraSequenceTriggerArgs` with explicit `source=EXTERNAL`/`polarity`/
-  `active`/`global_exposure` but never passes `masterpulse_mode`/`_source`/
-  `_interval_s`/`_burst_times`, so those four always fall back to the
-  dataclass defaults (`CONTINUOUS`/`SOFTWARE`/`0.01`/`1`) rather than
-  whatever the manual Camera panel (`ui/device_panels.py:1613-1623`, which
-  does have live, operator-settable widgets for all four) currently
-  shows. Confirmed on the real driver
-  (`drivers/camera/hamamatsu.py:280-291`) that these are written as
-  separate DCAM properties *regardless* of `trigger_source` — so this is
-  functionally inert for the automated path itself (which always uses
-  `EXTERNAL`, never `MASTERPULSE`, triggering), but a real automated run
-  would silently overwrite whatever MasterPulse configuration an operator
-  had set up on the manual tab for unrelated manual use. Not fixed: doing
-  so would mean either coupling the automated path to the manual tab's
-  live widget state (an architectural choice ola's own design otherwise
-  avoids — the automated plan is deliberately self-contained) or adding
-  explicit MasterPulse fields to `SimpleSeriesSettings` that nothing
-  currently needs. No evidence this has caused a real problem; documented
-  for awareness, not treated as a bug.
+  difference, evidence gathered, not changed.** Simulated-delay run
+  (no hardware; each worker's `disconnect_device` patched):
+  normal 0.00 s; one worker taking 1.0 s → 1.01 s, no error; one taking
+  3.0 s → 2.01 s, `errors=['pump: thread did not terminate']`, thread
+  still running afterwards; all six taking 3.0 s → 12.0 s total (the
+  loop signals a worker then waits up to 2 s for it before signalling
+  the next); a `disconnect_device` that raises → traceback on stderr
+  only, `errors=[]` (reported as clean). Also: `MainWindow.closeEvent`
+  ignores `shutdown()`'s returned error list and always accepts, so a
+  timeout is audited but never shown. Ordering is sound (SAFE_STOP is
+  emitted before the shutdown request), so on the normal path hardware is
+  stopped first. Minimal options, each independent, **for you to decide**
+  (exit policy is yours, nothing implemented): (a) signal every worker
+  first, then wait against one shared ~2 s deadline (worst case 2 s, not
+  12 s); (b) have a failing `disconnect_device` count as a shutdown error;
+  (c) show the returned errors in a message box / status line after close
+  instead of discarding them. No async framework, no forced quit by
+  default. junjiebranch's background-thread + force-close pattern stays
+  the heavier alternative.
+- **Automated camera runs overwrite the MasterPulse widgets on the manual
+  Camera tab — known difference, evidence gathered, not changed.**
+  `_camera_args()` builds `CameraSequenceTriggerArgs` without MasterPulse
+  fields, so the dataclass defaults (`CONTINUOUS`/`SOFTWARE`/`0.01`/`1`)
+  are sent. Correction to the earlier wording ("silently"): `MainWindow`
+  forwards every successful command, whatever its source, to
+  `panel.apply_successful_command`, so the manual panel *visibly mirrors
+  the last-applied values*. Simulated run: manual `burst/external/0.5/7`
+  → after one automated series the widgets show `continuous/software/
+  0.01/1` and the device holds those; a manual re-acquire would then send
+  those defaults. `CameraReadback` has no MasterPulse/trigger fields, so
+  there is no hardware readback of them. Automated triggering itself uses
+  the EXTERNAL source and is unaffected. Do **not** bind the automated run
+  to manual widgets. Options for you: (a) keep, document "panel shows
+  last-applied"; (b) add MasterPulse fields to the readback so the panel
+  shows device truth; (c) explicit MasterPulse fields in
+  `SimpleSeriesSettings` — only if experiments ever need non-default
+  MasterPulse (none do today).
 
 ## Z-axis algorithm parity — resolved findings (not reserved)
 
