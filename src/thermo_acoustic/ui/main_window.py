@@ -313,6 +313,8 @@ class MainWindow(QMainWindow):
             if pending is not None:
                 panel, _action = pending
                 panel.clear_pending(event.request_id)
+            if event.device is not None:
+                self.panels[event.device].handle_terminal_event(event)
 
     def _result(self, result: CommandResult) -> None:
         if result.ok and result.device is not None:

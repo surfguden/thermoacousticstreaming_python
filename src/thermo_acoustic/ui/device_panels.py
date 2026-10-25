@@ -260,6 +260,9 @@ class DevicePanel(QScrollArea):
             self._buttons[action].setText(f"{self._button_labels[action]} · pending")
         self._update_controls()
 
+    def handle_terminal_event(self, event: object) -> None:
+        """Hook for panels that react to a finished request; default does nothing."""
+
     def clear_pending(self, request_id: str) -> None:
         for action, pending_id in tuple(self._pending.items()):
             if pending_id == request_id:
@@ -1753,9 +1756,35 @@ class CameraPanel(DevicePanel):
         )
 
     def _show_image_window(self, status: str) -> None:
-        self.image_window.status.setText(status)
-        if not self.image_window.isVisible():
-            self.image_window.show()
+        self.image_window.begin_acquisition(status)
+
+    def set_status(self, status: DeviceStatus) -> None:
+        super().set_status(status)
+        readback = status.readback if isinstance(status.readback, CameraReadback) else None
+        connected = status.connection in {ConnectionState.CONNECTED, ConnectionState.ERROR}
+        self.image_window.set_camera_state(
+            connected=connected,
+            fault=status.fault,
+            capture_active=bool(readback and readback.capture_active),
+            mode=readback.mode if readback else None,
+            exposure_ms=readback.exposure_ms if readback else None,
+        )
+
+    def handle_terminal_event(self, event: object) -> None:
+        """Show a failed or cancelled capture request in the viewer state line."""
+        operation = getattr(event, "operation", None)
+        capture_operations = {
+            DeviceOperation.CAMERA_SNAPSHOT_CAPTURE, DeviceOperation.CAMERA_CONTINUOUS_CAPTURE,
+            DeviceOperation.CAMERA_SEQUENCE_CAPTURE, DeviceOperation.CAMERA_SEQUENCE_ARM,
+            DeviceOperation.CAMERA_SEQUENCE_COLLECT,
+        }
+        if operation not in capture_operations:
+            return
+        state = getattr(event, "state", "")
+        if state == "failed":
+            self.image_window.set_failure(getattr(event, "message", "") or "capture failed")
+        elif state in {"cancelled", "completed"}:
+            self.image_window.end_waiting()
 
     def _validate_profile_values(self, values: dict[str, object]) -> None:
         trigger = CameraSequenceTriggerArgs(

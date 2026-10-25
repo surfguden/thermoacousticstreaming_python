@@ -706,11 +706,9 @@ def test_camera_viewer_hover_maps_letterboxed_pixels_to_raw_values(qt_app):
     viewer.show_frame(frame, "Snapshot captured")
     qt_app.processEvents()
     preview = viewer.preview
-    pixmap = preview.pixmap()
-    area = preview.contentsRect()
-    left = area.x() + (area.width() - pixmap.width()) / 2
-    top = area.y() + (area.height() - pixmap.height()) / 2
-    position = QPointF(left + 2.5 * pixmap.width() / 4, top + 1.5 * pixmap.height() / 2)
+    target = preview.image_target_rect()
+    left, top = target.x(), target.y()
+    position = QPointF(left + 2.5 * target.width() / 4, top + 1.5 * target.height() / 2)
     assert preview.pixel_at(position) == (2, 1, 7)
     preview.mouseMoveEvent(QMouseEvent(
         QEvent.Type.MouseMove, position, position, position,
@@ -724,6 +722,7 @@ def test_camera_viewer_hover_maps_letterboxed_pixels_to_raw_values(qt_app):
     viewer.show_frame(frame + 20, "Continuous snapshot")
     assert viewer.cursor_status.text().endswith("—")
     assert preview.pixel_at(QPointF(left + 10, top - 2)) is None
+    assert preview.pixel_at(QPointF(left + target.width() + 2, top + 1)) is None
     viewer.close()
 
 
@@ -1491,3 +1490,188 @@ def test_previous_waveform_profile_keys_still_load(qt_app, tmp_path):
     CameraRoiLimitsReadback,
     CameraRoiReadback,
     IntegerRange,
+
+
+def _viewer(qt_app):
+    panel = CameraPanel()
+    viewer = panel.image_window
+    viewer.resize(900, 700)
+    viewer.show()
+    qt_app.processEvents()
+    return panel, viewer
+
+
+def test_camera_display_adjustments_never_change_raw_frame(qt_app):
+    _panel, viewer = _viewer(qt_app)
+    frame = np.arange(64 * 48, dtype=np.uint16).reshape(48, 64) * 7
+    original = frame.copy()
+    viewer.show_frame(frame, "x")
+    viewer.adjust_intensity_button.click()
+    viewer.robust_button.click()
+    viewer.limit_low.setValue(100)
+    viewer.limit_high.setValue(2000)
+    viewer.limit_apply_button.click()
+    viewer.zoom_in_button.click()
+    viewer.full_range_button.click()
+    assert np.array_equal(frame, original)
+    assert np.array_equal(viewer.preview.raw_frame, original)
+    viewer.close()
+
+
+def test_camera_fixed_range_persists_across_frames_and_autoscale_is_per_frame(qt_app):
+    _panel, viewer = _viewer(qt_app)
+    viewer.show_frame(np.full((8, 8), 500, dtype=np.uint16), "x")
+    viewer.limit_low.setValue(100)
+    viewer.limit_high.setValue(900)
+    viewer.limit_apply_button.click()
+    assert viewer.preview.display_limits == (100, 900)
+    viewer.show_frame(np.full((8, 8), 20000, dtype=np.uint16), "x")
+    viewer.show_frame(np.full((8, 8), 30000, dtype=np.uint16), "x")
+    assert viewer.preview.display_limits == (100, 900)
+    viewer.limit_low.setValue(900)
+    viewer.limit_high.setValue(900)
+    viewer.limit_apply_button.click()
+    assert viewer.preview.display_limits == (100, 900)  # invalid range rejected
+    viewer.autoscale_checkbox.setChecked(True)
+    viewer.show_frame(np.array([[10, 20], [30, 40]], dtype=np.uint16), "x")
+    assert viewer.preview.display_limits == (10, 40)
+    viewer.show_frame(np.array([[50, 60], [70, 80]], dtype=np.uint16), "x")
+    assert viewer.preview.display_limits == (50, 80)
+    viewer.close()
+
+
+def test_robust_stretch_ignores_isolated_hot_pixel_and_handles_constant_image():
+    from thermo_acoustic.ui.widgets import robust_display_limits
+    rng = np.random.default_rng(1)
+    frame = rng.integers(1000, 2000, size=(200, 200), dtype=np.uint16)
+    frame[3, 3] = 65535
+    frame[5, 5] = 0
+    low, high = robust_display_limits(frame)
+    assert frame.min() == 0 and frame.max() == 65535
+    assert 1000 <= low < high <= 2000
+    assert robust_display_limits(np.full((10, 10), 4321, dtype=np.uint16)) == (4321, 4322)
+    assert robust_display_limits(np.full((10, 10), 65535, dtype=np.uint16)) == (65534, 65535)
+    assert robust_display_limits(np.zeros((4, 4), dtype=np.float32)) is None
+
+
+def test_camera_robust_button_sets_fixed_limits_then_keeps_them(qt_app):
+    _panel, viewer = _viewer(qt_app)
+    frame = np.full((50, 50), 1500, dtype=np.uint16)
+    frame[0:25] = 1200
+    frame[10, 10] = 65535
+    viewer.show_frame(frame, "x")
+    viewer.robust_button.click()
+    limits = viewer.preview.display_limits
+    assert limits is not None and limits[1] < 65535
+    viewer.show_frame(frame + 1, "x")
+    assert viewer.preview.display_limits == limits
+    viewer.close()
+
+
+def test_camera_zoom_and_pan_map_to_correct_raw_pixels(qt_app):
+    _panel, viewer = _viewer(qt_app)
+    preview = viewer.preview
+    frame = np.arange(1200 * 1600, dtype=np.uint16).reshape(1200, 1600)
+    viewer.show_frame(frame, "x")
+    assert preview.is_fit
+    target = preview.image_target_rect()
+    x, y, value = preview.pixel_at(QPointF(target.center()))
+    assert value == int(frame[y, x])
+    viewer.zoom_100_button.click()
+    assert not preview.is_fit
+    # Zoom at the cursor keeps the pixel under the cursor.
+    anchor = QPointF(target.center().x() + 30, target.center().y() + 10)
+    before = preview.pixel_at(anchor)
+    preview.zoom_by(2.0, anchor)
+    assert preview.pixel_at(anchor)[:2] == before[:2]
+    # Every sampled widget position reads the raw value of the pixel it names.
+    rect = preview.image_target_rect()
+    for fx, fy in ((0.1, 0.1), (0.5, 0.5), (0.9, 0.8)):
+        pos = QPointF(rect.x() + fx * rect.width(), rect.y() + fy * rect.height())
+        px, py, val = preview.pixel_at(pos)
+        assert val == int(frame[py, px])
+    # Panning moves the visible source rectangle without changing raw data.
+    source_before = preview.visible_source_rect()
+    preview._center = QPointF(preview._center.x() + 5, preview._center.y())
+    assert preview.visible_source_rect() != source_before
+    assert np.array_equal(preview.raw_frame, frame)
+    viewer.fit_button.click()
+    assert preview.is_fit
+    viewer.close()
+
+
+def test_camera_zoom_resets_to_fit_when_image_size_changes(qt_app):
+    _panel, viewer = _viewer(qt_app)
+    viewer.show_frame(np.zeros((1200, 1600), dtype=np.uint16), "x")
+    viewer.zoom_100_button.click()
+    viewer.show_frame(np.zeros((1200, 1600), dtype=np.uint16), "x")
+    assert not viewer.preview.is_fit  # same shape keeps the operator's view
+    viewer.show_frame(np.zeros((900, 1000), dtype=np.uint16), "x")
+    assert viewer.preview.is_fit
+    viewer.close()
+
+
+def test_camera_preview_state_distinguishes_running_stopped_waiting_and_failed(qt_app):
+    from datetime import datetime, timedelta
+    from thermo_acoustic.application.commands import DeviceOperation
+    now = [datetime(2026, 1, 1, 12, 0, 0)]
+    panel, viewer = _viewer(qt_app)
+    viewer._clock = lambda: now[0]
+    assert "No acquisition yet" in viewer.preview_state.text()
+    panel._show_image_window("Waiting for camera frame")
+    assert "Waiting" in viewer.preview_state.text()
+    viewer.set_camera_state(connected=True, fault=None, capture_active=True, mode="continuous", exposure_ms=12.5)
+    assert "waiting for first frame" in viewer.preview_state.text()
+    viewer.show_frame(np.zeros((6, 8), dtype=np.uint16), "x")
+    assert viewer.preview_state.text() == "Preview running"
+    assert "8 × 6" in viewer.frame_info.text() and "12.5 ms" in viewer.frame_info.text()
+    assert "12:00:00" in viewer.frame_info.text()
+    now[0] += timedelta(seconds=10)
+    viewer._render_state()
+    assert "no new frame" in viewer.preview_state.text()
+    viewer.set_camera_state(connected=True, fault=None, capture_active=False, mode="continuous", exposure_ms=None)
+    assert viewer.preview_state.text() == "Preview stopped"
+    assert "not reported" in viewer.frame_info.text()
+    event = type("E", (), {
+        "operation": DeviceOperation.CAMERA_CONTINUOUS_CAPTURE, "state": "failed", "message": "no camera"})()
+    panel.handle_terminal_event(event)
+    assert viewer.preview_state.text() == "Preview failed: no camera"
+    viewer.set_camera_state(connected=False, fault=None, capture_active=False, mode=None, exposure_ms=None)
+    viewer.end_waiting()
+    viewer._failure = None
+    viewer._render_state()
+    assert "disconnected" in viewer.preview_state.text()
+    viewer.close()
+
+
+def test_camera_viewer_stays_closed_until_operator_starts_new_acquisition(qt_app):
+    panel, viewer = _viewer(qt_app)
+    viewer.show_frame(np.zeros((4, 4), dtype=np.uint16), "x")
+    viewer.close()
+    viewer.show_frame(np.ones((4, 4), dtype=np.uint16), "x")
+    assert not viewer.isVisible()
+    panel._show_image_window("Waiting for camera frame")
+    assert viewer.isVisible()
+    viewer.close()
+
+
+def test_camera_large_image_display_operations_stay_responsive(qt_app):
+    import time
+    _panel, viewer = _viewer(qt_app)
+    rng = np.random.default_rng(0)
+    frame = rng.integers(0, 65536, size=(2048, 2048), dtype=np.uint16)
+    timings = {}
+    start = time.perf_counter()
+    viewer.show_frame(frame, "x")
+    qt_app.processEvents()
+    timings["show_frame"] = time.perf_counter() - start
+    for name, action in (("robust", viewer.robust_button.click), ("zoom_in", viewer.zoom_in_button.click),
+                         ("fit", viewer.fit_button.click), ("next_frame", lambda: viewer.show_frame(frame, "x"))):
+        start = time.perf_counter()
+        action()
+        qt_app.processEvents()
+        timings[name] = time.perf_counter() - start
+    print("TIMINGS_MS", {key: round(value * 1000, 1) for key, value in timings.items()})
+    # Generous bound: catches a real regression, not a slow machine.
+    assert max(timings.values()) < 1.5, timings
+    viewer.close()
