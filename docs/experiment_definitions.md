@@ -24,14 +24,14 @@ in the default template are editable.
 
 Use **Validate / preview** to see the full ordered expansion and relative output
 paths. Queue time chooses an output root and either individual or stacked TIFF.
-Each queued series gets a new `experiment_series_<name>_<UTC>` directory with
+Each queued series gets a new `experiment_batch_NNNN` directory (inside an empty output root) with
 `metadata/definition.json`, `manifest.json`, `status.json`, and `events.jsonl`.
 Each experiment gets a parameter-named folder ending in `repeat_0001/` with
 TIFF images and `experiment.json`. The metadata contains camera SDK timestamps
 and host UTC receive timestamps as separate clock domains, requested and
 applied instrument settings, device readbacks, and frame-to-file/page mapping.
-Incomplete acquisitions are labelled and any copied frames are retained under
-`partial_capture/`.
+An incomplete acquisition is discarded (commit `f717884`); frames of earlier,
+completed experiments in the batch are kept.
 
 Terminal commands accepted by the running application:
 

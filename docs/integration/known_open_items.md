@@ -445,14 +445,26 @@ you/Codex, not sized or chosen here.
   ignores `shutdown()`'s returned error list and always accepts, so a
   timeout is audited but never shown. Ordering is sound (SAFE_STOP is
   emitted before the shutdown request), so on the normal path hardware is
-  stopped first. Minimal options, each independent, **for you to decide**
-  (exit policy is yours, nothing implemented): (a) signal every worker
-  first, then wait against one shared ~2 s deadline (worst case 2 s, not
-  12 s); (b) have a failing `disconnect_device` count as a shutdown error;
-  (c) show the returned errors in a message box / status line after close
-  instead of discarding them. No async framework, no forced quit by
-  default. junjiebranch's background-thread + force-close pattern stays
-  the heavier alternative.
+  stopped first. Four separate problems, each with its own minimal fix
+  (none implemented; none needs an async framework):
+  1. *Timeout leaves the thread running* — reproduced: a worker still
+     running at process exit aborts the process (exit `0xC0000409`) after
+     `shutdown()` returned `['pump: thread did not terminate']`. Minimal:
+     none that is safe by default; `QThread.terminate()` on a hung hardware
+     call or a hard process exit are **exit-policy choices for you**. The
+     error is at least reported by (4).
+  2. *Sequential wait* (12 s for six hung workers): emit all
+     `shutdown_requested` first, then wait against one shared ~2 s
+     deadline. About 6 lines in `ApplicationController.shutdown`. Recommend.
+  3. *`disconnect_device` exception is not reported*: catch it in
+     `DeviceWorker.shutdown_in_thread`, keep it on the worker, and let
+     `shutdown()` append it to `errors`. About 6 lines. Recommend.
+  4. *`closeEvent` discards `errors`*: show them (message box or status
+     line) before accepting. About 4 lines. Recommend.
+  Additionally (survey F4, simulation): closing the window mid-run leaves
+  the series `status.json` at "running" — `closeEvent` neither asks for
+  confirmation nor finalizes the series. Minimal: confirm dialog while an
+  experiment runs and mark the series aborted in `shutdown()`.
 - **Automated camera runs overwrite the MasterPulse widgets on the manual
   Camera tab — known difference, evidence gathered, not changed.**
   `_camera_args()` builds `CameraSequenceTriggerArgs` without MasterPulse
@@ -463,14 +475,15 @@ you/Codex, not sized or chosen here.
   the last-applied values*. Simulated run: manual `burst/external/0.5/7`
   → after one automated series the widgets show `continuous/software/
   0.01/1` and the device holds those; a manual re-acquire would then send
-  those defaults. `CameraReadback` has no MasterPulse/trigger fields, so
-  there is no hardware readback of them. Automated triggering itself uses
-  the EXTERNAL source and is unaffected. Do **not** bind the automated run
-  to manual widgets. Options for you: (a) keep, document "panel shows
-  last-applied"; (b) add MasterPulse fields to the readback so the panel
-  shows device truth; (c) explicit MasterPulse fields in
-  `SimpleSeriesSettings` — only if experiments ever need non-default
-  MasterPulse (none do today).
+  those defaults. `CameraReadback` has no MasterPulse/trigger fields (the
+  per-capture DCAM property dump in `experiment_storage.py:219` does
+  record trigger/MasterPulse state in `experiment.json`). Automated
+  triggering uses EXTERNAL and is unaffected. Practical impact: an operator
+  who tuned MasterPulse for a manual test and then ran a series must
+  re-enter it; the panel shows what was applied, so nothing is hidden.
+  **Recommendation: keep as is** (do not bind the automated run to manual
+  widgets, no new series parameters); the only addition worth making is a
+  one-line panel note that a series resets MasterPulse to defaults.
 
 ## Z-axis algorithm parity — resolved findings (not reserved)
 
@@ -505,3 +518,35 @@ Compared `piezo_zscan.py`'s `ZScanCalibration.run()`/`_acquire_one()` against
   superset of junjiebranch's Z-Scan tab fields).
 - Fault-reason message surfacing: closed, no gap (`event_formatting.py`
   already includes `event.message` on every failure).
+
+## System survey 2026-10-25 — findings awaiting authorization
+
+Evidence tags: **[CODE]** read in source; **[SIM]** run in simulation or with
+fake devices (proves ordering/bookkeeping, not timing or physics); **[JUNJIE-HW]**
+historical real-hardware record on junjiebranch (not proof for the integrated
+path); **UNCONFIRMED** not verified. Nothing below is implemented. Full
+coverage and traceability: `investigation_log.md` (2026-10-25 section).
+
+| ID | Finding | Evidence | Practical impact | Minimal fix |
+|---|---|---|---|---|
+| S1 | `PumpWorker.poll_once` never clears `state.fault` (`ValveWorker.poll_once` does) | [CODE] verified; [SIM] fake device | one transient poll error leaves the pump in ERROR with a stale message | 1 line |
+| S2 | After a failed Connect the panel shows ERROR and Connect stays disabled until Disconnect (`DevicePanel.set_status` treats ERROR as connected) | [SIM] fake device (agent probe); [CODE] | extra click; confusing, not unsafe | enable Connect while no device is open |
+| S3 | `PumpWorker._move` ignores `PumpMoveArgs.flow_rate_ul_min`/`timeout_s` (always max/2) | [CODE] verified | console `pump refill 500` silently uses a different flow | honor the argument (driver already clamps) or remove it |
+| S4 | Active `PumpPanel` has no "Recover fault" button (only dead `LegacyPumpPanel`); recovery = console `pump recover-fault` or reconnect | [CODE] | slower recovery | add button with confirmation, or document |
+| S5 | `configure_snapshot` never sets trigger source back to internal | [CODE] verified; hardware effect UNCONFIRMED (simulated camera has no trigger state) | after an external-trigger series, live preview/snapshot/Z-stack could wait for a trigger | set internal trigger in `configure_snapshot`; verify with a gated read-only probe |
+| S6 | AD2 `safe_stop` stops W1/W2/digital/scope in sequence via a full re-configure, no per-output fallback | [CODE] (D2 survey) | one failure skips remaining stops; W2 drives the laser input | call the direct stop primitives independently |
+| S7 | `_require_devices` does not require Z closed-loop when a `stage_move` step exists | [SIM] | series runs flush + TEC wait, then fails at first move | check up front |
+| S8 | Panic during a flush is reported "failed / Cancelled by Panic" rather than aborted | [SIM] | cosmetic | call `experiments.panic_abort()` first |
+| S9 | `experiment.json` has no TEC requested/applied values, no software commit, no simulated/real mode; simulated and real runs look the same on disk | [CODE]; [SIM] | traceability of data | write commit (+dirty flag) and operating mode into `metadata`; add TEC to `applied_settings` |
+| S10 | Abort during `tec_wait_stable` does not cancel the wait (runs up to `max_wait_s`, default 300 s; the single command lane stays busy) | [CODE] only, UNCONFIRMED | slow abort during a temperature wait | cancel the deferred wait on abort |
+| S11 | Valve and TEC ports are not checked against each other (junjie hard-rejected a COM port clash) | [CODE] | wrong port could be opened for the other device | generic "valve port != TEC port" check |
+| S12 | Driver-level regression tests were not ported (junjie: ~55 TEC, ~60 pump/valve, 13 Hamamatsu, 15 piezo, ~25 AD2; integration: none for driver rollback/gates/cleanup) | [CODE] file listing | ported safety code has no regression guard | test-only port with fake SDKs |
+| S13 | Elapsed / estimated-remaining time display (junjie had it); integration shows counts and phase only | [CODE] | operator planning during long series | display-only, optional |
+
+**Policy / hardware questions for you (not code defects):**
+- TEC after a run: nothing turns the TEC off on completion, stop-after-current, abort or plain failure (only panic and exit do) — matches junjie's open `TEC-AFTER-RUN-POLICY-001`. Also `SCI-TEC-EQUIL-001`: controller-stable ≠ imaging-plane equilibrium.
+- Final valve state: panic or exit during a flush leaves the valve open; abort leaves it closed (flush recovery).
+- Laser input: W2 feeds the iBEAM analog input (junjie `HW-LASER-PATH-001`); its default polarity means ~0 V is not guaranteed "optical off", while the integration hard-sets W2 to a fixed 5 V square with idle at offset. Installed unit/polarity UNCONFIRMED — resolve before any real laser run.
+- Valve labels: UI says Open/Closed for positions 1/2; junjie's later docs say routing is unverified (owner mapping P01 through-chip, P02 bypass, `HW-VALVE-001`).
+- Camera ROI snapped by the driver is recorded but not fed back to later steps; the pump reaching its target volume is not read back (completion = polling idle).
+- Past junjie real-pump evidence cited elsewhere in these docs (Session 54) is, by junjie's own later docs, historical and unverified (`HW-PUMP-MOTION-001` open).

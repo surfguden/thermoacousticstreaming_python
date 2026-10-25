@@ -279,15 +279,21 @@ against junjiebranch (no worktree of that branch was created this round).
 - **Per-repeat step order is a fixed, hardcoded sequence**
   (`application.py:74 STEP_ORDER`): `InitializeExperiment → ConfigureWfg →
   ConfigureCamera → CaptureFrames → WaitForAd2Completion → Flush →
-  SaveResults`. **Flush and Save are strictly sequential** in junjiebranch —
-  flush must fully complete before save even starts. ola/integration runs
+  SaveResults`. **Correction (2026-10-25, re-read at junjie HEAD `2528c1c`):** the
+  earlier statement that flush and save are strictly sequential in
+  junjiebranch was wrong. `application.py:_run_experiment2_unfinalized`
+  starts the flush in a thread, saves on the main thread, then joins the
+  flush thread (also described in junjie's
+  `handover_sequence_reconciliation_20260904.md`). The per-repeat order
+  above is the `STEP_ORDER` list; the concurrency is in how steps 6–7 run.
+  ola/integration runs
   `save_frames` and `wait_outputs`[+flush] as **two concurrent branches**
   with a hard barrier before the next step (now directly tested, see
-  above). junjiebranch's comment explicitly excludes `SetTecTarget`/
+  above) — an adaptation of the same idea with explicit failure containment. junjiebranch's comment explicitly excludes `SetTecTarget`/
   `WaitTecStable` from this fixed list, confirming the same top-level
   structure as ola's "temperature point wraps N repeats."
-  - **Consequence**: in junjiebranch, a slow/failed flush delays or blocks
-    the save that would otherwise be independent; in ola, a failed save
+  - **Consequence** (revised: junjie overlaps them too; the difference is
+    the failure handling): in ola, a failed save
     does not stop an already-started flush from completing (and vice
     versa) — different failure-containment boundaries, not just speed.
 - **Graceful stop granularity**: junjiebranch checks `stop_fired` at *two*

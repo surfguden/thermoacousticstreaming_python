@@ -187,3 +187,80 @@ weak.
 See `decision_log.md` for what to actually do about the remaining,
 precisely-scoped gaps, and `migration_checklist.md` for the per-module
 tracking table.
+
+## 2026-10-25 — System survey (junjiebranch `2528c1c` vs `codex/integration`)
+
+Method: six read-only passes (task domains, per-device, cross-device flow) plus
+simulation/fake-device runs; no hardware, no `reference/old-ui`. Tags as in
+`known_open_items.md` ("System survey" section, findings S1–S13).
+
+**Coverage by level**
+- *Investigated with evidence this round:* device preparation/recovery, manual
+  panels, settings save/load, orchestration, scan/temperature, repeat/flush,
+  acquisition/saving, status/stop/exit, result use, camera viewer; all six
+  registered devices (AD2, PUMP, VALVE, CAMERA, TEC, Z_STAGE) — capabilities,
+  reachability, readback, behaviour on completion/fault/stop/abort/exit; the
+  representative flow (prepare → TEC → camera/AD2 arm → trigger/capture →
+  save/flush → next → wrap-up) with failure injection per device [SIM].
+- *Carried from earlier rounds (not redone):* Z-algorithm parity, TEC protocol
+  client, AD2 JP4/JP5, flush-workflow guards, settings-profile design.
+- *Not investigated:* vendor SDK internals; TEC MeCom reconnect internals;
+  Z-stack interaction with a running series; most of junjie's 8,103-line change
+  log (about 25 sessions read); `tec_verification_matrix.md` (via summary only);
+  real `MainWindow.closeEvent` under failure (controller called directly);
+  real-hardware behaviour of any integrated path.
+- External dependencies: LabVIEW analysis VI / TDMS (need unchecked), vendor
+  SDKs/DLLs (Qmix, DCAM, WaveForms, Thorlabs .NET, pyMeCom). Laser, LED,
+  ultrasound amplifier and camera trigger all run through the AD2. The pump has
+  a built-in valve and a multi-unit bank (ola-side only).
+
+**Devices (one line each; see S-items for gaps)**
+
+| Device | Reachable from | Automated use | End states | vs junjie |
+|---|---|---|---|---|
+| Pump | PumpPanel, console | initial/post flush, capacity check | stop on abort/panic/exit; flush failure → stop + confirm idle + close valve | ported + stronger recovery; S1, S3, S4 |
+| Valve | ValvePanel | flush sequencing, readback-confirmed | closed after flush recovery; left open on panic/exit mid-flush | ported; stronger readiness check; labels unverified |
+| Camera | CameraPanel + viewer; configure/arm/collect engine-only | timing + exposure checks, arm, collect, save | preview running after normal end; stopped after abort/panic/exit | near-verbatim port; S5 |
+| AD2 | scope/wave/DIO panels; experiment DIO program engine-only | waveform + DIO trigger, achieved-rate poll | cleanup stops W1/W2/DO; safe_stop sequential (S6) | ported; polls completion where junjie waits a fixed time |
+| TEC | TecPanel | set, wait stable, hold | stays on after run/abort; off on panic/exit | ported; after-run policy open |
+| Z stage | Z panel/stack; `stage_move` hand-written steps only | not in simple series | exit stops | ported incl. Decimal fix; S7 |
+
+**Cross-device flow [CODE]+[SIM]**: one command lane serialises all device
+commands; true parallelism only for file save, AD2 status polling and the
+flush workflow; `tec_wait_stable` holds the lane. Camera/AD2 are configured and
+validated (achieved AD2 rate, read-back exposure) before any fluidics. Manual
+commands are rejected while a run is active (manual TEC set / pump refill
+rejected; reads and SAFE_STOP accepted); a manual AD2 waveform running at start
+fails the series before fluidics. Any single-device failure kept earlier
+experiments' data and discarded only the unfinished folder; `_fail` sends
+SAFE_STOP to camera and AD2 only. ola's order and barrier semantics are
+preserved; junjie's flush/save overlap, initial flush, flush guards,
+applied-exposure check and TEC partial-apply cleanup are adapted (counterparts
+below). Requested vs applied: AD2 achieved rate and camera exposure read-back
+feed later steps once per series; camera ROI snap and TEC set-point are not fed
+back (S9).
+
+**Traceability (selected; source → problem → later correction → applicability → integration counterpart → disposition)**
+
+| Source | Problem | Later correction | Applies now | Integration counterpart | Disposition |
+|---|---|---|---|---|---|
+| `qmix_backend.py` init gates | enabling pump with fault / position sensing off | auto-clear on init replaced manual clear (`bcd1634`, reversing Session 104) | yes | `drivers/pump/cetoni.py:186,244` | retained; tests missing (S12) |
+| junjie valve handshake (`instruments.py`) | partial open, bare replies | rollback + strict parse | yes | `drivers/valve/serial_valve.py` | retained, stronger |
+| DCAM open rollback, timeout buffer release, exposure 15.0→15.00025 (Session 54) | leaked API init, unquantised exposure | — | yes | `drivers/camera/hamamatsu.py`; applied-exposure check in `_configure_all_before_fluidics` | retained |
+| flush timeout minutes→seconds (Sessions 31–33) | spurious flush timeouts | — | yes | `workflows.py` `travel_s = volume*1000/flow*60 + 10` | retained |
+| flush over-draw guard (Session 54) | target < 0 | — | yes | `FlushWorkflow._implausible_reading`, target<0 reject | retained |
+| abort policy (Session 78) | dead mid-repeat abort checks | hard-stop abort removed by owner | yes | `stop_after_current` (+ `abort`, `panic_stop`) | retained, superset |
+| `430893a` urgent stop | Stop pump ignored while busy | — | yes | `controller._is_urgent` / `hal/base.execute_urgent` | retained |
+| `c58e092` TEC off on close | TEC left regulating | — | yes | `drivers/tec/controller.py:406` cleanup | retained; after-run policy open |
+| Piezo `System.Decimal` fix | `float()` failure | — | yes | `thorlabs_piezo._decimal_to_float` | retained |
+| `application.py` flush thread + save | overlap flush and save | — | yes | runner parallel save/flush block | adapted (flow_trace corrected) |
+| partial-capture preservation | keep frames of failed acquisition | ola `f717884` discards | no (deliberately overturned) | dead `partial_capture_folder` code in `hamamatsu.py:463-523` | dropped; doc fixed; dead code → your call |
+| `66016bd` elapsed / time left | planning long series | — | maybe | none | S13, optional |
+| TDMS `GitCommitHash`, `sim_*` flags | provenance of data | — | yes | none | S9 |
+| `hardware_factory` COM6 reject (`7a2ef57`, `a0a2de2`) | valve opened on TEC port | — | yes (generic form) | none | S11 |
+| settings auto-save/load | convenience | hardware_tests/README: tests must not reuse persisted UI | no | explicit, validated, all-or-nothing profile (`main_window.save_profile/load_profile`) | intentionally different |
+| `ARCH-PERSISTENCE-001` (hardware profile vs protocol split) | settings granularity | unlanded | partly | all-or-nothing profile | defer |
+| `experiment_presets.py` LabVIEW values (ROI 2304×740@y792, 40 ms, 20 fps…) | working defaults | referenced by junjie tests/UI | data only | none | defer; profile JSON if wanted |
+| W2 refusal in junjie planner (`HW-LASER-PATH-001`) | laser input polarity | — | yes | integration drives W2 at 5 V | policy question |
+| commissioning trace / evidence taxonomy | audit framework | — | no | event messages (`event_formatting.py`), `CAMERA_SETTINGS_READ` | not adopted; the readback and error-reason parts exist as named |
+| junjie `ImagePreviewWindow` (Full / 90% / Fixed / Downshift) | display range | — | yes | `widgets.py` `CameraImageWindow` | adapted; per-frame percentile and downshift deferred |

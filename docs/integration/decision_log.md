@@ -60,8 +60,12 @@ change:
 Areas 2, 4 (beyond the one finding above), 5, 7, and 8 were also checked
 and turned up nothing beyond what `migration_checklist.md`/
 `acceptance_table.md`/`known_open_items.md` already record. junjiebranch's
-own dead code (`experiment_presets.py`, confirmed unreferenced anywhere in
-junjiebranch itself) was correctly not treated as a capability gap.
+`experiment_presets.py` was not treated as a capability gap. (2026-10-25
+correction: it is *not* unreferenced in junjiebranch —
+`hardware_tests/test_real_workflow_smoke.py` and `tests/test_experiment_presets.py`
+import it and `qt_ui.py` cites it for the 792/740/40 ms camera defaults. It is
+still not a gap to port; if the LabVIEW ROI/exposure values are wanted, ship
+them as a profile JSON.)
 
 **No code changed this entry** — all four findings are documentation
 only, per the explicit instruction that historical material is evidence
@@ -1103,7 +1107,7 @@ cursor, drag pan (zoom never below fit; resets to fit when image size changes); 
 (waiting / running / stopped / failed / disconnected / no new frame for N s), camera-readback
 exposure ("not reported" if none), image size, last frame time; a closed viewer stays closed until
 the operator starts an acquisition. Difference from junjie "90% Dynamic" (5%/95%): junjie's cuts
-5% per side and has an unexplained +1 on the lower index; for sparse bright tracer particles that
+5% per side with an exact cumulative histogram (lower limit = the (floor(0.05·N)+1)th pixel, i.e. the first retained value; the integration's low-limit formula is the same); for sparse bright tracer particles that
 would saturate real signal, so 0.2% is used (ImageJ Auto ≈ 0.35% total). Both choices unverified
 on lab images (?).
 
@@ -1119,7 +1123,7 @@ on lab images (?).
 | ROI + statistics, row/column profiles, frame review | Andor Solis; ImageJ | not present | plausible value for focus/signal checks | 评估: P1 ROI mean/SD/min/max on the current frame; P2 one row/column profile; P3 frame review slider over the in-memory sequence. Not implemented | plan only |
 | Audit/protection/config subsystems of junjie | change log | simple parts already ported (clear error reasons, readback checks) | rest is framework | 不采用 wholesale | reviewed in earlier rounds |
 | conftest autouse Qt cleanup / faulthandler | junjie tests | not ported | may help the unconfirmed native `Aborted` crash (root cause unconfirmed) | 有条件暂缓 → user | hypothesis only (?) |
-| Pump 0.1873 mL stall; camera TIMING1–3 outputs | junjie hardware notes | `hardware_notes.md` | need hardware | 待实机 | none |
+| Pump 0.1873 mL stall; camera timing outputs | junjie `docs/pending_feedback.md` §6 (stall); `HW-TIMING-001` (the string "TIMING1-3" was not found in junjie, UNCONFIRMED) | stall now in `hardware_notes.md` | need hardware | 待实机 | none |
 
 **Web comparison** (adopt minimum, no feature-count parity):
 - ImageJ [Brightness/Contrast](https://imagej.net/ij/docs/guide/146-28.html): 16-bit display range is
