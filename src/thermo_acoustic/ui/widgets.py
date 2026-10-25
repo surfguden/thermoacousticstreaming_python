@@ -252,7 +252,8 @@ class CameraPreview(QLabel):
         self._raw_frame: np.ndarray | None = None
         self._display_limits: tuple[int, int] | None = None
         self._hover_position: QPointF | None = None
-        # Zoom in "device pixels per image pixel" (1.0 == 100 %); None == fit.
+        # Explicit zoom in physical device pixels per image pixel (1.0 == 100 %,
+        # even above the window size or below Fit); None == Fit, a separate mode.
         self._zoom: float | None = None
         self._center: QPointF | None = None
         self._drag_start: tuple[QPointF, QPointF] | None = None
@@ -392,10 +393,6 @@ class CameraPreview(QLabel):
         zoom = min(max(zoom, MIN_ZOOM), MAX_ZOOM)
         new_scale = zoom / self._device_ratio()
         iw, ih = self._image.width(), self._image.height()
-        fit_scale = max(min(area.width() / iw, area.height() / ih), 1e-6)
-        if new_scale <= fit_scale + 1e-9:
-            self.fit_to_window()
-            return
         vis_w, vis_h = min(float(iw), area.width() / new_scale), min(float(ih), area.height() / new_scale)
         left = area.x() + (area.width() - vis_w * new_scale) / 2
         top = area.y() + (area.height() - vis_h * new_scale) / 2
@@ -664,7 +661,7 @@ class CameraImageWindow(QDialog):
         self.fit_button = QPushButton("Fit")
         self.fit_button.clicked.connect(self.preview.fit_to_window)
         self.zoom_100_button = QPushButton("100%")
-        self.zoom_100_button.setToolTip("One image pixel per screen pixel. An image already shown larger than that stays at Fit.")
+        self.zoom_100_button.setToolTip("One image pixel per physical screen pixel (independent of Fit; an image smaller than the window stays small).")
         self.zoom_100_button.clicked.connect(self.preview.zoom_100)
         self.zoom_in_button = QPushButton("Zoom +")
         self.zoom_in_button.clicked.connect(lambda: self.preview.zoom_by(ZOOM_STEP))

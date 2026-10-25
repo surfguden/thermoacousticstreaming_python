@@ -1103,7 +1103,7 @@ marked (?).
 untouched).** Manual low/high + Apply (low<high enforced); "Robust auto (once)" = limits at the
 0.2% / 99.8% pixel quantiles of this frame (exact 65536-bin histogram, then held for later frames);
 existing Full range, Min–max (once) and per-frame Autoscale kept; Fit, 100%, Zoom ±, wheel zoom at
-cursor, drag pan (zoom never below fit; resets to fit when image size changes); state line
+cursor, drag pan (Fit and 100% are independent modes, see follow-up below; resets to fit when image size changes); state line
 (waiting / running / stopped / failed / disconnected / no new frame for N s), camera-readback
 exposure ("not reported" if none), image size, last frame time; a closed viewer stays closed until
 the operator starts an acquisition. Difference from junjie "90% Dynamic" (5%/95%): junjie's cuts
@@ -1140,3 +1140,59 @@ on lab images (?).
 **Decisions needed from the user:** shutdown options (a)/(b)/(c); MasterPulse option; whether to
 add ROI statistics (P1) next; robust tail value after viewing real images; whether to port the
 Qt-cleanup fixture / faulthandler for the unconfirmed crash.
+
+### 2026-10-25 follow-up — 100% mode, field use of the preview, evaluated-not-built items
+
+**100% correction.** Fit and 100% are now independent modes (commit after
+`b075d7a`). The view is "Fit" (`_zoom is None`, scale follows the window) or
+an explicit zoom in *physical device pixels per image pixel*; 100% means one
+image pixel per physical screen pixel, so on a 2× display it draws at
+0.5 logical pixels per image pixel and the percentage label and pixel readout
+are in the same unit. 100% is allowed to be smaller than Fit (small images)
+and wheel/Zoom− may go below Fit (down to 5%); the Fit button returns to Fit.
+Earlier wording in this entry ("zoom never below fit") is superseded.
+
+**What each preview feature is for (which bench step, today's workaround, cost
+of the gap, minimal scope).**
+
+| Feature | Bench step | Done today by | Cost of the gap | Minimal scope |
+|---|---|---|---|---|
+| Robust auto (once) | judging whether tracer particles are visible after changing laser/exposure/focus | Full range (image looks black) or Min–max (one hot pixel sets the top), then typing limits | repeated trial-and-error, easy to misjudge signal | done: one click, then held |
+| Fixed low/high | comparing frames/settings with identical mapping | not possible with per-frame autoscale | brightness differences between settings are hidden | done |
+| 100% / zoom / pan | focus and particle-size judgement at pixel level | enlarging the window only | cannot see single pixels or confirm sharpness | done |
+| State / readback / last frame | deciding whether the camera is really running and what exposure it reports before starting a series | status text only | a stopped or failed camera looked like a live one | done |
+
+**Evidence class of the design choices.** *Official sources support:* display-only
+range for 16-bit data, Reset/Set/Auto, Auto saturating a small tail, Apply being
+the only pixel-changing action (ImageJ [Brightness/Contrast](https://imagej.net/ij/docs/guide/146-28.html));
+Min–max / 0–max / fixed / custom scaling, histogram-based scaling, line profiles
+and image statistics (Andor Solis [iXon Ultra guide](https://andor.oxinst.com/downloads/uploads/iXon_Ultra_Software_User_Guide.pdf),
+[iStar guide](https://andor.oxinst.com/downloads/uploads/istar-scmos-hardware-guide.pdf),
+[Solis I](https://andor.oxinst.com/products/solis-software/solis-i)). *Our own
+design choices:* one-shot (held) instead of per-frame robust stretch, the 0.2%
+per-side tail, zoom units, closed viewer stays closed. *Hypotheses needing lab
+images:* that 0.2% per side suits sparse tracer particles (junjie's per-frame
+5%/95% "90% Dynamic" was not adopted; a per-frame percentile mode and junjie's
+bit-downshift are deferred, no request on record).
+
+**Evaluated, not implemented (current data conditions).** The viewer keeps only
+the *last* frame (`raw_frame` copy) of a snapshot, continuous preview or
+collected sequence; during an automated series `MainWindow` forwards each
+collected sequence result, so the viewer shows the last frame of each
+experiment. Full sequences exist in memory only inside the command result;
+saved TIFF + `experiment.json` are on disk.
+- *Observation ROI + statistics* (mean / SD / min / max / saturated count in a
+  rectangle of the current frame). Use: check signal level and background before
+  a run, compare across settings. Today: eyeball the hover readout. Cost: about
+  80 lines + tests on `raw_frame`; no data-flow change. Deferral cost: low; first
+  candidate if you want one.
+- *Row / column profile* (one line through the frame). Use: focus / beam-profile
+  checks, particle intensity cross-section. Today: none. Cost: similar size,
+  reuses the pixel mapping. Deferral cost: low.
+- *Sequence frame review.* Use: inspect each frame of a captured sequence
+  (trigger ordering, dropped/dim frames). Not feasible from memory for
+  production sizes (1000 frames × 2304×740 × 2 B ≈ 3.4 GB); realistic only by
+  reading saved TIFFs from disk, which is a new file-reading feature with its own
+  format/ownership decisions. Deferral cost: medium (the external analysis path
+  currently covers it). Do not start without a decision on source (memory vs
+  disk).

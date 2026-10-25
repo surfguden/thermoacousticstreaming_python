@@ -1675,3 +1675,44 @@ def test_camera_large_image_display_operations_stay_responsive(qt_app):
     # Generous bound: catches a real regression, not a slow machine.
     assert max(timings.values()) < 1.5, timings
     viewer.close()
+
+
+@pytest.mark.parametrize("shape", [(30, 40), (1200, 1600)], ids=["smaller_than_viewport", "larger_than_viewport"])
+@pytest.mark.parametrize("ratio", [1.0, 2.0], ids=["dpr1", "dpr2"])
+def test_camera_100_percent_is_exact_and_independent_of_fit(qt_app, shape, ratio):
+    _panel, viewer = _viewer(qt_app)
+    preview = viewer.preview
+    preview.devicePixelRatioF = lambda: ratio
+    frame = np.arange(shape[0] * shape[1], dtype=np.uint16).reshape(shape)
+    viewer.show_frame(frame, "x")
+    assert preview.is_fit
+    fit_percent = preview.zoom_percent()
+    viewer.zoom_100_button.click()
+    assert not preview.is_fit
+    assert preview.zoom_percent() == pytest.approx(100.0)
+    # 1 image pixel == 1 physical pixel == 1/ratio logical pixels.
+    assert preview.effective_scale() == pytest.approx(1.0 / ratio)
+    area = preview.contentsRect()
+    target = preview.image_target_rect()
+    expected_w = min(shape[1], area.width() * ratio) / ratio
+    expected_h = min(shape[0], area.height() * ratio) / ratio
+    assert target.width() == pytest.approx(expected_w)
+    assert target.height() == pytest.approx(expected_h)
+    if shape == (30, 40):
+        assert fit_percent > 100.0  # Fit enlarges it; 100% must not
+        assert viewer.zoom_label.text() == "Zoom: Manual (100%)"
+    # Raw readout matches the displayed geometry at both ends of the target.
+    source = preview.visible_source_rect()
+    x0, y0 = int(source.x()), int(source.y())
+    assert preview.pixel_at(QPointF(target.x() + 0.2, target.y() + 0.2)) == (x0, y0, int(frame[y0, x0]))
+    last = preview.pixel_at(QPointF(target.right() - 0.2, target.bottom() - 0.2))
+    assert last[2] == int(frame[last[1], last[0]])
+    # Zooming out below Fit and back; Fit is a separate, reachable mode.
+    preview.zoom_by(0.25, QPointF(area.center()))
+    assert not preview.is_fit and preview.zoom_percent() == pytest.approx(25.0)
+    px = preview.pixel_at(QPointF(preview.image_target_rect().center()))
+    assert px[2] == int(frame[px[1], px[0]])
+    viewer.fit_button.click()
+    assert preview.is_fit and preview.zoom_percent() == pytest.approx(fit_percent)
+    assert np.array_equal(preview.raw_frame, frame)
+    viewer.close()
