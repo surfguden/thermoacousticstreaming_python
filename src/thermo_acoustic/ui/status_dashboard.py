@@ -62,7 +62,10 @@ class StatusDashboard(QWidget):
             elif device is DeviceId.VALVE and data is not None:
                 pieces.append(f"position {_value(getattr(data, 'confirmed_position', None))}")
             elif device is DeviceId.Z_STAGE and data is not None:
-                pieces.append(f"position {_value(getattr(data, 'position_um', None), ' µm')}")
+                pieces.append(f"position {_value(getattr(data, 'position_um', None), ' µm')} (last read)")
+                commanded = getattr(data, "commanded_position_um", None)
+                if commanded is not None:
+                    pieces.append(f"last command {_value(commanded, ' µm')}")
             elif device is DeviceId.CAMERA and data is not None:
                 pieces.append(f"{data.mode} · exposure {_value(data.exposure_ms, ' ms')}")
                 if data.sequence_frame_count is not None:

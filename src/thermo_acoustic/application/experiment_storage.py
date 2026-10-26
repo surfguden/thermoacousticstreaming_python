@@ -58,7 +58,7 @@ TERMINAL_OUTCOMES = frozenset({
 
 class SeriesStorage:
     def __init__(self, root: Path, expansion: Expansion, image_format: str,
-                 *, continuing_batch: bool = False) -> None:
+                 *, continuing_batch: bool = False, run_identity: dict | None = None) -> None:
         if image_format not in {"frames", "stacked"}:
             raise ValueError("TIFF format must be frames or stacked")
         if not root.is_dir():
@@ -90,14 +90,17 @@ class SeriesStorage:
         self.finalized_outcome: str | None = None
         self.finalized_utc: str | None = None
         write_json(self.metadata / "definition.json", expansion.definition)
-        write_json(self.metadata / "manifest.json", {
+        manifest = {
             "schema_version": 1,
             "experiments": [{"experiment_id": item.experiment_id,
                              "relative_path": item.relative_path,
                              "parameters": item.parameters,
                              "repeat_index": item.repeat_index}
                             for item in expansion.experiments],
-        })
+        }
+        if run_identity is not None:
+            manifest["run"] = run_identity  # additive: existing fields are unchanged
+        write_json(self.metadata / "manifest.json", manifest)
         self.status("queued", {})
 
     def record_experiment_started(self) -> None:

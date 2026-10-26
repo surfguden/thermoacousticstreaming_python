@@ -15,6 +15,7 @@ from typing import Any, Callable
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from ..domain.models import ConnectionState, DeviceId, OperatingMode, PumpReadback, ZStageReadback
+from .run_identity import cached_software_identity
 from .commands import (
     Ad2AnalogOutputIdle, Ad2ConfigureWaveformArgs, Ad2ExperimentDigitalArgs,
     Ad2TriggerSettingsArgs, Ad2TriggerSource, Ad2WaveformChannelArgs,
@@ -148,7 +149,9 @@ class ExperimentManager(QObject):
             raise ValueError("All queued series in one batch must use the same experiment base folder")
         storage = SeriesStorage(output, expansion,
                                 image_format or definition.get("tiff_format", "frames"),
-                                continuing_batch=self._batch_output_root is not None)
+                                continuing_batch=self._batch_output_root is not None,
+                                run_identity={"mode": self.controller.mode.value,
+                                              "software": cached_software_identity()})
         self._batch_output_root = output
         self._queued.append((expansion, storage))
         self._invalidate_syringe_preflight()
@@ -1059,6 +1062,12 @@ class ExperimentManager(QObject):
         if name == "flush":
             self._settings.setdefault("flushes", []).append(requested)
             self._applied.setdefault("flushes", []).append({"status": "completed"})
+        elif name == "stage_move":
+            # The controller accepted a (possibly clamped) target; the step does not wait for
+            # the stage or read its position, so it is not recorded as an applied position.
+            self._settings[name] = requested
+            self._applied[name] = {"requested_um": requested["position_um"],
+                                   "sent_um": applied.position_um, "position_confirmed": False}
         else:
             self._settings[name] = requested
             self._applied[name] = json_ready(applied)

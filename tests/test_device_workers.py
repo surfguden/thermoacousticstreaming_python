@@ -244,3 +244,33 @@ def test_ad2_safe_stop_falls_back_to_direct_channel_stops(qt_app):
     assert recorder.run(DeviceOperation.SAFE_STOP)
     assert fake.calls == ["wfg_all_False", "wfg_direct_stop", "do_False", "scope_abort"]
     assert worker.status().readback.waveform_running is False
+
+
+# ------------------------------------------------------------- Z stage position
+def connected_z_stage():
+    from thermo_acoustic.drivers.z_stage import SimulatedZStage
+    from thermo_acoustic.hal.z_stage import ZStageWorker
+    device = SimulatedZStage()
+    worker = ZStageWorker(lambda: device)
+    recorder = Recorder(worker)
+    assert recorder.run(DeviceOperation.CONNECT)
+    assert recorder.run(DeviceOperation.Z_STAGE_CLOSED_LOOP_REQUIREMENT_READ)
+    assert recorder.run(DeviceOperation.Z_STAGE_CLOSED_LOOP_ENABLE)
+    return device, worker, recorder
+
+
+def test_a_position_command_is_recorded_as_commanded_not_as_a_measured_position(qt_app):
+    from thermo_acoustic.application.commands import ZStageSetPositionArgs
+    device, worker, recorder = connected_z_stage()
+    device.get_position = lambda: device.position_um - 5.0  # the stage is still 5 µm short
+    assert recorder.run(DeviceOperation.Z_STAGE_POSITION_SET, ZStageSetPositionArgs(20.0))
+    # The command result keeps its meaning (the clamped target the controller accepted)...
+    assert recorder.succeeded[-1][1].position_um == 20.0
+    readback = worker.status().readback
+    # ...but it is not presented as where the stage is.
+    assert readback.commanded_position_um == 20.0
+    assert readback.position_um is None
+    assert recorder.run(DeviceOperation.Z_STAGE_POSITION_READ)
+    assert recorder.succeeded[-1][1].position_um == 15.0
+    readback = worker.status().readback
+    assert readback.position_um == 15.0 and readback.commanded_position_um == 20.0

@@ -64,8 +64,10 @@ class ZStageWorker(DeviceWorker):
     def set_position(self, args: ZStageSetPositionArgs) -> ZStagePositionResult:
         if not self.state.readback.closed_loop:
             raise RuntimeError("Enable closed-loop before moving")
+        # The driver returns the clamped target it sent; that is a command, not a measurement,
+        # so it goes to `commanded_position_um` and `position_um` stays the last measured value.
         result = ZStagePositionResult(float(self.device.set_position(args.position_um)))
-        self.state.readback = replace(self.state.readback, position_um=result.position_um)
+        self.state.readback = replace(self.state.readback, commanded_position_um=result.position_um)
         return result
 
     def read_position(self, _args: NoArguments) -> ZStagePositionResult:

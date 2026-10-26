@@ -549,3 +549,21 @@ def test_manual_actions_are_refused_in_every_active_batch_state_but_reads_and_st
         _wait_for(qt_app, lambda: controller.active_device_command() is None, 5)
     finally:
         controller.shutdown()
+
+
+def test_stage_move_is_recorded_as_sent_and_not_confirmed(qt_app, tmp_path):
+    app = qt_app
+    controller, panel, results, events = _connected_temperature_series_harness(app, repeats=1)
+    try:
+        connect_z_stage(app, controller, events)
+        folder = controller.experiments.queue(definition_with_stage_move(panel, 10.0), tmp_path)
+        assert controller.experiments.start()
+        status = _wait_until_terminal(app, controller, timeout=60)
+        assert status["state"] == "completed", status
+        document = json.loads(next(folder.rglob("experiment.json")).read_text())
+        assert document["requested_settings"]["stage_move"] == {"position_um": 10.0}
+        assert document["applied_settings"]["stage_move"] == {
+            "requested_um": 10.0, "sent_um": 10.0, "position_confirmed": False}
+    finally:
+        panel.close()
+        controller.shutdown()

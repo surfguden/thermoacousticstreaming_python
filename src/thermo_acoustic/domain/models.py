@@ -228,7 +228,11 @@ class TecReadback:
 class ZStageReadback:
     closed_loop_confirmation_required: bool | None = None
     closed_loop: bool = False
+    # Last position read back from the stage (a measurement).
     position_um: float | None = None
+    # Last target sent to the stage, after the soft-limit clamp. The controller accepted it;
+    # nothing here says the stage has arrived.
+    commanded_position_um: float | None = None
     max_travel_um: float | None = None
 
 
