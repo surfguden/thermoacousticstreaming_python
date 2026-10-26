@@ -14,7 +14,7 @@ from typing import Any, Callable
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from ..domain.models import ConnectionState, DeviceId, OperatingMode, PumpReadback
+from ..domain.models import ConnectionState, DeviceId, OperatingMode, PumpReadback, ZStageReadback
 from .commands import (
     Ad2AnalogOutputIdle, Ad2ConfigureWaveformArgs, Ad2ExperimentDigitalArgs,
     Ad2TriggerSettingsArgs, Ad2TriggerSource, Ad2WaveformChannelArgs,
@@ -114,11 +114,16 @@ class ExperimentManager(QObject):
             return
         self._recorder.add(sample)
 
+    @property
+    def batch_active(self) -> bool:
+        """True from Start until the batch has fully stopped (including the stop/abort drain)."""
+        return self._state in {"running", "stopping", "aborting"}
+
     def queue(self, definition: dict[str, Any], output_root: str | Path,
               image_format: str | None = None) -> Path:
         if self._syringe_preflight_active or self.controller.count_preflight_active:
             raise RuntimeError("Wait for preflight to finish before changing the batch")
-        if self._state in {"running", "stopping", "aborting"}:
+        if self.batch_active:
             raise RuntimeError("Cannot queue a series while an experiment batch is running")
         if self.controller.panic_status()["state"] == "stopping":
             raise RuntimeError("Cannot queue a series during Panic safe stop")
@@ -489,6 +494,14 @@ class ExperimentManager(QObject):
         for device in DeviceId:
             if device.value in resources and statuses[device].connection is not ConnectionState.CONNECTED:
                 raise RuntimeError(f"Required device is not connected: {device.value}")
+        if "z_stage" in resources:
+            # Checked here, before any flush, heating or capture, so a stage_move that
+            # cannot run fails the series at once. Closed loop is required, never
+            # enabled on the operator's behalf, and the stage is not moved.
+            stage = statuses[DeviceId.Z_STAGE].readback
+            if not isinstance(stage, ZStageReadback) or not stage.closed_loop:
+                raise RuntimeError(
+                    "Z stage closed-loop control must be confirmed and enabled before a stage_move step")
         if statuses[DeviceId.CAMERA].busy:
             raise RuntimeError("Camera has a pending operation; wait before starting the series")
         ad2 = statuses[DeviceId.AD2].readback
@@ -1230,6 +1243,7 @@ class ExperimentManager(QObject):
         # allowed to perform its own valve/pump cleanup; a host-owned file save
         # is allowed to finish. No subsequent experiment is dispatched.
         if stop_outputs:
+            self._cancel_active_tec_wait()
             statuses = self.controller.statuses()
             for device in (DeviceId.AD2, DeviceId.CAMERA):
                 if statuses[device].connection is ConnectionState.CONNECTED:
@@ -1239,6 +1253,21 @@ class ExperimentManager(QObject):
                     except RuntimeError:
                         pass
         self._finish_failure_when_safe()
+
+    def _cancel_active_tec_wait(self) -> None:
+        """End a running TEC stability wait so it stops polling and frees the command lane.
+
+        This cancels the wait only (the worker's cancel hook leaves regulation
+        on); switching the TEC output off stays a separate action (Panic/exit).
+        """
+        active = self.controller.active_device_command()
+        if (active is not None and active.device is DeviceId.TEC
+                and active.operation is DeviceOperation.TEC_WAIT_STABLE):
+            try:
+                self.controller.submit(DeviceCommand(DeviceId.TEC, DeviceOperation.ABORT_ACTIVE,
+                                                     NoArguments(), source="experiment"))
+            except RuntimeError:
+                pass
 
     def _finish_failure_when_safe(self) -> None:
         if self._failure_reason is None:

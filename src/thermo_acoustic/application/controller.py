@@ -541,6 +541,11 @@ class ApplicationController(QObject):
         self._active = None
         self._dispatch_next()
 
+    def active_device_command(self) -> DeviceCommand | None:
+        """The device command currently holding the command lane, if any."""
+        pending = self._active
+        return pending.command if pending is not None and isinstance(pending.command, DeviceCommand) else None
+
     def statuses(self) -> dict:
         return dict(self._statuses)
 

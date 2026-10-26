@@ -109,7 +109,12 @@ class ZStackRunner(QObject):
             raise RuntimeError("Confirm and enable closed-loop stage control first")
         return stage
 
+    def _require_no_batch(self) -> None:
+        if self.controller.experiments.batch_active:
+            raise RuntimeError("An experiment batch owns the instruments until it has stopped")
+
     def start_preview(self, exposure_ms: float) -> None:
+        self._require_no_batch()
         if self.state == "running":
             raise RuntimeError("Z stack is running")
         self._require_devices()
@@ -133,6 +138,7 @@ class ZStackRunner(QObject):
         self._publish("Live preview stopped")
 
     def move_to(self, position_um: float) -> None:
+        self._require_no_batch()
         if self.state == "running":
             raise RuntimeError("Manual Z moves are unavailable during acquisition")
         stage = self._require_devices()
@@ -144,6 +150,7 @@ class ZStackRunner(QObject):
                                              NoArguments(), lambda result: self._publish(f"Z = {result.position_um:.3f} µm")))
 
     def move_relative(self, delta_um: float) -> None:
+        self._require_no_batch()
         if self.state == "running":
             raise RuntimeError("Manual Z moves are unavailable during acquisition")
         self._require_devices()
@@ -153,7 +160,8 @@ class ZStackRunner(QObject):
                                              NoArguments(), lambda result: self._publish(f"Z = {result.position_um:.3f} µm")))
 
     def start(self, settings: ZStackSettings) -> None:
-        if self.state == "running" or self.controller.experiments.status()["state"] == "running":
+        self._require_no_batch()
+        if self.state == "running":
             raise RuntimeError("Another acquisition is running")
         if self.controller.count_preflight_active or self.controller.experiments.status()["syringe_preflight_active"]:
             raise RuntimeError("Wait for experiment preflight to finish")
