@@ -90,3 +90,48 @@ def test_an_unreadable_git_does_not_stop_the_series_from_being_queued(qt_app, tm
         panel.close()
         controller.shutdown()
         monkeypatch.setattr(run_identity, "_cached", None)
+
+
+def test_editing_a_queued_series_keeps_its_run_identity_and_applies_the_edit(qt_app, tmp_path, monkeypatch):
+    from thermo_acoustic.application import run_identity
+    known = {"git_commit": COMMIT, "git_dirty": True, "source": "git"}
+    monkeypatch.setattr(run_identity, "_cached", dict(known))
+    controller, panel, results, events = _connected_temperature_series_harness(qt_app, repeats=1)
+    try:
+        folder = controller.experiments.queue(panel._definition(), tmp_path)
+        manifest_path = folder / "metadata" / "manifest.json"
+        before = json.loads(manifest_path.read_text())
+        assert before["run"] == {"mode": "simulation", "software": known}
+        count_before = len(before["experiments"])  # two temperature points x one repeat
+
+        # Edit through the real entry point, with Git now unreadable: the identity must be the
+        # stored one, neither re-read nor replaced.
+        monkeypatch.setattr(run_identity.subprocess, "run",
+                            lambda *a, **k: (_ for _ in ()).throw(AssertionError("git was read again")))
+        panel.repeats.setValue(2)
+        controller.experiments.update_queued(folder, panel._definition())
+
+        after = json.loads(manifest_path.read_text())
+        assert len(after["experiments"]) == 2 * count_before, "the edit did not reach the manifest"
+        assert json.loads((folder / "metadata" / "definition.json").read_text())["steps"] != []
+        assert after["run"] == before["run"]
+        assert after["schema_version"] == 1
+        assert json.loads((folder / "metadata" / "status.json").read_text())["requested_experiments"] == 2 * count_before
+    finally:
+        panel.close()
+        controller.shutdown()
+
+
+def test_a_series_stored_without_run_identity_is_still_editable(tmp_path):
+    """Older callers pass no identity: the manifest has no 'run' block, before or after an edit."""
+    from thermo_acoustic.application.experiment_storage import SeriesStorage
+    from thermo_acoustic.application.experiments import validate_definition
+    from test_experiments import described_default_definition
+    expansion = validate_definition(described_default_definition())
+    storage = SeriesStorage(tmp_path, expansion, "frames")
+    manifest_path = storage.metadata / "manifest.json"
+    assert "run" not in json.loads(manifest_path.read_text())
+    storage.update_definition(expansion)
+    after = json.loads(manifest_path.read_text())
+    assert "run" not in after and after["schema_version"] == 1
+    assert len(after["experiments"]) == len(expansion.experiments)

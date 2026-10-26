@@ -90,17 +90,8 @@ class SeriesStorage:
         self.finalized_outcome: str | None = None
         self.finalized_utc: str | None = None
         write_json(self.metadata / "definition.json", expansion.definition)
-        manifest = {
-            "schema_version": 1,
-            "experiments": [{"experiment_id": item.experiment_id,
-                             "relative_path": item.relative_path,
-                             "parameters": item.parameters,
-                             "repeat_index": item.repeat_index}
-                            for item in expansion.experiments],
-        }
-        if run_identity is not None:
-            manifest["run"] = run_identity  # additive: existing fields are unchanged
-        write_json(self.metadata / "manifest.json", manifest)
+        self.run_identity = run_identity  # fixed when the series is queued; edits keep it
+        write_json(self.metadata / "manifest.json", self._manifest(expansion))
         self.status("queued", {})
 
     def record_experiment_started(self) -> None:
@@ -121,20 +112,26 @@ class SeriesStorage:
         self.experiments_failed += 1
         self.status("running", {})
 
-    def update_definition(self, expansion: Expansion) -> None:
-        """Replace only the queued plan; no acquired data may be present."""
-        if any(path.is_dir() for path in self.folder.iterdir() if path != self.metadata):
-            raise RuntimeError("Cannot edit a series after acquisition has created output")
-        self.requested_experiments = len(expansion.experiments)
-        write_json(self.metadata / "definition.json", expansion.definition)
-        write_json(self.metadata / "manifest.json", {
+    def _manifest(self, expansion: Expansion) -> dict[str, Any]:
+        manifest: dict[str, Any] = {
             "schema_version": 1,
             "experiments": [{"experiment_id": item.experiment_id,
                              "relative_path": item.relative_path,
                              "parameters": item.parameters,
                              "repeat_index": item.repeat_index}
                             for item in expansion.experiments],
-        })
+        }
+        if self.run_identity is not None:
+            manifest["run"] = self.run_identity  # additive: existing fields are unchanged
+        return manifest
+
+    def update_definition(self, expansion: Expansion) -> None:
+        """Replace only the queued plan; no acquired data may be present."""
+        if any(path.is_dir() for path in self.folder.iterdir() if path != self.metadata):
+            raise RuntimeError("Cannot edit a series after acquisition has created output")
+        self.requested_experiments = len(expansion.experiments)
+        write_json(self.metadata / "definition.json", expansion.definition)
+        write_json(self.metadata / "manifest.json", self._manifest(expansion))
         self.status("queued", {"edited": True})
 
     def status(self, state: str, detail: dict[str, Any]) -> None:
