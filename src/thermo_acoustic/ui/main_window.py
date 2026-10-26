@@ -9,6 +9,7 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
+    QButtonGroup,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
@@ -61,10 +63,15 @@ class MainWindow(QMainWindow):
         self.controller = controller
         self._ui_log_writer = ui_log_writer
         self._requests: dict[str, tuple[DevicePanel | WorkflowPanel, str]] = {}
+        self._scroll_pages: dict[QWidget, QScrollArea] = {}
         self.setWindowTitle("Thermo-acoustic control — Simulation mode" if
                             controller.mode is OperatingMode.SIMULATION else "Thermo-acoustic control")
-        self.setMinimumSize(960, 1080)
-        self.resize(1100, 1080)
+        # Content scrolls inside the panels, so the window may be small; the initial size
+        # follows the screen it opens on instead of a fixed height.
+        self.setMinimumSize(900, 560)
+        available = self.screen().availableGeometry() if self.screen() is not None else None
+        self.resize(min(1280, int(available.width() * 0.95)) if available else 1280,
+                    min(860, int(available.height() * 0.92)) if available else 860)
         root = QWidget()
         root_layout = QVBoxLayout(root)
         self.setCentralWidget(root)
@@ -72,18 +79,39 @@ class MainWindow(QMainWindow):
         self._experiment_status = controller.experiments.status()
         self._panic_status = controller.panic_status()
         header = QHBoxLayout()
-        text = QVBoxLayout()
+        text = QHBoxLayout()
         self.activity_title = QLabel("Idle")
+        self.activity_title.setStyleSheet("font-weight: 600")
         self.activity_detail = QLabel("Ready")
         self.activity_detail.setWordWrap(True)
         text.addWidget(self.activity_title)
-        text.addWidget(self.activity_detail)
+        text.addWidget(self.activity_detail, 1)
         header.addLayout(text, 1)
+        # Three different stops, always visible, in increasing severity.
+        self.stop_after_button = QPushButton("Stop after current")
+        self.stop_after_button.setToolTip(
+            "Let the running experiment finish, then end the batch before the next one. "
+            "Nothing is interrupted.")
+        self.abort_button = QPushButton("Abort batch")
+        self.abort_button.setToolTip(
+            "End the batch now: cancel the running experiment and stop the AD2, camera, pump and "
+            "valve activity of the batch. An incomplete acquisition is discarded; completed "
+            "experiments are kept.")
+        self.abort_button.setStyleSheet("QPushButton:enabled { background: #ffe0b2; }")
         self.panic_button = QPushButton("PANIC · Safe stop")
         self.panic_button.setToolTip("Confirm, then urgently stop connected outputs and abort the batch")
+        self.panic_button.setStyleSheet(
+            "QPushButton:enabled { background: #b71c1c; color: white; font-weight: 700; }")
+        self.stop_after_button.setEnabled(False)
+        self.abort_button.setEnabled(False)
+        self.stop_after_button.clicked.connect(lambda: controller.experiments.stop_after_current())
+        self.abort_button.clicked.connect(lambda: controller.experiments.abort())
         self.panic_button.clicked.connect(self._panic)
-        header.addWidget(self.panic_button)
+        for button in (self.stop_after_button, self.abort_button, self.panic_button):
+            button.setMinimumHeight(32)
+            header.addWidget(button)
         root_layout.addLayout(header)
+        root_layout.addLayout(self._navigation_row())
 
         self.tabs = QTabWidget()
         self.tabs.setMinimumWidth(0)
@@ -104,14 +132,15 @@ class MainWindow(QMainWindow):
         )
         self.workflow_panel.abort_requested.connect(controller.cancel_active_workflow)
         self.workflow_panel.notice.connect(self._ui_notice)
-        self.tabs.addTab(self.workflow_panel, "Workflows")
+        self.tabs.addTab(self._scrolling(self.workflow_panel), "Workflows")
         from .z_stack_panel import ZStackPanel
         self.z_stack_panel = ZStackPanel(controller.z_stack, self.panels[DeviceId.CAMERA])
-        self.tabs.addTab(self.z_stack_panel, "Z stack")
+        self.tabs.addTab(self._scrolling(self.z_stack_panel), "Z stack")
         self.experiment_panel = SimpleSeriesPanel(controller)
         self.tabs.addTab(self.experiment_panel, "Experiments")
         self.dashboard = StatusDashboard()
-        self.tabs.addTab(self.dashboard, "Status")
+        self.tabs.addTab(self._scrolling(self.dashboard), "Run monitor")
+        self.dashboard.image_window_requested.connect(self._show_camera_image_window)
         self.builder_window = ExperimentBuilderWindow(controller.experiments, self)
         controller.experiments.confirm_batch = self.confirm_experiment_batch
         controller.experiments.confirm_unchecked = self.confirm_unchecked_preflight
@@ -138,6 +167,74 @@ class MainWindow(QMainWindow):
         controller.panic_changed.connect(self._panic_changed)
         self._status(controller.statuses())
         self._experiment_changed(self._experiment_status)
+        self.tabs.currentChanged.connect(self._sync_navigation)
+        self.experiment_panel.pages.currentChanged.connect(self._sync_navigation)
+        self._sync_navigation()
+
+    def _scrolling(self, widget: QWidget) -> QScrollArea:
+        """Tabs without their own scrolling get one, so a short window never squeezes their content."""
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        area.setFrameShape(QScrollArea.Shape.NoFrame)
+        area.setWidget(widget)
+        self._scroll_pages[widget] = area
+        return area
+
+    def _navigation_row(self) -> QHBoxLayout:
+        """Shortcuts to existing tabs. Navigation only: no command is issued and no step is required."""
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Task:"))
+        self._nav_group = QButtonGroup(self)
+        self._nav_buttons: dict[str, QPushButton] = {}
+        for key, label, tip in (
+            ("prepare", "1 Prepare devices", "Connect and set up instruments in the device tabs"),
+            ("configure", "2 Configure", "Experiments tab, Configure page"),
+            ("review", "3 Review and start", "Experiments tab, Review and start page"),
+            ("monitor", "4 Monitor run", "Run monitor tab"),
+        ):
+            button = QPushButton(label)
+            button.setCheckable(True)
+            button.setFlat(True)
+            button.setToolTip(tip + ". Any tab can be opened at any time.")
+            self._nav_group.addButton(button)
+            self._nav_buttons[key] = button
+            row.addWidget(button)
+            button.clicked.connect(lambda _checked=False, name=key: self._navigate(name))
+        row.addStretch(1)
+        self._last_device_tab = 0
+        return row
+
+    def _navigate(self, name: str) -> None:
+        if name == "prepare":
+            self.tabs.setCurrentIndex(self._last_device_tab)
+        elif name in {"configure", "review"}:
+            self.tabs.setCurrentWidget(self.experiment_panel)
+            self.experiment_panel.pages.setCurrentIndex(0 if name == "configure" else 1)
+        elif name == "monitor":
+            self.tabs.setCurrentWidget(self._scroll_pages[self.dashboard])
+
+    def _sync_navigation(self, *_args) -> None:
+        current = self.tabs.currentWidget()
+        if current in self.panels.values() or current in (self._scroll_pages[self.workflow_panel],
+                                                          self._scroll_pages[self.z_stack_panel]):
+            self._last_device_tab = self.tabs.currentIndex()
+            key = "prepare"
+        elif current is self.experiment_panel:
+            key = "configure" if self.experiment_panel.pages.currentIndex() == 0 else "review"
+        elif current is self._scroll_pages[self.dashboard]:
+            key = "monitor"
+        else:
+            key = None
+        self._nav_group.setExclusive(False)
+        for name, button in self._nav_buttons.items():
+            button.setChecked(name == key)
+        self._nav_group.setExclusive(True)
+
+    def _show_camera_image_window(self) -> None:
+        window = self.panels[DeviceId.CAMERA].image_window
+        window.show()
+        window.raise_()
+        window.activateWindow()
 
     def _panic(self) -> None:
         if self.controller.shutdown_started:
@@ -183,6 +280,12 @@ class MainWindow(QMainWindow):
             panel.set_experiment_locked(locked)
         self.workflow_panel.set_experiment_locked(locked)
         self.dashboard.update_experiment(status)
+        running = status["state"] == "running" and self._panic_status["state"] != "stopping"
+        stop_requested = bool(status.get("stop_after_current"))
+        self.stop_after_button.setEnabled(running and not stop_requested)
+        self.stop_after_button.setText("Stop requested" if running and stop_requested
+                                       else "Stop after current")
+        self.abort_button.setEnabled(running)
         self._render_activity()
 
     def _render_activity(self) -> None:

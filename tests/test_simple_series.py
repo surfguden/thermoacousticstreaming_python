@@ -791,12 +791,19 @@ def test_full_main_window_operator_flow_queue_start_status_output_and_stop(tmp_p
         while monotonic() < deadline and _completed_triggers() <= triggers_after_series_one:
             app.processEvents(); sleep(0.01)
         assert _completed_triggers() > triggers_after_series_one, "series 2's first repeat never completed"
-        assert panel.stop_button.isEnabled()
-        panel.stop_button.click()
+        # The monitor shows the running experiment's own parameters and where its output goes.
+        deadline = monotonic() + 15
+        while monotonic() < deadline and "frequency 1e+06 Hz" not in window.dashboard.condition.text():
+            app.processEvents(); sleep(0.01)
+        assert "frequency 1e+06 Hz" in window.dashboard.condition.text(), window.dashboard.condition.text()
+        assert window.dashboard.output_folder in {str(first_folder), str(second_folder)}
+        assert window.dashboard.output_folder in window.dashboard.output.text()
+        assert window.stop_after_button.isEnabled()
+        window.stop_after_button.click()
         status = _wait_until_terminal(app, controller)
         assert status["state"] == "stopped", status
-        assert not panel.stop_button.isEnabled()
-        assert not panel.abort_button.isEnabled()
+        assert not window.stop_after_button.isEnabled()
+        assert not window.abort_button.isEnabled()
 
         second_status = json.loads((second_folder / "metadata" / "status.json").read_text(encoding="utf-8"))
         assert second_status["finalized_outcome"] == "stopped_after_current"

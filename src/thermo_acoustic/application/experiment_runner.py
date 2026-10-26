@@ -321,6 +321,8 @@ class ExperimentManager(QObject):
                 "series": queue_details,
                 "current_series": str(self._current[1].folder) if self._current else None,
                 "current_experiment": self._experiment.experiment_id if self._experiment else None,
+                "current_parameters": dict(self._experiment.parameters) if self._experiment else None,
+                "current_repeat": self._experiment.repeat_index if self._experiment else None,
                 "completed_experiments": self._completed,
                 "stop_after_current": self._stop_after_current,
                 "syringe_preflight_passed": syringe_passed,

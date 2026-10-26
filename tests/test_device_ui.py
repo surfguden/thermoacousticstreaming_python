@@ -241,13 +241,16 @@ def test_main_window_uses_fixed_minimum_and_separate_detailed_log(qt_app):
     controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
     window = MainWindow(controller)
 
-    assert window.minimumWidth() == 960
-    assert window.minimumHeight() == 1080
+    # Content scrolls inside the tabs, so the window can follow a small screen (1366x768 at 125 %
+    # scaling leaves roughly 1090x610 logical pixels) and no panel may demand more than the minimum.
+    assert (window.minimumWidth(), window.minimumHeight()) == (900, 560)
+    hint = window.minimumSizeHint()
+    assert hint.width() <= window.minimumWidth() and hint.height() <= window.minimumHeight(), hint
     assert window.log.parent() is window.log_window
     assert [action.text() for action in window.menuBar().actions()] == [
         "&File", "&Log", "Experiment &builder"]
     assert window.tabs.tabText(window.tabs.count() - 2) == "Experiments"
-    assert window.tabs.tabText(window.tabs.count() - 1) == "Status"
+    assert window.tabs.tabText(window.tabs.count() - 1) == "Run monitor"
     assert window.builder_window.panel.parent() is window.builder_window
     for spin in window.findChildren(QAbstractSpinBox):
         assert spin.buttonSymbols() is QAbstractSpinBox.ButtonSymbols.NoButtons

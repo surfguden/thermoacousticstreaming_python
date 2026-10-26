@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSpinBox,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -899,3 +900,51 @@ class CameraImageWindow(QDialog):
     def closeEvent(self, event) -> None:
         self._dismissed = True
         super().closeEvent(event)
+
+
+class CollapsibleSection(QWidget):
+    """Header button that folds a content widget; folding only hides it, nothing is disabled.
+
+    The optional summary stays visible next to the title while folded, so values
+    inside a folded section are still readable.
+    """
+
+    def __init__(self, title: str, parent=None) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self._title = title
+        self.toggle = QToolButton()
+        self.toggle.setCheckable(True)
+        self.toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.toggle.setArrowType(Qt.ArrowType.RightArrow)
+        self.toggle.setText(title)
+        self.toggle.setStyleSheet("QToolButton { border: none; font-weight: 600; }")
+        self.summary = QLabel()
+        self.summary.setWordWrap(True)
+        self._content: QWidget | None = None
+        header = QHBoxLayout()
+        header.addWidget(self.toggle)
+        header.addWidget(self.summary, 1)
+        layout.addLayout(header)
+        self._layout = layout
+        self.toggle.toggled.connect(self._toggled)
+
+    def set_content(self, content: QWidget) -> None:
+        self._content = content
+        content.setVisible(self.toggle.isChecked())
+        self._layout.addWidget(content)
+
+    def set_summary(self, text: str) -> None:
+        self.summary.setText(text)
+
+    def is_expanded(self) -> bool:
+        return self.toggle.isChecked()
+
+    def set_expanded(self, expanded: bool) -> None:
+        self.toggle.setChecked(expanded)
+
+    def _toggled(self, expanded: bool) -> None:
+        self.toggle.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        if self._content is not None:
+            self._content.setVisible(expanded)

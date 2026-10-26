@@ -8,7 +8,7 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout,
     QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
-    QScrollArea, QSpinBox, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QScrollArea, QSpinBox, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..application.experiments import validate_definition
@@ -17,6 +17,7 @@ from ..application.commands import DeviceCommand, DeviceOperation, NoArguments
 from ..application.simple_preflight import SimpleSeriesPreflight
 from ..application.simple_series import NumericRange, SimpleSeriesSettings, compile_simple_series
 from ..domain.models import ConnectionState, DeviceId, PumpReadback, TecReadback
+from .widgets import CollapsibleSection
 
 
 def number(value: float, minimum: float = 0, maximum: float = 100_000_000,
@@ -53,14 +54,23 @@ class SimpleSeriesPanel(QWidget):
         # becomes current" default in place. Cleared once matched.
         self._pending_flush_unit_index: int | None = None
         root = QVBoxLayout(self)
-        root.addWidget(QLabel("Simple series · temperature → frequency → sweep width → amplitude → exposure → repeats"))
+        # Two free-to-visit pages of one form; neither is a required step. The Configure
+        # page edits the form, the Review page works on what is queued.
+        self.pages = QTabWidget()
+        root.addWidget(self.pages, 1)
+        configure_page = QWidget()
+        configure_layout = QVBoxLayout(configure_page)
+        scan_order = QLabel("Scan order: temperature → frequency → sweep width → amplitude → exposure → repeats")
+        scan_order.setWordWrap(True)
+        configure_layout.addWidget(scan_order)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         body = QWidget()
         self._body = body
         grid = QGridLayout(body)
         scroll.setWidget(body)
-        root.addWidget(scroll, 1)
+        configure_layout.addWidget(scroll, 1)
+        self.pages.addTab(configure_page, "Configure")
 
         output = QGroupBox("Output and acquisition")
         form = QFormLayout(output)
@@ -86,7 +96,7 @@ class SimpleSeriesPanel(QWidget):
                                ("Camera FPS", self.fps),
                                ("Image format", self.tiff_format)):
             form.addRow(label, control)
-        grid.addWidget(output, 0, 0)
+        left_groups = [output]
 
         timing = QGroupBox("Hardware timing from PC trigger")
         form = QFormLayout(timing)
@@ -101,7 +111,6 @@ class SimpleSeriesPanel(QWidget):
                                ("Laser run time (s), fixed 5 V", self.laser_run),
                                ("Camera start (s)", self.camera_start)):
             form.addRow(label, control)
-        grid.addWidget(timing, 0, 1)
 
         frequency = QGroupBox("Ultrasound")
         form = QFormLayout(frequency)
@@ -112,7 +121,7 @@ class SimpleSeriesPanel(QWidget):
         self.sweep_width = self._range(form, "Full sweep width (Hz)", 100_000, 100_000)
         self.sweep_period = number(1, 0.001, 1_000_000)
         form.addRow("Sweep period (ms), triangle", self.sweep_period)
-        grid.addWidget(frequency, 1, 0)
+        left_groups.append(frequency)
 
         temperature = QGroupBox("Temperature")
         form = QFormLayout(temperature)
@@ -131,12 +140,14 @@ class SimpleSeriesPanel(QWidget):
         form.insertRow(0, self.temperature_control)
         form.addRow("Controlled channel", self.tec_channel)
         form.addRow(self.temperature_wait_for_stability)
+        form.addRow("Additional hold once stable, or fixed wait (s)", self.temp_wait)
+        form.addRow(self.temperature_logging)
+        right_groups = [temperature]
+        stability = QGroupBox("Temperature stability policy")
+        form = QFormLayout(stability)
         form.addRow("Tolerance (°C)", self.temperature_tolerance)
         form.addRow("Minimum time within tolerance (s)", self.temperature_min_settle)
         form.addRow("Maximum wait for stability (s)", self.temperature_max_wait)
-        form.addRow("Additional hold once stable, or fixed wait (s)", self.temp_wait)
-        form.addRow(self.temperature_logging)
-        grid.addWidget(temperature, 1, 1)
 
         camera = QGroupBox("Camera")
         form = QFormLayout(camera)
@@ -150,9 +161,8 @@ class SimpleSeriesPanel(QWidget):
             form.addRow(label, control)
         self.import_camera = QPushButton("Import ROI and exposure from camera")
         form.addRow(self.import_camera)
+        left_groups.append(camera)
         self.camera_preflight_label = QLabel("Camera preflight: No")
-        form.addRow(self.camera_preflight_label)
-        grid.addWidget(camera, 2, 0)
 
         fluidics = QGroupBox("Flush")
         form = QFormLayout(fluidics)
@@ -167,9 +177,8 @@ class SimpleSeriesPanel(QWidget):
         form.addRow("Flow (µL/min)", self.flow)
         form.addRow("Wait after flush (s)", self.wait_after_flush)
         form.addRow(QLabel("One initial flush and one after every acquisition."))
-        grid.addWidget(fluidics, 2, 1)
+        right_groups.append(fluidics)
 
-        controls = QHBoxLayout()
         self.preflight_button = QPushButton("Preflight camera settings")
         self.syringe_preflight_button = QPushButton("Preflight batch syringe level")
         self.queue_button = QPushButton("Queue series")
@@ -177,24 +186,79 @@ class SimpleSeriesPanel(QWidget):
         self.update_button = QPushButton("Update selected series")
         self.remove_button = QPushButton("Remove selected series")
         self.start_button = QPushButton("Start queued batch")
-        self.stop_button = QPushButton("Stop after current")
-        self.abort_button = QPushButton("Abort batch")
-        for button in (self.preflight_button, self.syringe_preflight_button,
-                       self.queue_button, self.load_button, self.update_button, self.remove_button,
-                       self.start_button,
-                       self.stop_button, self.abort_button):
-            controls.addWidget(button)
-        root.addLayout(controls)
+        self.start_button.setStyleSheet("font-weight: 600; padding: 6px 18px")
+        self.start_button.setToolTip(
+            "Starts the queued series. Stop after current, Abort and Panic are always visible "
+            "at the top of the window while it runs.")
+
+        # Advanced values stay editable and are still saved/queued while folded away; the
+        # folded header summarizes them so a non-default value is not hidden from view.
+        self.advanced = CollapsibleSection("Advanced: hardware timing and temperature stability")
+        advanced_body = QWidget()
+        advanced_grid = QGridLayout(advanced_body)
+        advanced_grid.setContentsMargins(0, 0, 0, 0)
+        advanced_grid.addWidget(timing, 0, 0)
+        advanced_grid.addWidget(stability, 0, 1)
+        advanced_grid.setColumnStretch(0, 1)
+        advanced_grid.setColumnStretch(1, 1)
+        self.advanced.set_content(advanced_body)
+        self._left_groups, self._right_groups = left_groups, right_groups
+        self._grid_columns = 0
+        self._body_grid = grid
+        self._arrange_groups(2)
+
+        self.config_hint = QLabel()
+        self.config_hint.setWordWrap(True)
+        configure_actions = QHBoxLayout()
+        configure_actions.addWidget(self.queue_button)
+        configure_actions.addWidget(self.update_button)
+        configure_actions.addWidget(self.config_hint, 1)
+        configure_layout.addLayout(configure_actions)
+
+        review_page = QScrollArea()
+        review_page.setWidgetResizable(True)
+        review_body = QWidget()
+        review_layout = QVBoxLayout(review_body)
+        review_page.setWidget(review_body)
+        self.pages.addTab(review_page, "Review and start")
+        queue_group = QGroupBox("Series in this batch")
+        queue_layout = QVBoxLayout(queue_group)
         self.batch_list = QTreeWidget()
         self.batch_list.setHeaderLabels(["Series descriptor", "State", "Experiments",
                                          "Camera preflight", "Syringe preflight", "Output folder"])
         self.batch_list.setMinimumHeight(110)
         self._batch_snapshot = None
-        root.addWidget(self.batch_list)
+        queue_layout.addWidget(self.batch_list)
+        queue_actions = QHBoxLayout()
+        queue_actions.addWidget(self.load_button)
+        queue_actions.addWidget(self.remove_button)
+        queue_actions.addStretch(1)
+        queue_layout.addLayout(queue_actions)
+        review_layout.addWidget(queue_group)
+        checks = QGroupBox("Preflight checks")
+        checks_layout = QGridLayout(checks)
+        checks_layout.addWidget(self.preflight_button, 0, 0)
+        checks_layout.addWidget(self.camera_preflight_label, 0, 1)
+        checks_layout.addWidget(self.syringe_preflight_button, 1, 0)
+        checks_layout.setColumnStretch(2, 1)
+        note = QLabel("Start asks for confirmation if the camera preflight is not current for a queued "
+                      "series; in real mode Start requires the batch syringe preflight.")
+        note.setWordWrap(True)
+        checks_layout.addWidget(note, 2, 0, 1, 3)
+        review_layout.addWidget(checks)
+        summary_group = QGroupBox("Plan for the current form values")
+        summary_layout = QVBoxLayout(summary_group)
         self.summary = QLabel()
         self.summary.setWordWrap(True)
-        root.addWidget(self.summary)
+        summary_layout.addWidget(self.summary)
+        review_layout.addWidget(summary_group)
+        start_row = QHBoxLayout()
+        start_row.addWidget(self.start_button)
+        start_row.addStretch(1)
+        review_layout.addLayout(start_row)
+        review_layout.addStretch(1)
         self.state_label = QLabel()
+        self.state_label.setWordWrap(True)
         root.addWidget(self.state_label)
 
         self.choose_root.clicked.connect(self._choose_root)
@@ -206,8 +270,6 @@ class SimpleSeriesPanel(QWidget):
         self.update_button.clicked.connect(self._update_selected)
         self.remove_button.clicked.connect(self._remove_selected)
         self.start_button.clicked.connect(self._start)
-        self.stop_button.clicked.connect(self.manager.stop_after_current)
-        self.abort_button.clicked.connect(self.manager.abort)
         self.preflight.finished.connect(self._preflight_finished)
         self.manager.changed.connect(self._status)
         self.controller.status_changed.connect(self._devices)
@@ -227,6 +289,35 @@ class SimpleSeriesPanel(QWidget):
         self._devices(controller.statuses())
         self._preview()
         self._status(self.manager.status())
+
+    def _arrange_groups(self, columns: int) -> None:
+        """One column on a narrow window, two otherwise; only moves existing widgets."""
+        if columns == self._grid_columns:
+            return
+        self._grid_columns = columns
+        grid = self._body_grid
+        for group in (*self._left_groups, *self._right_groups, self.advanced):
+            grid.removeWidget(group)
+        if columns == 1:
+            groups = [*self._left_groups, *self._right_groups]
+            for row, group in enumerate(groups):
+                grid.addWidget(group, row, 0, 1, 2)
+            rows = len(groups)
+        else:
+            for row, group in enumerate(self._left_groups):
+                grid.addWidget(group, row, 0)
+            for row, group in enumerate(self._right_groups):
+                grid.addWidget(group, row, 1)
+            rows = max(len(self._left_groups), len(self._right_groups))
+        grid.addWidget(self.advanced, rows, 0, 1, 2)
+        for row in range(rows + 2):
+            grid.setRowStretch(row, 1 if row == rows + 1 else 0)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._arrange_groups(1 if self.width() < 1000 else 2)
 
     @staticmethod
     def _range(form: QFormLayout, label: str, start: float, stop: float,
@@ -422,18 +513,33 @@ class SimpleSeriesPanel(QWidget):
     def _definition(self) -> dict:
         return compile_simple_series(self._settings())
 
+    def _update_advanced_summary(self) -> None:
+        text = (f"sound {self.sound_start.value():g}+{self.sound_run.value():g} s · "
+                f"laser {self.laser_start.value():g}+{self.laser_run.value():g} s · "
+                f"camera from {self.camera_start.value():g} s")
+        if self.temperature_control.isChecked() and self.temperature_wait_for_stability.isChecked():
+            text += (f" · stability ±{self.temperature_tolerance.value():g} °C, "
+                     f"settle {self.temperature_min_settle.value():g} s, "
+                     f"max {self.temperature_max_wait.value():g} s")
+        self.advanced.set_summary(text)
+
     def _preview(self, *_args) -> None:
+        self._update_advanced_summary()
         try:
             definition = self._definition()
             expansion = validate_definition(definition)
             count = len(expansion.experiments)
             self.summary.setText(self._run_preview_text(expansion, count))
+            self.config_hint.setText(f"Current form: {count} experiments planned. Details under Review and start.")
+            self.config_hint.setStyleSheet("")
             passed = self.manager.camera_preflighted(definition)
             self.camera_preflight_label.setText("Camera preflight: Yes" if passed else "Camera preflight: No")
             self.camera_preflight_label.setStyleSheet(
                 f"color: {'#2e7d32' if passed else '#b71c1c'}; font-weight: 600")
         except (ValueError, ZeroDivisionError) as exc:
             self.summary.setText(f"Settings need attention: {exc}")
+            self.config_hint.setText(f"Settings need attention: {exc}")
+            self.config_hint.setStyleSheet("color: #b71c1c")
             self.camera_preflight_label.setText("Camera preflight: No")
 
     def _run_preview_text(self, expansion, count: int) -> str:
@@ -610,6 +716,7 @@ class SimpleSeriesPanel(QWidget):
                 raise ValueError("This series was changed outside the simple form; edit it in the JSON builder")
             self._apply_settings(settings)
             self.output_root.setText(str(Path(folder).parent))
+            self.pages.setCurrentIndex(0)
             self.state_label.setText("Selected series loaded; edit and press Update selected series")
         except Exception as exc:
             QMessageBox.warning(self, "Could not load series", str(exc))
@@ -725,8 +832,6 @@ class SimpleSeriesPanel(QWidget):
         for button in (self.load_button, self.update_button, self.remove_button):
             button.setEnabled(not editing_locked and status["queued_series"] > 0)
         self.start_button.setEnabled(not locked)
-        self.stop_button.setEnabled(status["state"] == "running")
-        self.abort_button.setEnabled(status["state"] == "running")
         self._render_batch_list(status)
         self.state_label.setText(f"Batch: {status['state']} · queued: {status['queued_series']} · "
                                  f"completed experiments: {status['completed_experiments']}")

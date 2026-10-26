@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QGridLayout, QLabel, QScrollArea, QVBoxLayout, QWidget
+from pathlib import Path
+
+from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
+from PySide6.QtWidgets import (
+    QGridLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget,
+)
 
 from ..domain.models import DeviceId
 from .temperature_plot import TemperaturePlot
@@ -12,13 +18,63 @@ def _value(value: object, unit: str = "") -> str:
     return "unknown" if value is None else f"{value:g}{unit}" if isinstance(value, (int, float)) else str(value)
 
 
+# Same parameter names as the compiled plan; anything not listed is shown as key=value.
+_PARAMETER_LABELS = (("frequency_hz", "frequency", " Hz"), ("amplitude_v", "amplitude", " V"),
+                     ("exposure_ms", "exposure", " ms"), ("sweep_width_hz", "sweep width", " Hz"),
+                     ("temperature_c", "temperature", " °C"))
+
+
+def describe_condition(parameters: dict | None) -> str:
+    """Current experiment's own parameters as stored in the plan; nothing is derived."""
+    if not parameters:
+        return "—"
+    pieces = []
+    known = set()
+    for key, label, unit in _PARAMETER_LABELS:
+        if key in parameters:
+            known.add(key)
+            if parameters[key] != "NaN":  # the plan's marker for a disabled sweep/temperature axis
+                pieces.append(f"{label} {_value(parameters[key], unit)}")
+    pieces.extend(f"{key}={_value(value)}" for key, value in parameters.items() if key not in known)
+    return " · ".join(pieces) if pieces else "—"
+
+
 class StatusDashboard(QWidget):
+    image_window_requested = Signal()
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         root = QVBoxLayout(self)
+        run = QGroupBox("Current run")
+        run_grid = QGridLayout(run)
         self.experiment = QLabel("Experiment batch: idle")
         self.experiment.setWordWrap(True)
-        root.addWidget(self.experiment)
+        self.condition = QLabel("—")
+        self.condition.setWordWrap(True)
+        self.series = QLabel("—")
+        self.series.setWordWrap(True)
+        self.output = QLabel("—")
+        self.output.setWordWrap(True)
+        self.output.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        run_grid.addWidget(self.experiment, 0, 0, 1, 2)
+        for row, (caption, label) in enumerate((("Condition", self.condition), ("Series", self.series),
+                                                ("Output folder", self.output)), 1):
+            run_grid.addWidget(QLabel(caption), row, 0)
+            run_grid.addWidget(label, row, 1)
+        run_grid.setColumnStretch(1, 1)
+        buttons = QHBoxLayout()
+        self.open_output_button = QPushButton("Open output folder")
+        self.image_window_button = QPushButton("Camera image window")
+        self.open_output_button.setEnabled(False)
+        self.open_output_button.clicked.connect(self.open_output_folder)
+        self.image_window_button.clicked.connect(self.image_window_requested)
+        for button in (self.open_output_button, self.image_window_button):
+            buttons.addWidget(button)
+        buttons.addStretch(1)
+        run_grid.addLayout(buttons, 4, 0, 1, 2)
+        root.addWidget(run)
+        self._folder: str | None = None
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         body = QWidget()
@@ -31,11 +87,20 @@ class StatusDashboard(QWidget):
             grid.addWidget(label, index, 1)
             self.rows[device] = label
         grid.setColumnStretch(1, 1)
+        grid.setRowStretch(len(DeviceId), 1)
         scroll.setWidget(body)
         root.addWidget(scroll, 1)
         root.addWidget(QLabel("TEC temperatures · latest rolling samples"))
         self.temperature_plot = TemperaturePlot()
         root.addWidget(self.temperature_plot)
+
+    @property
+    def output_folder(self) -> str | None:
+        return self._folder
+
+    def open_output_folder(self) -> None:
+        if self._folder and Path(self._folder).is_dir():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(self._folder))
 
     def update_experiment(self, status: dict) -> None:
         count = status.get("planned_experiments", 0)
@@ -43,6 +108,23 @@ class StatusDashboard(QWidget):
         self.experiment.setText(
             f"Batch: {status['state']} · completed {completed}/{count} · "
             f"remaining {max(0, count - completed)} · {status.get('phase', 'unknown')}")
+        number = status.get("current_experiment_number")
+        repeat = status.get("current_repeat")
+        if status.get("current_parameters"):
+            prefix = f"Experiment {number}/{count}" if number else "Experiment"
+            suffix = f" · repeat {repeat}" if repeat else ""
+            self.condition.setText(f"{prefix}{suffix} · {describe_condition(status['current_parameters'])}")
+        else:
+            self.condition.setText("— (no experiment running)")
+        current = status.get("current_series")
+        if current:
+            self._folder = current
+        series = next((item for item in status.get("series", []) if item["folder"] == self._folder), None)
+        self.series.setText("—" if series is None
+                            else f"{series['description']} · {series['state']} · "
+                                 f"{series['experiment_count']} experiments planned")
+        self.output.setText(self._folder or "— (nothing has run yet in this session)")
+        self.open_output_button.setEnabled(self._folder is not None)
 
     def add_temperature_sample(self, sample: dict) -> None:
         self.temperature_plot.add_sample(sample)
