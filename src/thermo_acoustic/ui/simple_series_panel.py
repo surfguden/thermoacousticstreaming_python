@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..application.experiments import validate_definition
+from ..application.experiment_runner import BATCH_ACTIVE_STATES
 from ..application.commands import DeviceCommand, DeviceOperation, NoArguments
 from ..application.simple_preflight import SimpleSeriesPreflight
 from ..application.simple_series import NumericRange, SimpleSeriesSettings, compile_simple_series
@@ -716,7 +717,7 @@ class SimpleSeriesPanel(QWidget):
                 self.batch_list.setCurrentItem(item)
 
     def _status(self, status: dict) -> None:
-        locked = status["state"] in {"running", "stopping", "aborting"}
+        locked = status["state"] in BATCH_ACTIVE_STATES
         editing_locked = locked or status["syringe_preflight_active"] or self.preflight._active
         self._body.setEnabled(not locked)
         self.preflight_button.setEnabled(not locked and not self.preflight._active)

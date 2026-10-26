@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..application.experiments import default_definition, load_definition, save_definition, validate_definition
+from ..application.experiment_runner import BATCH_ACTIVE_STATES
 from ..application.simple_preflight import SimpleSeriesPreflight
 
 
@@ -354,7 +355,7 @@ class ExperimentPanel(QWidget):
             self._notice(str(exc))
 
     def _status(self, status: dict) -> None:
-        locked = status["state"] in {"running", "stopping", "aborting"}
+        locked = status["state"] in BATCH_ACTIVE_STATES
         editing_locked = locked or status["syringe_preflight_active"] or self.camera_preflight._active
         self.queue_button.setEnabled(not editing_locked)
         self.camera_preflight_button.setEnabled(not locked and not self.camera_preflight._active)

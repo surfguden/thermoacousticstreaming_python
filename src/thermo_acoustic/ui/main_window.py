@@ -33,6 +33,7 @@ from ..application.commands import (
     ConfirmationRequest,
 )
 from ..application.event_formatting import detailed_event_text, event_summary
+from ..application.experiment_runner import BATCH_ACTIVE_STATES
 from ..application.simple_series import simple_series_settings_from_profile, simple_series_settings_to_profile
 from ..domain.models import ConnectionState, DeviceId, DeviceStatus, OperatingMode
 from .device_panels import DevicePanel, PANEL_TYPES
@@ -175,7 +176,7 @@ class MainWindow(QMainWindow):
 
     def _experiment_changed(self, status: dict) -> None:
         self._experiment_status = status
-        locked = (status["state"] in {"running", "stopping", "aborting"}
+        locked = (status["state"] in BATCH_ACTIVE_STATES
                   or self.controller.z_stack.state == "running"
                   or self._panic_status["state"] == "stopping")
         for panel in self.panels.values():

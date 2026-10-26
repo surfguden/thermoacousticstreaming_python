@@ -508,3 +508,44 @@ def test_panic_after_a_shutdown_timeout_reports_the_real_situation_without_queui
     assert "Application shutdown has started" not in lines["PANIC_ERRORS"]
     assert "ad2" not in lines["PANIC_ERRORS"]
     assert lines["SECOND_CLOSE_ACCEPTED"] == "True"
+
+
+# ------------------------------------------- one definition of "a batch is active"
+def _controller_with_pump_and_camera(app):
+    from thermo_acoustic.application.controller import ApplicationController
+    from thermo_acoustic.domain.models import OperatingMode
+    from thermo_acoustic.hal.registry import DeviceRegistry
+    controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
+    controller.start()
+    for device in (DeviceId.PUMP, DeviceId.CAMERA):
+        controller.submit(DeviceCommand(device, DeviceOperation.CONNECT))
+    assert _wait_for(app, lambda: all(controller.statuses()[d].connection.value == "connected"
+                                      for d in (DeviceId.PUMP, DeviceId.CAMERA)), 5)
+    return controller
+
+
+@pytest.mark.parametrize("state, blocked", [
+    ("idle", False), ("completed", False), ("aborted", False),
+    ("running", True), ("stopping", True), ("aborting", True),
+])
+def test_manual_actions_are_refused_in_every_active_batch_state_but_reads_and_stops_still_run(
+        qt_app, state, blocked):
+    from thermo_acoustic.application.commands import PumpMoveArgs, PumpUnitArgs
+    controller = _controller_with_pump_and_camera(qt_app)
+    try:
+        controller.experiments._state = state  # the rule under test depends only on this state
+        assert controller.experiments.batch_active is blocked
+        manual = DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_REFILL, PumpMoveArgs(), source="ui")
+        if blocked:
+            with pytest.raises(RuntimeError, match="Experiment owns"):
+                controller.submit(manual)
+        else:
+            controller.submit(manual)
+        # Reads and urgent stops keep working while a batch is active.
+        controller.submit(DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_STATUS_READ, PumpUnitArgs(0), source="ui"))
+        controller.submit(DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_FLOW_STOP, PumpUnitArgs(0), source="ui"))
+        controller.submit(DeviceCommand(DeviceId.CAMERA, DeviceOperation.SAFE_STOP, source="ui"))
+        controller.experiments._state = "idle"
+        _wait_for(qt_app, lambda: controller.active_device_command() is None, 5)
+    finally:
+        controller.shutdown()

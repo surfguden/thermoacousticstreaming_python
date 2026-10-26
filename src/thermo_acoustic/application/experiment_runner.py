@@ -30,6 +30,9 @@ from .temperature_recording import TemperatureRecorder
 from .simple_preflight import camera_preflight_fingerprint
 
 
+BATCH_ACTIVE_STATES = frozenset({"running", "stopping", "aborting"})
+
+
 class ExperimentManager(QObject):
     changed = Signal(object)
     notice = Signal(str)
@@ -117,7 +120,7 @@ class ExperimentManager(QObject):
     @property
     def batch_active(self) -> bool:
         """True from Start until the batch has fully stopped (including the stop/abort drain)."""
-        return self._state in {"running", "stopping", "aborting"}
+        return self._state in BATCH_ACTIVE_STATES
 
     def queue(self, definition: dict[str, Any], output_root: str | Path,
               image_format: str | None = None) -> Path:
@@ -610,13 +613,14 @@ class ExperimentManager(QObject):
             if camera["exposure_ms"] / 1000 >= interval:
                 self._fail("Camera exposure exceeds frame interval")
                 return
-            minimum = timing.minimum_trigger_interval_s
-            if minimum is not None and interval < minimum:
-                self._fail(f"Requested camera trigger interval {interval:g}s is below live SDK minimum {minimum:g}s")
-                return
-            if timing.readout_time_s is not None and interval < timing.readout_time_s:
-                self._fail("Requested frame interval is below live camera readout time")
-                return
+            # Only checks that do not depend on the camera's current configuration are made
+            # here. The camera's minimum trigger interval and readout time depend on the ROI,
+            # exposure and trigger mode, none of which this series has applied yet, so
+            # comparing against `timing` would judge the previous configuration. Those limits
+            # are checked in _configure_all_before_fluidics() against the readback taken
+            # after each configuration has been applied (and against the AD2's achieved rate).
+        # `timing` is the camera's state before this series configured it: recorded for
+        # reference only.
         storage.event("camera_timing_preflight", readback=json_ready(timing))
         def configured() -> None:
             if expansion.definition.get("preflight") and self.controller.mode is OperatingMode.REAL:

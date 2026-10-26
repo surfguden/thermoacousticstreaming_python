@@ -233,8 +233,7 @@ class ApplicationController(QObject):
                 command.operation not in observations and not self._is_urgent(command.operation)
             ):
                 raise RuntimeError("Count preflight owns camera and AD2; wait for it to finish")
-        if (self.experiments.status()["state"] in {"running", "stopping"}
-                and command.source != "experiment"):
+        if self.experiments.batch_active and command.source != "experiment":
             safe_observations = {
                 DeviceOperation.CAMERA_SEQUENCE_SAVE,
                 DeviceOperation.CAMERA_TIMING_READ,
