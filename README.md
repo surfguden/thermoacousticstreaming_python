@@ -6,21 +6,19 @@ experiment batches, and application-owned acquisition workflows.
 
 ## Architecture
 
-`main.py` creates one `QApplication`, one `ApplicationController`, one Qt
-window, one console reader, and one device registry. The controller owns a
-global FIFO queue and dispatches exactly one command at a time. UI buttons and
-stdin both create the same typed `DeviceCommand` objects. The console parser is
-only a text-to-command adapter; operation enums, argument models, validation,
-request IDs, lifecycle events, and audit records are shared.
+`main.py` creates one `QApplication`, an application controller, a main
+window, a console reader and a device registry. UI and console requests use
+shared typed commands, validation and result events. Normal device commands
+share one active dispatch lane. The queue is ordered, with explicit exceptions:
+a flush owns its pump/valve resources while unrelated commands can proceed,
+and background TEC observations use a separate request path. A queued wait is
+an ordering barrier.
 
-Long-running camera, pump, and TEC commands remain the one active FIFO command,
-but advance through short `QTimer`-driven steps on their existing device worker
-thread. This leaves the worker event loop responsive. Abort, safe-stop, camera
-capture-stop, pump stop, and TEC outputs-off commands use a separate urgent
-control path and therefore never wait behind the active FIFO command. Hardware
-calls still run only on the target device worker thread; an urgent request first
-terminates the deferred operation, performs its stop action, and only then lets
-the controller dispatch the next normal command.
+Long-running camera, pump and TEC operations use timer-driven steps on their
+device workers. Urgent stop/cancel requests bypass the normal queue, but still
+need the target worker event loop to execute them. They cannot interrupt an SDK
+call that blocks that thread. Normal device dispatch is through workers; some
+retained driver timeout/cleanup helpers also use their own threads.
 
 The `hal/` package is the application-facing Hardware Abstraction Layer. Each
 `DeviceWorker` is a `QObject` moved to its own persistent `QThread`.
@@ -36,7 +34,7 @@ thermo_acoustic/
 ├── application/  command queue, controller, configuration, and audit
 ├── console/      stdin parsing and reading
 ├── domain/       shared device identity and status models
-├── hal/          Qt device workers, registry, and simulations
+├── hal/          Qt device workers and registry
 ├── drivers/      reusable real and simulated implementations, grouped by device
 ├── ui/           Qt Widgets only
 └── main.py       the single process entry point
@@ -50,8 +48,8 @@ Image saving uses a host-side thread pool so the Qt event loop stays responsive.
 ## Start by double-click (Windows)
 
 - `launch_ui.bat` starts the UI in **simulation** mode (no hardware is touched).
-- `launch_ui_real.bat` starts **real** mode, on an authorized workstation only; the app still asks
-  for confirmation before it connects any device.
+- `launch_ui_real.bat` starts **real** mode. Connect actions submit real device connections;
+  there is no additional confirmation dialog for each Connect.
 
 Both use `tools\launch_common.cmd`, which picks the first usable Python from: `THERMO_ACOUSTIC_PYTHON`
 (your explicit choice; if it is set and unusable the launch fails instead of trying others), the
@@ -63,10 +61,16 @@ to `logs\` in the workspace folder whatever directory the script is started from
 
 ## Launch simulation
 
+From the checkout root, using a Python with the UI dependencies already available:
+
 ```powershell
-pip install -e ".[ui,test]"
-python -m thermo_acoustic.main
+python tools/run_ui.py --mode simulation
 ```
+
+On this lab workstation the double-click entry above can reuse `exp_ctrl` without
+creating a workspace `.venv`. Installation/setup is a separate action; the launchers
+do not install packages. An editable installation is another option when setting
+up a new environment (`python -m pip install -e ".[ui,test]"`).
 
 The program starts with every device disconnected. Example stdin commands:
 
@@ -107,7 +111,8 @@ quit
 The console prints timestamped, human-readable queued, running, completed, and
 failed events with request IDs, call arguments, results, and errors. EOF is
 treated as a quiet end of console input; it does not close the UI. `quit`
-requests coordinated safe-stop, disconnection, and worker-thread shutdown.
+requests Qt application exit. Window-close handling drains an active batch before
+worker shutdown; stop and cleanup errors keep the window open for inspection.
 
 The desktop UI provides one independent control tab for each device. Every tab
 shows connection, activity, fault, and typed readback state; normal actions use
@@ -170,15 +175,19 @@ existing empty folder before starting. Live preview is available while setting
 endpoints and continues between stack captures. The pump tiles control a
 two-position built-in CETONI valve independently of the serial valve tab.
 
-## Real mode safeguards
+## Real mode behaviour
 
-Use `--mode real` only on an authorized workstation. Creating the registry and
-workers does not construct, connect to, or probe devices. Every real connection
-is rejected unless the application controller receives explicit operator
-confirmation; only then does the target worker construct its driver and connect
-on its persistent thread. The UI is only a presentation of that policy; safety
-and validation remain in application and worker code. Existing driver timeouts
-remain in the retained drivers.
+`--mode real` selects real driver factories. Creating the registry/workers does
+not construct or probe devices. A Connect button or console command submits the
+connection directly; there is no generic extra Connect confirmation. The target
+worker constructs and initializes its driver when that request executes.
+
+Specific operations have their own handling: pump reference moves ask for
+confirmation; Z closed-loop enabling requires its requirement to have been read;
+real batch Start asks for approval and applies its preflight rules. Input/resource
+validation is in the application and workers. Driver timeouts do not imply that
+a blocked SDK call can be interrupted or that physical outputs are independently
+confirmed stopped.
 
 ```powershell
 python -m thermo_acoustic.main --mode real
@@ -192,9 +201,13 @@ behavior. Never run `hardware_tests/` without explicit hardware authorization.
 ```powershell
 .venv\Scripts\python.exe -m compileall -q src
 $env:QT_QPA_PLATFORM = "offscreen"
-.venv\Scripts\python.exe -m pytest -q
+.venv\Scripts\python.exe -m pytest tests -q --basetemp=.pytest_tmp
 python tools\check_repository_hygiene.py
 ```
+
+Use the selected environment's interpreter in place of `.venv\Scripts\python.exe`
+if this checkout has no local virtual environment. These are manual verification
+commands, not prerequisites to opening the application.
 
 Each UI launch creates a UTC-timestamped folder under `logs/` with a detailed
 UI command log, structured JSON Lines audit log, and hardware transaction log.
@@ -204,10 +217,21 @@ temporary directories.
 
 ## Retained drivers
 
-The canonical real pump implementation is `drivers/pump/CetoniPump`, which
-directly owns the Qmix SDK integration without another pump wrapper.
+The real pump factory creates `QmixPumpBank` in `drivers/pump/bank.py`. It
+uses the CETONI implementation in `drivers/pump/cetoni.py` and a shared Qmix
+session to expose the units declared in the selected Elements configuration.
 Each device folder also contains a reusable simulated implementation exposing
 the device-level methods used by its HAL worker. These simulators contain no Qt
 or application code. Vendor APIs, data types, and errors remain behind the HAL
 boundary. There is no aggregate `instruments.py` module or redundant standalone
 neMESYS path.
+
+## Current integration references
+
+- `docs/integration/acceptance_table.md`: current scope, inheritance and evidence.
+- `docs/integration/migration_checklist.md`: operating steps and where common changes go.
+- `docs/integration/known_open_items.md`: retained policies and specific remaining questions.
+
+Historical investigation and decision logs are source records, not the current
+operating instructions. Existing hardware evidence is reused within its scope;
+a missing new branch-labelled log does not by itself require hardware re-validation.

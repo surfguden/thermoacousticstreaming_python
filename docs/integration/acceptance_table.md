@@ -1,7 +1,8 @@
 # Integration acceptance table
 
-Current behaviour baseline: `codex/integration @ aa5f3d1` (2026-10-26).
-Later documentation commits do not change that behaviour. The branch starts at
+Experiment-control behaviour baseline: `codex/integration @ aa5f3d1` (2026-10-26).
+Windows launchers were subsequently fixed in `168cac4`; text-only revisions do not
+change the experiment-control behaviour. The branch starts at
 `origin/ola-branch @ 5014fc8f`; `junjiebranch @ 2528c1c4` is an ancestor of that
 start point. Acceptance concerns retained behaviour and integration changes,
 not whether Git history contains both branch names.

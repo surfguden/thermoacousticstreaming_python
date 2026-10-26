@@ -1,5 +1,11 @@
 # Integration investigation log
 
+> Historical record: entries describe the code and evidence available at the time.
+> Some conclusions were corrected later; an old approval/status is not a current task
+> or hardware authorization. Current facts and dispositions are in `acceptance_table.md`,
+> `known_open_items.md` and `migration_checklist.md`. Prefer named source evidence and
+> the actual current call path over an earlier summary.
+
 This branch (`codex/integration`) was created from `origin/ola-branch` at
 `5014fc8f479c058904e7e69f2f67384851ab88ce` to combine ola-branch's device/
 experiment-flow architecture with junjiebranch-specific algorithm and device

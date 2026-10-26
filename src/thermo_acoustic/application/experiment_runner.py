@@ -56,12 +56,11 @@ class ExperimentManager(QObject):
         self._approved = 0
         self._current: tuple[Expansion, SeriesStorage] | None = None
         self._experiment: PlannedExperiment | None = None
-        # True once _save_frames() has genuinely written this experiment's
-        # images to disk (storage.save_frames() has returned, not just
-        # been submitted) -- consulted by _finish_failure_when_safe() so a
-        # later failure (e.g. the post-acquisition flush) discards only a
-        # truly unfinished experiment directory, never one whose data is
-        # already real and on disk. Reset whenever a new experiment starts.
+        # Set by the UI-side save-result callback after storage.save_frames()
+        # succeeded, not merely when its Future became done. Failure finalization
+        # also waits for the callback set to empty before consulting this flag.
+        # Reset at each experiment; this distinguishes a saved acquisition from
+        # completion of its remaining output/flush steps.
         self._experiment_frames_saved = False
         self._capture: CameraSequenceResult | None = None
         self._triggered_at: float | None = None
@@ -989,15 +988,9 @@ class ExperimentManager(QObject):
                 "save_frames": "Saving frames",
             }.get(kind, kind)
             self._publish()
-        # Building a command's arguments (not just submitting the command)
-        # can itself raise -- e.g. a dataclass __post_init__ invariant that
-        # the declarative JSON schema does not separately encode (such as
-        # TecWaitStableArgs' poll_interval_s <= max_wait_s). _submit()'s own
-        # try/except only covers controller.submit(command), not building
-        # `command` as an argument to it one line above -- that exception
-        # previously reached Qt's callback chain uncaught. One try/except
-        # around the whole dispatch catches that class of error uniformly,
-        # for every action kind, rather than one at a time as each is found.
+        # Include argument construction in failure handling, not just submission.
+        # This covers dataclass validation before controller.submit() is called.
+        # The TEC polling interval below already adapts to a short max_wait_s.
         try:
             if kind == "flush":
                 command = WorkflowCommand(WorkflowOperation.FLUSH,

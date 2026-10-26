@@ -14,9 +14,9 @@ TEC_TARGET_MAX_C = 80.0
 
 # This integration is configured for two TEC-Family parameter instances.
 # MeCom addresses a channel through ``parameter_instance``; the official
-# protocol includes an instance-1 example for parameter 2010. Compatibility
-# of instances 1 and 2 with the attached controller still requires an approved
-# bench record; this is not a general device-discovery constant.
+# protocol includes an instance-1 example for parameter 2010. The configured
+# instances are not device discovery. Historical channel evidence and its
+# limits are recorded in docs/integration/acceptance_table.md.
 TEC_CHANNELS: tuple[int, ...] = (1, 2)
 
 # Scope rule for the current implementation:
@@ -24,8 +24,8 @@ TEC_CHANNELS: tuple[int, ...] = (1, 2)
 # *_raw -- no other parameter is ever written anywhere in this file.
 # READS are not limited to a fixed parameter list -- any parameter may be
 # read (by name, still never *_raw) for diagnostics (e.g. investigating a
-# real-hardware channel-addressing question), since a read cannot change
-# device state. This file's own production read paths (read_status())
+# channel-addressing question). This describes the parameter API, not an
+# authorization to probe hardware. This file's production read paths (read_status())
 # still only read the 4 parameters below (104/105/1000, plus the write
 # echo of 2010) -- the looser read rule exists for ad hoc diagnostic
 # scripts outside this class, not because this class gained new read
@@ -226,40 +226,17 @@ class MeerstetterTecDriver:
 
 
 class _PyMeComTecClient:
-    """Real MeCom client, backed by pyMeCom's MeComSerial
-    (github.com/meerstetter/pyMeCom, MIT license, pinned to tag v1.1 in
-    pyproject.toml/requirements-exp_ctrl.txt).
+    """MeComSerial adapter using named pyMeCom parameters.
 
-    Scope, enforced by construction (updated 2026-08-04): this class's own
-    read_status()/set_output_stage_static_on()/set_output_stage_static_off()/
-    set_target_temperature()
-    call ONLY get_parameter()/set_parameter() by name, for exactly the 4
-    parameter names this class currently reads -- 2010 Output Enable
-    Status, 1000 Object Temperature, 104 Device Status, 105 Error Number
-    -- and WRITES are strictly limited to exactly 2 parameter names, by
-    name, never via get_parameter_raw()/set_parameter_raw() (pyMeCom's
-    own bypass of its built-in parameter allow-list) -- 2010 Output
-    Enable Status and 3000 Target Object Temperature
-    (_MECOM_WRITABLE_PARAMETER_NAMES above). Reads are not restricted to
-    this class's own 4 parameters at the project level -- any parameter
-    may be read elsewhere (e.g. an ad hoc diagnostic script) for
-    real-hardware investigation, since a read cannot change device state;
-    this class itself just doesn't happen to read anything beyond what it
-    needs. No PID, current/voltage limits/thresholds, sensor calibration,
-    communication/address settings, or Auto Tuning is ever WRITTEN
-    anywhere in this file.
+    The project pins pyMeCom v1.1. read_status() reads Device Status (104),
+    Error Number (105 when reported in Error), Object Temperature (1000) and
+    Output Enable Status (2010). It does not read target parameter 3000.
+    Writes here are limited to Output Enable Status (2010) and Target Object
+    Temperature (3000); raw-parameter APIs are not used. write_config() below
+    is a RAM-only no-op, not the vendor's flash-persistence command.
 
-    read_status() takes all configured channels and returns
-    dict[channel, TecStatus]. Device Status/Error Number are read once at
-    instance 1 because the official protocol classifies them as Common Product
-    Parameters; temperature and output parameters are read per configured
-    channel. Compatibility with the attached model/firmware remains a bench
-    approval item.
-
-    `mecom` is imported lazily inside connect(), not at module import time
-    -- matching this project's established convention for optional vendor
-    SDKs (Qmix SDK loading and the Z-stage's lazy `import clr`). This keeps
-    importing the application independent of installed hardware packages.
+    These are implementation facts, not hardware-access authorization or a
+    claim that every operation was newly bench-verified on this branch.
     """
 
     def __init__(self, port: str | None, baudrate: int = 57600, timeout_s: float = 1.0) -> None:
@@ -311,7 +288,7 @@ class _PyMeComTecClient:
             result[channel] = TecStatus(
                 channel=channel,
                 current_temperature_c=current_temperature_c,
-                target_temperature_c=None,  # not re-read from the device; the caller already knows what it set
+                target_temperature_c=None,  # this client does not read the device target
                 output_stage_static_on=output_enabled,
                 ready=device_status_id in (1, 2) and output_enabled,
                 error_state=error_state,
@@ -504,13 +481,10 @@ class TecController:
     def apply_static_setpoint(
         self, temperature_c: float | dict[int, float], channels: tuple[int, ...] | None = None
     ) -> dict[int, TecStatus]:
-        # A plain float broadcasts the same target to every channel in
-        # `channels` (today's only usage, e.g. application.py's single
-        # "Temperature points (C)" field). A dict[int, float] gives each
-        # channel its own independent target in one call -- added
-        # (2026-08-04) for unlocked dual-channel temperature scans, where
-        # both channels must move to their own target together, not one
-        # after the other.
+        # A scalar assigns one target to the selected channels; a mapping
+        # assigns per-channel targets. The writes below are sequential, not
+        # atomic or simultaneous. Partial application attempts Static OFF
+        # cleanup for channels whose ON write may have been attempted.
         targets = self._resolve_targets(temperature_c, channels)
         channels = tuple(targets)
         if not self.enabled:
@@ -587,11 +561,10 @@ class TecController:
         channels: tuple[int, ...] | None = None,
         should_abort: Callable[[], bool] | None = None,
     ) -> dict[int, TecStatus]:
-        # See apply_static_setpoint()'s docstring note: a plain float
-        # broadcasts one target to every channel (today's only usage); a
-        # dict[int, float] lets each channel poll toward its own target in
-        # one call, genuinely simultaneously -- not one channel's full
-        # wait followed by the other's.
+        # Retained blocking API: a scalar resolves to the selected targets;
+        # a mapping supplies one target per channel. Each polling cycle reads
+        # the group and requires all channels to satisfy the criteria.
+        # The application experiment path uses hal/tec.py's deferred waiter.
         targets = self._resolve_targets(target_temperature_c, channels)
         channels = tuple(targets)
         targets_label = ", ".join(f"ch{channel}={value:.3f}C" for channel, value in targets.items())

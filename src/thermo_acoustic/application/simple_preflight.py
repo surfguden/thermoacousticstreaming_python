@@ -20,7 +20,7 @@ from .experiments import Expansion, validate_definition
 
 
 def camera_preflight_fingerprint(expansion: Expansion) -> str:
-    """Only camera configuration and its trigger timing invalidate camera proof."""
+    """Fingerprint camera/count-preflight inputs; not physical timing evidence."""
     combinations = set()
     for item in expansion.experiments:
         camera = next(step["args"] for step in item.steps if step["type"] == "camera_configure")

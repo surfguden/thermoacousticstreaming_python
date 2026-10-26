@@ -1,6 +1,6 @@
 # Integration known open items
 
-Current behaviour baseline: `aa5f3d1`. This is a current disposition list, not a development
+Experiment-control behaviour baseline: `aa5f3d1`; Windows launcher fix: `168cac4`. This is a current disposition list, not a development
 backlog or authorization for hardware access. `acceptance_table.md` is the overall acceptance
 entry; `migration_checklist.md` gives operating steps. Earlier investigations remain in
 `investigation_log.md`, `hardware_notes.md`, `decision_log.md` and Git history.
@@ -49,6 +49,10 @@ no item here authorizes executing it.
 | Valve on Panic | No new position move | Holds the last position while stops are requested. |
 | Window close during a batch | Abort, save/flush recovery drain, then shutdown | An active flush may close the valve during recovery; this is not the Panic path. |
 | Generic `stage_move` | Return after acceptance of the limited target | `position_confirmed: false`; use independent Z-stack for the existing arrival-then-capture workflow. |
+
+Real mode selects real factories; a Connect action submits access without an extra
+per-device confirmation dialog. Specific pump reference moves and real batch Start
+have their own confirmations. This describes current behaviour, not a request to add gates.
 
 These policies are carried forward for current integration scope. Changes require a concrete
 experimental need and an explicit decision; this document does not keep asking for the same decision.

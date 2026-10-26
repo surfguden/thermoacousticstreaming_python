@@ -1,7 +1,30 @@
 # Integration decision log
 
+> Historical record: entries describe the code and evidence available at the time.
+> Some conclusions were corrected later; an old approval/status is not a current task
+> or hardware authorization. Current facts and dispositions are in `acceptance_table.md`,
+> `known_open_items.md` and `migration_checklist.md`. Prefer named source evidence and
+> the actual current call path over an earlier summary.
+
 Append new entries at the top (newest first). Each entry should name the
 SHA(s)/file(s)/function(s) the decision rests on, not just a conclusion.
+
+---
+
+## 2026-10-26 — First-party text reconciliation (Codex)
+
+Source baseline: `168cac4`; experiment-control baseline: `aa5f3d1`.
+User authorized direct edits to comments and documentation. Current references were
+checked against entry points, dispatch, sequence/storage and driver interfaces.
+Corrections include flush/observation exceptions to the queue model, urgent-call
+limits, commanded versus measured values, TEC sequential writes and the active HAL
+wait, historical-evidence scope, and generic Connect confirmation claims.
+A no-thread/no-dispatch probe with simulation factories confirmed that real-mode
+Connect does not call `confirm_operation`; the launcher/README now say so. No new
+confirmation or hardware policy was implemented. Earlier logs remain historical.
+Executable Python is checked for equivalence after removing docstrings; batch
+selection/launch commands are unchanged except for explanatory text. No new full
+regression or hardware verification is claimed by this text revision.
 
 ---
 

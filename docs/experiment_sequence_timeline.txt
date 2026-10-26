@@ -1,3 +1,10 @@
+HISTORICAL V3 DESIGN REFERENCE - NOT THE CURRENT OPERATING GUIDE
+This file preserves the earlier intended procedure and V3 control names.
+Statements about future work, Helper/Expert modes or checkbox behaviour are not
+current integration requirements or proof of implementation. Use
+integration/flow_trace.md for the active call sequence, experiment_definitions.md
+for the schema, and integration/acceptance_table.md for acceptance and differences.
+
 THERMO ACOUSTIC STREAMING - V3 EXPERIMENT SEQUENCE TIMELINE
 ======================================================================
 

@@ -73,10 +73,10 @@ echo.
 echo IMPORTANT: Real hardware also requires vendor software installed separately:
 echo   - Hamamatsu DCAM-API and dcamapi.dll
 echo   - Digilent WaveForms and dwf.dll
-echo   - CETONI Qmix SDK with QMIXSDK configured
+echo   - CETONI Qmix SDK, located by QMIXSDK or the driver's supported LOCALAPPDATA path
 echo   - Thorlabs Kinesis
 echo.
-echo After installing the required vendor software, run launch_ui_real.bat.
+echo Use launch_ui.bat for simulation. launch_ui_real.bat selects real device access.
 pause
 exit /b 0
 

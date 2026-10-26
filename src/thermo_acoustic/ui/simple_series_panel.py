@@ -437,13 +437,12 @@ class SimpleSeriesPanel(QWidget):
             self.camera_preflight_label.setText("Camera preflight: No")
 
     def _run_preview_text(self, expansion, count: int) -> str:
-        """A read-only, before-you-click-Start summary, built entirely from
-        the already-compiled/validated plan (`expansion.experiments`'
-        actual parameter values, not re-derived from the NumericRange
-        widgets) plus a couple of scalar fields the compiled plan has no
-        reason to carry (temperature-wait strategy, the output folder) --
-        never a second implementation of compile_simple_series()'s own
-        logic."""
+        """Summarize the compiled experiments and current fixed-form inputs.
+
+        Scanned values/repeat indices come from expansion, not a second range
+        expansion. Counts, flush totals, temperature text and output location
+        also use this panel's scalar inputs; this is not a generic plan viewer.
+        """
         lines = [f"{count} experiments · {count + 1} flushes · "
                  f"{(count + 1) * self.volume.value():g} mL total flush volume · "
                  f"{count * self.frames.value()} saved frames"]

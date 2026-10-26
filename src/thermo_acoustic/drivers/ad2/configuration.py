@@ -35,7 +35,7 @@ _SUPPORTED_WAVEFORM_PARAMETERS = tuple(
 
 @dataclass(frozen=True, slots=True)
 class WaveformParameterPolicy:
-    """Verified static semantics for one exposed carrier function."""
+    """Static UI/validation policy for one exposed carrier function."""
 
     function: WaveformFunction
     visible: bool = True

@@ -239,10 +239,11 @@ class PiezoStage:
         return position_um
 
     def set_position(self, target_um: float) -> float:
-        """Move to target_um, clamped to [0, max_travel_um] (soft limit
-        against the device's own reported MaxTravel, read at connect() time
-        -- never hardcoded). Returns the clamped value actually sent.
-        Only valid in ClosedLoop mode."""
+        """Send a soft-limited target in ClosedLoop mode.
+
+        Limits come from the connected device. Return the clamped target sent,
+        not a measured position or a guarantee that motion has completed.
+        """
         channel = self._require_connected()
         if self.position_control_mode != CLOSED_LOOP_MODE_NAME:
             raise PiezoStageError(

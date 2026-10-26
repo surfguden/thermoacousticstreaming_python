@@ -38,7 +38,7 @@ if not defined PY goto nopython
 
 echo Using Python: %PY%
 echo Mode: %MODE%
-if "%MODE%"=="real" echo REAL hardware mode: every device connection still needs your explicit confirmation in the app.
+if "%MODE%"=="real" echo REAL hardware mode: Connect actions access devices directly; no extra connection confirmation is shown.
 if defined THERMO_ACOUSTIC_DRY_RUN goto dryrun
 
 cd /d "%ROOT%"

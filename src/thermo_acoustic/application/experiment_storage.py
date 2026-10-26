@@ -136,9 +136,9 @@ class SeriesStorage:
 
     def status(self, state: str, detail: dict[str, Any]) -> None:
         if state in TERMINAL_OUTCOMES and self.finalized_outcome is None:
-            # First terminal state wins -- a late, redundant status() call
-            # (e.g. cleanup code running twice) must not overwrite the
-            # record of how the series actually ended.
+            # Preserve the first finalized_outcome/time. The separate `state`
+            # field below is still rewritten on every status() call; callers
+            # must suppress stale completion callbacks after an abort/failure.
             self.finalized_outcome = state
             self.finalized_utc = datetime.now(timezone.utc).isoformat()
         write_json(self.metadata / "status.json", {
