@@ -237,6 +237,20 @@ class HamamatsuDcamDriver:
             self.configure_exposure_time(float(settings["exposure_ms"]))
         else:
             self.open_camera()
+        # Snapshot and live preview are free-running. A preceding sequence leaves
+        # TRIGGERSOURCE at EXTERNAL (the automated series) or whatever the operator
+        # chose, and cap_start/cap_snapshot would then wait for a trigger that never
+        # comes. Only the source is restored: the vendor property list gives no
+        # evidence that the other trigger properties matter for internal triggering,
+        # and every sequence configure writes its own set again.
+        props = self.dcam_module.DCAM_IDPROP
+        values = self.dcam_module.DCAMPROP
+        with log_call("camera", "configure_trigger_source_internal") as result:
+            self._check(
+                self.dcam.prop_setvalue(props.TRIGGERSOURCE, values.TRIGGERSOURCE.INTERNAL),
+                "set TRIGGERSOURCE to INTERNAL",
+            )
+            result["response"] = "applied"
         self.sequence_settings = None
         self.mode = CameraMode.SNAPSHOT
 

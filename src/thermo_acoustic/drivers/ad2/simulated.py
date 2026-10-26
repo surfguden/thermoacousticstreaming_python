@@ -101,6 +101,9 @@ class SimulatedAD2:
         if self.configuration is not None:
             self.configuration.running = running
 
+    def stop_analog_outputs(self) -> None:
+        self.wfg_start_stop_all_ch(False)
+
     def pc_trigger(self) -> None:
         self.triggered = True
 

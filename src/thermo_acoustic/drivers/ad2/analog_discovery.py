@@ -474,6 +474,20 @@ class AnalogDiscovery2:
         self._configure_wfg(self._require_handle("wfg_start_stop_all_ch()"), new_config)
         self.wfg_config = new_config
 
+    def stop_analog_outputs(self) -> None:
+        """Stop W1 and W2 one at a time; a refused stop on one does not skip the other."""
+        handle = self._require_handle("stop_analog_outputs()")
+        errors = []
+        for channel_index in (0, 1):
+            try:
+                self._stop_analog_output(handle, channel_index)
+            except Exception as exc:
+                errors.append(f"AnalogOut channel {channel_index} stop failed: {exc}")
+        if errors:
+            raise AnalogDiscoveryError("; ".join(errors))
+        if self.wfg_config is not None:
+            self.wfg_config.running = False
+
     def _get_do_config(self) -> DoConfig:
         if self.do_config is None:
             self.do_config = DoConfig()

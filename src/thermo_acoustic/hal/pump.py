@@ -15,6 +15,7 @@ class PumpWorker(DeviceWorker):
     """Serialize commands for the Qmix pump bank and publish per-unit readback."""
     def __init__(self, device_factory: Callable[[], object], parent=None) -> None:
         super().__init__(DeviceId.PUMP, device_factory, readback_factory=PumpReadback, poll_interval_s=0.5, parent=parent)
+        self._poll_fault: str | None = None  # fault text that only a failed poll produced
         for operation, handler in ((DeviceOperation.PUMP_FLOW_SET, self.set_flow), (DeviceOperation.PUMP_FLOW_STOP, self.stop_flow), (DeviceOperation.PUMP_FILL_LEVEL_READ, self.read_fill_level), (DeviceOperation.PUMP_STATUS_READ, self.read_status), (DeviceOperation.PUMP_FILL_LEVEL_SET, self.set_fill_level), (DeviceOperation.PUMP_SYRINGE_CONFIGURE, self.configure_syringe), (DeviceOperation.PUMP_FLOW_UNIT_CONFIGURE, self.configure_flow_unit), (DeviceOperation.PUMP_FAULT_RECOVER, self.recover_fault), (DeviceOperation.PUMP_REFILL, self.refill), (DeviceOperation.PUMP_EMPTY, self.empty), (DeviceOperation.PUMP_REFERENCE_MOVE, self.reference_move)):
             self.register(operation, handler)
         self.register(DeviceOperation.PUMP_VALVE_POSITION_READ, self.read_valve_position)
@@ -72,8 +73,22 @@ class PumpWorker(DeviceWorker):
     def poll_once(self) -> None:
         if self.state.connected and not self.state.busy:
             try: self._refresh()
-            except Exception as exc: self.state.fault = str(exc)
+            except Exception as exc: self.state.fault = self._poll_fault = str(exc)
+            else: self._clear_recovered_poll_fault()
             self._emit_status()
+    def _clear_recovered_poll_fault(self) -> None:
+        """Drop a fault that only a failed poll produced, once polling works again.
+
+        A fault set by a failed command, or one the device itself still reports
+        (``is_faulted``), is left alone: a healthy read-back does not prove those
+        have been resolved.
+        """
+        poll_fault = self._poll_fault
+        if poll_fault is None: return
+        if self.state.fault != poll_fault:
+            self._poll_fault = None  # a command result has since replaced or cleared it
+        elif not any(unit.is_faulted is True for unit in self.state.readback.units):
+            self.state.fault = self._poll_fault = None
     def set_flow(self, args: PumpSetFlowArgs) -> None:
         unit = self._unit(args.unit_index)
         if not math.isfinite(args.flow_ul_min) or unit.max_flow_rate_ul_min is None or abs(args.flow_ul_min) > unit.max_flow_rate_ul_min:
@@ -109,10 +124,17 @@ class PumpWorker(DeviceWorker):
     def _move(self, movement: str, args: PumpMoveArgs) -> object:
         unit = self._unit(args.unit_index)
         if unit.max_flow_rate_ul_min is None: raise RuntimeError("Pump maximum flow is unavailable")
-        flow = abs(float(unit.max_flow_rate_ul_min)) / 2.0
+        maximum = abs(float(unit.max_flow_rate_ul_min))
+        flow = maximum / 2.0 if args.flow_rate_ul_min is None else float(args.flow_rate_ul_min)
+        if not 0 < flow <= maximum:
+            # An explicit request is either honoured or refused; the driver's own
+            # clamp must not quietly turn it into a different flow.
+            raise ValueError(f"flow_rate_ul_min must be within 0..{maximum} µL/min")
         self._call(args.unit_index, movement, flow)
         # Completion means the SDK accepted the start command, not that the
-        # syringe has reached its target. Ordinary polling reports progress.
+        # syringe has reached its target. Ordinary polling reports progress, so
+        # PumpMoveArgs.timeout_s / poll_interval_s (which describe waiting) do
+        # not apply to this start-only operation.
         return PumpMovementResult()
     def refill(self, args: PumpMoveArgs) -> object: return self._move("refill", args)
     def empty(self, args: PumpMoveArgs) -> object: return self._move("empty", args)

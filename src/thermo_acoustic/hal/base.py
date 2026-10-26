@@ -76,7 +76,10 @@ class DeviceWorker(QObject):
 
     def status(self) -> DeviceStatus:
         connection = ConnectionState.CONNECTED if self.state.connected else ConnectionState.DISCONNECTED
-        if self.state.fault:
+        if self.state.fault and self.state.connected:
+            # ERROR means "open, but reporting a fault". A failed Connect leaves
+            # nothing open (the device object is discarded), so it stays
+            # DISCONNECTED with the failure text in `fault`, and Connect is offered again.
             connection = ConnectionState.ERROR
         return DeviceStatus(
             self.device_id,

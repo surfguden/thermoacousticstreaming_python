@@ -125,17 +125,51 @@ class AD2Worker(DeviceWorker):
         self.state.readback = replace(self.state.readback, waveform_running=False)
 
     def safe_stop(self) -> None:
-        if self.device_constructed and self.state.connected:
+        """Try to stop every independent output and the scope, then report what failed.
+
+        One refused stop must not leave the other outputs running, and the
+        read-back only claims "stopped" for what actually stopped. Output levels
+        and polarity are not touched: this is a stop request only.
+        """
+        if not (self.device_constructed and self.state.connected):
+            self.state.active = False
+            self.state.readback = replace(
+                self.state.readback, waveform_running=False,
+                digital_output_running=False, scope_state="idle",
+            )
+            return
+        errors: list[str] = []
+
+        def attempt(label: str, action: Callable[[], None]) -> bool:
+            try:
+                action()
+            except Exception as exc:
+                errors.append(f"{label}: {exc}")
+                return False
+            return True
+
+        try:
             self.device.wfg_start_stop_all_ch(False)
-            self.device.start_stop_do(False)
-            self.device.scope_abort()
-        self.state.active = False
+            waveform_stopped = True
+        except Exception as exc:
+            # The all-channel stop re-configures the generator; if that is refused,
+            # stop each analog output directly. Only a failure of both is an error.
+            direct_stop = getattr(self.device, "stop_analog_outputs", None)
+            waveform_stopped = callable(direct_stop) and attempt("direct analog output stop", direct_stop)
+            if not waveform_stopped:
+                errors.insert(0, f"waveform stop: {exc}")
+        digital_stopped = attempt("digital output stop", lambda: self.device.start_stop_do(False))
+        scope_stopped = attempt("scope abort", self.device.scope_abort)
+        readback = self.state.readback
         self.state.readback = replace(
-            self.state.readback,
-            waveform_running=False,
-            digital_output_running=False,
-            scope_state="idle",
+            readback,
+            waveform_running=False if waveform_stopped else readback.waveform_running,
+            digital_output_running=False if digital_stopped else readback.digital_output_running,
+            scope_state="idle" if scope_stopped else readback.scope_state,
         )
+        self.state.active = not (waveform_stopped and digital_stopped and scope_stopped)
+        if errors:
+            raise RuntimeError("AD2 safe stop incomplete: " + "; ".join(errors))
 
     def software_trigger(self, _args: NoArguments) -> None:
         self.device.pc_trigger()
