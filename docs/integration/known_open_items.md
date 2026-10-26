@@ -532,3 +532,24 @@ Nothing here was run on hardware, so none of it is physical verification.
 | Valve on Panic / exit during a flush | Valve holds its position (open if mid-flush); Abort closes it via flush recovery | ola `controller.panic_stop` comment: moving the valve while flow stops may be unsafe | Valve may stay open after Panic until the operator closes it | Keep; the status panel should say the valve position, no automatic move |
 | Laser path | W2 driven at a fixed 5 V square, idle at offset | junjie `HW-LASER-PATH-001`: W2 feeds the iBEAM analog input (0…+5 V, default polarity `sub`, 0 V is not optical off); junjie's planner rejects W2 | Installed unit/polarity unconfirmed | No code change; confirm the unit before any real laser run |
 | Abort during a TEC wait | Cancels the wait only | `TEC_WAIT_STABLE` cancel hook documents "does not turn regulation off"; `TEC_OUTPUTS_OFF` is the separate action | – | Keep |
+
+## Open at baseline `aa5f3d1` that matters for current use
+
+Short list; evidence and context are in the sections above and in `acceptance_table.md`.
+1. **Trigger chain on hardware (`HW-TIMING-001`).** The series triggers the camera externally from
+   AD2 DIO0; junjie's only real camera timing record (Session 31) was on the internal trigger and
+   showed free-running ~0.03 s frame spacing. Measure edges and frame spacing once before trusting
+   frame timing from a real series. Every `experiment.json` says `physical_dio0_edges_verified: false`.
+2. **Laser path (`HW-LASER-PATH-001`).** The series drives W2 at a fixed 5 V window; the iBEAM
+   input's polarity and the installed unit are unconfirmed. Resolve before any real laser run.
+3. **TEC after a run.** Output stays on after completion, stop, abort and failure (your policy).
+   "Controller stable" plus a fixed hold is the only equilibrium notion; the sample is not measured.
+4. **Downstream analysis.** No document shows what, if anything, reads the TIFF/JSON output
+   (junjie's `HANDOVER.md` lists "validate TIFF … against downstream analysis" without naming a
+   tool). Until you say a specific consumer exists, no format change (TDMS or otherwise) is needed.
+5. **Z stack records.** `metadata.json` has no failure reason and no mode/commit, and the suite has
+   only a happy-path Z-stack test (failure and stop were checked ad hoc). Minimal fix if wanted:
+   add `error` and the manifest's `run` block to `_write_metadata`, plus two tests.
+6. **LabVIEW-screenshot values** are not a verified recipe: laser window length, the "CH2" 1 kHz
+   field, trigger polarity, RAM needed for 1000 frames at 2304×740, and the purpose of two flushes
+   need your confirmation (table in `migration_checklist.md`).

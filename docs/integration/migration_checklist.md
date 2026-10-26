@@ -14,18 +14,27 @@ python -m thermo_acoustic.main --mode simulation
 `--mode simulation` is the default; `--mode real` drives connected hardware and needs the
 usual real-hardware precautions (not covered by this guide).
 
-**Short test recipe for one simulated experiment** (`SimpleSeriesPanel`, tab "Experiment").
-Read the values below as what the automated full-window test uses
-(`tests/test_simple_series.py::test_full_main_window_operator_flow_queue_start_status_output_and_stop`:
-repeats 2, frames 2, 10 fps, one frequency/amplitude/exposure `1`/`1`/`1`, 16×16 ROI, flush 0.01 mL
-at 200 µL/min, sweep and temperature control off). They are **not** the widgets' defaults and **not**
-a laboratory recipe. Three different things must not be mixed up:
-- *short automated-test values* — the recipe above;
-- *historical working values* — junjie's `experiment_presets.py` (cited by its tests and UI), taken
-  from the LabVIEW screenshots: ROI 2304×740 at y = 792, 40 ms, 20 fps, 1000 frames, 1.975 MHz at 2 V
-  for 60 s, flush 0.01 mL at 1000 µL/min with a 2 s wait. They are not applied anywhere here and
-  must be checked against the current apparatus before use;
-- *current widget defaults* — untested as a starting point; choose values deliberately.
+**Recipes: what each source is, and how it maps to the current controls.** Nothing here is applied
+automatically (no preset manager); historical device addresses and paths are not defaults.
+
+| Source | What it is | Values | Current controls | Gaps |
+|---|---|---|---|---|
+| Automated test (`test_full_main_window_operator_flow_…`) | short test values | repeats 2, frames 2, 10 fps, frequency/amplitude/exposure `1`/`1`/`1`, ROI 16×16, flush 0.01 mL @ 200 µL/min, sweep and temperature off | all expressible | not a laboratory recipe |
+| junjie Sessions 31/33 | real run on real hardware (junjie's GUI, camera on *Internal* trigger) | 4 repeats, frames 5, 5 fps, 15 ms, W1 1 kHz / 0.1 V / 2.0 s; flush 0.05 mL @ 200 µL/min (real pump move 9.8 s) | all expressible | ROI not stated in the log; the integration triggers the camera *externally* from DIO0, which that run did not exercise |
+| junjie Session 48 | real Z scan | 200→210 µm, step 2 (6 points), 20 ms, fixed 75 ms settle | Z stack: start 200, stop 210, points 6, exposure 20 | the integration confirms position instead of a fixed delay; tolerance/timeout were not part of the record |
+| junjie `experiment_presets.py` | values read from LabVIEW screenshots, **not** run records | ROI 2304×740 at (0, 792), 40 ms, 20 fps, 1000 frames; W1 1.975 MHz, 2 V, 60 s; "CH2" 1 kHz, 1 V, 60 s; flush 0.01 mL @ 1000 µL/min, wait 2 s, two flushes; syringe BD 5 mL | ROI, exposure, fps, frames, W1 frequency/amplitude/run, flush volume/flow/wait fit the controls (amplitude limit 5 V) | (a) laser/W2 is a PC-triggered DC window checked as `run × W2 minimum frequency < 0.5`, so a 60 s window is accepted only if the AD2 reports a minimum below ~0.008 Hz, and a 1 kHz sine "CH2" has no field; (b) the memory preflight wants `frame_bytes × (3 × frames + 3)` ≈ 10 GB free RAM for 1000 frames at that ROI; (c) the screenshot lists external polarity "Negative", the series fixes Positive; why two flushes is unstated. Treat as a reference to confirm, not a verified recipe |
+| Current widget defaults | defaults | frames 10, 10 fps, 1 ms, ROI 512×512 at (0, 0), 1 MHz, 1 V, sound run 1 s, laser run 0.1 s, flush 0.1 mL @ 500 µL/min, wait after flush 0, one temperature of 25 °C, hold 30 s, max wait 300 s | – | untested as a starting point |
+
+**Reading the saved output.**
+- *Which experiment:* `metadata/manifest.json` lists every planned experiment (`experiment_id`, `relative_path`, `parameters`, `repeat_index`); each `experiment.json` repeats them.
+- *Mode and software:* `manifest.json` → `run.mode` and `run.software` (`git_commit`, `git_dirty`, `source`).
+- *Outcome:* series — `status.json` (`state`, started/completed/failed counts, `error`). Experiment — a folder with `acquisition_status: "complete"` exists only for a complete acquisition; success has an `experiment_completed` event; a later failure has `post_acquisition.outcome: "failed"` plus `error` and an `experiment_preserved_after_later_failure` event; no folder means not acquired or an incomplete acquisition discarded (compare the counts and the `series_failed` event's `experiment_id`).
+- *Timestamps:* `frames[].camera_sdk_timestamp` (camera clock) and `host_received_utc`; the clock domains are stated in the file. `physical_dio0_edges_verified: false` is written into every file: frame spacing is not proven by the software.
+- *Actual settings:* `requested_settings`, `applied_settings`, `camera_settings` (DCAM property dump read at collect), `device_readbacks` (taken when the save started, right after the capture — not the end-of-batch state), and `definition.json` for the temperature tolerance/settle/hold.
+- *Not recorded:* TEC requested/applied values beyond the read-back, Z stack failure reason and run identity (`metadata.json`).
+
+**Short test recipe for one simulated experiment** (`SimpleSeriesPanel`, tab "Experiment"; use the
+first table row's values).
 
 1. Launch. Connect only the devices the run uses (Pump, Valve, Camera, AD2 for the shortest run;
    leave TEC off and Temperature unticked).
