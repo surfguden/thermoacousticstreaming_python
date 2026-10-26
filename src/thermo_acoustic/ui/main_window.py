@@ -4,7 +4,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QEvent
+from PySide6.QtCore import QEvent, QTimer
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
@@ -130,6 +130,9 @@ class MainWindow(QMainWindow):
         controller.temperature_monitor.sample.connect(self.panels[DeviceId.TEC].add_temperature_sample)
         controller.temperature_monitor.sample.connect(self.dashboard.add_temperature_sample)
         controller.experiments.changed.connect(self._experiment_changed)
+        self._close_after_stop = False
+        self._acknowledged_close_errors: tuple[str, ...] = ()
+        controller.experiments.changed.connect(self._close_when_batch_stopped)
         controller.z_stack.changed.connect(lambda _status: self._experiment_changed(self._experiment_status))
         controller.panic_changed.connect(self._panic_changed)
         self._status(controller.statuses())
@@ -488,10 +491,45 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Could not load settings", str(exc))
 
     def closeEvent(self, event) -> None:
+        """Close only when nothing is still running.
+
+        A running batch is stopped through the normal Abort (and its save/flush
+        drain) and the window closes by itself afterwards. If a device has not
+        finished shutting down, or reported an error, the window stays open and
+        says so; closing again retries. No device thread is forced to end.
+        """
+        controller = self.controller
+        experiments = controller.experiments
+        if experiments.batch_active:
+            controller.begin_close()
+            self._close_after_stop = True
+            if experiments.status()["state"] == "running":
+                experiments.abort("Application window closed during the run")
+            self.statusBar().showMessage("Closing: stopping the experiment batch first…")
+            event.ignore()
+            return
+        self._close_after_stop = False
+        errors = controller.shutdown()
+        pending = controller.shutdown_pending_devices()
+        if pending or (errors and tuple(errors) != self._acknowledged_close_errors):
+            self._acknowledged_close_errors = () if pending else tuple(errors)
+            if pending:
+                message = ("Close incomplete: still shutting down: " + ", ".join(pending)
+                           + ". The application stays open; close again to retry.")
+            else:
+                message = ("Close finished with errors: " + "; ".join(errors)
+                           + ". Close again to leave anyway.")
+            self.statusBar().showMessage(message)
+            self.log.append(message)
+            event.ignore()
+            return
         self.panels[DeviceId.CAMERA].image_window.close()
         self.builder_window.close()
-        self.controller.shutdown()
         event.accept()
+
+    def _close_when_batch_stopped(self, _status: dict) -> None:
+        if self._close_after_stop and not self.controller.experiments.batch_active:
+            QTimer.singleShot(0, self.close)
 
 
 def configure_palette(application: QApplication) -> None:

@@ -59,6 +59,7 @@ class DeviceWorker(QObject):
         self.poll_interval_s = poll_interval_s
         self._readback_factory = readback_factory or (lambda: None)
         self.state = WorkerState(readback=self._readback_factory())
+        self.shutdown_error: str | None = None
         self._operations: dict[DeviceOperation, Callable[[object], Any]] = {}
         self._timer: QTimer | None = None
         self._operation_timer: QTimer | None = None
@@ -339,14 +340,24 @@ class DeviceWorker(QObject):
 
     @Slot()
     def shutdown_in_thread(self) -> None:
+        errors: list[str] = []
         try:
             if self._deferred_request_id is not None:
                 active_request_id = self._deferred_request_id
                 cancel = self._deferred_cancel
                 self._clear_deferred()
                 if cancel is not None:
-                    cancel()
+                    try:
+                        cancel()
+                    except Exception as exc:
+                        errors.append(f"cancelling the active operation failed: {exc}")
                 self.command_cancelled.emit(active_request_id, "Application shutdown")
-            self.disconnect_device()
+            try:
+                self.disconnect_device()
+            except Exception as exc:
+                errors.append(str(exc))
         finally:
+            # Written before `stopped` ends the thread, so the controller reads it
+            # only after the thread has finished.
+            self.shutdown_error = "; ".join(errors) or None
             self.stopped.emit()

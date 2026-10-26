@@ -206,3 +206,197 @@ def test_stage_move_series_runs_when_the_stage_is_connected_and_closed_loop(qt_a
     finally:
         panel.close()
         controller.shutdown()
+
+
+# ------------------------------------------------------- real MainWindow close
+def _window_with_series(app, repeats=1):
+    from thermo_acoustic.ui.main_window import MainWindow
+    controller, panel, results, events = _connected_temperature_series_harness(app, repeats=repeats)
+    window = MainWindow(controller)
+    window.show()
+    controller.experiments.confirm_unchecked = lambda _summary: True
+    controller.experiments.confirm_batch = lambda _summary: True
+    app.processEvents()
+    return controller, panel, window, events
+
+
+def _close_when(controller, predicate, window):
+    outcome = {}
+
+    def handler(event):
+        if "result" not in outcome and predicate(event):
+            outcome["result"] = window.close()
+
+    controller.command_event.connect(handler)
+    return outcome
+
+
+def _wait_for(app, predicate, timeout):
+    deadline = monotonic() + timeout
+    while monotonic() < deadline and not predicate():
+        app.processEvents(); sleep(0.005)
+    return predicate()
+
+
+@pytest.mark.parametrize("phase", ["capture", "save_and_flush", "tec_wait"])
+def test_closing_the_window_mid_run_reuses_abort_and_closes_after_the_drain(qt_app, tmp_path, phase):
+    app = qt_app
+    controller, panel, window, events = _window_with_series(app)
+    try:
+        if phase == "tec_wait":
+            make_tec_unstable(controller)
+            panel.temperature_max_wait.setValue(30)
+        predicate = {
+            "capture": lambda e: e.operation is DeviceOperation.AD2_SOFTWARE_TRIGGER and e.state == "completed",
+            "save_and_flush": lambda e: e.operation is DeviceOperation.CAMERA_SEQUENCE_COLLECT and e.state == "completed",
+            "tec_wait": lambda e: e.operation is DeviceOperation.TEC_WAIT_STABLE and e.state == "running",
+        }[phase]
+        outcome = _close_when(controller, predicate, window)
+        folder = controller.experiments.queue(panel._definition(), tmp_path)
+        assert controller.experiments.start()
+        assert _wait_for(app, lambda: "result" in outcome, 40), "close was never requested"
+        # The close is deferred while the batch drains, not accepted with work in flight.
+        assert outcome["result"] is False
+        assert window.isVisible()
+        with pytest.raises(RuntimeError):
+            controller.experiments.start()
+        # Once the abort and its save/flush drain have finished the window closes by itself.
+        assert _wait_for(app, lambda: not window.isVisible(), 60), controller.experiments.status()
+        document = json.loads((folder / "metadata" / "status.json").read_text())
+        assert document["state"] == "aborted" and document["finalized_outcome"] == "aborted"
+        assert "window" in document["error"].lower()
+        # Data already written stays complete; no half-written experiment folder is left.
+        for experiment_dir in folder.rglob("repeat_*"):
+            if experiment_dir.is_dir():
+                assert (experiment_dir / "experiment.json").exists(), experiment_dir
+        assert not any(worker._thread.isRunning() for worker in controller.registry.all())
+    finally:
+        panel.close()
+        window.close()
+        controller.shutdown()
+
+
+def _idle_window():
+    from thermo_acoustic.application.controller import ApplicationController
+    from thermo_acoustic.domain.models import OperatingMode
+    from thermo_acoustic.hal.registry import DeviceRegistry
+    from thermo_acoustic.ui.main_window import MainWindow
+    controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
+    window = MainWindow(controller)
+    controller.start()
+    window.show()
+    return controller, window
+
+
+def test_close_while_idle_closes_at_once(qt_app):
+    controller, window = _idle_window()
+    qt_app.processEvents()
+    assert window.close() is True
+    assert not any(worker._thread.isRunning() for worker in controller.registry.all())
+
+
+def test_a_failing_disconnect_is_reported_and_the_second_close_is_accepted(qt_app):
+    controller, window = _idle_window()
+    controller.submit(DeviceCommand(DeviceId.PUMP, DeviceOperation.CONNECT))
+    assert _wait_for(qt_app, lambda: controller.statuses()[DeviceId.PUMP].connection.value == "connected", 5)
+
+    def broken_disconnect():
+        raise RuntimeError("simulated disconnect failure")
+
+    controller.registry.by_id(DeviceId.PUMP).disconnect_device = broken_disconnect
+    assert window.close() is False
+    assert window.isVisible()
+    assert "simulated disconnect failure" in window.statusBar().currentMessage()
+    assert not any(worker._thread.isRunning() for worker in controller.registry.all())
+    assert window.close() is True
+
+
+def test_controller_signals_every_worker_before_waiting(qt_app):
+    """Six workers that each need ~0.6 s must not take ~3.6 s in sequence."""
+    from thermo_acoustic.application.controller import ApplicationController
+    from thermo_acoustic.domain.models import OperatingMode
+    from thermo_acoustic.hal.registry import DeviceRegistry
+    controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
+    controller.start()
+    for worker in controller.registry.all():
+        original = worker.disconnect_device
+
+        def slow(original=original):
+            sleep(0.6)
+            original()
+
+        worker.disconnect_device = slow
+    started = monotonic()
+    errors = controller.shutdown()
+    elapsed = monotonic() - started
+    assert errors == []
+    assert elapsed < 2.0, elapsed
+    assert controller.shutdown_pending_devices() == []
+
+
+HUNG_WORKER_SCRIPT = """
+import os, sys, time
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+from PySide6.QtWidgets import QApplication
+from thermo_acoustic.application.commands import DeviceCommand, DeviceOperation
+from thermo_acoustic.application.controller import ApplicationController
+from thermo_acoustic.domain.models import DeviceId, OperatingMode
+from thermo_acoustic.hal.registry import DeviceRegistry
+from thermo_acoustic.ui.main_window import MainWindow
+
+app = QApplication(["hung-worker"])
+ApplicationController.SHUTDOWN_WAIT_S = 0.3
+controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
+window = MainWindow(controller)
+controller.start()
+window.show()
+controller.submit(DeviceCommand(DeviceId.PUMP, DeviceOperation.CONNECT))
+end = time.monotonic() + 5
+while time.monotonic() < end and controller.statuses()[DeviceId.PUMP].connection.value != "connected":
+    app.processEvents(); time.sleep(0.01)
+worker = controller.registry.by_id(DeviceId.PUMP)
+original = worker.disconnect_device
+worker.disconnect_device = lambda: (time.sleep(1.5), original())[1]
+
+first = window.close()
+print("FIRST_CLOSE_ACCEPTED", first, flush=True)
+print("WINDOW_STILL_OPEN", window.isVisible(), flush=True)
+print("PENDING", controller.shutdown_pending_devices(), flush=True)
+print("STATUS", window.statusBar().currentMessage(), flush=True)
+try:
+    controller.submit(DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_STATUS_READ))
+    print("NEW_COMMAND", "accepted", flush=True)
+except RuntimeError:
+    print("NEW_COMMAND", "refused", flush=True)
+try:
+    controller.experiments.start()
+    print("NEW_RUN", "accepted", flush=True)
+except RuntimeError:
+    print("NEW_RUN", "refused", flush=True)
+end = time.monotonic() + 5
+while time.monotonic() < end and worker._thread.isRunning():
+    app.processEvents(); time.sleep(0.01)
+second = window.close()
+print("SECOND_CLOSE_ACCEPTED", second, flush=True)
+print("THREADS_RUNNING", [w.device_id.value for w in controller.registry.all() if w._thread.isRunning()], flush=True)
+"""
+
+
+def test_a_worker_that_outlives_the_wait_keeps_the_app_open_until_it_finishes():
+    """Runs in a subprocess: tearing down a QThread that is still running aborts the whole process."""
+    import os
+    import subprocess
+    import sys
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(sys.path), "QT_QPA_PLATFORM": "offscreen"}
+    run = subprocess.run([sys.executable, "-c", HUNG_WORKER_SCRIPT], env=env, capture_output=True,
+                         text=True, timeout=60)
+    lines = {line.split(" ", 1)[0]: line.split(" ", 1)[1] if " " in line else ""
+             for line in run.stdout.splitlines()}
+    assert run.returncode == 0, (run.returncode, run.stdout, run.stderr)
+    assert lines["FIRST_CLOSE_ACCEPTED"] == "False"
+    assert lines["WINDOW_STILL_OPEN"] == "True"
+    assert lines["PENDING"] == "['pump']"
+    assert "pump" in lines["STATUS"]
+    assert lines["NEW_COMMAND"] == "refused" and lines["NEW_RUN"] == "refused"
+    assert lines["SECOND_CLOSE_ACCEPTED"] == "True"
+    assert lines["THREADS_RUNNING"] == "[]"

@@ -109,6 +109,10 @@ class ZStackRunner(QObject):
             raise RuntimeError("Confirm and enable closed-loop stage control first")
         return stage
 
+    def _require_open(self) -> None:
+        if self.controller.close_requested:
+            raise RuntimeError("The application is closing; no new acquisition can start")
+
     def _require_no_batch(self) -> None:
         if self.controller.experiments.batch_active:
             raise RuntimeError("An experiment batch owns the instruments until it has stopped")
@@ -160,6 +164,7 @@ class ZStackRunner(QObject):
                                              NoArguments(), lambda result: self._publish(f"Z = {result.position_um:.3f} µm")))
 
     def start(self, settings: ZStackSettings) -> None:
+        self._require_open()
         self._require_no_batch()
         if self.state == "running":
             raise RuntimeError("Another acquisition is running")

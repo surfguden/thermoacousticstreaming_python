@@ -71,6 +71,10 @@ class ApplicationController(QObject):
         self._urgent: dict[str, DeviceCommand[Any]] = {}
         self._observations: dict[str, DeviceCommand[Any]] = {}
         self._closing = False
+        self._close_requested = False
+        self._resources_closed = False
+        self._shutdown_pending: list[str] = []
+        self._shutdown_late_errors: list[str] = []
         self._panic_pending: dict[str, DeviceId] = {}
         self._panic_errors: list[str] = []
         self._panic_state = "idle"
@@ -517,6 +521,10 @@ class ApplicationController(QObject):
 
     @Slot(str, str)
     def _worker_failed(self, request_id: str, error: str) -> None:
+        if request_id.startswith("shutdown-"):
+            self._shutdown_late_errors.append(
+                f"{request_id.removeprefix('shutdown-')}: safe stop at shutdown failed: {error}")
+            return
         if self._flush is not None and self._flush.on_step(request_id, False, error=error):
             return
         if self._finish_urgent(request_id, False, error=error):
@@ -549,33 +557,67 @@ class ApplicationController(QObject):
     def statuses(self) -> dict:
         return dict(self._statuses)
 
+    # How long shutdown() waits, in total, for the device threads to finish.
+    SHUTDOWN_WAIT_S = 2.0
+
+    @property
+    def close_requested(self) -> bool:
+        """True once the application has started closing; no new run may start."""
+        return self._close_requested or self._closing
+
+    def begin_close(self) -> None:
+        self._close_requested = True
+
+    def shutdown_pending_devices(self) -> list[str]:
+        """Devices whose thread had not finished at the last shutdown() call."""
+        return list(self._shutdown_pending)
+
     def shutdown(self) -> list[str]:
+        """Stop and close every device; safe to call again after an incomplete attempt.
+
+        Every worker is told to stop first and the threads are then waited on
+        against one shared deadline. A worker whose thread has not finished is
+        reported in `shutdown_pending_devices()` and is never terminated or
+        destroyed; a later call waits for it again.
+        """
+        first_attempt = not self._closing
         self._closing = True
-        self.z_stack.abort_for_panic()
-        self.temperature_monitor.stop()
-        self._wait_timer.stop()
-        if self._active is not None and isinstance(self._active.command, WorkflowCommand):
-            self._emit(self._active.command, "cancelled", "Application shutdown")
-            self._active = None
-        if self._flush is not None:
-            self._flush.dispose()
-            if self._flush_command is not None:
-                self._emit(self._flush_command, "cancelled", "Application shutdown")
-            self._flush = None
-            self._flush_command = None
-        errors = []
-        while self._queue:
-            self._emit(self._queue.popleft().command, "cancelled", "Shutdown started")
+        if first_attempt:
+            self.z_stack.abort_for_panic()
+            self.temperature_monitor.stop()
+            self._wait_timer.stop()
+            if self._active is not None and isinstance(self._active.command, WorkflowCommand):
+                self._emit(self._active.command, "cancelled", "Application shutdown")
+                self._active = None
+            if self._flush is not None:
+                self._flush.dispose()
+                if self._flush_command is not None:
+                    self._emit(self._flush_command, "cancelled", "Application shutdown")
+                self._flush = None
+                self._flush_command = None
+            while self._queue:
+                self._emit(self._queue.popleft().command, "cancelled", "Shutdown started")
+            for worker in self.registry.all():
+                worker.urgent_command_requested.emit(
+                    f"shutdown-{worker.device_id.value}",
+                    DeviceOperation.SAFE_STOP,
+                    NoArguments(),
+                )
+                worker.shutdown_requested.emit()
+        deadline = monotonic() + self.SHUTDOWN_WAIT_S
+        errors: list[str] = []
+        pending: list[str] = []
         for worker in self.registry.all():
-            worker.urgent_command_requested.emit(
-                f"shutdown-{worker.device_id.value}",
-                DeviceOperation.SAFE_STOP,
-                NoArguments(),
-            )
-            worker.shutdown_requested.emit()
-            if not worker._thread.wait(2000):
-                errors.append(f"{worker.device_id.value}: thread did not terminate")
-        self.experiments.close()
-        self.z_stack.close()
-        self._audit("shutdown", errors=errors)
+            if not worker._thread.wait(max(0, int((deadline - monotonic()) * 1000))):
+                pending.append(worker.device_id.value)
+            elif worker.shutdown_error:
+                errors.append(f"{worker.device_id.value}: {worker.shutdown_error}")
+        self._shutdown_pending = pending
+        errors.extend(f"{device}: still shutting down (its thread has not finished)" for device in pending)
+        errors.extend(self._shutdown_late_errors)
+        if not pending and not self._resources_closed:
+            self._resources_closed = True
+            self.experiments.close()
+            self.z_stack.close()
+        self._audit("shutdown", errors=errors, pending=pending)
         return errors

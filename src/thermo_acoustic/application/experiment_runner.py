@@ -325,6 +325,8 @@ class ExperimentManager(QObject):
         self.changed.emit(self.status())
 
     def start(self) -> bool:
+        if self.controller.close_requested:
+            raise RuntimeError("The application is closing; no new batch can start")
         if self.controller.z_stack.state == "running":
             raise RuntimeError("Wait for the Z stack to finish before starting the batch")
         if self.controller.panic_status()["state"] == "stopping":
@@ -376,7 +378,7 @@ class ExperimentManager(QObject):
         self._stop_after_current = True
         self._publish()
 
-    def abort(self) -> None:
+    def abort(self, reason: str = "Operator aborted experiment batch") -> None:
         if self._state != "running":
             return
         self._abort_requested = True
@@ -390,7 +392,7 @@ class ExperimentManager(QObject):
             if self.controller.statuses()[device].connection is ConnectionState.CONNECTED:
                 self.controller.submit(DeviceCommand(device, DeviceOperation.SAFE_STOP,
                                                      NoArguments(), source="experiment"))
-        self._fail("Operator aborted experiment batch")
+        self._fail(reason)
 
     def panic_abort(self) -> None:
         """Stop batch dispatch without asking the flush workflow to move the valve."""
