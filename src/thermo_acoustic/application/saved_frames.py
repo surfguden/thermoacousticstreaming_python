@@ -49,6 +49,26 @@ def _read_json(path: Path) -> Any:
         raise SavedFramesError(f"Cannot read {path}: {exc}") from exc
 
 
+def _object(value: Any, what: str) -> dict:
+    if not isinstance(value, dict):
+        raise SavedFramesError(f"{what} is not a JSON object")
+    return value
+
+
+def _text(record: dict, key: str, what: str) -> str:
+    value = record.get(key)
+    if not isinstance(value, str) or not value:
+        raise SavedFramesError(f"{what} has no usable {key!r}")
+    return value
+
+
+def _parameters(record: dict, what: str) -> dict[str, Any]:
+    value = record.get("parameters")
+    if value is not None and not isinstance(value, dict):
+        raise SavedFramesError(f"{what}: parameters is not an object")
+    return dict(value or {})
+
+
 def find_experiments(folder: str | Path) -> list[SavedExperimentInfo]:
     """Experiments with saved frames under ``folder``.
 
@@ -58,9 +78,9 @@ def find_experiments(folder: str | Path) -> list[SavedExperimentInfo]:
     """
     folder = Path(folder)
     if (folder / "experiment.json").is_file():
-        record = _read_json(folder / "experiment.json")
+        record = _object(_read_json(folder / "experiment.json"), str(folder / "experiment.json"))
         return [SavedExperimentInfo(str(record.get("experiment_id", folder.name)), folder.name,
-                                    dict(record.get("parameters") or {}), record.get("repeat_index"),
+                                    _parameters(record, "experiment.json"), record.get("repeat_index"),
                                     folder)]
     manifest_path = folder / "metadata" / "manifest.json"
     if not manifest_path.is_file():
@@ -72,11 +92,14 @@ def find_experiments(folder: str | Path) -> list[SavedExperimentInfo]:
     if not isinstance(entries, list):
         raise SavedFramesError(f"{manifest_path} has no experiments list")
     found = []
-    for entry in entries:
-        experiment_folder = folder / entry["relative_path"]
+    for number, entry in enumerate(entries, 1):
+        what = f"{manifest_path} experiment entry {number}"
+        entry = _object(entry, what)
+        relative_path = _text(entry, "relative_path", what)
+        experiment_id = _text(entry, "experiment_id", what)
+        experiment_folder = folder / relative_path
         if (experiment_folder / "experiment.json").is_file():
-            found.append(SavedExperimentInfo(entry["experiment_id"], entry["relative_path"],
-                                             dict(entry.get("parameters") or {}),
+            found.append(SavedExperimentInfo(experiment_id, relative_path, _parameters(entry, what),
                                              entry.get("repeat_index"), experiment_folder))
     return found
 
@@ -86,9 +109,7 @@ class SavedExperiment:
 
     def __init__(self, folder: str | Path, *, cache_frames: int = DEFAULT_CACHE_FRAMES) -> None:
         self.folder = Path(folder)
-        record = _read_json(self.folder / "experiment.json")
-        if not isinstance(record, dict):
-            raise SavedFramesError(f"{self.folder / 'experiment.json'} is not a JSON object")
+        record = _object(_read_json(self.folder / "experiment.json"), str(self.folder / "experiment.json"))
         if record.get("acquisition_status") != "complete":
             raise SavedFramesError(
                 f"Acquisition status is {record.get('acquisition_status')!r}, not 'complete'")
@@ -98,10 +119,15 @@ class SavedExperiment:
         if record.get("frame_count") != len(frames):
             raise SavedFramesError(
                 f"frame_count {record.get('frame_count')!r} does not match the {len(frames)} frame records")
+        for number, item in enumerate(frames, 1):
+            item = _object(item, f"Frame record {number}")
+            _text(item, "filename", f"Frame record {number}")
+            if not isinstance(item.get("page_index", 0), int):
+                raise SavedFramesError(f"Frame record {number} has a non-integer page_index")
         if [item.get("index") for item in frames] != list(range(1, len(frames) + 1)):
             raise SavedFramesError("Frame records are not numbered 1..N in order; frame order is unclear")
         self.experiment_id = str(record.get("experiment_id", self.folder.name))
-        self.parameters: dict[str, Any] = dict(record.get("parameters") or {})
+        self.parameters: dict[str, Any] = _parameters(record, "experiment.json")
         self.image_format = record.get("image_format")
         records = []
         for item in frames:

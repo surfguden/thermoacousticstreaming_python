@@ -30,6 +30,7 @@ class SavedFramesWindow(CameraImageWindow):
         self._experiments: list[SavedExperimentInfo] = []
         self._experiment: SavedExperiment | None = None
         self._position = 0
+        self._load_error: str | None = None
         super().__init__(parent)
         self.setWindowTitle("Saved frames review — saved data, not live")
         banner = QLabel("SAVED DATA FROM DISK — not the live camera image")
@@ -99,8 +100,10 @@ class SavedFramesWindow(CameraImageWindow):
             experiment = SavedExperiment(info.folder)
             first = experiment.load_frame(0)
         except SavedFramesError as exc:
+            # Nothing of the previously shown experiment may stay on screen as if it were this one.
             self._experiment = None
-            self._set_controls_enabled(False)
+            self._load_error = None
+            self._clear_view()
             self.status.setText(f"Cannot show {info.relative_path}: {exc}")
             self._render_state()
             return
@@ -124,18 +127,38 @@ class SavedFramesWindow(CameraImageWindow):
         try:
             frame = experiment.load_frame(position)
         except SavedFramesError as exc:
-            self.status.setText(str(exc))
+            # The last valid image stays, labelled as such; the controls go back to its frame.
+            self._load_error = f"frame {position + 1} could not be read"
+            self._sync_controls(self._position)
+            self.status.setText(f"{exc} — still showing frame {self._position + 1}")
+            self._render_state()
             return
         self._display(position, frame)
+
+    def _clear_view(self) -> None:
+        self._set_controls_enabled(False)
+        self.count_label.setText("of —")
+        self._frame_description = "—"
+        self.histogram.set_frame(None)
+        self.preview.set_frame(None)  # also drops the analysis ROI
+        self.preview.setText("No saved frame")
+        self.adjust_intensity_button.setEnabled(False)
+        self.robust_button.setEnabled(False)
+        self._apply_limits(None, update_preview=False)
+        self.measurement.refresh()
+
+    def _sync_controls(self, position: int) -> None:
+        for widget in (self.slider, self.frame_spin):
+            widget.blockSignals(True)
+            widget.setValue(position + 1)
+            widget.blockSignals(False)
 
     def _display(self, position: int, frame) -> None:
         experiment = self._experiment
         record = experiment.frames[position]
         self._position = position
-        for widget in (self.slider, self.frame_spin):
-            widget.blockSignals(True)
-            widget.setValue(position + 1)
-            widget.blockSignals(False)
+        self._load_error = None
+        self._sync_controls(position)
         self.previous_button.setEnabled(position > 0)
         self.next_button.setEnabled(position < experiment.frame_count - 1)
         self.show_frame(frame, (
@@ -154,7 +177,8 @@ class SavedFramesWindow(CameraImageWindow):
             self.frame_info.setText("Image: —")
         else:
             self.preview_state.setText(
-                f"Saved frame {self._position + 1} of {experiment.frame_count} — historical, not live")
+                f"Saved frame {self._position + 1} of {experiment.frame_count} — historical, not live"
+                + (f" · {self._load_error}" if self._load_error else ""))
             self.frame_info.setText(
                 f"Image: {self._frame_description} · experiment {experiment.experiment_id} · "
                 f"{describe_condition(experiment.parameters)}")

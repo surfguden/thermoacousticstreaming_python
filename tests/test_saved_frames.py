@@ -216,3 +216,105 @@ def test_saved_review_is_separate_from_the_live_viewer_and_sends_no_device_comma
     review.close()
     window.close()
     controller.shutdown()
+
+
+def _break_record(folder: Path, change) -> None:
+    path = folder / "experiment.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    change(record)
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+
+def test_failing_to_load_another_experiment_clears_everything_of_the_previous_one(tmp_path, qt_app):
+    series, planned = make_series(tmp_path, "frames", saved=2)
+    _break_record(series / planned[1].relative_path, lambda r: r.update(frame_count=3))
+    window = SavedFramesWindow()
+    window.show()
+    window.open_folder(series)  # first experiment shows fine
+    window.measurement.profile_check.setChecked(True)
+    window.preview.set_analysis_roi((0, 0, 4, 3))
+    assert window.preview.raw_frame is not None and window.histogram.pixel_count > 0
+    window.experiment_combo.setCurrentIndex(1)  # unreadable one
+    assert window.preview.raw_frame is None and not window.preview.has_image
+    assert window.histogram.pixel_count == 0
+    assert window.preview.analysis_roi is None and window.measurement.roi_label.text() == "Analysis ROI: none"
+    assert window.measurement.profile_plot.samples_by_channel == {}
+    assert window.preview._profile_marker is None
+    assert not any(w.isEnabled() for w in (window.slider, window.frame_spin, window.previous_button,
+                                           window.next_button))
+    assert "Cannot show" in window.status.text() and "No saved frames" in window.preview_state.text()
+    assert window.frame_info.text() == "Image: —" and window.count_label.text() == "of —"
+    # Going back to the good experiment restores a normal, consistent view.
+    window.experiment_combo.setCurrentIndex(0)
+    assert int(window.preview.raw_frame[0, 0]) == 0 and window.slider.isEnabled()
+    window.close()
+
+
+def test_failing_to_load_another_frame_keeps_controls_and_labels_consistent_with_the_image(tmp_path, qt_app):
+    series, planned = make_series(tmp_path, "frames", saved=1)
+    folder = series / planned[0].relative_path
+    window = SavedFramesWindow()
+    window.open_folder(series)
+    window.show_position(1)
+    assert int(window.preview.raw_frame[0, 0]) == 1
+    (folder / "frame_000003.tif").write_bytes(b"damaged")  # frame number 3 becomes unreadable
+    window.slider.setValue(3)
+    assert int(window.preview.raw_frame[0, 0]) == 1  # last valid image kept ...
+    assert window.slider.value() == 2 and window.frame_spin.value() == 2  # ... controls say so
+    assert "frame 3 could not be read" in window.preview_state.text()
+    assert "Saved frame 2 of 4" in window.preview_state.text()
+    assert "Frame 3" in window.status.text() and "still showing frame 2" in window.status.text()
+    window.show_position(3)  # a readable frame clears the warning
+    assert "could not be read" not in window.preview_state.text() and window.slider.value() == 4
+    window.close()
+
+
+@pytest.mark.parametrize("target, damage", [
+    ("experiment", lambda: []),
+    ("experiment", lambda: "text"),
+    ("manifest_entry", lambda: 5),
+    ("manifest_entry", lambda: {"experiment_id": "x"}),
+    ("manifest_entry", lambda: {"relative_path": "x"}),
+    ("manifest_root", lambda: []),
+    ("frame_record", lambda: 7),
+    ("frame_record", lambda: {"index": 1}),
+    ("parameters", lambda: [1, 2]),
+])
+def test_structurally_wrong_records_give_a_saved_frames_error_not_a_crash(tmp_path, qt_app, monkeypatch,
+                                                                          target, damage):
+    series, planned = make_series(tmp_path, "frames", saved=1)
+    folder = series / planned[0].relative_path
+    if target == "experiment":
+        (folder / "experiment.json").write_text(json.dumps(damage()), encoding="utf-8")
+        with pytest.raises(SavedFramesError):
+            find_experiments(folder)
+        with pytest.raises(SavedFramesError):
+            SavedExperiment(folder)
+        window = SavedFramesWindow()
+        window.show()
+        shown = []
+        monkeypatch.setattr("thermo_acoustic.ui.saved_frames_window.QMessageBox.warning",
+                            lambda *args: shown.append(args[2]))
+        window.open_or_report(folder)  # the UI path: a message, no exception out of the slot
+        assert len(shown) == 1
+        window.close()
+        return
+    if target == "manifest_root":
+        (series / "metadata" / "manifest.json").write_text(json.dumps(damage()), encoding="utf-8")
+        with pytest.raises(SavedFramesError):
+            find_experiments(series)
+    elif target == "manifest_entry":
+        manifest_path = series / "metadata" / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["experiments"][0] = damage()
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        with pytest.raises(SavedFramesError):
+            find_experiments(series)
+    elif target == "frame_record":
+        _break_record(folder, lambda r: r["frames"].__setitem__(1, damage()))
+        with pytest.raises(SavedFramesError):
+            SavedExperiment(folder)
+    else:
+        _break_record(folder, lambda r: r.update(parameters=damage()))
+        with pytest.raises(SavedFramesError):
+            SavedExperiment(folder)
