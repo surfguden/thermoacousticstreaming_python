@@ -270,3 +270,80 @@ back (S9).
 | W2 refusal in junjie planner (`HW-LASER-PATH-001`) | laser input polarity | — | yes | integration drives W2 at 5 V | policy question |
 | commissioning trace / evidence taxonomy | audit framework | — | no | event messages (`event_formatting.py`), `CAMERA_SETTINGS_READ` | not adopted; the readback and error-reason parts exist as named |
 | junjie `ImagePreviewWindow` (Full / 90% / Fixed / Downshift) | display range | — | yes | `widgets.py` `CameraImageWindow` | adapted; per-frame percentile and downshift deferred |
+
+## LabVIEW control flow — read-only survey (2026-10-26)
+
+Nothing was run, opened in LabVIEW, installed or captured. The local project is
+`C:\git\thermacoustics` (git; HEAD `a7c4166`, 2026-09-10; one uncommitted binary change in
+`ExperimentSeries2_class/CreateExperiments.vi`, left untouched). `Main.vi` there is only a
+*candidate* entry: nothing establishes it is the version the lab currently runs.
+
+**Evidence kinds.** *Diagram* = exported block-diagram images in `junjiebranch:main_html/`
+(`Application_lvclass_RunExperiment2d*.png`, `…Flushd.png`, `…Waitd.png`, `…ListenAbortd.png`), read
+by eye. *History* = git dates/hashes of the local project. *Timeline* = junjie's
+`docs/experiment_sequence_timeline.txt` (a colleague's/intended sequence, not code).
+*Inference* = my reading of wires/layout. The `.vi` binaries were not read as code. The
+export's version/date is unknown; its manifest paths point to `C:\Users\Ola\…` and `LabVIEW 2025`
+`vi.lib`. In the local project `RunExperiment2.vi` changed on 2026-06-18 and 2026-09-08
+("FrequencySweep"); `Flush.vi`, `Wait.vi` and `ListenAbort.vi` have not changed since 2025. Whether
+the export shows the June or September `RunExperiment2` is **unknown**.
+
+| Question | What the sources show | Kind |
+|---|---|---|
+| Per-experiment setup | Dequeue experiment → create folder/TDMS → save settings → get WFG, clock and sequence settings and global exposure | Diagram |
+| AD2 configure | Config WFG, then "special clock configuration for LED" (DO) | Diagram (labels) |
+| Camera | Stop capture → ConfigureSequence → StartCapture ("configure camera") | Diagram |
+| Trigger | `PCTRIG` (AD2) sits after the camera start in the same error chain; one software trigger | Diagram + inference (order from error wire) |
+| Frame reading / stop | Loop: ImageSequence + buffer size, status event "Running Experiment Frame", peek of the main queue for Abort/Exit/Error ends the loop. Comment: "Stop capture was here before" (no stop-capture in this VI) | Diagram |
+| Output wait | `Application.Wait` with the sum of DO and Ch1/Ch2 run+wait ("wait in parallel"); a timed loop that also peeks Abort/Exit/Error | Diagram |
+| Flush | Comment: starts when that wait is complete (max of the AD2 run+wait). `Flush.vi`: valve pos 1 → wait → read pump status, set fill level → wait for pump (timeout from volume/flow + 5, inference) → valve pos 2 → wait after flush → FlushComplete | Diagram |
+| Save | SaveSequence, readout time, sub-region, SaveImageData, SaveCameraSettings, CleanUp; average-FPS and waveform displays | Diagram |
+| Save ∥ flush | Flush (Application object) and the save chain (Experiment object) hang on separate wires, so dataflow allows them to run together; not confirmed, wires not traced end to end | Inference |
+| Next repeat starts | Not in these diagrams: `RunExperiment2` returns; the caller (`Main.vi` loop / `Deque experiment.vi`) was **not examined** (209 `Main` images) | Unknown |
+| Stop / Abort / Exit | Abort/Exit/Error are *peeked* (not dequeued) in the frame loop and in `Wait`; what happens to a running flush/save and to AD2/camera outputs after that, and the Main.vi handlers, are **not shown** | Unknown |
+| Initial flush before experiment 1 | Not in `RunExperiment2`; the timeline says it exists, the diagrams read here do not show it | Timeline / unknown |
+
+**Differences from the current Python (semantics, not SDK calls).** (1) Python does one initial
+flush, then flushes after every experiment; the diagram has no initial flush in the experiment VI.
+(2) Python configures every distinct camera/AD2 setup and checks achieved timing *before* the first
+flush; LabVIEW configures inside each experiment. (3) Python starts waveform then DIO and sends the
+PC trigger; LabVIEW's diagram shows WFG config, DO config, camera start, trigger — Python's
+camera-armed-before-trigger order is the same, the finer AD2 start order was not compared.
+(4) LabVIEW waits a *computed* time (max run+wait) with abort polling; Python waits until the outputs
+report done, then stops them. (5) Flush: same steps (valve, fill/dispense, wait for idle, valve,
+wait); Python adds reading validation and recovery on failure. (6) Abort: LabVIEW peeks a message;
+Python cancels dispatch, stops outputs and drains save/flush. Historical LabVIEW hardware/output
+choices that differ from the installed apparatus (camera trigger mode used in junjie's real runs,
+DIO1/laser routing, W2 policy) are listed in `migration_checklist.md` and `known_open_items.md` and
+are not moved into Python.
+
+**Tracing options (NI documentation, limited).** *Desktop Execution Trace Toolkit*: NI describes it
+as capturing LabVIEW execution events on the desktop for debugging; the pages read did not list
+event categories, so coverage of queues/user events/Call Library nodes is unconfirmed, and it does
+not show DLL arguments as far as read. NI's compatibility page lists LabVIEW 2016–2025 and says it
+is part of LabVIEW Professional from 2023 Q3, so whether this lab's LabVIEW 2025 licence includes it
+is unknown ([compatibility](https://ni.com/en/support/documentation/compatibility/17/desktop-execution-trace-toolkit--dett--and-labview-compatibility.html),
+[2020 readme](https://www.ni.com/pdf/manuals/375337g.html)). *NI I/O Trace*: records calls to NI
+test-and-measurement drivers (NI-VISA, NI-488.2, NI-VXI), not to Digilent `dwf`, Hamamatsu DCAM or
+Qmix libraries ([NI](https://www.ni.com/docs/en-US/bundle/ni-serial/page/monitor-record-and-display-ni-visa.html));
+it could only see valve/TEC serial traffic if LabVIEW uses NI-VISA for them, which was not checked.
+*junjie's trace* (`commissioning_trace.py`) observes events the Python program itself emits; the
+reusable idea is a small timestamped event record next to the run, not the code, and it cannot
+observe LabVIEW.
+
+**Is new recording necessary?** Not for the order questions above: re-exporting the current
+`RunExperiment2`, `Main` and the stop handlers to HTML from LabVIEW (user action) answers them
+statically. Runtime recording is needed only for timing relationships (does flush start before save
+ends; what an Abort leaves running). Minimal plan if wanted: a few "append line" calls in the VIs,
+one CSV per series next to the TDMS: `seq, utc_iso_ms, tick_ms, series_id, experiment_n, event,
+detail`, events from a fixed list — `experiment_start, wfg_configured, do_configured,
+camera_started, pc_trigger_before, pc_trigger_after, frame_loop_exit(reason), wait_done,
+flush_start, flush_done, save_start, save_done, experiment_done, abort_seen`. Example:
+`12,2026-10-27T09:14:02.381,48210344,A,3,pc_trigger_after,`. This needs VI edits, so it is not done here.
+
+**Questions for the lab.** (1) Which `.lvproj`/`Main.vi` and LabVIEW version is run in experiments
+(path, last-saved date)? (2) From which commit/date was the `main_html` export made, and can
+`RunExperiment2`, `Main`, `Deque experiment`, `ExperimentSeries2` and the Abort/Exit handlers be
+re-exported from the current version? (3) Is DETT installed/licensed? (4) Do the valve/TEC VIs use
+NI-VISA? (5) Where does the initial flush happen in the LabVIEW run? (6) What does the operator
+observe after Abort during acquisition and during flush?
