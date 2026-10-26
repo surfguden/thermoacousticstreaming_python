@@ -10,13 +10,16 @@ phase or a deferred item is not a standing instruction to develop it.
 
 ## Quick reference: running an experiment, and where to change things
 
-**Launching** (no install needed from this worktree):
+**Launching.** Double-click `launch_ui.bat` (simulation) or `launch_ui_real.bat` (real, authorized
+workstation only). They choose a validated Python (`THERMO_ACOUSTIC_PYTHON`, then the workspace
+`.venv`, then `%USERPROFILE%\.conda\envs\exp_ctrl`), never search `PATH`, never install anything and
+never change the mode; details in `README.md`. From a console without the launcher:
 ```
 cd src
 python -m thermo_acoustic.main --mode simulation
 ```
-`--mode simulation` is the default; `--mode real` drives connected hardware and needs the
-usual real-hardware precautions (not covered by this guide).
+`--mode simulation` is the default; `--mode real` drives connected hardware and needs the usual
+real-hardware precautions (not covered by this guide).
 
 **Recipes: what each source is, and how it maps to the current controls.** Nothing here is applied
 automatically (no preset manager); historical device addresses and paths are not defaults.

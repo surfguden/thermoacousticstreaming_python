@@ -1,22 +1,7 @@
 @echo off
-setlocal
-
-cd /d "%~dp0"
-
-if not exist ".venv\Scripts\python.exe" (
-    echo Could not find .venv\Scripts\python.exe
-    echo Create the project virtual environment and install the UI dependencies first.
-    pause
-    exit /b 1
-)
-
-set "PYTHONPATH=%CD%\src"
-".venv\Scripts\python.exe" -m thermo_acoustic.main --mode real
-
-if errorlevel 1 (
-    echo.
-    echo The thermo-acoustic UI exited with an error.
-    pause
-)
-
-endlocal
+rem Double-click to start the UI in REAL mode, on an authorized workstation only.
+rem The app still asks for explicit confirmation before it connects any device.
+rem If no suitable Python is found this stops; it never falls back to simulation.
+rem Python selection, failure messages and options: tools\launch_common.cmd
+call "%~dp0tools\launch_common.cmd" real
+exit /b %ERRORLEVEL%

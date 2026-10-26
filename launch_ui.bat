@@ -1,22 +1,5 @@
 @echo off
-setlocal
-
-cd /d "%~dp0"
-
-if not exist ".venv\Scripts\python.exe" (
-    echo Could not find .venv\Scripts\python.exe
-    echo Create the project virtual environment and install the UI dependencies first.
-    pause
-    exit /b 1
-)
-
-set "PYTHONPATH=%CD%\src"
-".venv\Scripts\python.exe" -m thermo_acoustic.main --mode simulation
-
-if errorlevel 1 (
-    echo.
-    echo The thermo-acoustic UI exited with an error.
-    pause
-)
-
-endlocal
+rem Double-click to start the UI in SIMULATION mode. No hardware is touched.
+rem Python selection, failure messages and options: tools\launch_common.cmd
+call "%~dp0tools\launch_common.cmd" simulation
+exit /b %ERRORLEVEL%

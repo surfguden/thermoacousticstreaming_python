@@ -47,6 +47,20 @@ application queue, one dispatcher, and a dedicated actor/loop for each device.
 There is no TCP/HTTP/socket protocol, named pipe, or controller process.
 Image saving uses a host-side thread pool so the Qt event loop stays responsive.
 
+## Start by double-click (Windows)
+
+- `launch_ui.bat` starts the UI in **simulation** mode (no hardware is touched).
+- `launch_ui_real.bat` starts **real** mode, on an authorized workstation only; the app still asks
+  for confirmation before it connects any device.
+
+Both use `tools\launch_common.cmd`, which picks the first usable Python from: `THERMO_ACOUSTIC_PYTHON`
+(your explicit choice; if it is set and unusable the launch fails instead of trying others), the
+workspace `.venv`, then `%USERPROFILE%\.conda\envs\exp_ctrl`. Each candidate is validated by
+`tools\check_launch_python.py` (Python 3.11+, PySide6, numpy, Pillow; real mode also pyserial,
+pythonnet, mecom). `PATH` is not searched, nothing is installed, and a failed search never changes
+the mode. If no Python qualifies, the window lists what was tried and what to do. Logs are written
+to `logs\` in the workspace folder whatever directory the script is started from.
+
 ## Launch simulation
 
 ```powershell
