@@ -4,98 +4,72 @@ Status values: `done` (already true on this branch, no action), `planned`
 (Phase 1, recorded and awaiting approval), `open` (needs investigation before
 a plan can be written), `deferred` (decision owner needed, not a code task).
 
-## Quick reference: running a simulated experiment, and where to change things
+## Quick reference: running an experiment, and where to change things
 
-**Launching the simulated app** (verified by actually running it from this
-branch's worktree, not estimated): the package is not pip-installed in
-this worktree, so the `thermo-acoustic-ui` console script
-(`pyproject.toml`'s `[project.scripts]`) is not on PATH unless you install
-it first. The command below needs no install step and was confirmed to
-print a normal `--help` usage line with no import errors:
+**Launching** (no install needed from this worktree):
 ```
 cd src
 python -m thermo_acoustic.main --mode simulation
 ```
-`--mode simulation` is also the default — `python -m thermo_acoustic.main`
-with no arguments launches the same way. `--mode real` is the only other
-value `main.py` accepts, and is out of scope here (hardware access is not
-authorized).
+`--mode simulation` is the default; `--mode real` drives connected hardware and needs the
+usual real-hardware precautions (not covered by this guide).
 
-**Shortest path to one representative experiment, via the UI**
-(`src/thermo_acoustic/ui/simple_series_panel.py`, `SimpleSeriesPanel`,
-wired into `MainWindow` as `experiment_panel`). **Corrected this round
-(twice)**: the steps below were originally written from reading the code,
-not from an actual run — a full-`MainWindow` acceptance test
-(`tests/test_simple_series.py::
-test_full_main_window_operator_flow_queue_start_status_output_and_stop`)
-found the first version of this sequence genuinely failed. That test
-also, on its own terms, only proves two narrower things than the first
-correction implied, both tightened here:
+**Short test recipe for one simulated experiment** (`SimpleSeriesPanel`, tab "Experiment").
+Read the values below as what the automated full-window test uses
+(`tests/test_simple_series.py::test_full_main_window_operator_flow_queue_start_status_output_and_stop`:
+repeats 2, frames 2, 10 fps, one frequency/amplitude/exposure `1`/`1`/`1`, 16×16 ROI, flush 0.01 mL
+at 200 µL/min, sweep and temperature control off). They are **not** the widgets' defaults and **not**
+a laboratory recipe. Three different things must not be mixed up:
+- *short automated-test values* — the recipe above;
+- *historical working values* — junjie's `experiment_presets.py` (cited by its tests and UI), taken
+  from the LabVIEW screenshots: ROI 2304×740 at y = 792, 40 ms, 20 fps, 1000 frames, 1.975 MHz at 2 V
+  for 60 s, flush 0.01 mL at 1000 µL/min with a 2 s wait. They are not applied anywhere here and
+  must be checked against the current apparatus before use;
+- *current widget defaults* — untested as a starting point; choose values deliberately.
 
-- **It used specific short values, not "the defaults."** The test sets
-  `repeats=2`, `frames=2`, `fps=10`, a single fixed frequency/amplitude/
-  exposure (`1`/`1`/`1`), a 16x16 ROI, `volume=0.01`, `flow=200`, sweep
-  and temperature control both off. It does **not** leave every field at
-  whatever the widget's own built-in default happens to be. Step 4 below
-  previously said "every other group... has usable defaults; leave them"
-  — that was not what the test checked, and is corrected below:
-  leaving fields at their raw widget defaults (rather than the specific
-  values just listed) is simply **untested** by this acceptance pass, not
-  confirmed safe.
-- **A programmatic click is not a human visual check.** The test drives
-  real `QPushButton.click()` calls, which do run the same Qt
-  signal/slot code a mouse click would — that is genuine evidence the
-  button-to-manager wiring works. It is not evidence about anything a
-  human would judge by looking at the running window (layout, label
-  wrapping, whether a control is visible without scrolling, whether the
-  right thing is focused). Nothing in this document claims a human has
-  visually reviewed the window during this acceptance pass; where that
-  distinction matters, it is called out explicitly below.
+1. Launch. Connect only the devices the run uses (Pump, Valve, Camera, AD2 for the shortest run;
+   leave TEC off and Temperature unticked).
+2. **Pump fill level.** The *simulated* pump starts at 0 mL, so click Refill on the flush unit
+   first, otherwise queuing fails with "Pump unit N needs X mL total flush volume but currently has
+   0 mL". A *real* pump reports its fill level from the SDK; the same guard compares the planned
+   flush volume with that read-back. Do not refill by reflex after a restart — prepare the syringe
+   according to what it actually holds and what the experiment needs.
+3. Enter a series descriptor (required). Click "Preflight camera settings" before Start, otherwise
+   Start asks for confirmation.
+4. "Queue series", then "Start queued batch". Stop after current / Abort / Panic are available while
+   running.
+5. Output: one `experiment_batch_NNNN/` per queued series with `metadata/` (`definition.json`,
+   `manifest.json`, `status.json`, `events.jsonl`) and one TIFF set + `experiment.json` per
+   completed experiment. `manifest.json` has a `run` block: `mode` (`simulation`/`real`) and
+   `software` (`git_commit`, `git_dirty` for tracked files, `source`); a value that cannot be read
+   is `"unknown"`. An incomplete acquisition is discarded; completed experiments are kept.
 
-1. Launch as above.
-2. Connect only the devices the steps you'll use actually need (device
-   panels on the left, each with its own Connect button). For the
-   smallest possible representative run — one flush, one acquisition, no
-   temperature control — that's Pump, Valve, Camera, AD2; leave TEC
-   disconnected and the Temperature group's checkbox unticked (it's
-   optional and defaults off, so leaving it off doesn't require touching
-   any temperature field at all).
-3. **Click Refill on the Pump panel (the unit you'll flush from) before
-   queuing.** The simulated pump (and a real one after a restart, per
-   `known_open_items.md`) starts at 0 mL fill level; queuing a series
-   with any flush volume fails immediately with "Pump unit N needs X mL
-   total flush volume but currently has 0 mL" otherwise — this is the
-   flush-capacity guard working correctly, not a bug, but it does mean
-   Refill is a required step for this shortest path, not an optional one.
-4. In the Simple Series panel, the only field that must be filled by hand
-   is the series descriptor (`self.description`) — queuing without one
-   raises `"Enter a series descriptor before preflight"`. **Every other
-   field's raw widget default is untested by the acceptance pass above**
-   (which used the specific short values listed in the correction note
-   above, not those defaults); use small, deliberately-chosen values for
-   a first run rather than assuming the out-of-the-box defaults are a
-   sane starting point.
-5. **Click "Preflight camera settings" before Start.** Skipping it doesn't
-   block the run, but Start's own camera-preflight gate will instead pop
-   a confirmation dialog ("Camera preflight has not passed for N queued
-   series... Continue with standard Start validation?") the first time
-   through `MainWindow` — clicking Preflight first avoids that surprise
-   and is what a normal operator session would do anyway.
-6. "Queue series", then "Start queued batch". Status/phase updates live in
-   the panel and in the Status tab's dashboard; `stop_after_current`
-   ("Stop after current")/abort/panic are available once running, and
-   each reaches the manager through the same button a human would click
-   — confirmed by a programmatic click reaching the real signal/slot
-   path, per the distinction above; not confirmed by anyone looking at
-   the window while it ran.
-7. Output lands under the chosen experiment base folder, one
-   `experiment_batch_NNNN/` per queued series, with
-   `metadata/status.json` (live progress + final outcome, confirmed
-   readable from disk mid-run, not only after completion),
-   `metadata/manifest.json` (the plan — **corrected**: this lives inside
-   `metadata/`, not loose in the batch folder root as a prior version of
-   this step said), and one TIFF (or stacked TIFF) + `experiment.json`
-   per completed repeat.
+**What "done" means.** A command result means the driver accepted the command, not that the
+physical action finished unless the step says it waits for a read-back:
+- Pump Refill/Empty/flow: returns when the SDK accepted the start; progress comes from polling, and
+  the flush workflow waits until the pump reads idle.
+- Valve: the flush workflow confirms the position by read-back.
+- TEC: the stability wait uses the read-back temperature; a set-point command alone is not stability.
+- Z stage: manual Move and the `stage_move` experiment step return when the controller accepted the
+  (soft-limited) target; `ZStageReadback.position_um` is the last *measured* position and
+  `commanded_position_um` the last target sent. `stage_move` does **not** wait or read back, and is
+  recorded as `sent_um` with `position_confirmed: false`. The independent Z stack does read the
+  position and requires it within tolerance before each capture.
+- Camera/AD2: arming and triggering are checked by the sequence logic (frame count, achieved AD2
+  rate, applied exposure), not by the acceptance of the individual command.
+
+**Closing the window.** A running batch is stopped through Abort (reason "Application window closed
+during the run") and its save/flush drain, then the window closes by itself. Each device is then
+stopped in its own thread in this order: cancel an unfinished operation → SAFE_STOP → disconnect.
+If a device has not finished, or reported an error, the window stays open and says so; closing again
+retries. Panic cannot interrupt a blocked SDK call, and after shutdown has started it only reports.
+
+**How to read verification labels.** "Simulated" means exercised against simulated or fake devices.
+It does not mean nothing is known about the hardware: the shared driver layer (Qmix pump, DCAM
+camera, piezo stage, AD2, TEC read/OFF) has real-hardware records from junjiebranch, listed per item
+in `acceptance_table.md`. What has no real run is the integration layer itself: the experiment
+engine's AD2→camera trigger chain, the flush workflow, the Z stack on this branch, and the window
+close/abort paths.
 
 **Where common changes go** (verified against current code, not
 estimated — full detail with file/function names in `decision_log.md`'s
@@ -108,10 +82,12 @@ estimated — full detail with file/function names in `decision_log.md`'s
 - **Parameter sweeps** (new scan axis): `application/experiments.py`'s
   `_values()`/`walk()`; one coupling point — the folder-naming `labels`
   dict needs a matching entry for a new named parameter.
-- **Acquisition timing**: three intentionally separate layers —
+- **Acquisition timing**: three layers with different inputs —
   `experiments.py`'s `_validate_experiment()` (schema), `experiment_runner.py`'s
-  `_after_camera_timing()` (live-SDK sanity), `_configure_all_before_fluidics()`
-  (applied-value sanity). Not redundant; don't collapse them.
+  `_after_camera_timing()` (static checks that do not depend on the camera's current
+  configuration: exposure vs interval, laser window), and `_configure_all_before_fluidics()`
+  (camera limits and exposure judged on the read-back after each configuration was applied,
+  with the AD2's achieved rate, for every unique configuration, before any flush).
 - **A new experiment-step kind**: `experiments.py`'s `ACTION_RESOURCES`/
   `_action()` (schema) + `experiment_runner.py`'s `_run_action()`
   (execution) — a deliberate validation/execution split.
