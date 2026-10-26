@@ -139,6 +139,11 @@ class MainWindow(QMainWindow):
         self._experiment_changed(self._experiment_status)
 
     def _panic(self) -> None:
+        if self.controller.shutdown_started:
+            # Closing already issued every stop; Panic can only report what is left,
+            # so there is nothing to confirm.
+            self.controller.panic_stop()
+            return
         answer = QMessageBox.warning(
             self, "Confirm Panic safe stop",
             "Stop connected AD2, pump, camera and TEC outputs and abort the experiment batch? "
@@ -521,6 +526,12 @@ class MainWindow(QMainWindow):
                            + ". Close again to leave anyway.")
             self.statusBar().showMessage(message)
             self.log.append(message)
+            # Commands are refused once shutdown has started, so the device tabs cannot
+            # do anything; Panic stays and only reports (it cannot interrupt a blocked call).
+            self.tabs.setEnabled(False)
+            self.panic_button.setToolTip(
+                "Closing: stop requests were already issued. Panic now only reports the remaining "
+                "devices and cannot interrupt a blocked SDK call.")
             event.ignore()
             return
         self.panels[DeviceId.CAMERA].image_window.close()

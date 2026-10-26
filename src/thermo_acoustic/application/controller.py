@@ -74,7 +74,6 @@ class ApplicationController(QObject):
         self._close_requested = False
         self._resources_closed = False
         self._shutdown_pending: list[str] = []
-        self._shutdown_late_errors: list[str] = []
         self._panic_pending: dict[str, DeviceId] = {}
         self._panic_errors: list[str] = []
         self._panic_state = "idle"
@@ -101,10 +100,39 @@ class ApplicationController(QObject):
         return {"state": self._panic_state, "pending": len(self._panic_pending),
                 "errors": tuple(self._panic_errors)}
 
+    @property
+    def shutdown_started(self) -> bool:
+        return self._closing
+
+    def _panic_report_during_shutdown(self) -> None:
+        """Panic after shutdown has started: report, do not dispatch.
+
+        Every worker was already told to stop and close, in its own thread, when
+        shutdown began. A worker whose thread has finished has stopped (or kept its
+        error); a worker whose thread is still running is blocked or busy, and a
+        further stop would only queue behind that shutdown request, so none is sent.
+        Software cannot interrupt a blocked SDK call.
+        """
+        errors = []
+        for worker in self.registry.all():
+            device = worker.device_id.value
+            if worker._thread.isRunning():
+                errors.append(
+                    f"{device}: shutdown is still running in its thread; the stop was requested when "
+                    "closing started and cannot be interrupted or repeated from here")
+            elif worker.shutdown_error:
+                errors.append(f"{device}: {worker.shutdown_error}")
+        self._panic_errors = errors
+        self._panic_state = "failed" if errors else "completed"
+        self.panic_changed.emit(self.panic_status())
+
     def panic_stop(self) -> None:
         """Urgently stop active outputs without scheduling a valve or stage move."""
         if self._panic_state == "stopping":
             raise RuntimeError("Panic stop is already in progress")
+        if self._closing:
+            self._panic_report_during_shutdown()
+            return
         self._panic_state = "stopping"
         self.z_stack.abort_for_panic()
         self._panic_dispatching = True
@@ -521,10 +549,6 @@ class ApplicationController(QObject):
 
     @Slot(str, str)
     def _worker_failed(self, request_id: str, error: str) -> None:
-        if request_id.startswith("shutdown-"):
-            self._shutdown_late_errors.append(
-                f"{request_id.removeprefix('shutdown-')}: safe stop at shutdown failed: {error}")
-            return
         if self._flush is not None and self._flush.on_step(request_id, False, error=error):
             return
         if self._finish_urgent(request_id, False, error=error):
@@ -598,12 +622,7 @@ class ApplicationController(QObject):
             while self._queue:
                 self._emit(self._queue.popleft().command, "cancelled", "Shutdown started")
             for worker in self.registry.all():
-                worker.urgent_command_requested.emit(
-                    f"shutdown-{worker.device_id.value}",
-                    DeviceOperation.SAFE_STOP,
-                    NoArguments(),
-                )
-                worker.shutdown_requested.emit()
+                worker.shutdown_requested.emit()  # stops, then closes, in the worker's own thread
         deadline = monotonic() + self.SHUTDOWN_WAIT_S
         errors: list[str] = []
         pending: list[str] = []
@@ -614,7 +633,6 @@ class ApplicationController(QObject):
                 errors.append(f"{worker.device_id.value}: {worker.shutdown_error}")
         self._shutdown_pending = pending
         errors.extend(f"{device}: still shutting down (its thread has not finished)" for device in pending)
-        errors.extend(self._shutdown_late_errors)
         if not pending and not self._resources_closed:
             self._resources_closed = True
             self.experiments.close()

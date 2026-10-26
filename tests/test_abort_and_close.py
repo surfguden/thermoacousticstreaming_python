@@ -400,3 +400,111 @@ def test_a_worker_that_outlives_the_wait_keeps_the_app_open_until_it_finishes():
     assert lines["NEW_COMMAND"] == "refused" and lines["NEW_RUN"] == "refused"
     assert lines["SECOND_CLOSE_ACCEPTED"] == "True"
     assert lines["THREADS_RUNNING"] == "[]"
+
+
+def test_a_safe_stop_failure_at_close_is_kept_even_when_cleanup_succeeds(qt_app):
+    """The result must come from the worker thread itself, not from a queued signal."""
+    controller, window = _idle_window()
+    controller.submit(DeviceCommand(DeviceId.PUMP, DeviceOperation.CONNECT))
+    assert _wait_for(qt_app, lambda: controller.statuses()[DeviceId.PUMP].connection.value == "connected", 5)
+    worker = controller.registry.by_id(DeviceId.PUMP)
+
+    def broken_safe_stop():
+        raise RuntimeError("simulated safe stop failure")
+
+    worker.safe_stop = broken_safe_stop
+    cleaned = []
+    original_cleanup = worker.cleanup_device
+    worker.cleanup_device = lambda: (original_cleanup(), cleaned.append(True))[1]
+    assert window.close() is False, "the failed stop was not reported"
+    assert window.isVisible()
+    assert cleaned == [True]  # the device was closed; only the stop failed
+    assert "simulated safe stop failure" in window.statusBar().currentMessage()
+    assert not any(w._thread.isRunning() for w in controller.registry.all())
+    # Nothing depends on later event processing: the error is still there on every call.
+    qt_app.processEvents()
+    assert any("simulated safe stop failure" in error for error in controller.shutdown())
+    assert window.close() is True
+
+
+PANIC_AFTER_TIMEOUT_SCRIPT = """
+import os, time
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+from PySide6.QtWidgets import QApplication
+from thermo_acoustic.application.commands import DeviceCommand, DeviceOperation
+from thermo_acoustic.application.controller import ApplicationController
+from thermo_acoustic.domain.models import DeviceId, OperatingMode
+from thermo_acoustic.hal.registry import DeviceRegistry
+from thermo_acoustic.ui.main_window import MainWindow
+
+app = QApplication(["panic-after-timeout"])
+ApplicationController.SHUTDOWN_WAIT_S = 0.3
+controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
+window = MainWindow(controller)
+controller.start()
+window.show()
+for device in (DeviceId.PUMP, DeviceId.AD2):
+    controller.submit(DeviceCommand(device, DeviceOperation.CONNECT))
+end = time.monotonic() + 5
+while time.monotonic() < end and not all(
+        controller.statuses()[d].connection.value == "connected" for d in (DeviceId.PUMP, DeviceId.AD2)):
+    app.processEvents(); time.sleep(0.01)
+
+stops = {"pump": 0, "ad2": 0}
+for device, key in ((DeviceId.PUMP, "pump"), (DeviceId.AD2, "ad2")):
+    worker = controller.registry.by_id(device)
+    original_stop = worker.safe_stop
+    def counted(original_stop=original_stop, key=key):
+        stops[key] += 1
+        return original_stop()
+    worker.safe_stop = counted
+pump = controller.registry.by_id(DeviceId.PUMP)
+original_disconnect = pump.disconnect_device
+pump.disconnect_device = lambda: (time.sleep(1.5), original_disconnect())[1]
+panic_events = []
+controller.command_event.connect(lambda e: panic_events.append(e) if e.source == "panic" else None)
+
+print("CLOSE_ACCEPTED", window.close(), flush=True)
+print("PENDING", controller.shutdown_pending_devices(), flush=True)
+try:
+    controller.panic_stop()
+    print("PANIC_RAISED", False, flush=True)
+except Exception as exc:
+    print("PANIC_RAISED", True, flush=True)
+app.processEvents()
+status = controller.panic_status()
+print("PANIC_STATE", status["state"], flush=True)
+print("PANIC_ERRORS", " | ".join(status["errors"]), flush=True)
+print("PANIC_COMMANDS", len(panic_events), flush=True)
+print("PANIC_BUTTON_TEXT", window.statusBar().currentMessage(), flush=True)
+end = time.monotonic() + 5
+while time.monotonic() < end and pump._thread.isRunning():
+    app.processEvents(); time.sleep(0.01)
+app.processEvents()
+print("STOP_CALLS", stops, flush=True)
+print("SECOND_CLOSE_ACCEPTED", window.close(), flush=True)
+"""
+
+
+def test_panic_after_a_shutdown_timeout_reports_the_real_situation_without_queuing_stops():
+    """Subprocess: a thread still running at interpreter exit would abort the process."""
+    import os
+    import subprocess
+    import sys
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(sys.path), "QT_QPA_PLATFORM": "offscreen"}
+    run = subprocess.run([sys.executable, "-c", PANIC_AFTER_TIMEOUT_SCRIPT], env=env, capture_output=True,
+                         text=True, timeout=60)
+    lines = {line.split(" ", 1)[0]: line.split(" ", 1)[1] if " " in line else ""
+             for line in run.stdout.splitlines()}
+    assert run.returncode == 0, (run.returncode, run.stdout, run.stderr)
+    assert lines["CLOSE_ACCEPTED"] == "False" and lines["PENDING"] == "['pump']"
+    assert lines["PANIC_RAISED"] == "False"
+    # No stop command was dispatched or queued by Panic, and none ran twice later.
+    assert lines["PANIC_COMMANDS"] == "0"
+    assert lines["STOP_CALLS"] == "{'pump': 1, 'ad2': 1}"
+    # The blocked device is reported as what it is; the finished one is not blamed.
+    assert lines["PANIC_STATE"] == "failed"
+    assert "pump" in lines["PANIC_ERRORS"] and "cannot be interrupted" in lines["PANIC_ERRORS"]
+    assert "Application shutdown has started" not in lines["PANIC_ERRORS"]
+    assert "ad2" not in lines["PANIC_ERRORS"]
+    assert lines["SECOND_CLOSE_ACCEPTED"] == "True"

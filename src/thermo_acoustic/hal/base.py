@@ -352,6 +352,15 @@ class DeviceWorker(QObject):
                     except Exception as exc:
                         errors.append(f"cancelling the active operation failed: {exc}")
                 self.command_cancelled.emit(active_request_id, "Application shutdown")
+            if self._device is not None:
+                # The stop runs here, in this thread, and its outcome is recorded with
+                # the cleanup outcome below. Sending it as a separate queued command
+                # would return its failure through a signal the UI thread may not have
+                # processed yet when the thread has already finished.
+                try:
+                    self.safe_stop()
+                except Exception as exc:
+                    errors.append(f"safe stop failed: {exc}")
             try:
                 self.disconnect_device()
             except Exception as exc:
