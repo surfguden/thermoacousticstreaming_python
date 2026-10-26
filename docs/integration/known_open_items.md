@@ -445,26 +445,11 @@ you/Codex, not sized or chosen here.
   ignores `shutdown()`'s returned error list and always accepts, so a
   timeout is audited but never shown. Ordering is sound (SAFE_STOP is
   emitted before the shutdown request), so on the normal path hardware is
-  stopped first. Four separate problems, each with its own minimal fix
-  (none implemented; none needs an async framework):
-  1. *Timeout leaves the thread running* — reproduced: a worker still
-     running at process exit aborts the process (exit `0xC0000409`) after
-     `shutdown()` returned `['pump: thread did not terminate']`. Minimal:
-     none that is safe by default; `QThread.terminate()` on a hung hardware
-     call or a hard process exit are **exit-policy choices for you**. The
-     error is at least reported by (4).
-  2. *Sequential wait* (12 s for six hung workers): emit all
-     `shutdown_requested` first, then wait against one shared ~2 s
-     deadline. About 6 lines in `ApplicationController.shutdown`. Recommend.
-  3. *`disconnect_device` exception is not reported*: catch it in
-     `DeviceWorker.shutdown_in_thread`, keep it on the worker, and let
-     `shutdown()` append it to `errors`. About 6 lines. Recommend.
-  4. *`closeEvent` discards `errors`*: show them (message box or status
-     line) before accepting. About 4 lines. Recommend.
-  Additionally (survey F4, simulation): closing the window mid-run leaves
-  the series `status.json` at "running" — `closeEvent` neither asks for
-  confirmation nor finalizes the series. Minimal: confirm dialog while an
-  experiment runs and mark the series aborted in `shutdown()`.
+  stopped first. **Implemented 2026-10-26** (parallel signalling with one shared
+  deadline, worker shutdown errors returned, hung workers kept alive and
+  reported, `closeEvent` keeps the window open and retries, running batch
+  stopped through Abort first): see the "Exit" and "Close" rows of the
+  system survey table below.
 - **Automated camera runs overwrite the MasterPulse widgets on the manual
   Camera tab — known difference, evidence gathered, not changed.**
   `_camera_args()` builds `CameraSequenceTriggerArgs` without MasterPulse
@@ -519,34 +504,38 @@ Compared `piezo_zscan.py`'s `ZScanCalibration.run()`/`_acquire_one()` against
 - Fault-reason message surfacing: closed, no gap (`event_formatting.py`
   already includes `event.message` on every failure).
 
-## System survey 2026-10-25 — findings awaiting authorization
+## System survey 2026-10-25 — status (updated 2026-10-26)
 
-Evidence tags: **[CODE]** read in source; **[SIM]** run in simulation or with
-fake devices (proves ordering/bookkeeping, not timing or physics); **[JUNJIE-HW]**
-historical real-hardware record on junjiebranch (not proof for the integrated
-path); **UNCONFIRMED** not verified. Nothing below is implemented. Full
-coverage and traceability: `investigation_log.md` (2026-10-25 section).
+Status: **repro** = reproduced before the change; **fixed** = changed; **verified** = a test
+that fails without the change and passes with it (simulation or fake devices only);
+**decision** = waiting for you. Evidence tags: [CODE] read in source, [SIM] simulated run /
+fake device, [JUNJIE-HW] historical junjie hardware record (not proof for this path).
+Nothing here was run on hardware, so none of it is physical verification.
 
-| ID | Finding | Evidence | Practical impact | Minimal fix |
+| ID | Finding | Change | Tests | Status |
 |---|---|---|---|---|
-| S1 | `PumpWorker.poll_once` never clears `state.fault` (`ValveWorker.poll_once` does) | [CODE] verified; [SIM] fake device | one transient poll error leaves the pump in ERROR with a stale message | 1 line |
-| S2 | After a failed Connect the panel shows ERROR and Connect stays disabled until Disconnect (`DevicePanel.set_status` treats ERROR as connected) | [SIM] fake device (agent probe); [CODE] | extra click; confusing, not unsafe | enable Connect while no device is open |
-| S3 | `PumpWorker._move` ignores `PumpMoveArgs.flow_rate_ul_min`/`timeout_s` (always max/2) | [CODE] verified | console `pump refill 500` silently uses a different flow | honor the argument (driver already clamps) or remove it |
-| S4 | Active `PumpPanel` has no "Recover fault" button (only dead `LegacyPumpPanel`); recovery = console `pump recover-fault` or reconnect | [CODE] | slower recovery | add button with confirmation, or document |
-| S5 | `configure_snapshot` never sets trigger source back to internal | [CODE] verified; hardware effect UNCONFIRMED (simulated camera has no trigger state) | after an external-trigger series, live preview/snapshot/Z-stack could wait for a trigger | set internal trigger in `configure_snapshot`; verify with a gated read-only probe |
-| S6 | AD2 `safe_stop` stops W1/W2/digital/scope in sequence via a full re-configure, no per-output fallback | [CODE] (D2 survey) | one failure skips remaining stops; W2 drives the laser input | call the direct stop primitives independently |
-| S7 | `_require_devices` does not require Z closed-loop when a `stage_move` step exists | [SIM] | series runs flush + TEC wait, then fails at first move | check up front |
-| S8 | Panic during a flush is reported "failed / Cancelled by Panic" rather than aborted | [SIM] | cosmetic | call `experiments.panic_abort()` first |
-| S9 | `experiment.json` has no TEC requested/applied values, no software commit, no simulated/real mode; simulated and real runs look the same on disk | [CODE]; [SIM] | traceability of data | write commit (+dirty flag) and operating mode into `metadata`; add TEC to `applied_settings` |
-| S10 | Abort during `tec_wait_stable` does not cancel the wait (runs up to `max_wait_s`, default 300 s; the single command lane stays busy) | [CODE] only, UNCONFIRMED | slow abort during a temperature wait | cancel the deferred wait on abort |
-| S11 | Valve and TEC ports are not checked against each other (junjie hard-rejected a COM port clash) | [CODE] | wrong port could be opened for the other device | generic "valve port != TEC port" check |
-| S12 | Driver-level regression tests were not ported (junjie: ~55 TEC, ~60 pump/valve, 13 Hamamatsu, 15 piezo, ~25 AD2; integration: none for driver rollback/gates/cleanup) | [CODE] file listing | ported safety code has no regression guard | test-only port with fake SDKs |
-| S13 | Elapsed / estimated-remaining time display (junjie had it); integration shows counts and phase only | [CODE] | operator planning during long series | display-only, optional |
+| S1 | A fault set only by a failed pump poll stayed after polling recovered | `PumpWorker.poll_once` keeps the text of a poll-produced fault and clears it after a successful poll **only if** the fault was not replaced by a command error and no unit reports `is_faulted`. Evidence limit: a healthy read-back proves the same reads work again, not that an underlying device fault is gone; a device-reported fault or a failed command is never cleared by polling | `test_device_workers.py` (3 pump-fault tests) | repro, fixed, verified |
+| S2 | After a failed Connect the panel showed ERROR and kept Connect disabled | `DeviceWorker.status()` reports ERROR only for an open device. A failed Connect discards the device object (drivers roll back in `initialize`; a driver whose rollback itself fails says so in the message) and stays DISCONNECTED with the reason in `fault`, so Connect is offered again. Open-but-faulted devices stay ERROR (Disconnect only) | 2 connect tests | repro, fixed, verified |
+| S3 | `PumpWorker._move` ignored `flow_rate_ul_min` (always max/2) | A valid explicit flow (0 < flow ≤ unit maximum) reaches the device; 0, negative or above-maximum is refused with a message instead of being clamped by the driver; no flow keeps max/2. `timeout_s`/`poll_interval_s` do not apply: the call returns when the SDK accepted the start (progress comes from polling); not changed to wait for motion | 5 pump-move tests | repro, fixed, verified |
+| S4 | No "Recover fault" button on the active pump panel | none | – | decision (deferred) |
+| S5 | Snapshot / live preview could wait for an external trigger after a series | `configure_snapshot` writes `TRIGGERSOURCE=INTERNAL` and nothing else (vendor property list gives no evidence that polarity/active/delay/times matter for internal triggering; global exposure is rewritten by each sequence configure). The automated series is unchanged: each experiment's `configure_sequence` still writes EXTERNAL. The same path serves the in-run preview (`CAMERA_CONTINUOUS_CAPTURE`), which therefore becomes truly free-running. Whether the real camera needs more than this is unverified | fake-DCAM `test_driver_fakes.py` (3) | repro (fake DCAM), fixed, verified; **hardware effect not verified** |
+| S6 | AD2 safe stop stopped W1/W2, digital and scope in sequence; one failure skipped the rest | `AD2Worker.safe_stop` tries each independently; if the all-channel stop fails it falls back to a new direct `stop_analog_outputs()` (W1/W2 one by one); read-back claims only what stopped; all failures are returned in one error; levels/polarity untouched | 3 tests | repro, fixed, verified |
+| S7 | A `stage_move` series with open-loop/unconnected Z ran flush and heating, then failed | `_require_devices` checks connected + closed loop first; never enables closed loop or moves the stage. Before: 17 experiment commands ran before the failure; after: only the failure path's own SAFE_STOP | 2 tests | repro, fixed, verified |
+| S8 | Panic during a flush is recorded "failed / Cancelled by Panic" instead of "aborted" | **Investigated, not changed.** Cause [CODE]+[SIM]: `panic_stop` cancels the flush and emits its failed result synchronously, so `ExperimentManager._fail` runs before `panic_abort()`, whose `or self._failed` guard then returns. Effect: the label only (`status.json` says failed with error "Cancelled by Panic"; devices, kept data and Panic's own SAFE_STOPs are the same; the runner also sends AD2/camera SAFE_STOP a second time, harmless). Swapping the calls would change when `_finish_failure_when_safe` sees `controller._flush`, so it needs its own timing test first | – | repro, decision (optional) |
+| S9 | Saved data has no software commit, simulated/real mode or TEC applied values | none | – | decision (deferred) |
+| S10 | Abort did not cancel a TEC stability wait; lane busy until `max_wait_s` | `ExperimentManager._fail` ends an active TEC wait through the existing `ABORT_ACTIVE` path (the worker's cancel hook leaves regulation on). Before: after abort the TEC command stayed active and an ordinary command waited 6.5 s of a 6 s wait (default 300 s); after: lane free at once, TEC output still on, final state `aborted`, no experiment started, late result ignored (`_command_result` guard) | 1 test | repro, fixed, verified |
+| S11 | Valve and TEC ports are not checked against each other | **Reported only.** Both panels list the same `serial.tools.list_ports` devices (canonical names such as `COM5`); the console accepts any text (`connect valve --port COM3`); no COM number is hard-coded in `src`. A second open of an already-open port fails at the OS (pySerial opens exclusively), so a clash fails closed once the first device holds the port. Real risk is selecting the *other* device's port for the first connection: the valve driver then sends `S\r` at 19200 baud and the TEC client sends MeCom frames to a non-TEC device (effect on the foreign device unknown). junjie hard-rejected COM6 for the valve (`7a2ef57`, `a0a2de2`; COM6 = TEC at that time, still current? UNCONFIRMED). If wanted: a "valve port ≠ TEC port" comparison at connect time, no resource manager | – | decision |
+| S12 | Driver-level tests were not ported | Added only what this round changed or relies on: fake DCAM (trigger source, failure order), pump worker (flow, faults, connect), AD2 safe stop. Existing tests are not duplicated; junjie's ~150 driver tests were not bulk-ported | `test_device_workers.py`, `test_driver_fakes.py` | partly done |
+| S13 | Elapsed / remaining time display | none | – | decision (deferred) |
+| Z-stack | Experiment vs Z-stack exclusion | **Existing exclusion works** [SIM]: with a batch running, `z_stack.start` was refused and Z commands were rejected by `controller.submit`; with the stack running, batch start and manual camera/Z commands were refused. Gaps fixed: entry points looked only at runner state `running`, so during `stopping`/`aborting` (flush/save drain) they left the stack in a stray `failed` state (and `start` wrote `metadata.json`). They now refuse up front using the runner's existing active states (`ExperimentManager.batch_active`). Unchanged: starting a batch while a Z live preview is on is allowed and leaves the stack's `preview` label stale (cosmetic) | 2 tests | repro, fixed, verified |
+| Close | Closing the real window mid-run | Closing a running batch now reuses Abort ("Application window closed during the run") and its save/flush drain, keeps the window open until the batch has stopped, then closes by itself; `begin_close()` blocks new batch/Z-stack starts. Before (real `MainWindow`, [SIM]): `window.close()` returned in 0.00–0.07 s, devices were disconnected and `status.json` stayed `running` forever in all of capture, save, flush and TEC-wait phases | 3 phases + idle | repro, fixed, verified |
+| Exit | Shutdown waits, errors, hung workers | `shutdown()` signals every worker first and waits against one shared deadline (`SHUTDOWN_WAIT_S`, 2 s; before: sequential, 12 s for six hung workers). A `disconnect_device` or cancel exception is kept on the worker and returned as an error (before: traceback on stderr, `errors=[]`). A worker whose thread has not finished is listed in `shutdown_pending_devices()`; it is never terminated and its owner is not destroyed; a later `shutdown()` waits again and the resources (`experiments.close()`, Z stack) close once all threads are done. `closeEvent` shows pending devices / errors in the status bar and the log and stays open (closing again retries; with finished threads and unchanged errors the second attempt is accepted). Before, a worker still running at process exit aborted the process (exit `0xC0000409`); now the window stays open instead (checked in a subprocess). No forced quit, no per-device dialog. Residual: SAFE_STOP failures during shutdown arrive as queued signals and are reported on the next `shutdown()` attempt; if the stop never finishes the window stays open and Panic remains the operator's route | 5 tests incl. subprocess | repro, fixed, verified |
 
-**Policy / hardware questions for you (not code defects):**
-- TEC after a run: nothing turns the TEC off on completion, stop-after-current, abort or plain failure (only panic and exit do) — matches junjie's open `TEC-AFTER-RUN-POLICY-001`. Also `SCI-TEC-EQUIL-001`: controller-stable ≠ imaging-plane equilibrium.
-- Final valve state: panic or exit during a flush leaves the valve open; abort leaves it closed (flush recovery).
-- Laser input: W2 feeds the iBEAM analog input (junjie `HW-LASER-PATH-001`); its default polarity means ~0 V is not guaranteed "optical off", while the integration hard-sets W2 to a fixed 5 V square with idle at offset. Installed unit/polarity UNCONFIRMED — resolve before any real laser run.
-- Valve labels: UI says Open/Closed for positions 1/2; junjie's later docs say routing is unverified (owner mapping P01 through-chip, P02 bypass, `HW-VALVE-001`).
-- Camera ROI snapped by the driver is recorded but not fed back to later steps; the pump reaching its target volume is not read back (completion = polling idle).
-- Past junjie real-pump evidence cited elsewhere in these docs (Session 54) is, by junjie's own later docs, historical and unverified (`HW-PUMP-MOTION-001` open).
+**Current behaviour — original basis — practical effect — recommended policy (unchanged this round; yours to decide, not inferred from software):**
+
+| Item | Current behaviour | Original basis | Practical effect | Recommendation |
+|---|---|---|---|---|
+| TEC after a run | Output stays on after completion, Stop, Abort and plain failure; Panic and exit switch it off | junjie Checkpoint S (`c58e092`): TEC kept regulating after the app closed, so cleanup now sets Static OFF; `TEC-AFTER-RUN-POLICY-001` records the implicit "keep after run" as an owner decision; `SCI-TEC-EQUIL-001`: controller-stable ≠ imaging-plane equilibrium | Sample stays at temperature for follow-up imaging; nobody is told it is still heating/cooling | Keep; if you want it visible, show "TEC output on" in the run-finished message rather than switching it off |
+| Valve on Panic / exit during a flush | Valve holds its position (open if mid-flush); Abort closes it via flush recovery | ola `controller.panic_stop` comment: moving the valve while flow stops may be unsafe | Valve may stay open after Panic until the operator closes it | Keep; the status panel should say the valve position, no automatic move |
+| Laser path | W2 driven at a fixed 5 V square, idle at offset | junjie `HW-LASER-PATH-001`: W2 feeds the iBEAM analog input (0…+5 V, default polarity `sub`, 0 V is not optical off); junjie's planner rejects W2 | Installed unit/polarity unconfirmed | No code change; confirm the unit before any real laser run |
+| Abort during a TEC wait | Cancels the wait only | `TEC_WAIT_STABLE` cancel hook documents "does not turn regulation off"; `TEC_OUTPUTS_OFF` is the separate action | – | Keep |

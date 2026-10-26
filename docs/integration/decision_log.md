@@ -1196,3 +1196,15 @@ saved TIFF + `experiment.json` are on disk.
   format/ownership decisions. Deferral cost: medium (the external analysis path
   currently covers it). Do not start without a decision on source (memory vs
   disk).
+
+## 2026-10-26 — Defect fixes from the system survey
+
+Scope, evidence and results are in `known_open_items.md` ("System survey" table). Decisions made
+in code, in short: explicit pump flows are honoured or refused (never silently replaced); a poll
+error is cleared only when polling recovers and nothing else reports a fault; a failed Connect is
+DISCONNECTED and retryable; snapshot/preview sets only `TRIGGERSOURCE=INTERNAL`; AD2 safe stop
+tries every output and reports what failed; Abort cancels a TEC wait but not the TEC output; Z
+stack and `stage_move` check their preconditions up front; closing the window during a run uses
+Abort and its drain, and a close that cannot finish keeps the application open instead of
+forcing threads to end. Not changed (yours to decide): TEC/valve/laser output policies, S4, S8,
+S9, S11, S13, MasterPulse.
