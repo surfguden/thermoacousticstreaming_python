@@ -54,6 +54,9 @@ See `investigation_log.md`, `hardware_notes.md` and `decision_log.md` for invest
 | Run identity, including queued edits | `manifest.run` stores mode and cached Git identity; `test_run_identity.py` including `update_queued`. Missing Git records unknown and does not block queueing. |
 | Stop, recovery and cleanup | TEC cancellation, pump requested flow/poll fault, failed Connect retry, snapshot trigger reset, AD2 independent stop attempts and shutdown-result tests. |
 | Real pixel data remains unchanged | Viewer tests cover contrast, fixed range, hot/constant frames and zoom mapping; 100% is one image pixel per physical display pixel, independent of Fit. |
+| Analysis ROI, row/column profile | `test_image_tools.py`: statistics from raw values (not the display range), drag mapping when fit/zoomed/panned, clamping, move/clear, dropped on size change, profile row/column values, no device command from the main window. Computed on the UI thread: about 0.02 s for a full 2304×2304 frame on the development PC. |
+| Saved-frame review | `test_saved_frames.py`, fixtures written by the real `SeriesStorage` (individual and stacked TIFF): frame order from `experiment.json`, on-demand reads with a bounded cache, refusal of inconsistent records, files unchanged, saved/live state kept apart. |
+| Task navigation, stop controls, monitor | `test_operation_ui.py`: navigation switches tabs only (no command), Stop after current / Abort / Panic enablement, folded Advanced values still queued/saved, one/two-column form, queue-edit buttons across both pages, run-monitor text. Rendered screenshots were inspected by hand at 1366×768 and 1920×1080 (100 %), 1920×1080 at 150 % and a 1366×768 window at 125 % (offscreen platform, simulated devices); this is not a check on a real display or with real devices. Representative captures with their conditions are in `docs/integration/screenshots/` (file names give window size and scaling; saved-frame and viewer shots use a simulated 4-experiment series and a synthetic frame). |
 
 ## Current decisions and evidence boundaries
 
@@ -79,7 +82,7 @@ entries. This is bounded acceptance, not a claim of an exhaustive audit or every
 
 A useful small candidate is persisting Z-stack failure reason and run identity. Other candidates
 are `stage_move` arrival waiting when needed, independent dual-channel TEC UI, extra point-level
-progress, recovery-button convenience, elapsed/remaining time and viewer ROI/profile/frame review.
+progress, recovery-button convenience and elapsed/remaining time.
 None is required just for parity. No automatic resume, recipe manager or audit framework is planned.
 
 ## Verification scope

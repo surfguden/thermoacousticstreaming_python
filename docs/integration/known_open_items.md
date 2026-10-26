@@ -66,11 +66,12 @@ experimental need and an explicit decision; this document does not keep asking f
 | S11: valve/TEC serial-port selection | Both accept ports; OS exclusivity prevents simultaneous open, but does not identify a device on the first open | Historical COM6 prohibition is not a current universal mapping. No fixed COM-number ban or generic resource manager is planned. |
 | External analysis requirements | TIFF/JSON is available, but an active consumer and its exact needs are not established | Keep format. Inspect a named consumer only when it is actually required; do not infer compatibility or mandatory TDMS support from its absence in this repo. |
 | Historical screenshot recipe | Some output, trigger, flush-count and memory assumptions differ from current controls | Provenance/gaps are listed in the operating guide. Not an automatically applied or fully verified current recipe. |
-| Human preview/workflow review | Offscreen tests cover behaviour, not screen readability or interaction feel | A bounded usability check when the viewer is used; not a requirement to build an image-analysis suite. |
+| Human preview/workflow review | Offscreen tests cover behaviour, not screen readability or interaction feel. Layout was inspected on rendered offscreen screenshots only (fonts and a real display's DPI handling were not exercised) | A bounded usability check on the real display when the viewer is used; not a requirement to build an image-analysis suite. |
+| Smallest supported screen | The main window can shrink to 900×560 logical pixels; 1366×768 at 150 % scaling (about 910×510 logical) is smaller than that | Reduce the scaling or maximise the window; panels scroll, but the window cannot go below its minimum. |
+| Image tools scope | One rectangular analysis ROI, one profile line, no calibration, no saving of measurements; the saved-frame viewer does not follow a running series by itself | Intended minimum. Add only for a stated need. |
 
 Optional, not default implementation tasks: a recovery button (console/reconnect already exist),
-elapsed/remaining time, dual-channel temperature UI, temperature-point counters, ROI statistics,
-profiles and disk-backed frame review. No recipe manager, automatic resume or audit framework
+elapsed/remaining time, dual-channel temperature UI and temperature-point counters. No recipe manager, automatic resume or audit framework
 is part of the current plan. Restore labelled partial captures only if a concrete experiment needs it.
 
 ## Resolved integration items (do not reopen without new evidence)

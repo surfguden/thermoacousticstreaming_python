@@ -43,8 +43,34 @@ automatically (no preset manager); historical device addresses and paths are not
 - *TEC evidence:* requested targets are in `definition.json`; available channel status is in the experiment snapshot. The real client does not re-read target parameter 3000. Do not interpret a simulated target readback as a real applied-target measurement.
 - *Standalone Z stack:* its `metadata.json` has no failure reason or run identity; this differs from the series manifest.
 
-**Short test recipe for one simulated experiment** (`SimpleSeriesPanel`, tab "Experiment"; use the
-first table row's values).
+**Where things are in the window.** A "Task" row under the title links to existing tabs
+(1 Prepare devices → the device tabs, 2 Configure and 3 Review and start → the two pages of the
+Experiments tab, 4 Monitor run → the Run monitor tab). They only switch tabs; every tab stays
+reachable and nothing is required before Start. **Stop after current**, **Abort batch** and
+**PANIC · Safe stop** are always visible at the top right: Stop after current lets the running
+experiment finish and ends the batch before the next one; Abort cancels the running experiment and
+ends the batch (an incomplete acquisition is discarded, completed experiments are kept); Panic
+asks for confirmation, then urgently stops the connected AD2/pump/camera/TEC outputs (valve and Z
+stage hold position). Run monitor: batch progress, the running experiment's own parameters,
+series and output folder (with Open output folder), device state and TEC temperatures.
+Hardware timing and the temperature stability policy are under the folded **Advanced** section of
+Configure; its header repeats their values while folded.
+
+**Looking at images.** The camera image window (Camera tab or Run monitor) and the saved-frames
+viewer share the display range, Fit/100 %, zoom/pan, histogram and pixel readout, and add:
+*Draw / move analysis ROI* (one rectangle; mean, population SD, min, max and pixel count of the raw
+values, independent of the display range; not the camera acquisition ROI and it sends no camera
+command; dropped when the image size changes) and *Intensity profile* (one raw row or column, in
+pixel units; no calibration is applied, so no physical length is shown). **Review saved frames…**
+(File menu or Run monitor) opens a series or experiment folder read-only, lists its experiments
+and steps through the frames recorded in `experiment.json` (read from disk one at a time, a few
+cached). Its banner and state line say "saved data, not live". A folder whose frame records are
+missing, out of order or inconsistent is refused with the reason; nothing is guessed from file
+names. Series being written can be opened: only experiments that already have an
+`experiment.json` are listed.
+
+**Short test recipe for one simulated experiment** (Experiments tab; use the first table row's
+values).
 
 1. Launch. Connect only the devices the run uses (Pump, Valve, Camera, AD2 for the shortest run;
    leave TEC off and Temperature unticked).
@@ -53,10 +79,12 @@ first table row's values).
    0 mL". A *real* pump reports its fill level from the SDK; the same guard compares the planned
    flush volume with that read-back. Do not refill by reflex after a restart — prepare the syringe
    according to what it actually holds and what the experiment needs.
-3. Enter a series descriptor (required). Click "Preflight camera settings" before Start, otherwise
-   Start asks for confirmation.
-4. "Queue series", then "Start queued batch". Stop after current / Abort / Panic are available while
-   running.
+3. On *Configure* enter a series descriptor (required) and a base folder, then "Queue series". On
+   *Review and start* click "Preflight camera settings" before Start, otherwise Start asks for
+   confirmation (real mode also needs the batch syringe preflight).
+4. "Start queued batch". Watch it on the Run monitor; Stop after current / Abort / Panic are in the
+   header. Queue edits: *Load selected for editing* and *Remove selected series* are on Review and
+   start, *Update selected series* is next to *Queue series* on Configure.
 5. Output: one `experiment_batch_NNNN/` per queued series with `metadata/` (`definition.json`,
    `manifest.json`, `status.json`, `events.jsonl`) and one TIFF set + `experiment.json` per
    completed experiment. `manifest.json` has a `run` block: `mode` (`simulation`/`real`) and

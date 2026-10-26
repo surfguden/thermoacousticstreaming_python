@@ -1231,3 +1231,36 @@ stack and `stage_move` check their preconditions up front; closing the window du
 Abort and its drain, and a close that cannot finish keeps the application open instead of
 forcing threads to end. Not changed (yours to decide): TEC/valve/laser output policies, S4, S8,
 S9, S11, S13, MasterPulse.
+
+## 2026-10-26 — Operating-surface convergence and minimal image aids
+
+Scope: make the existing integration controls easier to operate and add the smallest image aids
+needed at the bench. Compared against `junjiebranch` code (`qt_ui_v3.py`) and its tests by reading
+them, not from earlier lists. "Implemented/reachable/tested" below refers to junjie's own code.
+
+| Operator task | Integration before | junjie point (implemented · reachable · tested) | Verdict | Reason |
+|---|---|---|---|---|
+| Prepare and connect devices | Six device tabs with their own Connect | "Initialize hardware" dialog, persistent instrument bar, Shutdown button; Prepare checklist with guided pump panels (implemented · reachable · tested) | Equivalent exists (device tabs, close/stop path); only a "1 Prepare devices" shortcut added | The device tabs already drive the same controllers; a guided checklist would be a second readiness model |
+| Configure an experiment, save/load | One long grid of groups; File → save/load settings | Configure sub-tabs (Acquisition / Conditions / Acoustic / Fluidics / Advanced), common vs advanced split (implemented · reachable · tested) | Adopted in spirit: Configure page with folded **Advanced** (timing, stability policy) whose values stay visible in the header; one column on narrow windows | Same layering, no new parameter model; save/load and queue-edit semantics unchanged |
+| Check before Start | Preview text, count/syringe preflight buttons, confirmations in `start()` | Review run tab fed by a separate planner and a run-gate summary (implemented · reachable · tested) | Equivalent exists, regrouped: *Review and start* page (queue, preflights, plan summary, Start) | Integration's plan summary comes from the compiled definition; a second planner would duplicate it and could disagree. No new gate |
+| Observe a run | Status tab: batch line, device rows, temperature plot | Monitor workspace with "Current execution" derived from worker step events (implemented · reachable · tested) | Partly adopted: Run monitor shows completed/planned, the running experiment's own parameters (`status()` now carries `current_parameters`/`current_repeat`), series, output folder, camera image window shortcut | Step-level phase display depends on events the integration does not publish in that form; not re-derived in the UI |
+| Stop / Abort / Panic | Stop and Abort inside the Experiments tab, Panic in the header | Persistent run-control bar with "Request graceful stop"; no Panic equivalent (implemented · reachable · tested) | Adopted placement: all three always visible in the header, enabled only when they apply, tooltips state the difference | Operator should not have to be on one tab to stop |
+| Find the output | Path text in the preview only | None found (no open-folder action in V3) | Added: Open output folder, Review saved frames | New, small |
+| Focus / signal check | Histogram, range, zoom, pixel readout | AD2/camera panels only; no ROI or profile found | Added: one analysis ROI, one row/column profile | Needed for focus and illumination checks; computed from raw pixels |
+| Review saved frames | External analysis only | None found | Added: read-only viewer over `experiment.json` | Disk-backed, see below |
+
+Navigation is a row of buttons that switch existing tabs/pages; it carries no state of its own and
+blocks nothing. Not adopted: junjie's four-workspace split, guided pump preparation, the shared
+readiness planner/run gate, execution-step indicator, operator event log tab, initialization
+dialog. Reason: each rests on structures (its own planner, step events, lifecycle state) that the
+integration does not have, and reproducing them in the UI would put experiment logic there.
+
+Image tools. *Source decision for frame review:* disk (the earlier note asked for one); frames are
+read one at a time with a small cache (`application/saved_frames.py`), order taken only from the
+`frames` list in `experiment.json` and refused if it is inconsistent. Statistics and profiles
+(`application/image_analysis.py`) run on the UI thread: a worst-case 2304×2304 full-frame ROI took
+about 21 ms on the development PC, so no worker thread was added. The analysis ROI is held in
+image pixels, dropped when the image size changes, never sent to the camera. Window layout: the
+Experiments tab's single row of nine buttons had forced a 2376 px minimum width and the window a
+fixed 1080 px height; the buttons are regrouped, the remaining tabs scroll, and the window follows
+the screen (minimum 900×560).
