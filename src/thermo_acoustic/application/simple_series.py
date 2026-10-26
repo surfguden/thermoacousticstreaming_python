@@ -186,14 +186,9 @@ def compile_simple_series(settings: SimpleSeriesSettings) -> dict[str, Any]:
             raise ValueError("Temperature minimum settle time must be nonnegative")
         if settings.temperature_max_wait_s <= 0:
             raise ValueError("Temperature maximum wait must be positive")
-        # Deliberately no extra floor tied to TecWaitStableArgs' own
-        # poll_interval_s default here: that default is a software polling
-        # choice, not a device requirement, and experiment_runner.py's
-        # _run_action() already reports an inconsistent combination as an
-        # ordinary series failure at run time -- a second, compile-time
-        # restriction duplicating that same software default as if it were
-        # a rule this field must obey is exactly the kind of unnecessary
-        # restriction worth not adding.
+        # The runner adapts poll_interval_s to min(1.0, max_wait_s), so a
+        # positive sub-second timeout is executable. The polling default
+        # does not impose a physical lower bound on this field.
     if not 0 <= settings.flush_wait_after_s <= 100:
         raise ValueError("Wait after flush must be within 0..100 s")
     if settings.sweep_enabled and (settings.sweep_period_ms <= 0 or any(width <= 0 for width in widths)):
