@@ -5,14 +5,20 @@ from datetime import datetime
 
 import numpy as np
 from PIL import Image
+from ..application.image_analysis import (
+    Rect, RoiStats, clamp_rect, column_profile, move_rect, rect_from_points, roi_statistics, row_profile,
+)
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QToolButton,
@@ -25,6 +31,11 @@ class ScopePlot(QWidget):
     """Small dependency-free plot for typed AD2 scope results."""
 
     _COLORS = (QColor("#4da3ff"), QColor("#ff8c42"), QColor("#5fd35f"), QColor("#d66cff"))
+    x_axis_label = "time (s)"
+    empty_message = "No scope data"
+
+    def _series_label(self, channel: int) -> str:
+        return f"CH{channel + 1}"
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -79,7 +90,7 @@ class ScopePlot(QWidget):
         painter.drawRect(area)
         bounds = self._data_bounds()
         if bounds is None:
-            painter.drawText(area, Qt.AlignmentFlag.AlignCenter, "No scope data")
+            painter.drawText(area, Qt.AlignmentFlag.AlignCenter, self.empty_message)
             return
         (data_x0, data_x1), (data_y0, data_y1) = bounds
         x0, x1 = self._x_view or (data_x0, data_x1)
@@ -102,12 +113,12 @@ class ScopePlot(QWidget):
                 painter.drawPolyline(points)
             painter.drawText(
                 QPointF(area.left() + color_index * 72, self.height() - 10),
-                f"CH{channel + 1}",
+                self._series_label(channel),
             )
         painter.setPen(self.palette().text().color())
         painter.drawText(2, 22, f"{high:.4g}")
         painter.drawText(2, int(area.bottom()), f"{low:.4g}")
-        painter.drawText(area, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight, "time (s)")
+        painter.drawText(area, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight, self.x_axis_label)
         painter.drawText(int(area.left()), self.height() - 10, f"{x0:.5g}")
         painter.drawText(int(area.right()) - 70, self.height() - 10, f"{x1:.5g}")
 
@@ -159,6 +170,25 @@ class ScopePlot(QWidget):
             self.unsetCursor()
 
 
+class ProfilePlot(ScopePlot):
+    """Raw intensity along one image row or column; x is the pixel index (sample rate 1 per px)."""
+
+    x_axis_label = "pixel position (px)"
+    empty_message = "No profile"
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setMinimumHeight(110)
+        self.label = ""
+
+    def set_profile(self, values: np.ndarray | None, label: str) -> None:
+        self.label = label
+        self.set_samples({} if values is None else {0: values.tolist()}, 1.0)
+
+    def _series_label(self, channel: int) -> str:
+        return ""  # the description sits in a label above the plot, clear of the axis ticks
+
+
 class ScopePlotWindow(QDialog):
     """Reusable, non-modal scope viewer with Qt-native zoom and pan."""
 
@@ -190,6 +220,7 @@ class ScopePlotWindow(QDialog):
 #: images; change here if real frames call for a different tail.
 ROBUST_TAIL_FRACTION = 0.002
 
+ROI_DRAG_THRESHOLD_PX = 3
 MIN_ZOOM = 0.05
 MAX_ZOOM = 64.0
 ZOOM_STEP = 1.25
@@ -245,6 +276,8 @@ class CameraPreview(QLabel):
 
     pixel_hovered = Signal(object)
     view_changed = Signal()
+    #: Emitted with the analysis ROI as (x, y, width, height) image pixels, or None when cleared.
+    roi_changed = Signal(object)
 
     def __init__(self, parent=None) -> None:
         super().__init__("No image")
@@ -258,6 +291,13 @@ class CameraPreview(QLabel):
         self._zoom: float | None = None
         self._center: QPointF | None = None
         self._drag_start: tuple[QPointF, QPointF] | None = None
+        # Analysis ROI: a rectangle in image pixels, display/measurement only. It is not the
+        # camera's acquisition ROI and nothing here talks to the camera.
+        self._analysis_roi: Rect | None = None
+        self._roi_tool = False
+        self._roi_drag: tuple[str, object] | None = None  # ("new", start_xy) / ("move", (xy, rect))
+        self._roi_draft: Rect | None = None
+        self._profile_marker: tuple[str, int] | None = None  # ("row"|"column", index)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setMinimumSize(260, 180)
         self.setFrameShape(QLabel.Shape.Box)
@@ -279,9 +319,72 @@ class CameraPreview(QLabel):
     def is_fit(self) -> bool:
         return self._zoom is None
 
+    @property
+    def analysis_roi(self) -> Rect | None:
+        return self._analysis_roi
+
+    @property
+    def roi_tool_active(self) -> bool:
+        return self._roi_tool
+
+    def set_roi_tool(self, active: bool) -> None:
+        """While active, a left drag draws or moves the analysis ROI instead of panning."""
+        self._roi_tool = bool(active)
+        self._roi_drag = None
+        self._roi_draft = None
+        self.update()
+
+    def set_analysis_roi(self, rect: Rect | None) -> None:
+        """Set (clamped to the current image) or clear the analysis ROI."""
+        if rect is not None and self._raw_frame is not None:
+            rect = clamp_rect(rect, self._raw_frame.shape)
+        elif rect is not None:
+            rect = None
+        if rect != self._analysis_roi:
+            self._analysis_roi = rect
+            self.update()
+            self.roi_changed.emit(rect)
+
+    def clear_analysis_roi(self) -> None:
+        self.set_analysis_roi(None)
+
+    def set_profile_marker(self, marker: tuple[str, int] | None) -> None:
+        if marker != self._profile_marker:
+            self._profile_marker = marker
+            self.update()
+
+    def image_position_at(self, position: QPointF) -> tuple[float, float] | None:
+        """Image position (pixel units, pixel i spans [i, i+1)) under a widget position,
+        clamped to the image so a drag may leave the widget. None without an image."""
+        raw, geometry = self._raw_frame, self._view_geometry()
+        if raw is None or geometry is None:
+            return None
+        source, target = geometry
+        scale = self.effective_scale()
+        x = source.x() + (position.x() - target.x()) / scale
+        y = source.y() + (position.y() - target.y()) / scale
+        return min(max(x, 0.0), float(raw.shape[1])), min(max(y, 0.0), float(raw.shape[0]))
+
+    def _rect_to_widget(self, rect: Rect) -> QRectF | None:
+        geometry = self._view_geometry()
+        if geometry is None:
+            return None
+        source, target = geometry
+        scale = self.effective_scale()
+        x, y, width, height = rect
+        return QRectF(target.x() + (x - source.x()) * scale, target.y() + (y - source.y()) * scale,
+                      width * scale, height * scale)
+
     def set_frame(self, frame: object, limits: tuple[int, int] | None = None) -> None:
         previous_shape = None if self._image is None else (self._image.height(), self._image.width())
         self._raw_frame = np.ascontiguousarray(frame).copy() if isinstance(frame, np.ndarray) and frame.ndim == 2 else None
+        if self._analysis_roi is not None and (
+                self._raw_frame is None or self._raw_frame.shape != previous_shape):
+            # A rectangle from another image size no longer means the same pixels.
+            self._analysis_roi = None
+            self._roi_drag = None
+            self._roi_draft = None
+            self.roi_changed.emit(None)
         self._display_limits = limits
         try:
             image = self._display_image(frame)
@@ -417,6 +520,25 @@ class CameraPreview(QLabel):
         # pixels stay visible and readable against the pixel readout.
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, self.effective_scale() < 1.0)
         painter.drawPixmap(target, self._pixmap, source)
+        roi = self._roi_draft or self._analysis_roi
+        if roi is not None:
+            widget_rect = self._rect_to_widget(roi)
+            if widget_rect is not None:
+                painter.setPen(QPen(QColor("#ffb347"), 2, Qt.PenStyle.DashLine))
+                painter.drawRect(widget_rect)
+        if self._profile_marker is not None and self._raw_frame is not None:
+            kind, index = self._profile_marker
+            rows, columns = self._raw_frame.shape
+            line = (self._rect_to_widget((0, index, columns, 1)) if kind == "row"
+                    else self._rect_to_widget((index, 0, 1, rows)))
+            if line is not None:
+                painter.setPen(QPen(QColor("#40d6c4"), 1))
+                if kind == "row":
+                    painter.drawLine(QPointF(line.left(), line.center().y()),
+                                     QPointF(line.right(), line.center().y()))
+                else:
+                    painter.drawLine(QPointF(line.center().x(), line.top()),
+                                     QPointF(line.center().x(), line.bottom()))
         painter.end()
 
     # --------------------------------------------------------------- mapping
@@ -437,6 +559,17 @@ class CameraPreview(QLabel):
 
     # ---------------------------------------------------------------- events
     def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self._roi_tool and self._raw_frame is not None:
+            point = self.image_position_at(QPointF(event.position()))
+            if point is not None:
+                roi = self._analysis_roi
+                inside = (roi is not None and roi[0] <= point[0] < roi[0] + roi[2]
+                          and roi[1] <= point[1] < roi[1] + roi[3])
+                self._roi_drag = (("move", (point, roi)) if inside
+                                  else ("new", (point, QPointF(event.position()))))
+                self.setCursor(Qt.CursorShape.SizeAllCursor if inside else Qt.CursorShape.CrossCursor)
+            super().mousePressEvent(event)
+            return
         if event.button() == Qt.MouseButton.LeftButton and self._image is not None:
             geometry = self._view_geometry()
             if geometry is not None:
@@ -446,6 +579,14 @@ class CameraPreview(QLabel):
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self._roi_drag is not None:
+            draft, self._roi_drag, self._roi_draft = self._roi_draft, None, None
+            self.unsetCursor()
+            if draft is not None:  # a plain click (no draft) leaves the ROI as it was
+                self.set_analysis_roi(draft)
+            self.update()
+            super().mouseReleaseEvent(event)
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start = None
             self.unsetCursor()
@@ -453,6 +594,22 @@ class CameraPreview(QLabel):
 
     def mouseMoveEvent(self, event) -> None:
         self._hover_position = QPointF(event.position())
+        if self._roi_drag is not None and self._raw_frame is not None:
+            point = self.image_position_at(QPointF(event.position()))
+            kind, data = self._roi_drag
+            if point is not None and kind == "new":
+                start, press = data
+                # A few screen pixels of movement separate a drag from a click.
+                moved = (QPointF(event.position()) - press).manhattanLength() >= ROI_DRAG_THRESHOLD_PX
+                self._roi_draft = (rect_from_points(start, point, self._raw_frame.shape) if moved else None)
+            elif point is not None and kind == "move":
+                start, roi = data
+                self._roi_draft = move_rect(roi, round(point[0] - start[0]), round(point[1] - start[1]),
+                                            self._raw_frame.shape)
+            self.update()
+            self.pixel_hovered.emit(self.pixel_at(self._hover_position))
+            super().mouseMoveEvent(event)
+            return
         if self._drag_start is not None and self._zoom is not None:
             origin, center = self._drag_start
             scale = self.effective_scale()
@@ -600,6 +757,114 @@ class CameraHistogram(QWidget):
         painter.end()
 
 
+class ImageMeasurementPanel(QWidget):
+    """Analysis-ROI statistics and a row/column intensity profile of the frame in ``preview``.
+
+    Everything is computed from the raw pixel values in pixel units, so the display stretch has no
+    effect. The analysis ROI is not the camera's acquisition ROI: nothing here sends a camera command.
+    """
+
+    def __init__(self, preview: CameraPreview, parent=None) -> None:
+        super().__init__(parent)
+        self.preview = preview
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        roi_buttons = QHBoxLayout()
+        self.roi_button = QPushButton("Draw / move analysis ROI")
+        self.roi_button.setCheckable(True)
+        self.roi_button.setToolTip(
+            "While on, drag on the image to draw a rectangle, or drag inside it to move it "
+            "(panning is off meanwhile). Display-only measurement.")
+        self.clear_roi_button = QPushButton("Clear ROI")
+        roi_buttons.addWidget(self.roi_button)
+        roi_buttons.addWidget(self.clear_roi_button)
+        layout.addLayout(roi_buttons)
+        self.roi_label = QLabel("Analysis ROI: none")
+        self.roi_label.setWordWrap(True)
+        layout.addWidget(self.roi_label)
+        note = QLabel("The analysis ROI is not the camera acquisition ROI; it sends no camera command.")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        profile_row = QHBoxLayout()
+        self.profile_check = QCheckBox("Intensity profile")
+        self.profile_axis = QComboBox()
+        self.profile_axis.addItem("Row (horizontal line)", "row")
+        self.profile_axis.addItem("Column (vertical line)", "column")
+        self.profile_position = QSpinBox()
+        self.profile_position.setKeyboardTracking(False)
+        profile_row.addWidget(self.profile_check)
+        profile_row.addWidget(self.profile_axis, 1)
+        profile_row.addWidget(self.profile_position)
+        layout.addLayout(profile_row)
+        self.profile_label = QLabel("")
+        self.profile_label.setWordWrap(True)
+        self.profile_label.setVisible(False)
+        layout.addWidget(self.profile_label)
+        self.profile_plot = ProfilePlot()
+        self.profile_plot.setVisible(False)
+        layout.addWidget(self.profile_plot)
+        self.roi_button.toggled.connect(preview.set_roi_tool)
+        self.clear_roi_button.clicked.connect(preview.clear_analysis_roi)
+        preview.roi_changed.connect(lambda _rect: self.refresh())
+        self.profile_check.toggled.connect(self._profile_toggled)
+        self.profile_axis.currentIndexChanged.connect(lambda _index: self._axis_changed())
+        self.profile_position.valueChanged.connect(lambda _value: self.refresh())
+        self._shape: tuple[int, int] | None = None
+        self._axis_changed()
+
+    def _profile_toggled(self, enabled: bool) -> None:
+        self.profile_plot.setVisible(enabled)
+        self.profile_label.setVisible(enabled)
+        self.refresh()
+
+    def _axis_changed(self) -> None:
+        self._update_position_range(recenter=True)
+        self.refresh()
+
+    def _update_position_range(self, *, recenter: bool = False) -> None:
+        frame = self.preview.raw_frame
+        shape = None if frame is None else frame.shape
+        count = 1 if shape is None else (shape[0] if self.profile_axis.currentData() == "row" else shape[1])
+        self.profile_position.blockSignals(True)
+        self.profile_position.setRange(0, max(count - 1, 0))
+        if recenter or self.profile_position.value() > count - 1:
+            self.profile_position.setValue(count // 2 if shape is not None else 0)
+        self.profile_position.blockSignals(False)
+
+    def refresh(self) -> None:
+        """Recompute from ``preview.raw_frame``; called after every frame and every ROI/profile change."""
+        frame = self.preview.raw_frame
+        shape = None if frame is None else frame.shape
+        if shape != self._shape:
+            self._shape = shape
+            self._update_position_range(recenter=True)
+        stats = None
+        if frame is not None and self.preview.analysis_roi is not None:
+            stats = roi_statistics(frame, self.preview.analysis_roi)
+        self.roi_label.setText(self.describe_roi(stats))
+        marker, values, label = None, None, ""
+        if self.profile_check.isChecked() and frame is not None:
+            position = self.profile_position.value()
+            if self.profile_axis.currentData() == "row":
+                values, label, marker = row_profile(frame, position), f"row y={position}", ("row", position)
+            else:
+                values, label, marker = column_profile(frame, position), f"column x={position}", ("column", position)
+        self.profile_plot.set_profile(values, label)
+        self.profile_label.setText(
+            "" if values is None else
+            f"Profile along {label} · min {values.min()} · max {values.max()} · raw values, pixel units")
+        self.preview.set_profile_marker(marker if values is not None else None)
+
+    @staticmethod
+    def describe_roi(stats: RoiStats | None) -> str:
+        if stats is None:
+            return "Analysis ROI: none"
+        x, y, width, height = stats.rect
+        return (f"Analysis ROI x={x}, y={y}, {width}×{height} px ({stats.pixel_count} px) · "
+                f"mean {stats.mean:.2f} · std {stats.std:.2f} (population) · "
+                f"min {stats.minimum} · max {stats.maximum} · raw values")
+
+
 class CameraImageWindow(QDialog):
     """Reusable non-modal camera viewer for every acquisition mode.
 
@@ -616,10 +881,13 @@ class CameraImageWindow(QDialog):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Camera acquisition")
-        self.resize(900, 700)
-        layout = QVBoxLayout(self)
+        screen = QGuiApplication.primaryScreen()
+        available = screen.availableGeometry() if screen is not None else None
+        self.resize(min(1180, int(available.width() * 0.95)) if available else 1180,
+                    min(740, int(available.height() * 0.92)) if available else 740)
+        layout = QHBoxLayout(self)
         self.preview = CameraPreview()
-        self.preview.setMinimumSize(640, 480)
+        self.preview.setMinimumSize(320, 240)
         # A QLabel's size hint follows its pixmap. Ignore that hint so each
         # new sensor frame cannot resize or reposition the window.
         self.preview.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
@@ -677,26 +945,45 @@ class CameraImageWindow(QDialog):
         self.cursor_status = QLabel("Cursor (frame x, y, value): —")
         self.preview.pixel_hovered.connect(self._show_pixel)
 
-        intensity_row = QHBoxLayout()
-        for widget in (self.full_range_button, self.adjust_intensity_button, self.robust_button,
-                       self.autoscale_checkbox, QLabel("Low"), self.limit_low, QLabel("High"),
-                       self.limit_high, self.limit_apply_button):
-            intensity_row.addWidget(widget)
-        intensity_row.addStretch(1)
+        intensity_row = QGridLayout()
+        for column, widget in enumerate((self.full_range_button, self.adjust_intensity_button,
+                                         self.robust_button)):
+            intensity_row.addWidget(widget, 0, column)
+        intensity_row.addWidget(self.autoscale_checkbox, 1, 0, 1, 3)
+        for column, widget in enumerate((QLabel("Low"), self.limit_low, QLabel("High"), self.limit_high)):
+            intensity_row.addWidget(widget, 2, column)
+        intensity_row.addWidget(self.limit_apply_button, 3, 0, 1, 3)
         view_row = QHBoxLayout()
         for widget in (self.fit_button, self.zoom_100_button, self.zoom_out_button,
                        self.zoom_in_button, self.zoom_label):
             view_row.addWidget(widget)
         view_row.addStretch(1)
-        layout.addWidget(self.preview_state)
-        layout.addWidget(self.frame_info)
-        layout.addWidget(self.preview, 1)
-        layout.addLayout(view_row)
-        layout.addLayout(intensity_row)
-        layout.addWidget(self.histogram)
-        layout.addWidget(self.intensity_status)
-        layout.addWidget(self.cursor_status)
-        layout.addWidget(self.status)
+        # Image and its state on the left; display and measurement controls scroll on the right,
+        # so a short screen does not push either out of reach.
+        left = QVBoxLayout()
+        self.extra_top = QVBoxLayout()  # room for a subclass's own controls above the image
+        left.addLayout(self.extra_top)
+        left.addWidget(self.preview_state)
+        left.addWidget(self.frame_info)
+        left.addWidget(self.preview, 1)
+        left.addLayout(view_row)
+        left.addWidget(self.cursor_status)
+        left.addWidget(self.status)
+        layout.addLayout(left, 1)
+        side_body = QWidget()
+        side = QVBoxLayout(side_body)
+        side.addLayout(intensity_row)
+        side.addWidget(self.histogram)
+        side.addWidget(self.intensity_status)
+        self.measurement = ImageMeasurementPanel(self.preview)
+        side.addWidget(self.measurement)
+        side.addStretch(1)
+        side_scroll = QScrollArea()
+        side_scroll.setWidgetResizable(True)
+        side_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        side_scroll.setWidget(side_body)
+        side_scroll.setMinimumWidth(400)
+        layout.addWidget(side_scroll)
 
         # Preview state. `_clock` is injectable so tests need no real waiting.
         self._clock = datetime.now
@@ -802,6 +1089,7 @@ class CameraImageWindow(QDialog):
         if frame_limits is None:
             limits = None
         self.preview.set_frame(frame, limits)
+        self.measurement.refresh()
         self.adjust_intensity_button.setEnabled(frame_limits is not None)
         self.robust_button.setEnabled(frame_limits is not None)
         self._apply_limits(limits, update_preview=False)

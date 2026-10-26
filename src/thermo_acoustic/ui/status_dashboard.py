@@ -40,6 +40,7 @@ def describe_condition(parameters: dict | None) -> str:
 
 
 class StatusDashboard(QWidget):
+    review_requested = Signal(str)
     image_window_requested = Signal()
 
     def __init__(self, parent=None) -> None:
@@ -64,11 +65,13 @@ class StatusDashboard(QWidget):
         run_grid.setColumnStretch(1, 1)
         buttons = QHBoxLayout()
         self.open_output_button = QPushButton("Open output folder")
+        self.review_button = QPushButton("Review saved frames…")
         self.image_window_button = QPushButton("Camera image window")
         self.open_output_button.setEnabled(False)
         self.open_output_button.clicked.connect(self.open_output_folder)
         self.image_window_button.clicked.connect(self.image_window_requested)
-        for button in (self.open_output_button, self.image_window_button):
+        self.review_button.clicked.connect(lambda: self.review_requested.emit(self._folder or ""))
+        for button in (self.open_output_button, self.review_button, self.image_window_button):
             buttons.addWidget(button)
         buttons.addStretch(1)
         run_grid.addLayout(buttons, 4, 0, 1, 2)

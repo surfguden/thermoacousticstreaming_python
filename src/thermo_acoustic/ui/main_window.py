@@ -41,6 +41,7 @@ from ..domain.models import ConnectionState, DeviceId, DeviceStatus, OperatingMo
 from .device_panels import DevicePanel, PANEL_TYPES
 from .workflow_panel import WorkflowPanel
 from .experiment_panel import ExperimentPanel
+from .saved_frames_window import SavedFramesWindow
 from .simple_series_panel import SimpleSeriesPanel
 from .status_dashboard import StatusDashboard
 
@@ -141,6 +142,8 @@ class MainWindow(QMainWindow):
         self.dashboard = StatusDashboard()
         self.tabs.addTab(self._scrolling(self.dashboard), "Run monitor")
         self.dashboard.image_window_requested.connect(self._show_camera_image_window)
+        self.dashboard.review_requested.connect(self._review_saved_frames)
+        self.saved_frames_window: SavedFramesWindow | None = None
         self.builder_window = ExperimentBuilderWindow(controller.experiments, self)
         controller.experiments.confirm_batch = self.confirm_experiment_batch
         controller.experiments.confirm_unchecked = self.confirm_unchecked_preflight
@@ -229,6 +232,21 @@ class MainWindow(QMainWindow):
         for name, button in self._nav_buttons.items():
             button.setChecked(name == key)
         self._nav_group.setExclusive(True)
+
+    def _review_saved_frames(self, folder: str = "") -> None:
+        """Open the saved-frames viewer on ``folder`` (a series or experiment folder) or ask for one.
+
+        The viewer only reads files; it never touches a device or the running batch."""
+        if self.saved_frames_window is None:
+            self.saved_frames_window = SavedFramesWindow(self)
+        window = self.saved_frames_window
+        window.show()
+        window.raise_()
+        window.activateWindow()
+        if folder and Path(folder).is_dir():
+            window.open_or_report(folder)
+        else:
+            window.choose_folder(self.dashboard.output_folder or "")
 
     def _show_camera_image_window(self) -> None:
         window = self.panels[DeviceId.CAMERA].image_window
@@ -324,6 +342,10 @@ class MainWindow(QMainWindow):
         load_action.triggered.connect(self._choose_load_profile)
         menu.addAction(save_action)
         menu.addAction(load_action)
+        menu.addSeparator()
+        review_action = QAction("Review saved frames…", self)
+        review_action.triggered.connect(lambda: self._review_saved_frames())
+        menu.addAction(review_action)
 
     def _create_log_menu(self) -> None:
         menu = self.menuBar().addMenu("&Log")
@@ -639,6 +661,8 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self.panels[DeviceId.CAMERA].image_window.close()
+        if self.saved_frames_window is not None:
+            self.saved_frames_window.close()
         self.builder_window.close()
         event.accept()
 

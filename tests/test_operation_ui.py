@@ -142,6 +142,10 @@ def test_run_monitor_shows_progress_condition_and_output_location(qt_app, tmp_pa
                                  "current_series": None, "series": []})
     assert dashboard.output_folder == str(series) and dashboard.open_output_button.isEnabled()
     assert dashboard.condition.text().startswith("—")
+    requested = []
+    dashboard.review_requested.connect(requested.append)
+    dashboard.review_button.click()
+    assert requested == [str(series)]
 
 
 def test_runner_status_exposes_the_current_experiments_parameters(qt_app):
