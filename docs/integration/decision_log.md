@@ -1246,7 +1246,7 @@ them, not from earlier lists. "Implemented/reachable/tested" below refers to jun
 | Observe a run | Status tab: batch line, device rows, temperature plot | Monitor workspace with "Current execution" derived from worker step events (implemented · reachable · tested) | Partly adopted: Run monitor shows completed/planned, the running experiment's own parameters (`status()` now carries `current_parameters`/`current_repeat`), series, output folder, camera image window shortcut | Step-level phase display depends on events the integration does not publish in that form; not re-derived in the UI |
 | Stop / Abort / Panic | Stop and Abort inside the Experiments tab, Panic in the header | Persistent run-control bar with "Request graceful stop"; no Panic equivalent (implemented · reachable · tested) | Adopted placement: all three always visible in the header, enabled only when they apply, tooltips state the difference | Operator should not have to be on one tab to stop |
 | Find the output | Path text in the preview only | None found (no open-folder action in V3) | Added: Open output folder, Review saved frames | New, small |
-| Focus / signal check | Histogram, range, zoom, pixel readout | AD2/camera panels only; no ROI or profile found | Added: one analysis ROI, one row/column profile | Needed for focus and illumination checks; computed from raw pixels |
+| Focus / signal check | Histogram, range, zoom, pixel readout | junjie has the *camera acquisition* ROI ("Shared applied ROI" group, "Edit ROI in Prepare"); no analysis ROI on the displayed image and no intensity profile were found in its Qt files | Added: one *analysis* ROI on the displayed image (statistics, no camera command) and one row/column *profile*; the acquisition ROI stays the existing camera/series controls | Needed for focus and illumination checks; computed from raw pixels |
 | Review saved frames | External analysis only | None found | Added: read-only viewer over `experiment.json` | Disk-backed, see below |
 
 Navigation is a row of buttons that switch existing tabs/pages; it carries no state of its own and
@@ -1264,3 +1264,8 @@ image pixels, dropped when the image size changes, never sent to the camera. Win
 Experiments tab's single row of nine buttons had forced a 2376 px minimum width and the window a
 fixed 1080 px height; the buttons are regrouped, the remaining tabs scroll, and the window follows
 the screen (minimum 900×560).
+
+Correction (same day): an earlier line said junjie's Qt files contain no ROI code. They do have the
+camera acquisition ROI (offset/size, applied to the camera). What was not found there is an analysis
+ROI on the displayed image or an intensity profile. The three are separate: acquisition ROI (camera
+setting), analysis ROI (display-only measurement), intensity profile (one raw row or column).
