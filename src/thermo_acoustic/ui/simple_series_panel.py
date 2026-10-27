@@ -303,7 +303,7 @@ class SimpleSeriesPanel(QWidget):
         self.form_differs_label.setWordWrap(True)
         self.form_differs_label.setStyleSheet("color: #a65a00; font-weight: 600")
         plan_layout.addWidget(self.form_differs_label)
-        review_layout.insertWidget(review_layout.indexOf(checks), plan_group)
+        review_layout.insertWidget(review_layout.indexOf(checks) + 1, plan_group)  # preflight first, then the plan
         review_layout.addStretch(1)
         self.state_label = QLabel()
         self.state_label.setWordWrap(True)

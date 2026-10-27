@@ -250,3 +250,11 @@ experiments; the queue page shows the requested (not measured) timing of one exp
 | Configure groups, range tags, timing table, queue page | `simple_series_panel.py` (`_range`, `_render_timing`) |
 | Run monitor (current run, alert line, image host) | `status_dashboard.py` |
 | Results page | `results_panel.py` (hosts `SavedFramesWindow`) |
+
+Differences to know: **Results** names two folders apart: *Viewing* (what the viewer loaded, by any route;
+the file-manager button opens this one) and *Latest output of this session* (shortcut from the monitor).
+**Queue and start** shows the compiled plan of the *selected queued series* (what Start runs; flush
+budget from `ExperimentManager.queued_flush_budget`, timing from the settings it was queued with) and
+warns when the form has edits the queue does not; the form's own plan is the folded "Preview of this
+form (not queued)" on Configure. An image viewer embedded in a page ignores Esc/Enter (`CameraImageWindow.done`);
+popped out it is an ordinary window again.
