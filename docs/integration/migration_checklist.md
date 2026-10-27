@@ -75,8 +75,8 @@ values).
 1. Launch. Connect only the devices the run uses (Pump, Valve, Camera, AD2 for the shortest run;
    leave TEC off and Temperature unticked).
 2. **Pump fill level.** The *simulated* pump starts at 0 mL, so click Refill on the flush unit
-   first, otherwise queuing fails with "Pump unit N needs X mL total flush volume but currently has
-   0 mL". A *real* pump reports its fill level from the SDK; the same guard compares the planned
+   first, otherwise the series fails when it starts (Queue does not check) with "Pump unit N needs X mL
+   total flush volume but currently has 0 mL"; the batch syringe preflight finds it earlier. A *real* pump reports its fill level from the SDK; the same guard compares the planned
    flush volume with that read-back. Do not refill by reflex after a restart — prepare the syringe
    according to what it actually holds and what the experiment needs.
 3. On *Configure* enter a series descriptor (required) and a base folder, then "Queue series". On
@@ -84,7 +84,10 @@ values).
    confirmation (real mode also needs the batch syringe preflight).
 4. "Start queued batch". Watch it on the Run monitor; Stop after current / Abort / Panic are in the
    header. Queue edits: *Load selected for editing* and *Remove selected series* are on Review and
-   start, *Update selected series* is next to *Queue series* on Configure.
+   start; *Update loaded series* is next to *Queue series* on Configure and changes only the series
+   named in "Editing queued series: …" above the form (nothing is changed when none is loaded).
+   Review shows what blocks Start and what is only a reminder. A new batch needs a new empty base
+   folder (one base folder holds one batch).
 5. Output: one `experiment_batch_NNNN/` per queued series with `metadata/` (`definition.json`,
    `manifest.json`, `status.json`, `events.jsonl`) and one TIFF set + `experiment.json` per
    completed experiment. `manifest.json` has a `run` block: `mode` (`simulation`/`real`) and

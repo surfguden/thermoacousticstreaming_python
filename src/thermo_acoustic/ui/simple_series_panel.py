@@ -265,10 +265,9 @@ class SimpleSeriesPanel(QWidget):
         self.start_readiness_label = QLabel()
         self.start_readiness_label.setWordWrap(True)
         self.start_readiness_label.setTextFormat(Qt.TextFormat.RichText)
-        review_layout.addWidget(self.start_readiness_label)
         start_row = QHBoxLayout()
-        start_row.addWidget(self.start_button)
-        start_row.addStretch(1)
+        start_row.addWidget(self.start_button, 0, Qt.AlignmentFlag.AlignTop)
+        start_row.addWidget(self.start_readiness_label, 1)
         review_layout.addLayout(start_row)
         review_layout.addStretch(1)
         self.state_label = QLabel()
@@ -758,7 +757,8 @@ class SimpleSeriesPanel(QWidget):
         readiness = self.manager.start_readiness()
         lines = [f'<span style="color:#b71c1c;font-weight:600">Cannot start: {text}</span>'
                  for text in readiness.blocking]
-        lines += [f'<span style="color:#555">Not blocking: {text}</span>' for text in readiness.reminders]
+        if readiness.reminders:
+            lines.append('<span style="color:#555">Not blocking: ' + "; ".join(readiness.reminders) + "</span>")
         self.start_readiness_label.setText("<br>".join(lines))
         self.start_button.setEnabled(not readiness.blocking and not self._start_locked)
 

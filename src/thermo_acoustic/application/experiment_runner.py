@@ -374,12 +374,11 @@ class ExperimentManager(QObject):
                 reminders.append(f"Camera preflight is not current for {len(unchecked)} queued series "
                                  "(optional; Start asks to continue)")
             if syringe_needed and not syringe_current and self.controller.mode is not OperatingMode.REAL:
-                reminders.append("Batch syringe preflight not run (required in real mode); pump fill level "
-                                 "is checked when each series starts")
+                reminders.append("Batch syringe preflight not run (required in real mode)")
             if self.controller.mode is OperatingMode.REAL:
                 reminders.append("Start asks for confirmation before using real hardware")
-            reminders.append("Checked when the series starts, not now: required devices connected, pump "
-                             "capacity and fill level, camera buffer, no manual AD2 output running")
+            reminders.append("Checked only when the series starts: devices connected, pump level, camera "
+                             "buffer, no manual AD2 output")
         return StartReadiness(tuple(blocking), tuple(reminders))
 
     def start(self) -> bool:

@@ -1269,3 +1269,30 @@ Correction (same day): an earlier line said junjie's Qt files contain no ROI cod
 camera acquisition ROI (offset/size, applied to the camera). What was not found there is an analysis
 ROI on the displayed image or an intensity profile. The three are separate: acquisition ROI (camera
 setting), analysis ROI (display-only measurement), intensity profile (one raw row or column).
+
+## 2026-10-27 — Operation-logic corrections after the UI walkthrough
+
+Scope: operator-facing logic only; no change to experiment order, hardware protocol, output policy
+or data format. Simulation, offscreen and programmatic clicks only; not a real-display check.
+
+- **Queue edit target.** Update used whichever row was selected when pressed (load A, browse to B,
+  Update rewrote B). The panel now keeps the one loaded series, shows it above the form, disables
+  Update without one and drops it when that series is removed, started or finished; Queue and a new
+  Load retarget explicitly. Loading a settings file leaves the target (the label stays visible).
+  Regression tests fail on the old behaviour (verified by reverting).
+- **Rejected Queue.** `queue()` reset a finished batch's record before validating; an invalid
+  definition, a bad/non-empty folder or a storage error wiped state, counts and display. It now
+  resets only after the new series is stored (tested, verified by reverting).
+- **Base folder rule.** Kept. One base folder holds one batch (`experiment_batch_NNNN` per series);
+  numbering already avoids overwrites, but relaxing the rule would mix batches without any batch
+  identity on disk. Only the message now says what to do.
+- **Header.** "Batch idle" + what devices report (fault/active) + "Last action:"; no static Ready.
+  Operator Abort reads "Experiment batch aborted: …" (state, status.json and events unchanged;
+  Panic classification S8 untouched). Mode and six connection states are one non-growing line.
+- **Start readiness.** `start_readiness()` (read-only, shared with `start()`) lists blockers and
+  reminders on Review. Camera preflight stays optional; items that need a device refresh are marked
+  "checked when the series starts". Start is disabled only for the listed blockers.
+- **Camera / Z-stage / TEC pages.** Readback repr replaced by summaries (unknown shown as unknown;
+  Z measured vs commanded). Notes state which controls act now and that Import copies camera → form
+  only; camera and Z stack pages can show the image window without acquiring. "Workflows" tab is
+  "Flush".
