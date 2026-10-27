@@ -573,3 +573,98 @@ def test_builder_edit_of_a_form_queued_series_shows_in_the_queue_plan(two_queued
     panel.load_button.click()
     assert warned and "outside the simple form" in warned[0]
     assert panel.queue_plan_text.text() == text
+
+
+def _compiled(**changes):
+    from dataclasses import replace
+    from thermo_acoustic.application.simple_series import (
+        NumericRange, SimpleSeriesSettings, compile_simple_series)
+    base = SimpleSeriesSettings(
+        repeats=1, frame_count=5, camera_fps=10, sound_start_s=0, sound_run_s=1, laser_start_s=0, laser_run_s=0.1,
+        camera_start_s=0.1, frequency_hz=NumericRange(1e6, 1e6, 1), amplitude_v=NumericRange(1, 1, 1),
+        exposure_ms=NumericRange(1, 1, 1), roi=(0, 0, 8, 6), flush_unit_index=0, flush_volume_ml=0.01,
+        flush_flow_ul_min=200, description="facts")
+    return compile_simple_series(replace(base, **changes))
+
+
+def test_plan_facts_report_disabled_outputs_and_refuse_to_summarise_mixed_definitions():
+    import copy
+    from thermo_acoustic.application.experiments import validate_definition
+    from thermo_acoustic.application.plan_facts import plan_facts
+    definition = _compiled()
+
+    def facts_of(d):
+        return plan_facts(validate_definition(d).steps)
+
+    def configure(d):
+        node = d["steps"]
+        stack = [node]
+        while stack:
+            for step in stack.pop():
+                if step.get("type") == "ad2_configure":
+                    return step
+                stack.append(step.get("steps", []))
+                stack.extend(step.get("branches", []))
+    plain = facts_of(definition)
+    assert plain.uniform and plain.sound_enabled is True and plain.sound_run_s == 1.0 and plain.frames == 5
+    disabled = copy.deepcopy(definition)
+    configure(disabled)["args"]["ultrasound"]["enabled"] = False
+    configure(disabled)["args"]["laser"]["enabled"] = False
+    facts = facts_of(disabled)
+    assert facts.sound_enabled is False and facts.laser_enabled is False  # reported as disabled, with the rest intact
+    assert facts.frames == 5
+    # Two different acquisition blocks: no first-block summary.
+    doubled = copy.deepcopy(definition)
+    block = next(step for step in _flatten(doubled["steps"]) if step.get("type") == "experiment")
+    parent = _parent_list(doubled["steps"], block)
+    other = copy.deepcopy(block)
+    next(s for s in other["steps"] if s["type"] == "camera_configure")["args"]["frame_count"] = 9
+    next(s for s in other["steps"] if s["type"] == "ad2_configure")["args"]["dio"]["frame_count"] = 9
+    parent.append({"type": "sweep", "parameters": {"block_two": [1]}, "steps": [other]})
+    mixed = plan_facts(validate_definition(doubled).steps)
+    assert not mixed.uniform and mixed.frames is None and "2 acquisition blocks" in mixed.note
+    # Different temperature strategies in one definition are not reported as the first one.
+    temperature = _compiled(temperature_control=True, temperature_wait_for_stability=True, temperature_wait_s=5.0,
+                            temperature_tolerance_c=0.5, temperature_min_settle_s=1.0, temperature_max_wait_s=30.0,
+                            tec_channel=1, temperature_c=__import__("thermo_acoustic.application.simple_series",
+                                                                    fromlist=["NumericRange"]).NumericRange(25, 30, 2))
+    assert "wait for stability" in facts_of(temperature).temperature_strategy
+    node = next(step for step in _flatten(temperature["steps"]) if step.get("type") == "tec_wait_stable")
+    parent = _parent_list(temperature["steps"], node)
+    extra = copy.deepcopy(node)
+    extra["args"]["max_wait_s"] = 99.0
+    parent.append(extra)
+    assert "differs between temperature blocks" in facts_of(temperature).temperature_strategy
+
+
+def _flatten(steps):
+    for step in steps:
+        yield step
+        yield from _flatten(step.get("steps", []))
+        for branch in step.get("branches", []):
+            yield from _flatten(branch)
+
+
+def _parent_list(steps, target):
+    if target in steps:
+        return steps
+    for step in steps:
+        for child in (step.get("steps", []), *step.get("branches", [])):
+            found = _parent_list(child, target)
+            if found is not None:
+                return found
+    return None
+
+
+def test_queue_page_shows_a_disabled_output_as_disabled(two_queued):
+    import copy
+    window, panel, a, b = two_queued
+    definition = copy.deepcopy(panel.manager.queued_definition(a))
+    step = next(s for s in _flatten(definition["steps"]) if s.get("type") == "ad2_configure")
+    step["args"]["ultrasound"]["enabled"] = False
+    panel.manager.update_queued(a, definition)
+    window.experiment_panel._status(panel.manager.status())
+    _select(panel, a)
+    assert "Ultrasound output: disabled" in panel.queue_plan_text.text()
+    assert panel.queue_timing_table.item(0, 1).text() == "disabled"
+    assert panel.queue_timing_table.item(1, 1).text() != "disabled"  # the laser is still enabled

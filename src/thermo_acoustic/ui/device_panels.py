@@ -99,6 +99,7 @@ from .temperature_plot import TemperaturePlot
 from ..application.configuration import DEFAULT_PUMP_CONFIGURATION_DIR
 from .ad2_scope import OscilloscopePanel
 from .status_dashboard import camera_summary, z_stage_summary
+from .status_text import ad2_outputs_summary, valve_summary
 from .widgets import CameraImageWindow, CollapsibleSection
 
 
@@ -1072,8 +1073,7 @@ class Ad2Panel(DevicePanel):
                 f"Digital output: {digital_state}"
             )
             self.readback_label.setText(f"WFG configuration: {channel_text}")
-            self.acoustic_status_label.setText(
-                f"WFG: {wfg_state} ({channel_text}) · Digital output: {digital_state}")
+            self.acoustic_status_label.setText(ad2_outputs_summary(readback))
 
     def _apply_capabilities(self, capabilities: Ad2Capabilities) -> None:
         by_channel = {
@@ -1604,13 +1604,7 @@ class ValvePanel(DevicePanel):
 
     def update_readback(self, readback: object) -> None:
         if isinstance(readback, ValveReadback):
-            requested = "—" if readback.requested_position is None else str(readback.requested_position)
-            confirmed = "—" if readback.confirmed_position is None else str(readback.confirmed_position)
-            ready = "—" if readback.ready is None else ("Yes" if readback.ready else "No")
-            note = f" · {readback.status_note}" if readback.status_note else ""
-            self.readback_label.setText(
-                f"Requested: {requested} · Confirmed: {confirmed} · Ready: {ready}{note}"
-            )
+            self.readback_label.setText(valve_summary(readback))
 
     def apply_successful_command(self, command: DeviceCommand | None) -> None:
         if command is None:

@@ -48,6 +48,7 @@ from .results_panel import ResultsPanel
 from .saved_frames_window import SavedFramesWindow
 from .simple_series_panel import SimpleSeriesPanel
 from .status_dashboard import StatusDashboard
+from .status_text import connection_color, connection_phrase, is_connected
 
 
 PROFILE_SCHEMA_VERSION = 2
@@ -74,21 +75,15 @@ def connection_summary_html(mode: OperatingMode, statuses: dict[DeviceId, Device
         head = '<span style="color:#b71c1c;font-weight:700">Mode: REAL hardware</span>'
     else:
         head = '<span style="font-weight:700">Mode: Simulation</span>'
-    chips = []
-    for device in DeviceId:
-        status = statuses.get(device)
-        state = status.connection if status is not None else ConnectionState.DISCONNECTED
-        label = ("connected, operation failed" if state is ConnectionState.ERROR else
-                 state.value + (" (fault)" if status is not None and status.fault else ""))
-        chips.append(f'{_DEVICE_NAMES[device]} <span style="{_STATE_STYLE[state]}">{label}</span>')
+    chips = [f'{_DEVICE_NAMES[device]} <span style="color:{connection_color(statuses.get(device))}">'
+             f'{connection_phrase(statuses.get(device))}</span>' for device in DeviceId]
     return head + " &nbsp;|&nbsp; " + " &nbsp;·&nbsp; ".join(chips)
 
 
 def device_activity_text(statuses: dict[DeviceId, DeviceStatus]) -> str:
     """What the devices themselves report right now (manual or batch): faults first, then activity."""
     faults = [_DEVICE_NAMES[d] for d, s in statuses.items() if s.fault or s.connection is ConnectionState.ERROR]
-    active = [_DEVICE_NAMES[d] for d, s in statuses.items()
-              if s.connection is ConnectionState.CONNECTED and (s.active or s.busy)]
+    active = [_DEVICE_NAMES[d] for d, s in statuses.items() if is_connected(s) and (s.active or s.busy)]
     pieces = []
     if faults:
         pieces.append("Fault: " + ", ".join(faults))

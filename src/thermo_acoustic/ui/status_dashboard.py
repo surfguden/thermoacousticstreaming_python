@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..domain.models import DeviceId
+from .status_text import connection_phrase, is_connected, valve_summary, ad2_outputs_summary
 from .temperature_plot import TemperaturePlot
 
 
@@ -184,9 +185,9 @@ class StatusDashboard(QWidget):
     def update_statuses(self, statuses: dict) -> None:
         for device, status in statuses.items():
             data = status.readback
-            pieces = [status.connection.value]
+            pieces = [connection_phrase(status)]
             if status.fault:
-                pieces.append(f"ERROR: {status.fault}")
+                pieces.append(f"reason: {status.fault}")
             if device is DeviceId.PUMP and data is not None:
                 for unit in getattr(data, "units", ()):
                     pieces.append(
@@ -194,29 +195,20 @@ class StatusDashboard(QWidget):
                         f"flow {_value(unit.current_flow_ul_min, ' µL/min')} · "
                         f"{'pumping' if unit.is_pumping else 'idle' if unit.is_pumping is False else 'unknown'}")
             elif device is DeviceId.VALVE and data is not None:
-                pieces.append(f"position {_value(getattr(data, 'confirmed_position', None))}")
+                pieces.append(valve_summary(data))
             elif device is DeviceId.Z_STAGE and data is not None:
                 pieces.append(z_stage_summary(data))
             elif device is DeviceId.CAMERA and data is not None:
                 pieces.append(camera_summary(data))
             elif device is DeviceId.AD2 and data is not None:
-                pieces.append("waveform running" if data.waveform_running else "waveform idle")
-                pieces.append("digital output running" if data.digital_output_running else "digital output idle")
-                for channel in data.waveform_channels:
-                    detail = f"CH{channel.channel_index + 1}: {channel.function} center {_value(channel.frequency_hz, ' Hz')}"
-                    if channel.fm_enabled:
-                        width = 2 * channel.frequency_hz * channel.fm_modulation_index_percent / 100
-                        detail += f" · sweep width {width:g} Hz"
-                    detail += (f" · {_value(channel.amplitude_v, ' V')} · idle setting {channel.idle_state}"
-                               " · live channel state unknown")
-                    pieces.append(detail)
+                pieces.append(ad2_outputs_summary(data))
             elif device is DeviceId.TEC and data is not None:
                 for channel in getattr(data, "channels", ()):
                     pieces.append(f"CH{channel.channel}: {_value(channel.current_temperature_c, ' °C')} "
                                   f"→ {_value(channel.target_temperature_c, ' °C')}")
             if status.fault:
-                pieces[0] = f"{status.connection.value} (FAULT)"
-            elif status.connection.value == "connected" and (status.busy or status.active):
+                pass
+            elif is_connected(status) and (status.busy or status.active):
                 pieces.insert(1, "working")
             self.rows[device].setText(" · ".join(pieces))
             self.rows[device].setStyleSheet("color: #b71c1c; font-weight: 600" if status.fault else "")

@@ -280,3 +280,73 @@ def test_tec_wait_that_never_reaches_the_target_fails_with_the_reason_on_the_pag
     finally:
         window.close()
         controller.shutdown()
+
+
+def test_tec_wait_can_be_cancelled_and_regulation_stays_on(qt_app):
+    from thermo_acoustic.drivers.tec.simulated import SimulatedTec
+
+    class NeverStable(SimulatedTec):  # keeps the wait running: always 10 degrees from the target
+        def read_status(self, channels=None):
+            status = super().read_status(channels)
+            return {c: type(s)(channel=c, current_temperature_c=(s.target_temperature_c or 25.0) + 10.0,
+                               target_temperature_c=s.target_temperature_c, output_stage_static_on=self.outputs_enabled,
+                               ready=True) for c, s in status.items()}
+
+    controller = ApplicationController(DeviceRegistry(factories={DeviceId.TEC: NeverStable}),
+                                       mode=OperatingMode.SIMULATION)
+    controller.start()
+    window = MainWindow(controller)
+    window.show()
+
+    def until(condition, timeout=15):
+        deadline = monotonic() + timeout
+        while monotonic() < deadline and not condition():
+            qt_app.processEvents(); sleep(0.01)
+        assert condition()
+    try:
+        tec = window.panels[DeviceId.TEC]
+        tec._buttons["connect"].click()
+        until(lambda: controller.statuses()[DeviceId.TEC].connection is ConnectionState.CONNECTED)
+        tec.target.setValue(25.0)
+        tec._buttons["apply"].click()
+        until(lambda: tec._buttons["apply"].isEnabled() and controller.statuses()[DeviceId.TEC].configured)
+        tec.max_wait.setValue(60.0)
+        tec.poll.setValue(0.05)
+        tec._buttons["wait"].click()
+        until(lambda: "pending" in tec._buttons["wait"].text() and tec._buttons["abort"].isEnabled())
+        sleep(0.3)
+        assert "pending" in tec._buttons["wait"].text()  # still waiting; the fake never settles
+        tec._buttons["abort"].click()  # the existing cancel entry
+        until(lambda: "pending" not in tec._buttons["wait"].text())
+        assert tec._buttons["wait"].isEnabled() and tec.notice_label.text()
+        assert controller.statuses()[DeviceId.TEC].connection is ConnectionState.CONNECTED
+        device = controller.registry.by_id(DeviceId.TEC).device
+        assert any(getattr(d, "outputs_enabled", False) for d in (device, getattr(device, "driver", device)))
+    finally:
+        window.close()
+        controller.shutdown()
+
+
+def test_every_surface_says_connected_when_the_last_operation_failed(env):
+    from thermo_acoustic.domain.models import DeviceStatus, TecChannelReadback, TecReadback
+    window, controller, events, wait = env
+    readback = TecReadback(channels=(TecChannelReadback(1, current_temperature_c=24.0, target_temperature_c=None,
+                                                         output_enabled=True, ready=True),))
+    failed = DeviceStatus(DeviceId.TEC, ConnectionState.ERROR, fault="wait timed out", readback=readback)
+    controller._statuses[DeviceId.TEC] = failed
+    window._status(controller.statuses())
+    window.prepare_panel._refresh()
+    texts = {
+        "chips": window.connection_summary.text(),
+        "table": window.prepare_panel.state_labels[DeviceId.TEC].text(),
+        "summary": window.prepare_panel.temperature_section.summary.text(),
+        "monitor": window.dashboard.rows[DeviceId.TEC].text(),
+        "page": window.panels[DeviceId.TEC].connection_label.text(),
+    }
+    for where, text in texts.items():
+        if where != "chips":  # the chips line also names the six devices that really are not connected
+            assert "not connected" not in text.lower() and "disconnected" not in text.lower(), (where, text)
+    assert "connected · last operation failed" in texts["chips"]
+    assert "last operation failed" in texts["table"] and "operation failed" in texts["page"].lower()
+    assert "24.00 °C" in texts["summary"] and "wait timed out" in texts["monitor"]
+    assert "reported target none" in texts["summary"]  # unknown is written as unknown

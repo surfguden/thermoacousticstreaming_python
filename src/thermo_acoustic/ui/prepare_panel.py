@@ -25,6 +25,10 @@ from PySide6.QtWidgets import (
 from ..application.device_connect import ConnectOutcome, DeviceConnector
 from ..domain.models import ConnectionState, DeviceId, DeviceStatus, OperatingMode, PumpReadback
 from .status_dashboard import camera_summary, z_stage_summary
+from .status_text import (
+    ad2_outputs_summary, connection_color, connection_phrase, is_connected, pump_summary, tec_summary,
+    valve_summary,
+)
 from .widgets import CollapsibleSection
 
 DEVICE_NAMES = {DeviceId.AD2: "AD2", DeviceId.PUMP: "Pump", DeviceId.VALVE: "Valve",
@@ -199,37 +203,19 @@ class PreparePanel(QWidget):
         return section
 
     def _section_summaries(self, statuses: dict[DeviceId, DeviceStatus]) -> None:
-        pump = statuses[DeviceId.PUMP]
-        units = pump.readback.units if isinstance(pump.readback, PumpReadback) else ()
-        if pump.connection is not ConnectionState.CONNECTED:
-            pump_text = "pump not connected"
-        else:
-            pump_text = (" · ".join(
-                f"Pump {unit.unit_index + 1}: "
-                + ("unknown level" if unit.fill_level_ml is None else f"{unit.fill_level_ml:.3g} mL")
-                + (", pumping" if unit.is_pumping else "") for unit in units) or "no pump units")
-        valve = statuses[DeviceId.VALVE]
-        selector = ("selector valve: " + self.panels[DeviceId.VALVE].readback_label.text().split(" · ")[1]
-                    if valve.connection is ConnectionState.CONNECTED else "selector valve not connected")
-        self.pump_section.set_summary(f"{pump_text} | {selector}")
-        camera, stage = statuses[DeviceId.CAMERA], statuses[DeviceId.Z_STAGE]
+        """Folded one-line summaries, from the typed statuses through the shared wording."""
+        def part(device: DeviceId, name: str, describe) -> str:
+            status = statuses[device]
+            if not is_connected(status):
+                return f"{name} not connected"
+            text = describe(status.readback) if status.readback is not None else "no readback yet"
+            return text + (" · last operation failed" if status.connection is ConnectionState.ERROR else "")
+        self.pump_section.set_summary(" | ".join((
+            part(DeviceId.PUMP, "pump", pump_summary), part(DeviceId.VALVE, "selector valve", valve_summary))))
         self.imaging_section.set_summary(" | ".join((
-            "camera: " + (camera_summary(camera.readback) if camera.connection is ConnectionState.CONNECTED
-                          else "not connected"),
-            "Z: " + (z_stage_summary(stage.readback) if stage.connection is ConnectionState.CONNECTED
-                     and stage.readback is not None else "not connected"))))
-        ad2 = statuses[DeviceId.AD2]
-        self.acoustic_section.set_summary(
-            "AD2 not connected" if ad2.connection is not ConnectionState.CONNECTED
-            else self.panels[DeviceId.AD2].acoustic_status_label.text().split(" (")[0] + " · "
-            + self.panels[DeviceId.AD2].acoustic_status_label.text().split(" · ")[-1])
-        tec = statuses[DeviceId.TEC]
-        channels = getattr(tec.readback, "channels", ()) if tec.connection is ConnectionState.CONNECTED else ()
-        self.temperature_section.set_summary(
-            "TEC not connected" if tec.connection is not ConnectionState.CONNECTED else " · ".join(
-                f"ch{item.channel}: "
-                + ("unknown" if item.current_temperature_c is None else f"{item.current_temperature_c:.2f} °C")
-                for item in channels) or "TEC connected")
+            part(DeviceId.CAMERA, "camera", camera_summary), part(DeviceId.Z_STAGE, "Z-stage", z_stage_summary))))
+        self.acoustic_section.set_summary(part(DeviceId.AD2, "AD2", ad2_outputs_summary))
+        self.temperature_section.set_summary(part(DeviceId.TEC, "TEC", tec_summary))
 
     def _selection_changed(self, *_args) -> None:
         self._start_error = ""
@@ -270,11 +256,9 @@ class PreparePanel(QWidget):
         statuses: dict[DeviceId, DeviceStatus] = self.controller.statuses()
         for device in DeviceId:
             status = statuses[device]
-            self.state_labels[device].setText(
-                "connected · operation failed" if status.connection is ConnectionState.ERROR
-                else status.connection.value + (" (fault)" if status.fault else ""))
+            self.state_labels[device].setText(connection_phrase(status))
             self.state_labels[device].setToolTip(status.fault or "")
-            self.state_labels[device].setStyleSheet(_STATE_STYLE[status.connection])
+            self.state_labels[device].setStyleSheet(f"color: {connection_color(status)}")
             self.input_labels[device].setText(self.panels[device].connect_inputs_text())
         self._section_summaries(statuses)
         blocked = self.connector.blocked_reason()

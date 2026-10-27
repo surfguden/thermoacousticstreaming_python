@@ -642,11 +642,17 @@ class SimpleSeriesPanel(QWidget):
         flush = self.manager.queued_flush_budget(folder)
         if flush:
             lines[0] += " · flush volume: " + ", ".join(f"pump unit {unit + 1}: {ml:g} mL" for unit, ml in sorted(flush.items()))
-        if facts.frames is not None:
+        if facts.uniform and facts.frames is not None:
             lines[0] += f" · {count * facts.frames} saved frames ({facts.frames} per experiment)"
         repeats = max((experiment.repeat_index for experiment in expansion.experiments), default=0)
         lines.append(f"Repeats per point: {repeats}")
         lines.extend(self._parameter_lines(expansion))
+        if facts.uniform:
+            for name, enabled in (("Ultrasound", facts.sound_enabled), ("Laser", facts.laser_enabled)):
+                if enabled is False:
+                    lines.append(f"{name} output: disabled in this definition")
+        else:
+            lines.append(f"Not summarised: {facts.note}")
         if facts.temperature_strategy:
             lines.append(facts.temperature_strategy)
         lines.append(f"Output location: {folder}")
@@ -655,23 +661,30 @@ class SimpleSeriesPanel(QWidget):
         rows = self._fill_timing_facts(self.queue_timing_table, facts)
         self.queue_timing_caption.setText(
             "Requested timing of one experiment (not measured; the hardware timing is checked when the series "
-            "starts)" if rows else "Requested timing is not shown: this definition does not state it as one "
-            "plain set of values (open it in the experiment builder).")
+            "starts)" if rows else "Requested timing is not shown: "
+            + (facts.note or "this definition does not state it as one plain set of values")
+            + " (open it in the experiment builder).")
         self.queue_timing_table.setVisible(rows > 0)
 
     @staticmethod
     def _fill_timing_facts(table: QTableWidget, facts: PlanFacts) -> int:
-        """Rows the definition states plainly; returns how many were filled."""
-        rows = []
-        if None not in (facts.sound_start_s, facts.sound_run_s):
-            rows.append(("Ultrasound (AD2)", facts.sound_start_s, facts.sound_run_s))
-        if None not in (facts.laser_start_s, facts.laser_run_s):
-            rows.append(("Laser", facts.laser_start_s, facts.laser_run_s))
+        """Rows the definition states plainly; a disabled output is shown as disabled, never with a duration."""
+        def output_row(name: str, enabled, start, length) -> list[str] | None:
+            if enabled is False:
+                return [name, "disabled", "disabled", "disabled"]
+            if None in (start, length):
+                return None
+            return [name + ("" if enabled else " (enabled not stated)"), f"{start:g}", f"{length:g}",
+                    f"{start + length:g}"]
+        rows = [output_row("Ultrasound (AD2)", facts.sound_enabled, facts.sound_start_s, facts.sound_run_s),
+                output_row("Laser", facts.laser_enabled, facts.laser_start_s, facts.laser_run_s)]
         if None not in (facts.camera_start_s, facts.frames, facts.camera_fps) and facts.camera_fps:
-            rows.append(("Camera frames", facts.camera_start_s, facts.frames / facts.camera_fps))
+            length = facts.frames / facts.camera_fps
+            rows.append(["Camera frames", f"{facts.camera_start_s:g}", f"{length:g}", f"{facts.camera_start_s + length:g}"])
+        rows = [row for row in rows if row is not None] if facts.uniform else []
         table.setRowCount(len(rows))
-        for row, (name, start, length) in enumerate(rows):
-            for column, value in enumerate((name, f"{start:g}", f"{length:g}", f"{start + length:g}")):
+        for row, values in enumerate(rows):
+            for column, value in enumerate(values):
                 table.setItem(row, column, QTableWidgetItem(value))
         return len(rows)
 
