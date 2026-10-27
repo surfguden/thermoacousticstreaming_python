@@ -45,7 +45,7 @@ automatically (no preset manager); historical device addresses and paths are not
 
 **Where things are in the window.** One tab row is the navigation: **1 Prepare devices**,
 **2 Configure experiment** (pages *Configure* and *Queue and start*), **3 Run monitor**,
-**4 Results**, and **Device details** (AD2, Pump, Valve, Camera, TEC, Z-stage, Flush, Z stack:
+**4 Results**, and **Device details** (AD2, Pump, Valve, Camera, TEC, Z-stage, Z stack:
 connection inputs, advanced settings, diagnostics). Switching only changes the page; every page
 stays reachable and nothing is required before Start. **Stop after current**, **Abort batch** and
 **PANIC · Safe stop** are always visible at the top right: Stop after current lets the running
@@ -258,3 +258,14 @@ budget from `ExperimentManager.queued_flush_budget`, timing from the settings it
 warns when the form has edits the queue does not; the form's own plan is the folded "Preview of this
 form (not queued)" on Configure. An image viewer embedded in a page ignores Esc/Enter (`CameraImageWindow.done`);
 popped out it is an ordinary window again.
+
+Device pages, 2026-10-28: the common header is one status line plus one button row. **Prepare** now also
+holds the selector valve position (separate from the pumps' own valves, which stay on each pump card),
+the **manual flush** (it moved from the old Flush tab; the experiment's own flush is Configure,
+Repeats and flush) and an **Acoustic and trigger output** strip (state of the waveform and digital
+outputs, Stop buttons; the signal settings stay on Device details, AD2, labelled as a manual signal test).
+Configure keeps the single-experiment timing (sound, laser, camera start) as a main group; only the
+temperature stability policy is folded. The Z stack page is grouped (scan range, camera, positioning,
+run). A device whose last operation failed reads "Connected, last operation failed", not "Error".
+The queue page's plan facts (frames, requested timing, temperature strategy) come from the queued
+definition itself (`application/plan_facts.py`), so an experiment-builder edit shows there.
