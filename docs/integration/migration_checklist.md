@@ -210,3 +210,25 @@ and the historical investigation/decision logs. It does not schedule new work.
   hardware bundle, a modal dialog, preparation checklist and gates, reference-path stubs.
 - **Verified** with simulation and fake devices (`test_device_connect.py`); real drivers, real
   timing and a blocked SDK were not exercised.
+
+## Prepare tab: everyday controls (where to change things)
+
+Prepare has four folded sections (folded = hidden only; nothing is sent or disabled): **Connect
+devices**, **Pump and flow path** (per pump unit: state, volume, flow, Refill, Empty, Stop, Go to
+level, Set flow), **Imaging and focus** (snapshot/continuous/stop, exposure, acquisition ROI, Show
+image window; Z-stage requirement, enable closed loop, position, step, Move/Up/Down, measured vs
+commanded position) and **Fixed temperature** (the TEC setpoint, wait, read, outputs-off controls and
+plot). The folded header shows a live one-line summary. These are the device panels' own controls,
+taken over by Prepare, not copies, so values, saved settings, locking during a batch and feedback are
+unchanged. The device pages keep connection inputs, built-in valve / reference move / syringe setup,
+buffered sequence, trigger and master pulse, and point to Prepare. The analysis ROI (image window) only
+measures; the acquisition ROI is sent to the camera by Set ROI; neither fills the Experiments form
+except through its Import button (camera to form).
+
+| To change | Edit |
+|---|---|
+| Pump unit tile (state, volume, Refill/Empty/Stop, level, flow) | `PumpPanel._build_tiles` (`device_panels.py`); low-frequency pump buttons are built in the same function (`detail`) |
+| Exposure, snapshot, ROI | `CameraPanel.__init__` groups "Snapshot and exposure" and "ROI and timing" |
+| Focus controls | `ZStagePanel.__init__`; position text `z_stage_summary` (`status_dashboard.py`) |
+| Fixed temperature | `TecPanel.__init__` ("Setpoints and stabilization") |
+| Which controls appear on Prepare, section order, summaries | `PreparePanel.__init__`, `_section_summaries` (`prepare_panel.py`); a panel opts in with `daily_container()` |

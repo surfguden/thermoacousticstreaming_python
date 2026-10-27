@@ -1307,3 +1307,12 @@ target after a settings file is loaded (label visible, only Update changes the q
 Wait-until-stable was observed to its end (about 5 s, "wait stable — done!", button restored); this
 says nothing about real temperature stability. The camera test that failed once earlier did not
 recur in the runs of this round.
+
+## 2026-10-28 — Prepare as the everyday workbench
+
+Following junjie's Prepare idea (embed the routine pump, imaging, focus and temperature groups once,
+leave the rest on the detail pages) without its planner, checklist or gates. Multi-pump display is kept.
+Simulated task walkthrough (connect, refill, snapshot/exposure/ROI, focus, set temperature, Import,
+queue, start): tab/page switches 12 -> 2 and 5 fewer Connect clicks, but button clicks overall did not
+fall (6 tick boxes and 3 section openings are new), so the gain is fewer page changes, not fewer clicks.
+Offscreen only; real display, DPI feel and real devices are not covered.
