@@ -1232,7 +1232,7 @@ class CollapsibleSection(QWidget):
     def set_content(self, content: QWidget) -> None:
         self._content = content
         content.setVisible(self.toggle.isChecked())
-        self._layout.addWidget(content)
+        self._layout.addWidget(content, 1)  # spare height goes to the content when the parent gives it
 
     def set_summary(self, text: str) -> None:
         self.summary.setText(text)

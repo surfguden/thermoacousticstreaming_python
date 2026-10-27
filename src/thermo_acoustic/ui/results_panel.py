@@ -13,7 +13,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QGridLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QCheckBox, QGridLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget
 
 from .saved_frames_window import SavedFramesWindow
 
@@ -37,7 +37,10 @@ class ResultsPanel(QWidget):
         grid.addWidget(self.viewing_label, 0, 0)
         grid.addWidget(self.open_viewed_button, 0, 1)
         grid.addWidget(self.latest_label, 1, 0)
+        self.measure_toggle = QCheckBox("Display and measurement")
+        self.measure_toggle.setToolTip("Display range, histogram, analysis ROI and intensity profile (display only)")
         grid.addWidget(self.open_latest_button, 1, 1)
+        grid.addWidget(self.measure_toggle, 2, 0, alignment=Qt.AlignmentFlag.AlignLeft)
         grid.setColumnStretch(0, 1)
         layout.addLayout(grid)
         self._latest = ""
@@ -49,6 +52,8 @@ class ResultsPanel(QWidget):
         area.setFrameShape(QScrollArea.Shape.NoFrame)
         area.setWidget(self.viewer)
         layout.addWidget(area, 1)
+        self.viewer.set_measurement_visible(False)  # same default as the docked viewer: the image first
+        self.measure_toggle.toggled.connect(self.viewer.set_measurement_visible)
         self.viewer.show()
         self.viewer.source_changed.connect(self._viewer_changed)
         self.set_latest("")

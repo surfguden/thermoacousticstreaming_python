@@ -136,7 +136,7 @@ class StatusDashboard(QWidget):
         side.addWidget(scroll, 1)
         side.addWidget(QLabel("TEC temperatures · latest rolling samples"))
         self.temperature_plot = TemperaturePlot()
-        side.addWidget(self.temperature_plot)
+        side.addWidget(self.temperature_plot, 2)  # the trend gets more height than the short device list
 
     @property
     def output_folder(self) -> str | None:

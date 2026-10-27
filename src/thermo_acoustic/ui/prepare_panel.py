@@ -105,6 +105,7 @@ class PreparePanel(QWidget):
         self.pump_section = self._section(
             root, "Pump and flow path", [panels[DeviceId.PUMP].release_daily("Everyday pump controls")])
         self.imaging_section = self._section(root, "Imaging and focus", [self._imaging_body(panels, show_prepare)])
+        root.setStretchFactor(self.imaging_section, 1)  # spare height goes to the image, not to empty space
         self.temperature_section = self._section(
             root, "Fixed temperature", [panels[DeviceId.TEC].release_daily("Everyday temperature controls")])
 
@@ -159,8 +160,9 @@ class PreparePanel(QWidget):
         controls_layout.addStretch(1)
         grid.addWidget(image_box, 0, 0)
         grid.addWidget(controls, 0, 1)
-        grid.setColumnStretch(0, 3)
+        grid.setColumnStretch(0, 5)
         grid.setColumnStretch(1, 2)
+        controls.setMaximumWidth(620)  # forms do not need more; the width goes to the image
         return body
 
     def _toggle_pop_out(self) -> None:
