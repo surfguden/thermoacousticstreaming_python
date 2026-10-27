@@ -44,7 +44,7 @@ automatically (no preset manager); historical device addresses and paths are not
 - *Standalone Z stack:* its `metadata.json` has no failure reason or run identity; this differs from the series manifest.
 
 **Where things are in the window.** A "Task" row under the title links to existing tabs
-(1 Prepare devices → the device tabs, 2 Configure and 3 Review and start → the two pages of the
+(1 Prepare devices → the Prepare tab, which lists the six devices; the device tabs stay, 2 Configure and 3 Review and start → the two pages of the
 Experiments tab, 4 Monitor run → the Run monitor tab). They only switch tabs; every tab stays
 reachable and nothing is required before Start. **Stop after current**, **Abort batch** and
 **PANIC · Safe stop** are always visible at the top right: Stop after current lets the running
@@ -72,8 +72,12 @@ names. Series being written can be opened: only experiments that already have an
 **Short test recipe for one simulated experiment** (Experiments tab; use the first table row's
 values).
 
-1. Launch. Connect only the devices the run uses (Pump, Valve, Camera, AD2 for the shortest run;
-   leave TEC off and Temperature unticked).
+1. Launch (nothing connects by itself). On *Prepare* tick the devices the run uses (Pump, Valve,
+   Camera, AD2 for the shortest run; leave TEC off and Temperature unticked) and press **Connect
+   selected devices**. Each device is connected in turn with the inputs shown in "Connect uses"
+   (edit them on the device page via *Open page*); connected devices are skipped, a failure does
+   not stop or undo the others and is not retried. A device page's own Connect/Disconnect still
+   works. Choosing a device is not a connection and does not mean the experiment is ready.
 2. **Pump fill level.** The *simulated* pump starts at 0 mL, so click Refill on the flush unit
    first, otherwise the series fails when it starts (Queue does not check) with "Pump unit N needs X mL
    total flush volume but currently has 0 mL"; the batch syringe preflight finds it earlier. A *real* pump reports its fill level from the SDK; the same guard compares the planned
@@ -180,3 +184,29 @@ and the historical investigation/decision logs. It does not schedule new work.
 | TIFF + JSON | Retained | No active external consumer requirement has been established. Do not infer mandatory TDMS support or confirmed compatibility from this. |
 | Automatic resume / audit or recipe framework | Not planned | No automatic hardware restart from stale records. Use the manual inspection procedure in `known_open_items.md`. |
 | Offline test environment | Existing check method | Use a writable `--basetemp` when the host's default temp ACLs fail. This is an observed host issue, not a universal fresh-clone requirement or a pytest configuration change. |
+
+## Connecting the selected devices (Prepare tab)
+
+- **Behaviour.** `DeviceConnector` (application layer) takes one CONNECT command per chosen device,
+  built from that device page's own inputs (`build_connect_command()`, same path as its Connect
+  button), and submits them one at a time through the normal command queue. The set and commands
+  are fixed when the button is pressed. Skipped: already connected, or a Connect already queued or
+  running. A failure is kept per device; others stay connected; nothing is retried, disconnected or
+  rolled back. Refused as a whole while an experiment batch, Z stack, count preflight, Panic or
+  closing owns the instruments. If Panic or closing starts mid-group, devices not yet submitted are
+  not started; a Connect already running is not interrupted. The command lane is serial, so a slow
+  Connect delays the next device. No Refill, reference move, Z move, TEC setpoint/output, AD2
+  output or capture is sent.
+- **What a real Connect does (driver code read, not run).** AD2: opens the first device
+  (`FDwfDeviceOpen`) and reads capabilities. Camera: `Dcamapi.init` + `dev_open`, reads ROI. Pump:
+  opens/starts the Qmix bus from the configuration folder, **clears a latched fault** (owner-approved
+  policy) and **enables the pump drive**, then reads state; no motion is commanded. Valve: opens
+  the COM port and sends the status query. TEC: connects the client on the chosen port. Z-stage:
+  Kinesis connect, waits for settings, starts polling, reads limits; never switches to closed loop.
+  So Connect is not free of device-side effects (pump fault clear and drive enable in particular);
+  the group action adds none of its own.
+- **junjie.** Taken: choose the needed devices, one action, a result per device, inputs beside the
+  choice. Not taken: per-device Simulate toggles (mode switching), cleanup-then-rebuild of the whole
+  hardware bundle, a modal dialog, preparation checklist and gates, reference-path stubs.
+- **Verified** with simulation and fake devices (`test_device_connect.py`); real drivers, real
+  timing and a blocked SDK were not exercised.

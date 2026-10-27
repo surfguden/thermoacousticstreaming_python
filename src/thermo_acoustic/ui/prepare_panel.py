@@ -129,8 +129,8 @@ class PreparePanel(QWidget):
         statuses: dict[DeviceId, DeviceStatus] = self.controller.statuses()
         for device in DeviceId:
             status = statuses[device]
-            self.state_labels[device].setText(status.connection.value + (
-                f" ({status.fault})" if status.fault else ""))
+            self.state_labels[device].setText(status.connection.value + (" (fault)" if status.fault else ""))
+            self.state_labels[device].setToolTip(status.fault or "")
             self.state_labels[device].setStyleSheet(_STATE_STYLE[status.connection])
             self.input_labels[device].setText(self.panels[device].connect_inputs_text())
         blocked = self.connector.blocked_reason()

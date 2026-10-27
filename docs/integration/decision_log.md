@@ -1296,3 +1296,14 @@ or data format. Simulation, offscreen and programmatic clicks only; not a real-d
   Z measured vs commanded). Notes state which controls act now and that Import copies camera → form
   only; camera and Z stack pages can show the image window without acquiring. "Workflows" tab is
   "Flush".
+
+## 2026-10-28 — Prepare tab and Connect selected devices
+
+Adds a *Prepare* tab (first tab; the "1 Prepare devices" shortcut opens it) and the application-level
+`DeviceConnector`; details and the driver Connect actions are in `migration_checklist.md`. Decisions
+carried in this round: one base folder still holds one batch; a loaded series stays the editing
+target after a settings file is loaded (label visible, only Update changes the queue); Z-stage
+"Error" after a refused move and Z-stack output review are unchanged. TEC wait: one simulated
+Wait-until-stable was observed to its end (about 5 s, "wait stable — done!", button restored); this
+says nothing about real temperature stability. The camera test that failed once earlier did not
+recur in the runs of this round.
