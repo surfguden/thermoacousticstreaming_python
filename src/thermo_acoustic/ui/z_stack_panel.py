@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QDoubleSpinBox, QFileDialog, QFormLayout,
                                QHBoxLayout, QLabel, QLineEdit, QMessageBox,
                                QPushButton, QSpinBox, QVBoxLayout, QWidget)
@@ -28,6 +30,10 @@ class ZStackPanel(QWidget):
         self.camera_panel = camera_panel
         self._import_request = None
         layout = QVBoxLayout(self)
+        needs = QLabel("Needs the camera and Z-stage connected and the Z-stage closed loop enabled "
+                       "(Z-stage tab), and an empty output folder. Images appear in the camera image window.")
+        needs.setWordWrap(True)
+        layout.addWidget(needs)
         form = QFormLayout()
         self.start_z = numeric(0, 0, 1_000_000)
         self.stop_z = numeric(100, 0, 1_000_000)
@@ -86,6 +92,15 @@ class ZStackPanel(QWidget):
         actions.addWidget(start)
         actions.addWidget(stop)
         layout.addLayout(actions)
+        results = QHBoxLayout()
+        self.open_folder_button = QPushButton("Open output folder")
+        self.open_folder_button.clicked.connect(self._open_folder)
+        self.show_image_button = QPushButton("Show image window")
+        self.show_image_button.setToolTip("Shows the existing image window; it does not start a capture")
+        self.show_image_button.clicked.connect(self.camera_panel.show_image_window)
+        results.addWidget(self.open_folder_button)
+        results.addWidget(self.show_image_button)
+        layout.addLayout(results)
         self.position_label = QLabel("Current Z: —")
         self.progress = QLabel("Idle")
         layout.addWidget(self.position_label)
@@ -101,6 +116,13 @@ class ZStackPanel(QWidget):
             self.camera_panel._show_image_window("Z stack live view")
         except Exception as exc:
             QMessageBox.warning(self, "Z stack", str(exc))
+
+    def _open_folder(self) -> None:
+        folder = self.folder.text().strip()
+        if folder and Path(folder).is_dir():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+        else:
+            QMessageBox.information(self, "Z stack", "The output folder does not exist yet.")
 
     def _browse(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, "Choose empty Z stack folder")

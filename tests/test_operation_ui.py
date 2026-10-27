@@ -440,3 +440,19 @@ def test_camera_page_can_show_the_image_window_without_acquiring_and_flush_tab_i
     assert window.submitted == []  # showing the window issues no camera command
     assert window.tabs.tabText(window.tabs.indexOf(window._scroll_pages[window.workflow_panel])) == "Flush"
     camera.image_window.close()
+
+
+def test_z_stage_and_z_stack_panels_label_measured_and_commanded_positions(window):
+    from thermo_acoustic.domain.models import ZStageReadback
+    from thermo_acoustic.ui.status_dashboard import z_stage_summary
+    text = z_stage_summary(ZStageReadback(closed_loop=True, position_um=10.0, commanded_position_um=12.5,
+                                          max_travel_um=450.0))
+    assert "measured position 10 µm" in text and "last commanded target 12.5 µm" in text
+    assert "not confirmed" in text and "ZStageReadback(" not in text
+    assert "no move commanded yet" in z_stage_summary(ZStageReadback())
+    zs = window.z_stack_panel
+    assert zs.show_image_button.isEnabled() and zs.open_folder_button.isEnabled()
+    zs.show_image_button.click()
+    assert window.panels[DeviceId.CAMERA].image_window.isVisible()
+    assert window.submitted == []
+    window.panels[DeviceId.CAMERA].image_window.close()

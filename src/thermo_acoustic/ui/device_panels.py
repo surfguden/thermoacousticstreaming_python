@@ -97,7 +97,7 @@ from ..domain.models import (
 from .temperature_plot import TemperaturePlot
 from ..application.configuration import DEFAULT_PUMP_CONFIGURATION_DIR
 from .ad2_scope import OscilloscopePanel
-from .status_dashboard import camera_summary
+from .status_dashboard import camera_summary, z_stage_summary
 from .widgets import CameraImageWindow
 
 
@@ -1933,6 +1933,11 @@ class TecPanel(DevicePanel):
         controls_layout = QGridLayout(controls)
         self.layout.addWidget(controls)
         group, form = form_group("Setpoints and stabilization")
+        note = QLabel("Manual setpoints act on the controller now. Experiments use the temperature range and "
+                      "stability policy in the Experiments tab, not these values. Regulation stays on after a "
+                      "run unless Outputs off is pressed.")
+        note.setWordWrap(True)
+        form.addRow(note)
         self.target_mode = self.register_profile("target_mode", QComboBox())
         self.target_mode.addItem("Broadcast to both channels", "broadcast")
         self.target_mode.addItem("Per channel", "per_channel")
@@ -2105,7 +2110,7 @@ class ZStagePanel(DevicePanel):
 
     def update_readback(self, readback: object) -> None:
         if readback is not None:
-            self.readback_label.setText(str(readback))
+            self.readback_label.setText(z_stage_summary(readback))
 
     def apply_successful_command(self, command: DeviceCommand | None) -> None:
         if command is not None and isinstance(command.arguments, ZStageSetPositionArgs):

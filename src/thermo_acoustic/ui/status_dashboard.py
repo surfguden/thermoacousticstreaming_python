@@ -32,6 +32,19 @@ def camera_summary(data: object) -> str:
     return " · ".join(pieces)
 
 
+def z_stage_summary(data: object) -> str:
+    """Measured position and last commanded target are different facts and are labelled as such."""
+    pieces = [f"measured position {_value(getattr(data, 'position_um', None), ' µm')} (last read)"]
+    commanded = getattr(data, "commanded_position_um", None)
+    pieces.append("no move commanded yet" if commanded is None else
+                  f"last commanded target {_value(commanded, ' µm')} (arrival is not confirmed by this)")
+    pieces.append("closed loop on" if getattr(data, "closed_loop", False) else "closed loop off")
+    maximum = getattr(data, "max_travel_um", None)
+    if maximum is not None:
+        pieces.append(f"travel 0–{_value(maximum, ' µm')}")
+    return " · ".join(pieces)
+
+
 # Same parameter names as the compiled plan; anything not listed is shown as key=value.
 _PARAMETER_LABELS = (("frequency_hz", "frequency", " Hz"), ("amplitude_v", "amplitude", " V"),
                      ("exposure_ms", "exposure", " ms"), ("sweep_width_hz", "sweep width", " Hz"),
@@ -161,10 +174,7 @@ class StatusDashboard(QWidget):
             elif device is DeviceId.VALVE and data is not None:
                 pieces.append(f"position {_value(getattr(data, 'confirmed_position', None))}")
             elif device is DeviceId.Z_STAGE and data is not None:
-                pieces.append(f"position {_value(getattr(data, 'position_um', None), ' µm')} (last read)")
-                commanded = getattr(data, "commanded_position_um", None)
-                if commanded is not None:
-                    pieces.append(f"last command {_value(commanded, ' µm')}")
+                pieces.append(z_stage_summary(data))
             elif device is DeviceId.CAMERA and data is not None:
                 pieces.append(camera_summary(data))
             elif device is DeviceId.AD2 and data is not None:
