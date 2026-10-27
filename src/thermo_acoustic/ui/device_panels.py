@@ -1865,6 +1865,10 @@ class CameraPanel(DevicePanel):
     def dock_image(self, layout: QVBoxLayout) -> None:
         """Show the image viewer inside `layout` (the Prepare tab) instead of as its own window."""
         window = self.image_window
+        if self.image_docked and self._image_dock_layout is layout:
+            return
+        if self._image_dock_layout is not None:
+            self._image_dock_layout.removeWidget(window)
         window.setWindowFlags(Qt.WindowType.Widget)
         layout.addWidget(window, 1)
         self._image_dock_layout = layout

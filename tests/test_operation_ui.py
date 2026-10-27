@@ -451,3 +451,22 @@ def test_z_stage_and_z_stack_panels_label_measured_and_commanded_positions(windo
     assert window.panels[DeviceId.CAMERA].image_window.isVisible()
     assert window.submitted == []
     window.panels[DeviceId.CAMERA].image_window.close()
+
+
+def test_range_rows_say_whether_they_are_fixed_or_a_scan_and_timing_table_follows_the_form(window):
+    panel = window.experiment_panel
+    start, stop, steps = panel.frequency
+    steps.setValue(1)
+    # The row's own description is the label under its Start/Stop/Steps fields.
+    descriptions = [label.text() for label in panel.findChildren(type(panel.edit_target_label))
+                    if label.text().startswith(("Fixed value", "Scan across"))]
+    assert any(text.startswith("Fixed value") for text in descriptions)
+    steps.setValue(3)
+    assert any("Scan across experiments: 3 values" in label.text()
+               for label in panel.findChildren(type(panel.edit_target_label)))
+    panel.sound_start.setValue(0.5)
+    panel.sound_run.setValue(2.0)
+    assert [panel.timing_table.item(0, c).text() for c in range(4)] == ["Ultrasound (AD2)", "0.5", "2", "2.5"]
+    panel.frames.setValue(20)
+    panel.fps.setValue(10)
+    assert panel.timing_table.item(2, 2).text() == "2"  # 20 frames at 10 fps; requested, not measured

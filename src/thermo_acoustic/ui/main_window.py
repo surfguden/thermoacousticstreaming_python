@@ -202,6 +202,9 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._scrolling(self.dashboard), "3  Run monitor")
         self.tabs.addTab(self.results_panel, "4  Results")
         self.tabs.addTab(self.device_tabs, "Device details")
+        camera = self.panels[DeviceId.CAMERA]
+        camera.image_reveal = self._reveal_image
+        self.tabs.currentChanged.connect(self._place_image_viewer)
         self.builder_window = ExperimentBuilderWindow(controller.experiments, self)
         controller.experiments.confirm_batch = self.confirm_experiment_batch
         controller.experiments.confirm_unchecked = self.confirm_unchecked_preflight
@@ -266,7 +269,30 @@ class MainWindow(QMainWindow):
         self.results_panel.open_folder(folder or self.dashboard.output_folder or "")
 
     def _show_camera_image_window(self) -> None:
-        self.panels[DeviceId.CAMERA].show_image_window()
+        camera = self.panels[DeviceId.CAMERA]
+        if camera.image_docked:
+            camera.pop_out_image()
+            self.prepare_panel.pop_button.setText("Dock image")
+        else:
+            camera.show_image_window()
+
+    def _place_image_viewer(self, *_args) -> None:
+        """One image viewer, shown in the workspace being looked at (Prepare or Run monitor)."""
+        camera = self.panels[DeviceId.CAMERA]
+        if not camera.image_docked:
+            return
+        page = self.tabs.currentWidget()
+        if page is self._scroll_pages[self.dashboard]:
+            camera.dock_image(self.dashboard.image_layout)
+        elif page is self._scroll_pages[self.prepare_panel]:
+            camera.dock_image(self.prepare_panel.image_layout)
+
+    def _reveal_image(self) -> None:
+        """A capture was requested while the viewer is docked: make sure it is on screen."""
+        if self.tabs.currentWidget() is self._scroll_pages[self.dashboard]:
+            return
+        self.show_workspace("prepare")
+        self.prepare_panel.imaging_section.set_expanded(True)
 
     def _panic(self) -> None:
         if self.controller.shutdown_started:

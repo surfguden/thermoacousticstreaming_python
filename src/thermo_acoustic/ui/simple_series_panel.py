@@ -7,9 +7,12 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QHeaderView,
     QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout,
     QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
-    QScrollArea, QSpinBox, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget, QTreeWidget, QTreeWidgetItem,
+    QVBoxLayout, QWidget,
 )
 
 from ..application.experiments import validate_definition
@@ -82,7 +85,7 @@ class SimpleSeriesPanel(QWidget):
         configure_layout.addWidget(scroll, 1)
         self.pages.addTab(configure_page, "Configure")
 
-        output = QGroupBox("Output and acquisition")
+        output = QGroupBox("Output")
         form = QFormLayout(output)
         self.description = QLineEdit()
         self.description.setPlaceholderText("Required: describe this experiment series")
@@ -101,11 +104,6 @@ class SimpleSeriesPanel(QWidget):
         self.tiff_format = QComboBox()
         self.tiff_format.addItem("Individual TIFF", "frames")
         self.tiff_format.addItem("Stacked TIFF", "stacked")
-        for label, control in (("Number of repeats", self.repeats),
-                               ("Number of frames", self.frames),
-                               ("Camera FPS", self.fps),
-                               ("Image format", self.tiff_format)):
-            form.addRow(label, control)
         left_groups = [output]
 
         timing = QGroupBox("Hardware timing from PC trigger")
@@ -126,14 +124,14 @@ class SimpleSeriesPanel(QWidget):
         form = QFormLayout(frequency)
         self.frequency = self._range(form, "Center frequency (Hz)", 1_000_000, 1_000_000)
         self.amplitude = self._range(form, "AD2 source peak amplitude (V)", 1, 1, maximum=5)
-        self.sweep_enabled = QCheckBox("Frequency sweep · frequency values become center frequencies")
+        self.sweep_enabled = QCheckBox("Frequency sweep within each experiment · frequencies become centers")
         form.addRow(self.sweep_enabled)
         self.sweep_width = self._range(form, "Full sweep width (Hz)", 100_000, 100_000)
         self.sweep_period = number(1, 0.001, 1_000_000)
         form.addRow("Sweep period (ms), triangle", self.sweep_period)
         left_groups.append(frequency)
 
-        temperature = QGroupBox("Temperature")
+        temperature = QGroupBox("Temperature program")
         form = QFormLayout(temperature)
         self.temperature_control = QCheckBox("Control temperature")
         self.temperature_logging = QCheckBox("Log both TEC channels throughout series (1 s)")
@@ -159,8 +157,11 @@ class SimpleSeriesPanel(QWidget):
         form.addRow("Minimum time within tolerance (s)", self.temperature_min_settle)
         form.addRow("Maximum wait for stability (s)", self.temperature_max_wait)
 
-        camera = QGroupBox("Camera")
+        camera = QGroupBox("Acquisition")
         form = QFormLayout(camera)
+        for label, control in (("Number of frames", self.frames), ("Camera FPS", self.fps),
+                               ("Image format", self.tiff_format)):
+            form.addRow(label, control)
         self.exposure = self._range(form, "Exposure (ms)", 1, 1)
         self.roi_x = integer(0, 0)
         self.roi_y = integer(0, 0)
@@ -174,8 +175,9 @@ class SimpleSeriesPanel(QWidget):
         left_groups.append(camera)
         self.camera_preflight_label = QLabel("Camera preflight: No")
 
-        fluidics = QGroupBox("Flush")
+        fluidics = QGroupBox("Repeats and flush")
         form = QFormLayout(fluidics)
+        form.addRow("Number of repeats", self.repeats)
         self.pump_unit = QComboBox()
         self.pump_unit_notice = QLabel("")
         self.volume = number(0.1, 0.000001, 1000)
@@ -230,13 +232,14 @@ class SimpleSeriesPanel(QWidget):
         review_body = QWidget()
         review_layout = QVBoxLayout(review_body)
         review_page.setWidget(review_body)
-        self.pages.addTab(review_page, "Review and start")
+        self.pages.addTab(review_page, "Queue and start")
         queue_group = QGroupBox("Series in this batch")
         queue_layout = QVBoxLayout(queue_group)
         self.batch_list = QTreeWidget()
         self.batch_list.setHeaderLabels(["Series descriptor", "State", "Experiments",
                                          "Camera preflight", "Syringe preflight", "Output folder"])
-        self.batch_list.setMinimumHeight(110)
+        self.batch_list.setMinimumHeight(90)
+        self.batch_list.setMaximumHeight(170)
         self._batch_snapshot = None
         queue_layout.addWidget(self.batch_list)
         queue_actions = QHBoxLayout()
@@ -245,6 +248,13 @@ class SimpleSeriesPanel(QWidget):
         queue_actions.addStretch(1)
         queue_layout.addLayout(queue_actions)
         review_layout.addWidget(queue_group)
+        self.start_readiness_label = QLabel()
+        self.start_readiness_label.setWordWrap(True)
+        self.start_readiness_label.setTextFormat(Qt.TextFormat.RichText)
+        start_row = QHBoxLayout()
+        start_row.addWidget(self.start_button, 0, Qt.AlignmentFlag.AlignTop)
+        start_row.addWidget(self.start_readiness_label, 1)
+        review_layout.addLayout(start_row)
         checks = QGroupBox("Preflight checks")
         checks_layout = QGridLayout(checks)
         checks_layout.addWidget(self.preflight_button, 0, 0)
@@ -261,14 +271,18 @@ class SimpleSeriesPanel(QWidget):
         self.summary = QLabel()
         self.summary.setWordWrap(True)
         summary_layout.addWidget(self.summary)
+        timing_caption = QLabel("Requested timing of one experiment, from the form values (not measured; the "
+                                "hardware timing is checked when the series starts)")
+        timing_caption.setWordWrap(True)
+        summary_layout.addWidget(timing_caption)
+        self.timing_table = QTableWidget(3, 4)
+        self.timing_table.setHorizontalHeaderLabels(("Output", "Starts at (s)", "Lasts (s)", "Ends at (s)"))
+        self.timing_table.verticalHeader().setVisible(False)
+        self.timing_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.timing_table.setMaximumHeight(120)
+        self.timing_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        summary_layout.addWidget(self.timing_table)
         review_layout.addWidget(summary_group)
-        self.start_readiness_label = QLabel()
-        self.start_readiness_label.setWordWrap(True)
-        self.start_readiness_label.setTextFormat(Qt.TextFormat.RichText)
-        start_row = QHBoxLayout()
-        start_row.addWidget(self.start_button, 0, Qt.AlignmentFlag.AlignTop)
-        start_row.addWidget(self.start_readiness_label, 1)
-        review_layout.addLayout(start_row)
         review_layout.addStretch(1)
         self.state_label = QLabel()
         self.state_label.setWordWrap(True)
@@ -353,6 +367,16 @@ class SimpleSeriesPanel(QWidget):
             row.addWidget(caption, 0, column)
             row.addWidget(control, 1, column)
             row.setColumnStretch(column, 1)
+        kind = QLabel()
+        kind.setStyleSheet("color: #555")
+        row.addWidget(kind, 2, 0, 1, 3)
+
+        def describe(*_args) -> None:
+            count = steps.value()
+            kind.setText("Fixed value: Start is used for every experiment" if count == 1
+                         else f"Scan across experiments: {count} values from Start to Stop")
+        steps.valueChanged.connect(describe)
+        describe()
         form.addRow(label, box)
         return start_widget, stop_widget, steps
 
@@ -536,14 +560,29 @@ class SimpleSeriesPanel(QWidget):
                      f"max {self.temperature_max_wait.value():g} s")
         self.advanced.set_summary(text)
 
+    def _render_timing(self) -> None:
+        """Rows come straight from the form values the plan is compiled from; nothing is derived here
+        except frames / FPS for the camera window."""
+        try:
+            settings = self._settings(require_pump_unit=False)
+        except (ValueError, ZeroDivisionError):
+            return
+        rows = (("Ultrasound (AD2)", settings.sound_start_s, settings.sound_run_s),
+                ("Laser", settings.laser_start_s, settings.laser_run_s),
+                ("Camera frames", settings.camera_start_s, settings.frame_count / settings.camera_fps))
+        for row, (name, start, length) in enumerate(rows):
+            for column, value in enumerate((name, f"{start:g}", f"{length:g}", f"{start + length:g}")):
+                self.timing_table.setItem(row, column, QTableWidgetItem(value))
+
     def _preview(self, *_args) -> None:
         self._update_advanced_summary()
+        self._render_timing()
         try:
             definition = self._definition()
             expansion = validate_definition(definition)
             count = len(expansion.experiments)
             self.summary.setText(self._run_preview_text(expansion, count))
-            self.config_hint.setText(f"Current form: {count} experiments planned. Details under Review and start.")
+            self.config_hint.setText(f"Current form: {count} experiments planned. Details under Queue and start.")
             self.config_hint.setStyleSheet("")
             passed = self.manager.camera_preflighted(definition)
             self.camera_preflight_label.setText("Camera preflight: Yes" if passed else "Camera preflight: No")

@@ -148,9 +148,9 @@ class PreparePanel(QWidget):
         header.addWidget(self.measure_toggle)
         header.addWidget(self.pop_button)
         image_layout.addLayout(header)
+        self.image_layout = image_layout
         camera.dock_image(image_layout)
         camera.image_window.setMinimumHeight(360)
-        camera.image_reveal = lambda: (show_prepare(), self.imaging_section.set_expanded(True))
         controls = QWidget()
         controls_layout = QVBoxLayout(controls)
         controls_layout.setContentsMargins(0, 0, 0, 0)
@@ -170,7 +170,7 @@ class PreparePanel(QWidget):
             self.pop_button.setText("Dock image")
             self.measure_toggle.setEnabled(False)
         else:
-            camera.redock_image()
+            camera.dock_image(self.image_layout)
             self.pop_button.setText("Pop out")
             self.measure_toggle.setEnabled(True)
             camera.image_window.set_measurement_visible(self.measure_toggle.isChecked())

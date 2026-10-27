@@ -85,6 +85,11 @@ class StatusDashboard(QWidget):
         self.output.setWordWrap(True)
         self.output.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         run_grid.addWidget(self.experiment, 0, 0, 1, 2)
+        # Shown only when a run ended abnormally or was stopped; says which, in words.
+        self.alert = QLabel()
+        self.alert.setWordWrap(True)
+        self.alert.setVisible(False)
+        run_grid.addWidget(self.alert, 5, 0, 1, 2)
         for row, (caption, label) in enumerate((("Condition", self.condition), ("Series", self.series),
                                                 ("Output folder", self.output)), 1):
             run_grid.addWidget(QLabel(caption), row, 0)
@@ -92,8 +97,9 @@ class StatusDashboard(QWidget):
         run_grid.setColumnStretch(1, 1)
         buttons = QHBoxLayout()
         self.open_output_button = QPushButton("Open output folder")
-        self.review_button = QPushButton("Review saved frames…")
-        self.image_window_button = QPushButton("Camera image window")
+        self.review_button = QPushButton("Review saved frames")
+        self.image_window_button = QPushButton("Pop out image")
+        self.image_window_button.setToolTip("Show the image in its own window; the same viewer, moved")
         self.open_output_button.setEnabled(False)
         self.open_output_button.clicked.connect(self.open_output_folder)
         self.image_window_button.clicked.connect(self.image_window_requested)
@@ -105,6 +111,14 @@ class StatusDashboard(QWidget):
         root.addWidget(run)
         self._folder: str | None = None
 
+        middle = QHBoxLayout()
+        # The live image viewer is the camera page's own viewer, moved here while this workspace is shown.
+        image_box = QGroupBox("Live image or last frame")
+        self.image_layout = QVBoxLayout(image_box)
+        middle.addWidget(image_box, 3)
+        side = QVBoxLayout()
+        middle.addLayout(side, 2)
+        root.addLayout(middle, 1)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         body = QWidget()
@@ -119,10 +133,10 @@ class StatusDashboard(QWidget):
         grid.setColumnStretch(1, 1)
         grid.setRowStretch(len(DeviceId), 1)
         scroll.setWidget(body)
-        root.addWidget(scroll, 1)
-        root.addWidget(QLabel("TEC temperatures · latest rolling samples"))
+        side.addWidget(scroll, 1)
+        side.addWidget(QLabel("TEC temperatures · latest rolling samples"))
         self.temperature_plot = TemperaturePlot()
-        root.addWidget(self.temperature_plot)
+        side.addWidget(self.temperature_plot)
 
     @property
     def output_folder(self) -> str | None:
@@ -138,6 +152,14 @@ class StatusDashboard(QWidget):
         self.experiment.setText(
             f"Batch: {status['state']} · completed {completed}/{count} · "
             f"remaining {max(0, count - completed)} · {status.get('phase', 'unknown')}")
+        state = status.get("state")
+        phase = status.get("phase", "")
+        text, color = {"failed": (phase, "#b71c1c"), "aborted": (phase, "#a65a00"),
+                       "stopped": ("Stopped after the current experiment; the remaining ones were not run.",
+                                   "#a65a00")}.get(state, ("", ""))
+        self.alert.setVisible(bool(text))
+        self.alert.setText(text)
+        self.alert.setStyleSheet(f"color: {color}; font-weight: 600")
         number = status.get("current_experiment_number")
         repeat = status.get("current_repeat")
         if status.get("current_parameters"):
