@@ -359,3 +359,84 @@ def test_accepted_queue_after_a_finished_batch_starts_a_fresh_batch(qt_app, tmp_
         assert status["state"] == "idle" and status["queued_series"] == 1
     finally:
         controller.shutdown()
+
+
+def test_idle_header_separates_batch_idle_device_activity_and_last_action(window):
+    from thermo_acoustic.domain.models import ConnectionState, DeviceStatus
+    assert window.activity_title.text() == "Batch idle"
+    assert "Ready" not in window.activity_detail.text()  # no static Ready for an unconnected system
+    assert "Last action: none yet" in window.activity_detail.text()
+    statuses = dict(window.controller.statuses())
+    statuses[DeviceId.TEC] = DeviceStatus(DeviceId.TEC, ConnectionState.ERROR, fault="comm lost")
+    statuses[DeviceId.CAMERA] = DeviceStatus(DeviceId.CAMERA, ConnectionState.CONNECTED, active=True)
+    window._status(statuses)
+    detail = window.activity_detail.text()
+    assert "Fault: TEC" in detail and "Active: Camera" in detail
+    summary = window.connection_summary.text()
+    assert "Simulation" in summary and "TEC" in summary and "error" in summary and "connected" in summary
+
+
+def test_abort_is_not_reported_as_a_series_failure(window):
+    window._experiment_changed({**window._experiment_status, "state": "aborted",
+                                "phase": "Experiment batch aborted: Operator aborted experiment batch"})
+    assert "failed" not in window.activity_detail.text().lower()
+    window._experiment_changed({**window._experiment_status, "state": "failed",
+                                "phase": "Experiment series failed: valve timeout"})
+    assert "failed" in window.activity_detail.text()
+
+
+def test_camera_summary_names_unknown_values_and_does_not_dump_the_repr():
+    from thermo_acoustic.domain.models import CameraReadback
+    from thermo_acoustic.ui.status_dashboard import camera_summary
+    text = camera_summary(CameraReadback(mode="continuous"))
+    assert "exposure unknown" in text and "ROI unknown" in text and "CameraReadback(" not in text
+
+
+def test_start_readiness_is_read_only_and_matches_what_start_refuses(qt_app, tmp_path):
+    controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
+    manager = controller.experiments
+    try:
+        submitted = []
+        controller.submit = lambda command: submitted.append(command)
+        before = manager.status()
+        readiness = manager.start_readiness()
+        assert readiness.blocking == ("Queue at least one experiment series",)
+        assert manager.status() == before and submitted == []  # asking changes and sends nothing
+        with pytest.raises(RuntimeError, match="Queue at least one"):
+            manager.start()
+        from test_experiments import described_default_definition
+        manager.queue(described_default_definition(), tmp_path)
+        readiness = manager.start_readiness()
+        assert readiness.blocking == ()  # simulation: syringe preflight is not required
+        assert any("Camera preflight is not current" in text for text in readiness.reminders)
+        assert any("when the series starts" in text for text in readiness.reminders)
+        # Real mode makes the batch syringe preflight a blocker, with the text start() raises.
+        monkey_mode = OperatingMode.REAL
+        controller.mode = monkey_mode
+        blocking = manager.start_readiness().blocking
+        assert blocking == ("Run syringe preflight for the current batch before Start",)
+        with pytest.raises(RuntimeError, match="Run syringe preflight"):
+            manager.start()
+    finally:
+        controller.shutdown()
+
+
+def test_review_page_shows_blockers_and_non_blocking_reminders(two_queued):
+    window, panel, a, b = two_queued
+    text = panel.start_readiness_label.text()
+    assert "Cannot start" not in text and "Camera preflight is not current" in text
+    assert panel.start_button.isEnabled()  # the optional camera preflight never disables Start
+    panel.manager.remove_queued(a); panel.manager.remove_queued(b)
+    panel._status(panel.manager.status())
+    assert "Cannot start: Queue at least one experiment series" in panel.start_readiness_label.text()
+    assert not panel.start_button.isEnabled()
+
+
+def test_camera_page_can_show_the_image_window_without_acquiring_and_flush_tab_is_named(window):
+    camera = window.panels[DeviceId.CAMERA]
+    assert not camera.image_window.isVisible()
+    camera.show_image_button.click()
+    assert camera.image_window.isVisible()
+    assert window.submitted == []  # showing the window issues no camera command
+    assert window.tabs.tabText(window.tabs.indexOf(window._scroll_pages[window.workflow_panel])) == "Flush"
+    camera.image_window.close()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout,
@@ -50,6 +51,7 @@ class SimpleSeriesPanel(QWidget):
         self._editing_folder: str | None = None
         self._edit_target_lost = False
         self._edit_buttons_allowed = True
+        self._start_locked = False
         self._camera_import_request: str | None = None
         # Set by _apply_settings() when a loaded flush_unit_index isn't
         # among the pump_unit combo's current choices (most commonly:
@@ -260,6 +262,10 @@ class SimpleSeriesPanel(QWidget):
         self.summary.setWordWrap(True)
         summary_layout.addWidget(self.summary)
         review_layout.addWidget(summary_group)
+        self.start_readiness_label = QLabel()
+        self.start_readiness_label.setWordWrap(True)
+        self.start_readiness_label.setTextFormat(Qt.TextFormat.RichText)
+        review_layout.addWidget(self.start_readiness_label)
         start_row = QHBoxLayout()
         start_row.addWidget(self.start_button)
         start_row.addStretch(1)
@@ -747,6 +753,15 @@ class SimpleSeriesPanel(QWidget):
         except Exception as exc:
             QMessageBox.warning(self, "Could not update series", str(exc))
 
+    def _render_start_readiness(self) -> None:
+        """Show the manager's own Start rule: what blocks Start, and what is only a reminder."""
+        readiness = self.manager.start_readiness()
+        lines = [f'<span style="color:#b71c1c;font-weight:600">Cannot start: {text}</span>'
+                 for text in readiness.blocking]
+        lines += [f'<span style="color:#555">Not blocking: {text}</span>' for text in readiness.reminders]
+        self.start_readiness_label.setText("<br>".join(lines))
+        self.start_button.setEnabled(not readiness.blocking and not self._start_locked)
+
     def _queued_descriptor(self, folder: str, status: dict | None = None) -> str | None:
         for series in (status or self.manager.status()).get("series", []):
             if series["folder"] == folder and series["state"] == "queued":
@@ -840,6 +855,7 @@ class SimpleSeriesPanel(QWidget):
                 if self.tec_channel.findData(current_channel) >= 0:
                     self.tec_channel.setCurrentIndex(self.tec_channel.findData(current_channel))
         self._render_batch_list(self.manager.status())
+        self._render_start_readiness()
 
     def _render_batch_list(self, status: dict) -> None:
         selected = self.batch_list.currentItem().text(5) if self.batch_list.currentItem() else None
@@ -875,7 +891,8 @@ class SimpleSeriesPanel(QWidget):
         for button in (self.load_button, self.remove_button):
             button.setEnabled(not editing_locked and status["queued_series"] > 0)
         self._render_edit_target(status)
-        self.start_button.setEnabled(not locked)
+        self._start_locked = locked
+        self._render_start_readiness()
         self._render_batch_list(status)
         self.state_label.setText(f"Batch: {status['state']} · queued: {status['queued_series']} · "
                                  f"completed experiments: {status['completed_experiments']}")

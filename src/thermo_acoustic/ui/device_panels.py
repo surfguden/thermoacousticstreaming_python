@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGridLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
@@ -96,6 +97,7 @@ from ..domain.models import (
 from .temperature_plot import TemperaturePlot
 from ..application.configuration import DEFAULT_PUMP_CONFIGURATION_DIR
 from .ad2_scope import OscilloscopePanel
+from .status_dashboard import camera_summary
 from .widgets import CameraImageWindow
 
 
@@ -1525,6 +1527,23 @@ class CameraPanel(DevicePanel):
         # placed behind it while acquisition controls remain accessible.
         self.image_window = CameraImageWindow()
         self.preview = self.image_window.preview
+        notes_row = QWidget()
+        notes_layout = QHBoxLayout(notes_row)
+        notes_layout.setContentsMargins(0, 0, 0, 0)
+        self.camera_notes = QLabel(
+            "Controls here act on the camera now and are not used by Experiments, which apply their own "
+            "exposure and ROI from the Experiments tab; its Import button copies the camera's current ROI "
+            "and exposure there (camera to form only).")
+        self.camera_notes.setToolTip(
+            "Snapshot and Continuous use Snapshot exposure. Set exposure applies Exposure. Buffered "
+            "sequence uses its own frames and exposure. Set ROI applies the ROI to the camera.")
+        self.camera_notes.setWordWrap(True)
+        self.show_image_button = QPushButton("Show image window")
+        self.show_image_button.setToolTip("Shows the existing image window; it does not start a capture")
+        self.show_image_button.clicked.connect(self.show_image_window)
+        notes_layout.addWidget(self.camera_notes, 1)
+        notes_layout.addWidget(self.show_image_button, 0)
+        self.layout.addWidget(notes_row)
         controls = QWidget()
         controls_layout = QGridLayout(controls)
         controls_layout.setContentsMargins(0, 0, 0, 0)
@@ -1636,9 +1655,6 @@ class CameraPanel(DevicePanel):
             form.addRow(label, widget)
         controls_layout.addWidget(group, 1, 1)
 
-        preview_hint = QLabel("Images open in the camera acquisition window.")
-        preview_hint.setWordWrap(True)
-        controls_layout.addWidget(preview_hint, 2, 1)
         controls_layout.setColumnStretch(0, 1)
         controls_layout.setColumnStretch(1, 1)
         self.readback_label = QLabel("No readback")
@@ -1755,6 +1771,13 @@ class CameraPanel(DevicePanel):
             CameraSequenceSaveFormat(self.sequence_save_format.currentData()),
         )
 
+    def show_image_window(self) -> None:
+        """Bring up the image window as it is (live image or last frame); no acquisition is started."""
+        window = self.image_window
+        window.show()
+        window.raise_()
+        window.activateWindow()
+
     def _show_image_window(self, status: str) -> None:
         self.image_window.begin_acquisition(status)
 
@@ -1811,7 +1834,7 @@ class CameraPanel(DevicePanel):
 
     def update_readback(self, readback: object) -> None:
         if isinstance(readback, CameraReadback):
-            self.readback_label.setText(str(readback))
+            self.readback_label.setText(camera_summary(readback))
             limits = readback.roi_limits
             if limits is not None:
                 self._current_roi_limits = limits

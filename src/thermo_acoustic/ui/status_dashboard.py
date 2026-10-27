@@ -18,6 +18,20 @@ def _value(value: object, unit: str = "") -> str:
     return "unknown" if value is None else f"{value:g}{unit}" if isinstance(value, (int, float)) else str(value)
 
 
+def camera_summary(data: object) -> str:
+    """Camera readback as mode, exposure, ROI and frames; a value the camera did not report is 'unknown'."""
+    pieces = [f"mode {_value(getattr(data, 'mode', None))}",
+              f"exposure {_value(getattr(data, 'exposure_ms', None), ' ms')}"]
+    roi = getattr(data, "roi", None)
+    pieces.append("ROI unknown" if roi is None else
+                  f"ROI {roi.horizontal_size}×{roi.vertical_size} at ({roi.horizontal_offset}, {roi.vertical_offset})")
+    if getattr(data, "capture_active", None):
+        pieces.append("capturing")
+    if getattr(data, "sequence_frame_count", None) is not None:
+        pieces.append(f"frames {_value(getattr(data, 'captured_frame_count', None))}/{data.sequence_frame_count}")
+    return " · ".join(pieces)
+
+
 # Same parameter names as the compiled plan; anything not listed is shown as key=value.
 _PARAMETER_LABELS = (("frequency_hz", "frequency", " Hz"), ("amplitude_v", "amplitude", " V"),
                      ("exposure_ms", "exposure", " ms"), ("sweep_width_hz", "sweep width", " Hz"),
@@ -152,9 +166,7 @@ class StatusDashboard(QWidget):
                 if commanded is not None:
                     pieces.append(f"last command {_value(commanded, ' µm')}")
             elif device is DeviceId.CAMERA and data is not None:
-                pieces.append(f"{data.mode} · exposure {_value(data.exposure_ms, ' ms')}")
-                if data.sequence_frame_count is not None:
-                    pieces.append(f"frames {data.captured_frame_count}/{data.sequence_frame_count}")
+                pieces.append(camera_summary(data))
             elif device is DeviceId.AD2 and data is not None:
                 pieces.append("waveform running" if data.waveform_running else "waveform idle")
                 pieces.append("digital output running" if data.digital_output_running else "digital output idle")

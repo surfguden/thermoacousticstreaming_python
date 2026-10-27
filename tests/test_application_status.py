@@ -97,7 +97,7 @@ def test_top_status_and_dashboard_are_passive_and_lock_commands():
         assert "valve timeout" in window.activity_detail.text()
         window._event(CommandEvent("manual", "completed", DeviceId.AD2,
                                    DeviceOperation.AD2_WAVEFORM_CONFIGURE, "ui"))
-        assert window.activity_title.text() == "Idle"
+        assert window.activity_title.text() == "Batch idle"
         assert "waveform configure" in window.activity_detail.text()
         assert window.experiment_panel.queue_button.isEnabled()
     finally:

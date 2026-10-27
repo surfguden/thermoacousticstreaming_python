@@ -65,7 +65,8 @@ class SeriesStorage:
             raise ValueError("Experiment base folder must exist and be a directory")
         existing = list(root.iterdir())
         if existing and not continuing_batch:
-            raise ValueError("Experiment base folder must be empty before queueing a batch")
+            raise ValueError("Experiment base folder must be empty before queueing a new batch: one base folder holds "
+                             "one batch, so a folder that already has results cannot be reused. Choose a new empty folder.")
         if continuing_batch and any(not path.is_dir() or not path.name.startswith("experiment_batch_")
                                     for path in existing):
             raise ValueError("Experiment base folder contains files outside this batch")

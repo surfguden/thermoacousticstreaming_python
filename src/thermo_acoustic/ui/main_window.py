@@ -4,7 +4,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QTimer
+from PySide6.QtCore import QEvent, QTimer, Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
@@ -58,6 +59,41 @@ _TAB_LABELS = {
 }
 
 
+_DEVICE_NAMES = {DeviceId.AD2: "AD2", DeviceId.PUMP: "Pump", DeviceId.VALVE: "Valve",
+                 DeviceId.CAMERA: "Camera", DeviceId.TEC: "TEC", DeviceId.Z_STAGE: "Z-stage"}
+_STATE_STYLE = {ConnectionState.CONNECTED: "color:#2e7d32", ConnectionState.ERROR: "color:#b71c1c;font-weight:700",
+                ConnectionState.DISCONNECTED: "color:#616161"}
+
+
+def connection_summary_html(mode: OperatingMode, statuses: dict[DeviceId, DeviceStatus]) -> str:
+    """Mode and the six connection states. Every state is also written as a word, not only coloured."""
+    if mode is OperatingMode.REAL:
+        head = '<span style="color:#b71c1c;font-weight:700">Mode: REAL hardware</span>'
+    else:
+        head = '<span style="font-weight:700">Mode: Simulation</span>'
+    chips = []
+    for device in DeviceId:
+        status = statuses.get(device)
+        state = status.connection if status is not None else ConnectionState.DISCONNECTED
+        label = state.value + (" (fault)" if status is not None and status.fault and
+                               state is not ConnectionState.ERROR else "")
+        chips.append(f'{_DEVICE_NAMES[device]} <span style="{_STATE_STYLE[state]}">{label}</span>')
+    return head + " &nbsp;|&nbsp; " + " &nbsp;·&nbsp; ".join(chips)
+
+
+def device_activity_text(statuses: dict[DeviceId, DeviceStatus]) -> str:
+    """What the devices themselves report right now (manual or batch): faults first, then activity."""
+    faults = [_DEVICE_NAMES[d] for d, s in statuses.items() if s.fault or s.connection is ConnectionState.ERROR]
+    active = [_DEVICE_NAMES[d] for d, s in statuses.items()
+              if s.connection is ConnectionState.CONNECTED and (s.active or s.busy)]
+    pieces = []
+    if faults:
+        pieces.append("Fault: " + ", ".join(faults))
+    if active:
+        pieces.append("Active: " + ", ".join(active))
+    return "; ".join(pieces) if pieces else "No device activity reported"
+
+
 class MainWindow(QMainWindow):
     def __init__(self, controller, parent=None, *, ui_log_writer=None):
         super().__init__(parent)
@@ -76,7 +112,8 @@ class MainWindow(QMainWindow):
         root = QWidget()
         root_layout = QVBoxLayout(root)
         self.setCentralWidget(root)
-        self._last_action = "Ready"
+        self._last_action = "none yet"
+        self._device_statuses: dict[DeviceId, DeviceStatus] = {}
         self._experiment_status = controller.experiments.status()
         self._panic_status = controller.panic_status()
         header = QHBoxLayout()
@@ -113,6 +150,11 @@ class MainWindow(QMainWindow):
             header.addWidget(button)
         root_layout.addLayout(header)
         root_layout.addLayout(self._navigation_row())
+        self.connection_summary = QLabel()
+        self.connection_summary.setTextFormat(Qt.TextFormat.RichText)
+        # One line that never widens the window or grows taller; the full text is also the tooltip.
+        self.connection_summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        root_layout.addWidget(self.connection_summary)
 
         self.tabs = QTabWidget()
         self.tabs.setMinimumWidth(0)
@@ -133,7 +175,7 @@ class MainWindow(QMainWindow):
         )
         self.workflow_panel.abort_requested.connect(controller.cancel_active_workflow)
         self.workflow_panel.notice.connect(self._ui_notice)
-        self.tabs.addTab(self._scrolling(self.workflow_panel), "Workflows")
+        self.tabs.addTab(self._scrolling(self.workflow_panel), "Flush")
         from .z_stack_panel import ZStackPanel
         self.z_stack_panel = ZStackPanel(controller.z_stack, self.panels[DeviceId.CAMERA])
         self.tabs.addTab(self._scrolling(self.z_stack_panel), "Z stack")
@@ -249,10 +291,7 @@ class MainWindow(QMainWindow):
             window.choose_folder(self.dashboard.output_folder or "")
 
     def _show_camera_image_window(self) -> None:
-        window = self.panels[DeviceId.CAMERA].image_window
-        window.show()
-        window.raise_()
-        window.activateWindow()
+        self.panels[DeviceId.CAMERA].show_image_window()
 
     def _panic(self) -> None:
         if self.controller.shutdown_started:
@@ -306,6 +345,11 @@ class MainWindow(QMainWindow):
         self.abort_button.setEnabled(running)
         self._render_activity()
 
+    def _idle_detail(self) -> str:
+        """Three separate facts: no batch is running, what the devices report, and the last operator action."""
+        return (f"{device_activity_text(self._device_statuses)} · "
+                f"Last action: {self._last_action}")
+
     def _render_activity(self) -> None:
         panic = self._panic_status
         experiment = self._experiment_status
@@ -315,7 +359,7 @@ class MainWindow(QMainWindow):
         elif panic["state"] == "failed":
             title, detail = "Safe stop incomplete", "; ".join(panic["errors"])
         elif panic["state"] == "completed":
-            title, detail = "Idle", "Panic safe stop completed; valve and Z-stage held position"
+            title, detail = "Batch idle", "Panic safe stop completed; valve and Z-stage held position"
         elif state == "running":
             number = experiment.get("current_experiment_number")
             count = experiment.get("planned_experiments", 0)
@@ -324,13 +368,13 @@ class MainWindow(QMainWindow):
         elif state in {"stopping", "aborting"}:
             title, detail = "Safe stop!", experiment.get("phase", "Stopping experiment batch")
         elif state in {"failed", "aborted"}:
-            title, detail = "Idle", experiment.get("phase", "Experiment series failed")
+            title, detail = "Batch idle", experiment.get("phase", "Experiment series failed")
         elif state == "completed":
-            title, detail = "Idle", "Experiment series completed!"
+            title, detail = "Batch idle", "Experiment series completed!"
         elif state == "stopped":
-            title, detail = "Idle", "Experiment batch stopped after current experiment"
+            title, detail = "Batch idle", "Experiment batch stopped after current experiment"
         else:
-            title, detail = "Idle", self._last_action
+            title, detail = "Batch idle", self._idle_detail()
         self.activity_title.setText(title)
         self.activity_detail.setText(detail)
 
@@ -493,6 +537,11 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(text)
 
     def _status(self, statuses: dict[DeviceId, DeviceStatus]) -> None:
+        self._device_statuses = dict(statuses)
+        summary = connection_summary_html(self.controller.mode, statuses)
+        self.connection_summary.setText(summary)
+        self.connection_summary.setToolTip(summary)
+        self._render_activity()
         for device, status in statuses.items():
             self.panels[device].set_status(status)
         pump = statuses.get(DeviceId.PUMP)

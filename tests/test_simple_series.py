@@ -1591,6 +1591,8 @@ def test_abort_during_a_running_series_stops_without_starting_the_next_experimen
         controller.experiments.abort()
         status = _wait_until_terminal(app, controller)
         assert status["state"] == "aborted", status
+        # Operator abort is worded as an abort, not a series failure; the persisted record is unchanged.
+        assert status["phase"].startswith("Experiment batch aborted"), status["phase"]
 
         completed_ops = [event.operation for event in events if event.state == "completed"]
         # The second repeat of the first point must never have reached
@@ -1601,6 +1603,7 @@ def test_abort_during_a_running_series_stops_without_starting_the_next_experimen
 
         status_doc = json.loads((folder / "metadata" / "status.json").read_text())
         assert status_doc["finalized_outcome"] == "aborted"
+        assert "Operator aborted" in status_doc["error"]
         assert status_doc["experiments_completed"] == 1
         # The second repeat's incomplete experiment, if any was in flight
         # when abort() landed, must not be miscounted as completed.

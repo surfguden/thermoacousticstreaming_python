@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 import math
@@ -29,6 +30,12 @@ from .experiment_storage import FileWorker, SeriesStorage, json_ready
 from .experiments import Expansion, PlannedExperiment, validate_definition
 from .temperature_recording import TemperatureRecorder
 from .simple_preflight import camera_preflight_fingerprint
+
+
+@dataclass(frozen=True)
+class StartReadiness:
+    blocking: tuple[str, ...]
+    reminders: tuple[str, ...]
 
 
 BATCH_ACTIVE_STATES = frozenset({"running", "stopping", "aborting"})
@@ -334,26 +341,52 @@ class ExperimentManager(QObject):
     def _publish(self) -> None:
         self.changed.emit(self.status())
 
-    def start(self) -> bool:
+    def _unchecked_camera_series(self) -> list[str]:
+        return [expansion.definition["description"] for expansion, _storage in self._queued
+                if camera_preflight_fingerprint(expansion) not in self._camera_preflight_passes]
+
+    def start_readiness(self) -> StartReadiness:
+        """What stops Start, and what it only warns about. Read-only: no device command, no state change,
+        no dialog. `start()` refuses on the first `blocking` entry, so the UI and Start share one rule."""
+        blocking: list[str] = []
+        reminders: list[str] = []
         if self.controller.close_requested:
-            raise RuntimeError("The application is closing; no new batch can start")
+            blocking.append("The application is closing; no new batch can start")
         if self.controller.z_stack.state == "running":
-            raise RuntimeError("Wait for the Z stack to finish before starting the batch")
+            blocking.append("Wait for the Z stack to finish before starting the batch")
         if self.controller.panic_status()["state"] == "stopping":
-            raise RuntimeError("Wait for Panic safe stop to finish before starting a batch")
+            blocking.append("Wait for Panic safe stop to finish before starting a batch")
         if self.controller.count_preflight_active:
-            raise RuntimeError("Wait for count preflight to finish before starting a batch")
+            blocking.append("Wait for count preflight to finish before starting a batch")
         if self._current is not None or self._state == "running":
-            raise RuntimeError("An experiment batch is already running")
+            blocking.append("An experiment batch is already running")
         if not self._queued:
-            raise RuntimeError("Queue at least one experiment series")
+            blocking.append("Queue at least one experiment series")
         if self._syringe_preflight_active:
-            raise RuntimeError("Wait for syringe preflight to finish")
-        if (self.controller.mode is OperatingMode.REAL
-                and self._flush_totals(list(self._queued)) and not self._syringe_preflight_current()):
-            raise RuntimeError("Run syringe preflight for the current batch before Start")
-        unchecked = [expansion.definition["description"] for expansion, _storage in self._queued
-                     if camera_preflight_fingerprint(expansion) not in self._camera_preflight_passes]
+            blocking.append("Wait for syringe preflight to finish")
+        syringe_needed = bool(self._queued) and bool(self._flush_totals(list(self._queued)))
+        syringe_current = syringe_needed and self._syringe_preflight_current()
+        if self.controller.mode is OperatingMode.REAL and syringe_needed and not syringe_current:
+            blocking.append("Run syringe preflight for the current batch before Start")
+        if self._queued:
+            unchecked = self._unchecked_camera_series()
+            if unchecked:
+                reminders.append(f"Camera preflight is not current for {len(unchecked)} queued series "
+                                 "(optional; Start asks to continue)")
+            if syringe_needed and not syringe_current and self.controller.mode is not OperatingMode.REAL:
+                reminders.append("Batch syringe preflight not run (required in real mode); pump fill level "
+                                 "is checked when each series starts")
+            if self.controller.mode is OperatingMode.REAL:
+                reminders.append("Start asks for confirmation before using real hardware")
+            reminders.append("Checked when the series starts, not now: required devices connected, pump "
+                             "capacity and fill level, camera buffer, no manual AD2 output running")
+        return StartReadiness(tuple(blocking), tuple(reminders))
+
+    def start(self) -> bool:
+        blocking = self.start_readiness().blocking
+        if blocking:
+            raise RuntimeError(blocking[0])
+        unchecked = self._unchecked_camera_series()
         if unchecked and not self.confirm_unchecked(
             f"Camera preflight has not passed for {len(unchecked)} queued series with their current "
             "camera settings. Continue with standard Start validation?"
@@ -1339,7 +1372,10 @@ class ExperimentManager(QObject):
                     except OSError as exc:
                         reason += f"; unfinished experiment files could not be discarded: {exc}"
         self._state = "failed" if not self._abort_requested else "aborted"
-        self._phase = f"Experiment series failed: {reason}"
+        # Wording only: an operator abort is not a device or saving fault. The persisted state,
+        # status.json `error` and the series_failed event keep their existing values.
+        self._phase = (f"Experiment batch aborted: {reason}" if self._state == "aborted"
+                       else f"Experiment series failed: {reason}")
         if self._current is not None:
             storage = self._current[1]
             self._series_states[storage.folder] = self._state
