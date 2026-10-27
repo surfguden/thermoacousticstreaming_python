@@ -318,3 +318,91 @@ def test_structurally_wrong_records_give_a_saved_frames_error_not_a_crash(tmp_pa
         _break_record(folder, lambda r: r.update(parameters=damage()))
         with pytest.raises(SavedFramesError):
             SavedExperiment(folder)
+
+
+def _window(qt_app):
+    controller = ApplicationController(DeviceRegistry(mode=OperatingMode.SIMULATION),
+                                       mode=OperatingMode.SIMULATION)
+    window = MainWindow(controller)
+    window.show()
+    qt_app.processEvents()
+    return controller, window
+
+
+def test_escape_does_not_hide_an_embedded_viewer_and_still_closes_a_popped_out_one(qt_app):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from thermo_acoustic.domain.models import DeviceId
+    controller, window = _window(qt_app)
+    try:
+        camera = window.panels[DeviceId.CAMERA]
+        window.show_workspace("prepare")
+        window.prepare_panel.imaging_section.set_expanded(True)
+        qt_app.processEvents()
+        viewer = camera.image_window
+        assert viewer.isVisible()
+        viewer.preview.setFocus()
+        QTest.keyClick(viewer.preview, Qt.Key.Key_Escape)  # a real key press
+        QTest.keyClick(viewer, Qt.Key.Key_Escape)
+        assert viewer.isVisible()
+        window.show_workspace("results")
+        window.show_workspace("prepare")
+        assert viewer.isVisible()
+        results_viewer = window.results_panel.viewer
+        window.show_workspace("results")
+        QTest.keyClick(results_viewer, Qt.Key.Key_Escape)
+        assert results_viewer.isVisible()
+        window.show_workspace("monitor")
+        window.show_workspace("results")
+        assert results_viewer.isVisible()
+        camera.show_image_window()  # the Show image entry also keeps it shown
+        assert viewer.isVisible()
+        # Popped out it is an ordinary window again: Esc closes it, and docking brings it back.
+        window.prepare_panel.pop_button.click()
+        assert viewer.isWindow() and viewer.isVisible()
+        QTest.keyClick(viewer, Qt.Key.Key_Escape)
+        assert not viewer.isVisible()
+        window.prepare_panel.pop_button.click()  # Dock image
+        window.show_workspace("prepare")
+        assert not viewer.isWindow() and viewer.isVisible()
+    finally:
+        window.close()
+        controller.shutdown()
+
+
+def test_results_names_the_viewed_folder_apart_from_the_latest_output(tmp_path, qt_app, monkeypatch):
+    first, _ = make_series(_mk(tmp_path / "one"), "frames", saved=1)
+    second, _ = make_series(_mk(tmp_path / "two"), "frames", saved=1)
+    controller, window = _window(qt_app)
+    opened = []
+    monkeypatch.setattr("thermo_acoustic.ui.results_panel.QDesktopServices.openUrl",
+                        lambda url: opened.append(url.toLocalFile()))
+    try:
+        results = window.results_panel
+        results.set_latest(str(second))  # the session's latest output
+        assert "nothing loaded" in results.viewing_label.text().lower()
+        assert not results.open_viewed_button.isEnabled()
+        # Load a different, older folder through the viewer's own Open: the outer state follows it.
+        results.viewer.open_or_report(str(first))
+        assert str(first) in results.viewing_label.text() and results.open_viewed_button.isEnabled()
+        results.open_viewed_button.click()
+        assert [str(Path(p)) for p in opened] == [str(first)]  # not the latest output
+        assert str(second) in results.latest_label.text()
+        results.open_latest_button.click()
+        assert str(second) in results.viewing_label.text()
+        # A failed load changes nothing that is shown or targeted.
+        empty = _mk(tmp_path / "empty")
+        monkeypatch.setattr("thermo_acoustic.ui.saved_frames_window.QMessageBox.warning", lambda *a: None)
+        results.viewer.open_or_report(str(empty))
+        assert str(second) in results.viewing_label.text()
+        results.open_viewed_button.click()
+        assert str(Path(opened[-1])) == str(second)
+        assert digest(first)  # the source data was only read
+    finally:
+        window.close()
+        controller.shutdown()
+
+
+def _mk(path: Path) -> Path:
+    path.mkdir()
+    return path

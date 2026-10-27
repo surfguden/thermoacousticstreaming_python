@@ -7,7 +7,7 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QComboBox, QFileDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton, QSlider, QSpinBox,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Signal, Qt
 
 from ..application.saved_frames import (
     SavedExperiment, SavedExperimentInfo, SavedFramesError, find_experiments,
@@ -25,8 +25,10 @@ class SavedFramesWindow(CameraImageWindow):
     """
 
     _BLUE = "#1f4e8c"
+    source_changed = Signal()  # what is loaded changed (a folder, an experiment, or a failed load)
 
     def __init__(self, parent=None) -> None:
+        self._source: str | None = None  # the folder last opened successfully
         self._experiments: list[SavedExperimentInfo] = []
         self._experiment: SavedExperiment | None = None
         self._position = 0
@@ -67,6 +69,13 @@ class SavedFramesWindow(CameraImageWindow):
         self._render_state()
 
     # ---------------------------------------------------------------- source
+    def loaded_folder(self) -> str | None:
+        """The folder whose frames are on screen now; None when nothing (or nothing readable) is loaded."""
+        return self._source if self._experiment is not None else None
+
+    def loaded_experiment_id(self) -> str | None:
+        return self._experiment.experiment_id if self._experiment is not None else None
+
     def choose_folder(self, start: str = "") -> None:
         path = QFileDialog.getExistingDirectory(self, "Series or experiment folder", start or "")
         if path:
@@ -83,6 +92,7 @@ class SavedFramesWindow(CameraImageWindow):
         if not experiments:
             raise SavedFramesError("This series has no saved experiments yet")
         self._experiments = experiments
+        self._source = str(path)
         self.experiment_combo.blockSignals(True)
         self.experiment_combo.clear()
         for info in experiments:
@@ -106,6 +116,7 @@ class SavedFramesWindow(CameraImageWindow):
             self._clear_view()
             self.status.setText(f"Cannot show {info.relative_path}: {exc}")
             self._render_state()
+            self.source_changed.emit()
             return
         self._experiment = experiment
         self.experiment_combo.blockSignals(True)
@@ -118,6 +129,7 @@ class SavedFramesWindow(CameraImageWindow):
         self.count_label.setText(f"of {experiment.frame_count}")
         self._set_controls_enabled(True)
         self._display(0, first)
+        self.source_changed.emit()
 
     # ---------------------------------------------------------------- frames
     def show_position(self, position: int) -> None:

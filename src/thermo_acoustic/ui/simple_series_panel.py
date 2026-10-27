@@ -219,6 +219,21 @@ class SimpleSeriesPanel(QWidget):
         self._body_grid = grid
         self._arrange_groups(2)
 
+        # The form's own plan: what Queue series would add. Not what Start runs (that is on Queue and start).
+        self.form_preview = CollapsibleSection("Preview of this form (not queued)")
+        preview_body = QWidget()
+        preview_layout = QVBoxLayout(preview_body)
+        preview_layout.setContentsMargins(12, 0, 0, 0)
+        self.summary = QLabel()
+        self.summary.setWordWrap(True)
+        preview_layout.addWidget(self.summary)
+        timing_caption = QLabel("Requested timing of one experiment from the form values (not measured)")
+        timing_caption.setWordWrap(True)
+        preview_layout.addWidget(timing_caption)
+        self.timing_table = self._timing_table()
+        preview_layout.addWidget(self.timing_table)
+        self.form_preview.set_content(preview_body)
+        configure_layout.addWidget(self.form_preview)
         self.config_hint = QLabel()
         self.config_hint.setWordWrap(True)
         configure_actions = QHBoxLayout()
@@ -239,7 +254,7 @@ class SimpleSeriesPanel(QWidget):
         self.batch_list.setHeaderLabels(["Series descriptor", "State", "Experiments",
                                          "Camera preflight", "Syringe preflight", "Output folder"])
         self.batch_list.setMinimumHeight(90)
-        self.batch_list.setMaximumHeight(170)
+        self.batch_list.setMaximumHeight(150)
         self._batch_snapshot = None
         queue_layout.addWidget(self.batch_list)
         queue_actions = QHBoxLayout()
@@ -266,23 +281,29 @@ class SimpleSeriesPanel(QWidget):
         note.setWordWrap(True)
         checks_layout.addWidget(note, 2, 0, 1, 3)
         review_layout.addWidget(checks)
-        summary_group = QGroupBox("Plan for the current form values")
-        summary_layout = QVBoxLayout(summary_group)
-        self.summary = QLabel()
-        self.summary.setWordWrap(True)
-        summary_layout.addWidget(self.summary)
-        timing_caption = QLabel("Requested timing of one experiment, from the form values (not measured; the "
-                                "hardware timing is checked when the series starts)")
-        timing_caption.setWordWrap(True)
-        summary_layout.addWidget(timing_caption)
-        self.timing_table = QTableWidget(3, 4)
-        self.timing_table.setHorizontalHeaderLabels(("Output", "Starts at (s)", "Lasts (s)", "Ends at (s)"))
-        self.timing_table.verticalHeader().setVisible(False)
-        self.timing_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.timing_table.setMaximumHeight(120)
-        self.timing_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        summary_layout.addWidget(self.timing_table)
-        review_layout.addWidget(summary_group)
+        plan_group = QGroupBox("Plan of the selected series: the queued definition, what Start will run")
+        plan_layout = QVBoxLayout(plan_group)
+        self.batch_summary = QLabel()
+        self.batch_summary.setWordWrap(True)
+        plan_layout.addWidget(self.batch_summary)
+        self.queue_plan_title = QLabel()
+        self.queue_plan_title.setWordWrap(True)
+        self.queue_plan_title.setStyleSheet("font-weight: 600")
+        plan_layout.addWidget(self.queue_plan_title)
+        self.queue_plan_text = QLabel()
+        self.queue_plan_text.setWordWrap(True)
+        plan_layout.addWidget(self.queue_plan_text)
+        self.queue_timing_caption = QLabel("Requested timing of one experiment (not measured; the hardware "
+                                           "timing is checked when the series starts)")
+        self.queue_timing_caption.setWordWrap(True)
+        plan_layout.addWidget(self.queue_timing_caption)
+        self.queue_timing_table = self._timing_table()
+        plan_layout.addWidget(self.queue_timing_table)
+        self.form_differs_label = QLabel()
+        self.form_differs_label.setWordWrap(True)
+        self.form_differs_label.setStyleSheet("color: #a65a00; font-weight: 600")
+        plan_layout.addWidget(self.form_differs_label)
+        review_layout.insertWidget(review_layout.indexOf(checks), plan_group)
         review_layout.addStretch(1)
         self.state_label = QLabel()
         self.state_label.setWordWrap(True)
@@ -312,6 +333,7 @@ class SimpleSeriesPanel(QWidget):
             widget.toggled.connect(self._preview)
         self.description.textChanged.connect(self._preview)
         self.pump_unit.currentIndexChanged.connect(self._pump_unit_selected)
+        self.batch_list.currentItemChanged.connect(lambda *_: self._render_queue_plan())
         self._enabled()
         self._devices(controller.statuses())
         self._preview()
@@ -560,28 +582,105 @@ class SimpleSeriesPanel(QWidget):
                      f"max {self.temperature_max_wait.value():g} s")
         self.advanced.set_summary(text)
 
-    def _render_timing(self) -> None:
-        """Rows come straight from the form values the plan is compiled from; nothing is derived here
-        except frames / FPS for the camera window."""
-        try:
-            settings = self._settings(require_pump_unit=False)
-        except (ValueError, ZeroDivisionError):
-            return
+    @staticmethod
+    def _timing_table() -> QTableWidget:
+        table = QTableWidget(3, 4)
+        table.setHorizontalHeaderLabels(("Output", "Starts at (s)", "Lasts (s)", "Ends at (s)"))
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setMaximumHeight(120)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        return table
+
+    @staticmethod
+    def _fill_timing(table: QTableWidget, settings: SimpleSeriesSettings) -> None:
+        """Rows come straight from the settings the plan is compiled from; the only calculation is
+        frames / FPS for the camera window."""
         rows = (("Ultrasound (AD2)", settings.sound_start_s, settings.sound_run_s),
                 ("Laser", settings.laser_start_s, settings.laser_run_s),
                 ("Camera frames", settings.camera_start_s, settings.frame_count / settings.camera_fps))
         for row, (name, start, length) in enumerate(rows):
             for column, value in enumerate((name, f"{start:g}", f"{length:g}", f"{start + length:g}")):
-                self.timing_table.setItem(row, column, QTableWidgetItem(value))
+                table.setItem(row, column, QTableWidgetItem(value))
+
+    def _render_timing(self) -> None:
+        try:
+            self._fill_timing(self.timing_table, self._settings(require_pump_unit=False))
+        except (ValueError, ZeroDivisionError):
+            return
+
+    def _render_queue_plan(self) -> None:
+        """What Start will run: the queued definitions, not the form. The selected series is shown from its
+        compiled definition; its settings (when it was queued from this form) add frames and timing."""
+        status = self.manager.status()
+        queued = [item for item in status.get("series", []) if item["state"] == "queued"]
+        batch = f"Batch: {len(queued)} queued series · {sum(item['experiment_count'] for item in queued)} experiments"
+        budget = self.manager.queued_flush_budget()
+        if budget:
+            batch += " · flush volume: " + ", ".join(f"pump unit {unit + 1}: {ml:g} mL" for unit, ml in sorted(budget.items()))
+        self.batch_summary.setText(batch if queued else "Nothing is queued yet; queue a series from Configure.")
+        item = self.batch_list.currentItem()
+        folder = item.text(5) if item is not None else None
+        self.form_differs_label.setText(self._form_differs_text())
+        try:
+            expansion = validate_definition(self.manager.queued_definition(folder)) if folder else None
+        except (StopIteration, ValueError):
+            expansion = None
+        has_plan = expansion is not None
+        for widget in (self.queue_plan_text, self.queue_timing_caption, self.queue_timing_table):
+            widget.setVisible(has_plan)
+        if not has_plan:
+            self.queue_plan_title.setText("Select a queued series above to see what Start will run for it.")
+            return
+        settings = self._queued_settings.get(folder)
+        count = len(expansion.experiments)
+        lines = [f"{count} experiments"]
+        flush = self.manager.queued_flush_budget(folder)
+        if flush:
+            lines[0] += " · flush volume: " + ", ".join(f"pump unit {unit + 1}: {ml:g} mL" for unit, ml in sorted(flush.items()))
+        if settings is not None:
+            lines[0] += f" · {count * settings.frame_count} saved frames"
+        repeats = max((experiment.repeat_index for experiment in expansion.experiments), default=0)
+        lines.append(f"Repeats per point: {repeats}")
+        lines.extend(self._parameter_lines(expansion))
+        if settings is not None:
+            strategy = self._strategy_line(settings.temperature_control, settings.temperature_wait_for_stability,
+                                           settings.temperature_tolerance_c, settings.temperature_min_settle_s,
+                                           settings.temperature_max_wait_s, settings.temperature_wait_s)
+            if strategy:
+                lines.append(strategy)
+        lines.append(f"Output location: {folder}")
+        self.queue_plan_title.setText(f"Series “{item.text(0)}” · {item.text(1)}")
+        self.queue_plan_text.setText("\n".join(lines))
+        self.queue_timing_caption.setVisible(settings is not None)
+        self.queue_timing_table.setVisible(settings is not None)
+        if settings is not None:
+            self._fill_timing(self.queue_timing_table, settings)
+
+    def _form_differs_text(self) -> str:
+        """Edits in the form that the queue does not have yet (they only count after Update loaded series)."""
+        folder = self._editing_folder
+        stored = self._queued_settings.get(folder) if folder else None
+        if stored is None:
+            return ""
+        try:
+            changed = self._settings(require_pump_unit=False) != stored
+        except (ValueError, ZeroDivisionError):
+            return ""
+        return ("The form has changes that are not in the queue; Start runs the queued definition. "
+                "Press Update loaded series on Configure to apply them." if changed else "")
 
     def _preview(self, *_args) -> None:
         self._update_advanced_summary()
         self._render_timing()
+        self._render_edit_target()
+        self.form_differs_label.setText(self._form_differs_text())
         try:
             definition = self._definition()
             expansion = validate_definition(definition)
             count = len(expansion.experiments)
             self.summary.setText(self._run_preview_text(expansion, count))
+            self.form_preview.set_summary(self.summary.text().split("\n")[0])
             self.config_hint.setText(f"Current form: {count} experiments planned. Details under Queue and start.")
             self.config_hint.setStyleSheet("")
             passed = self.manager.camera_preflighted(definition)
@@ -590,9 +689,39 @@ class SimpleSeriesPanel(QWidget):
                 f"color: {'#2e7d32' if passed else '#b71c1c'}; font-weight: 600")
         except (ValueError, ZeroDivisionError) as exc:
             self.summary.setText(f"Settings need attention: {exc}")
+            self.form_preview.set_summary(f"Settings need attention: {exc}")
             self.config_hint.setText(f"Settings need attention: {exc}")
             self.config_hint.setStyleSheet("color: #b71c1c")
             self.camera_preflight_label.setText("Camera preflight: No")
+
+    @staticmethod
+    def _parameter_lines(expansion) -> list[str]:
+        lines: list[str] = []
+        for key, label in (("frequency_hz", "Frequency (Hz)"), ("amplitude_v", "Amplitude (V)"),
+                           ("exposure_ms", "Exposure (ms)"), ("sweep_width_hz", "Sweep width (Hz)"),
+                           ("temperature_c", "Temperature (°C)")):
+            # compile_simple_series() fills a disabled sweep/temperature
+            # axis with the literal string "NaN" (not a float, not an
+            # absent key) -- that's the compiled plan's own way of saying
+            # "not applicable this run," so it's excluded here rather than
+            # shown as a one-value range.
+            values = sorted({experiment.parameters[key] for experiment in expansion.experiments
+                             if key in experiment.parameters and experiment.parameters[key] != "NaN"})
+            if not values:
+                continue
+            lines.append(f"{label}: {values[0]:g}" if len(values) == 1
+                         else f"{label}: {values[0]:g} .. {values[-1]:g} ({len(values)} values)")
+        return lines
+
+    @staticmethod
+    def _strategy_line(enabled: bool, wait_for_stability: bool, tolerance: float, min_settle: float,
+                       max_wait: float, hold: float) -> str:
+        if not enabled:
+            return ""
+        if wait_for_stability:
+            return (f"Temperature strategy: wait for stability (±{tolerance:g}°C, settled {min_settle:g}s, "
+                    f"max wait {max_wait:g}s), then hold {hold:g}s")
+        return f"Temperature strategy: fixed wait of {hold:g}s, no stability check"
 
     def _run_preview_text(self, expansion, count: int) -> str:
         """Summarize the compiled experiments and current fixed-form inputs.
@@ -609,28 +738,13 @@ class SimpleSeriesPanel(QWidget):
         # -- not a running count across the whole plan.
         repeats = max((experiment.repeat_index for experiment in expansion.experiments), default=0)
         lines.append(f"Repeats per point: {repeats}")
-        for key, label in (("frequency_hz", "Frequency (Hz)"), ("amplitude_v", "Amplitude (V)"),
-                           ("exposure_ms", "Exposure (ms)"), ("sweep_width_hz", "Sweep width (Hz)"),
-                           ("temperature_c", "Temperature (°C)")):
-            # compile_simple_series() fills a disabled sweep/temperature
-            # axis with the literal string "NaN" (not a float, not an
-            # absent key) -- that's the compiled plan's own way of saying
-            # "not applicable this run," so it's excluded here rather than
-            # shown as a one-value range.
-            values = sorted({experiment.parameters[key] for experiment in expansion.experiments
-                             if key in experiment.parameters and experiment.parameters[key] != "NaN"})
-            if not values:
-                continue
-            lines.append(f"{label}: {values[0]:g}" if len(values) == 1
-                         else f"{label}: {values[0]:g} .. {values[-1]:g} ({len(values)} values)")
-        if self.temperature_control.isChecked():
-            if self.temperature_wait_for_stability.isChecked():
-                lines.append(
-                    f"Temperature strategy: wait for stability (±{self.temperature_tolerance.value():g}°C, "
-                    f"settled {self.temperature_min_settle.value():g}s, max wait "
-                    f"{self.temperature_max_wait.value():g}s), then hold {self.temp_wait.value():g}s")
-            else:
-                lines.append(f"Temperature strategy: fixed wait of {self.temp_wait.value():g}s, no stability check")
+        lines.extend(self._parameter_lines(expansion))
+        strategy = self._strategy_line(
+            self.temperature_control.isChecked(), self.temperature_wait_for_stability.isChecked(),
+            self.temperature_tolerance.value(), self.temperature_min_settle.value(),
+            self.temperature_max_wait.value(), self.temp_wait.value())
+        if strategy:
+            lines.append(strategy)
         output_root = self.output_root.text().strip()
         lines.append(f"Output location: {output_root}" if output_root else "Output location: not chosen yet")
         return "\n".join(lines)
@@ -730,6 +844,7 @@ class SimpleSeriesPanel(QWidget):
                 raise ValueError("Choose an experiment base folder")
             folder = self.manager.queue(definition, root)
             self._queued_settings[str(folder)] = self._settings()
+            self._render_queue_plan()  # the series is queued before its settings are recorded
             self._editing_folder = None
             self._render_edit_target()
             self.state_label.setText(f"Queued: {folder}")
@@ -786,6 +901,7 @@ class SimpleSeriesPanel(QWidget):
             settings = self._settings()
             self.manager.update_queued(folder, compile_simple_series(settings))
             self._queued_settings[folder] = settings
+            self._render_queue_plan()
             self._render_edit_target()
             self.state_label.setText("Queued series updated; batch syringe preflight reset")
         except Exception as exc:
@@ -933,5 +1049,6 @@ class SimpleSeriesPanel(QWidget):
         self._start_locked = locked
         self._render_start_readiness()
         self._render_batch_list(status)
+        self._render_queue_plan()
         self.state_label.setText(f"Batch: {status['state']} · queued: {status['queued_series']} · "
                                  f"completed experiments: {status['completed_experiments']}")

@@ -1894,6 +1894,7 @@ class CameraPanel(DevicePanel):
     def show_image_window(self) -> None:
         """Bring up the image viewer as it is (live image or last frame); no acquisition is started."""
         if self.image_docked:
+            self.image_window.show()  # a docked viewer is always shown; this also covers any earlier hide
             self.image_reveal()
             return
         window = self.image_window

@@ -1006,6 +1006,12 @@ class CameraImageWindow(QDialog):
         self._update_zoom_label()
         self._render_state()
 
+    def done(self, result: int) -> None:
+        """Esc (or Enter on a default button) ends a separate window. A viewer embedded in a page is part
+        of that page: it is never hidden by a key press, only popped out or left with its workspace."""
+        if self.isWindow():
+            super().done(result)
+
     def set_measurement_visible(self, visible: bool) -> None:
         """Show or hide the display-range, histogram and measurement column (display only)."""
         self.side_panel.setVisible(visible)

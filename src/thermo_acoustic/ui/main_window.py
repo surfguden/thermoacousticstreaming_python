@@ -205,6 +205,7 @@ class MainWindow(QMainWindow):
         camera = self.panels[DeviceId.CAMERA]
         camera.image_reveal = self._reveal_image
         self.tabs.currentChanged.connect(self._place_image_viewer)
+        self.tabs.currentChanged.connect(lambda *_: self.results_panel.ensure_visible())
         self.builder_window = ExperimentBuilderWindow(controller.experiments, self)
         controller.experiments.confirm_batch = self.confirm_experiment_batch
         controller.experiments.confirm_unchecked = self.confirm_unchecked_preflight

@@ -168,6 +168,13 @@ class ExperimentManager(QObject):
         self._publish()
         return storage.folder
 
+    def queued_flush_budget(self, folder: str | Path | None = None) -> dict[int, float]:
+        """Flush volume per pump unit (mL) in the compiled steps of the queued series: all of them, or just
+        `folder`. Read-only; the same computation the batch syringe preflight uses."""
+        items = [(expansion, storage) for expansion, storage in self._queued
+                 if folder is None or storage.folder == Path(folder)]
+        return self._flush_totals(items)
+
     def queued_definition(self, folder: str | Path) -> dict[str, Any]:
         return next(expansion.definition for expansion, storage in self._queued
                     if storage.folder == Path(folder))

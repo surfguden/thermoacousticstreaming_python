@@ -470,3 +470,29 @@ def test_range_rows_say_whether_they_are_fixed_or_a_scan_and_timing_table_follow
     panel.frames.setValue(20)
     panel.fps.setValue(10)
     assert panel.timing_table.item(2, 2).text() == "2"  # 20 frames at 10 fps; requested, not measured
+
+
+def test_start_plan_follows_the_queued_definition_not_the_form_or_the_list_browsing(two_queued):
+    window, panel, a, b = two_queued
+    _select(panel, a)
+    assert "Series “A”" in panel.queue_plan_title.text()
+    assert "3 saved frames" in panel.queue_plan_text.text() and a in panel.queue_plan_text.text()
+    assert "flush volume: pump unit 1" in panel.queue_plan_text.text()  # compiled budget, not the form scalar
+    _select(panel, b)
+    assert "Series “B”" in panel.queue_plan_title.text() and "4 saved frames" in panel.queue_plan_text.text()
+    assert "2 queued series" in panel.batch_summary.text() and "2 experiments" in panel.batch_summary.text()
+    # An unsaved form change is not in the queue: the plan keeps the queued value and says so.
+    _select(panel, a)
+    panel.load_button.click()
+    panel.frames.setValue(9)
+    assert "9 saved frames" in panel.summary.text() or "9" in panel.summary.text()  # the form preview follows the form
+    assert "3 saved frames" in panel.queue_plan_text.text()  # what Start runs is unchanged
+    assert "not in the queue" in panel.form_differs_label.text()
+    # Browsing the list changes which queued plan is shown, never the form or the editing target.
+    _select(panel, b)
+    assert "4 saved frames" in panel.queue_plan_text.text() and panel.frames.value() == 9
+    assert "Editing queued series: A" in panel.edit_target_label.text()
+    _select(panel, a)
+    panel.update_button.click()
+    assert "9 saved frames" in panel.queue_plan_text.text() and panel.form_differs_label.text() == ""
+    assert "Preview of this form" in panel.form_preview.toggle.text()
