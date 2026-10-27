@@ -1316,3 +1316,17 @@ Simulated task walkthrough (connect, refill, snapshot/exposure/ROI, focus, set t
 queue, start): tab/page switches 12 -> 2 and 5 fewer Connect clicks, but button clicks overall did not
 fall (6 tick boxes and 3 section openings are new), so the gain is fewer page changes, not fewer clicks.
 Offscreen only; real display, DPI feel and real devices are not covered.
+
+## 2026-10-28 — Unified window: four workspaces
+
+Navigation is one row (Prepare, Configure, Monitor, Results) plus Device details; the earlier task row
+and the ten top-level tabs were removed, with no compatibility switch. Borrowed: junjie's
+Prepare / Configure / Review / Monitor stages and its "current execution" idea (kept to what the
+runner reports: series, condition, repeat, phase, counts; no percentage or time estimate). Vendor
+documentation read for layout only: CETONI Elements (the fill indicator shows the drive position, so
+the pump bar is drawn only from a known level and capacity), Meerstetter service software (device
+status, target and output shown separately; a controller may report no target, so the table keeps a
+"Requested" column apart from "Reported target"), Andor Solis (exposure and ROI beside the image),
+Thorlabs Kinesis (target position, jog step and measured position as separate items). Not adopted: old
+mutual-exclusion rules between scan axes (combined scans stay valid), evidence grading, a separate
+planner for the pre-run view.

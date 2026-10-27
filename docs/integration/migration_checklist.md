@@ -43,10 +43,11 @@ automatically (no preset manager); historical device addresses and paths are not
 - *TEC evidence:* requested targets are in `definition.json`; available channel status is in the experiment snapshot. The real client does not re-read target parameter 3000. Do not interpret a simulated target readback as a real applied-target measurement.
 - *Standalone Z stack:* its `metadata.json` has no failure reason or run identity; this differs from the series manifest.
 
-**Where things are in the window.** A "Task" row under the title links to existing tabs
-(1 Prepare devices → the Prepare tab, which lists the six devices; the device tabs stay, 2 Configure and 3 Review and start → the two pages of the
-Experiments tab, 4 Monitor run → the Run monitor tab). They only switch tabs; every tab stays
-reachable and nothing is required before Start. **Stop after current**, **Abort batch** and
+**Where things are in the window.** One tab row is the navigation: **1 Prepare devices**,
+**2 Configure experiment** (pages *Configure* and *Queue and start*), **3 Run monitor**,
+**4 Results**, and **Device details** (AD2, Pump, Valve, Camera, TEC, Z-stage, Flush, Z stack:
+connection inputs, advanced settings, diagnostics). Switching only changes the page; every page
+stays reachable and nothing is required before Start. **Stop after current**, **Abort batch** and
 **PANIC · Safe stop** are always visible at the top right: Stop after current lets the running
 experiment finish and ends the batch before the next one; Abort cancels the running experiment and
 ends the batch (an incomplete acquisition is discarded, completed experiments are kept); Panic
@@ -61,8 +62,8 @@ viewer share the display range, Fit/100 %, zoom/pan, histogram and pixel readout
 *Draw / move analysis ROI* (one rectangle; mean, population SD, min, max and pixel count of the raw
 values, independent of the display range; not the camera acquisition ROI and it sends no camera
 command; dropped when the image size changes) and *Intensity profile* (one raw row or column, in
-pixel units; no calibration is applied, so no physical length is shown). **Review saved frames…**
-(File menu or Run monitor) opens a series or experiment folder read-only, lists its experiments
+pixel units; no calibration is applied, so no physical length is shown). **Results** (4; File menu
+or *Review saved frames* in the Run monitor) opens a series or experiment folder read-only, lists its experiments
 and steps through the frames recorded in `experiment.json` (read from disk one at a time, a few
 cached). Its banner and state line say "saved data, not live". A folder whose frame records are
 missing, out of order or inconsistent is refused with the reason; nothing is guessed from file
@@ -84,10 +85,10 @@ values).
    flush volume with that read-back. Do not refill by reflex after a restart — prepare the syringe
    according to what it actually holds and what the experiment needs.
 3. On *Configure* enter a series descriptor (required) and a base folder, then "Queue series". On
-   *Review and start* click "Preflight camera settings" before Start, otherwise Start asks for
+   *Queue and start* click "Preflight camera settings" before Start, otherwise Start asks for
    confirmation (real mode also needs the batch syringe preflight).
 4. "Start queued batch". Watch it on the Run monitor; Stop after current / Abort / Panic are in the
-   header. Queue edits: *Load selected for editing* and *Remove selected series* are on Review and
+   header. Queue edits: *Load selected for editing* and *Remove selected series* are on Queue and
    start; *Update loaded series* is next to *Queue series* on Configure and changes only the series
    named in "Editing queued series: …" above the form (nothing is changed when none is loaded).
    Review shows what blocks Start and what is only a reminder. A new batch needs a new empty base
@@ -232,3 +233,20 @@ except through its Import button (camera to form).
 | Focus controls | `ZStagePanel.__init__`; position text `z_stage_summary` (`status_dashboard.py`) |
 | Fixed temperature | `TecPanel.__init__` ("Setpoints and stabilization") |
 | Which controls appear on Prepare, section order, summaries | `PreparePanel.__init__`, `_section_summaries` (`prepare_panel.py`); a panel opts in with `daily_container()` |
+
+## Window structure and where to change it (2026-10-28)
+
+The live image viewer is one widget: it is docked in Prepare, moves to the Run monitor when that page
+is shown, and can be popped out (*Pop out* / *Dock image*). Saved frames are read in Results with the
+same viewer class. Configure groups the form as Output, Acquisition, Ultrasound, Temperature program,
+Repeats and flush; each Start/Stop/Steps row says whether it is a fixed value or a scan across
+experiments; the queue page shows the requested (not measured) timing of one experiment.
+
+| To change | Edit |
+|---|---|
+| Tabs / navigation (`show_workspace`, `open_page`), header, connection line | `main_window.py` |
+| Prepare sections, image docking, summaries | `prepare_panel.py`; image dock/pop-out in `CameraPanel.dock_image` / `pop_out_image` |
+| Pump fill bar, TEC requested vs reported columns | `PumpPanel._build_tiles` / `update_readback`, `TecPanel._set_channels` |
+| Configure groups, range tags, timing table, queue page | `simple_series_panel.py` (`_range`, `_render_timing`) |
+| Run monitor (current run, alert line, image host) | `status_dashboard.py` |
+| Results page | `results_panel.py` (hosts `SavedFramesWindow`) |
