@@ -196,3 +196,87 @@ def test_requested_temperature_is_kept_apart_from_the_reported_target(env):
     wait(lambda: any(e.operation is DeviceOperation.TEC_SETPOINTS_APPLY and e.state == "completed" for e in events))
     wait(lambda: tec.table.item(0, 2) is not None and tec.table.item(0, 2).text() == "27.5")
     assert tec.table.horizontalHeaderItem(3).text() == "Reported target °C"
+
+
+def test_valve_ad2_and_manual_flush_controls_are_in_prepare_and_send_their_usual_commands(env):
+    from thermo_acoustic.application.commands import WorkflowOperation
+    window, controller, events, wait = env
+    _connect(window, wait, DeviceId.PUMP, DeviceId.VALVE, DeviceId.AD2)
+    prepare = window.prepare_panel
+    valve, ad2 = window.panels[DeviceId.VALVE], window.panels[DeviceId.AD2]
+    assert _inside(valve._buttons["set"], prepare) and not _inside(valve.port, prepare)
+    assert _inside(ad2._buttons["wave_stop_quick"], prepare) and not _inside(ad2._buttons["wave_start"], prepare)
+    assert _inside(window.workflow_panel.flush_button, prepare)
+    valve.position.setCurrentIndex(1)
+    valve._buttons["set"].click()
+    wait(lambda: any(e.operation is DeviceOperation.VALVE_POSITION_SET and e.state == "completed" for e in events))
+    assert [e for e in events if e.operation is DeviceOperation.VALVE_POSITION_SET][0].arguments.position == 2
+    ad2._buttons["wave_stop_quick"].click()
+    wait(lambda: any(e.operation is DeviceOperation.AD2_WAVEFORM_STOP and e.state == "completed" for e in events))
+    wait(lambda: window.panels[DeviceId.PUMP].tiles_layout.count() > 0)
+    flush = window.workflow_panel
+    flush.unit.setCurrentIndex(1)
+    flush.flush_button.click()
+    wait(lambda: any(e.operation is WorkflowOperation.FLUSH and e.state in {"completed", "failed"} for e in events))
+    assert [e for e in events if e.operation is WorkflowOperation.FLUSH][0].arguments.unit_index == 0
+
+
+def test_stopping_a_manual_output_is_blocked_while_a_batch_owns_the_instruments(env):
+    window, controller, events, wait = env
+    _connect(window, wait, DeviceId.AD2)
+    ad2 = window.panels[DeviceId.AD2]
+    assert ad2._buttons["wave_stop_quick"].isEnabled()
+    window._experiment_changed({**window._experiment_status, "state": "running"})
+    assert not ad2._buttons["wave_stop_quick"].isEnabled() and not ad2._buttons["do_stop_quick"].isEnabled()
+    assert window.abort_button.isEnabled() and window.panic_button.isEnabled()  # the experiment is stopped there
+
+
+def test_tec_wait_reports_its_end(env):
+    window, controller, events, wait = env
+    _connect(window, wait, DeviceId.TEC)
+    tec = window.panels[DeviceId.TEC]
+    tec.target.setValue(25.0)
+    tec._buttons["apply"].click()
+    wait(lambda: any(e.operation is DeviceOperation.TEC_SETPOINTS_APPLY and e.state == "completed" for e in events))
+    tec.settle.setValue(0.2)
+    tec._buttons["wait"].click()
+    wait(lambda: "pending" not in tec._buttons["wait"].text(), timeout=20)
+    assert "wait stable" in tec.notice_label.text() and "done" in tec.notice_label.text()
+    assert tec._buttons["wait"].isEnabled()  # connected or applied never meant "stable"; this reports the wait
+
+
+def test_tec_wait_that_never_reaches_the_target_fails_with_the_reason_on_the_page(qt_app):
+    from thermo_acoustic.drivers.tec.simulated import SimulatedTec
+
+    class FarTec(SimulatedTec):  # reports a temperature 10 degrees away from any target
+        def read_status(self, channels=None):
+            status = super().read_status(channels)
+            return {c: type(s)(channel=c, current_temperature_c=(s.target_temperature_c or 25.0) + 10.0,
+                               target_temperature_c=s.target_temperature_c, output_stage_static_on=True, ready=True)
+                    for c, s in status.items()}
+
+    controller = ApplicationController(DeviceRegistry(factories={DeviceId.TEC: FarTec}), mode=OperatingMode.SIMULATION)
+    controller.start()
+    window = MainWindow(controller)
+    window.show()
+    try:
+        tec = window.panels[DeviceId.TEC]
+        tec._buttons["connect"].click()
+        deadline = monotonic() + 8
+        while monotonic() < deadline and controller.statuses()[DeviceId.TEC].connection is not ConnectionState.CONNECTED:
+            qt_app.processEvents(); sleep(0.01)
+        tec.target.setValue(25.0)
+        tec.max_wait.setValue(0.6)
+        tec.poll.setValue(0.05)
+        tec.settle.setValue(0.1)
+        tec._buttons["wait"].click()
+        deadline = monotonic() + 15
+        while monotonic() < deadline and "pending" in tec._buttons["wait"].text():
+            qt_app.processEvents(); sleep(0.01)
+        assert tec._buttons["wait"].isEnabled()  # the page is usable again after the failure
+        text = tec.notice_label.text().lower()
+        assert "failed" in text and ("stab" in text or "wait" in text or "reach" in text)
+        assert "connected" in tec.connection_label.text().lower()  # a failed wait is not a lost connection
+    finally:
+        window.close()
+        controller.shutdown()

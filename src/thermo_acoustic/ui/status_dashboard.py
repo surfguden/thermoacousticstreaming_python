@@ -214,4 +214,9 @@ class StatusDashboard(QWidget):
                 for channel in getattr(data, "channels", ()):
                     pieces.append(f"CH{channel.channel}: {_value(channel.current_temperature_c, ' °C')} "
                                   f"→ {_value(channel.target_temperature_c, ' °C')}")
+            if status.fault:
+                pieces[0] = f"{status.connection.value} (FAULT)"
+            elif status.connection.value == "connected" and (status.busy or status.active):
+                pieces.insert(1, "working")
             self.rows[device].setText(" · ".join(pieces))
+            self.rows[device].setStyleSheet("color: #b71c1c; font-weight: 600" if status.fault else "")

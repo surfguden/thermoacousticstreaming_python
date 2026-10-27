@@ -74,20 +74,19 @@ def test_stop_controls_are_always_visible_and_only_enabled_when_they_apply(windo
         assert button.isVisibleTo(window)
 
 
-def test_advanced_values_are_folded_but_still_part_of_the_series(window):
+def test_output_timing_is_a_main_parameter_and_only_the_stability_policy_is_folded(window):
     panel = window.experiment_panel
+    window.show_workspace("configure")
     assert not panel.advanced.is_expanded()
-    assert not panel.sound_run.isVisibleTo(panel)  # folded away
-    assert "sound 0+1 s" in panel.advanced.summary.text()
+    assert panel.sound_run.isVisibleTo(panel)  # timing of one experiment is core, not folded away
+    assert not panel.temperature_tolerance.isVisibleTo(panel)  # the stability policy is folded
     panel.sound_run.setValue(2.5)
     panel.camera_start.setValue(0.4)
-    assert "sound 0+2.5 s" in panel.advanced.summary.text() and "camera from 0.4 s" in panel.advanced.summary.text()
     settings = panel._settings(require_pump_unit=False)
-    assert settings.sound_run_s == 2.5 and settings.camera_start_s == 0.4  # folded does not mean ignored
+    assert settings.sound_run_s == 2.5 and settings.camera_start_s == 0.4
     panel.advanced.set_expanded(True)
-    assert panel.sound_run.isVisibleTo(panel)
-    # Saved with the settings profile either way.
-    assert window.profile_document()["experiment"]["sound_run_s"] == 2.5
+    assert panel.temperature_tolerance.isVisibleTo(panel)
+    assert window.profile_document()["experiment"]["sound_run_s"] == 2.5  # saved with the settings
 
 
 def test_form_uses_one_column_on_a_narrow_window_and_two_on_a_wide_one(window, qt_app):
@@ -368,7 +367,7 @@ def test_idle_header_separates_batch_idle_device_activity_and_last_action(window
     detail = window.activity_detail.text()
     assert "Fault: TEC" in detail and "Active: Camera" in detail
     summary = window.connection_summary.text()
-    assert "Simulation" in summary and "TEC" in summary and "error" in summary and "connected" in summary
+    assert "Simulation" in summary and "TEC" in summary and "operation failed" in summary and "connected" in summary
 
 
 def test_abort_is_not_reported_as_a_series_failure(window):
@@ -433,7 +432,7 @@ def test_camera_page_can_show_the_image_window_without_acquiring_and_flush_tab_i
     camera.show_image_button.click()
     assert camera.image_window.isVisible()
     assert window.submitted == []  # showing the window issues no camera command
-    assert window.device_tabs.tabText(window.device_tabs.indexOf(window._scroll_pages[window.workflow_panel])) == "Flush"
+    assert window.workflow_panel.parentWidget() is not None  # the manual flush lives in Prepare, beside the pumps
     camera.image_window.close()
 
 

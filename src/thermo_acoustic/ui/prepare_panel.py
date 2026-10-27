@@ -42,7 +42,7 @@ class PreparePanel(QWidget):
     def __init__(self, controller, panels: dict, connector: DeviceConnector,
                  open_device_page: Callable[[DeviceId], None],
                  open_configure: Callable[[], None] = lambda: None,
-                 show_prepare: Callable[[], None] = lambda: None, parent=None) -> None:
+                 show_prepare: Callable[[], None] = lambda: None, workflow_panel=None, parent=None) -> None:
         super().__init__(parent)
         self.controller = controller
         self.panels = panels
@@ -102,10 +102,19 @@ class PreparePanel(QWidget):
 
         # Everyday controls, taken over from the device panels (one owner each; see module docstring).
         # Folding a section only hides it: nothing is sent and nothing is disabled.
+        flow_extras = QWidget()
+        extras_layout = QHBoxLayout(flow_extras)
+        extras_layout.setContentsMargins(0, 0, 0, 0)
+        extras_layout.addWidget(panels[DeviceId.VALVE].release_daily("Selector valve position"), 1, Qt.AlignmentFlag.AlignTop)
+        if workflow_panel is not None:
+            extras_layout.addWidget(workflow_panel, 1, Qt.AlignmentFlag.AlignTop)
         self.pump_section = self._section(
-            root, "Pump and flow path", [panels[DeviceId.PUMP].release_daily("Everyday pump controls")])
+            root, "Pump and flow path",
+            [panels[DeviceId.PUMP].release_daily("Everyday pump controls"), flow_extras])
         self.imaging_section = self._section(root, "Imaging and focus", [self._imaging_body(panels, show_prepare)])
         root.setStretchFactor(self.imaging_section, 1)  # spare height goes to the image, not to empty space
+        self.acoustic_section = self._section(
+            root, "Acoustic and trigger output", [panels[DeviceId.AD2].release_daily("Acoustic output status and stops")])
         self.temperature_section = self._section(
             root, "Fixed temperature", [panels[DeviceId.TEC].release_daily("Everyday temperature controls")])
 
@@ -193,18 +202,27 @@ class PreparePanel(QWidget):
         pump = statuses[DeviceId.PUMP]
         units = pump.readback.units if isinstance(pump.readback, PumpReadback) else ()
         if pump.connection is not ConnectionState.CONNECTED:
-            self.pump_section.set_summary("pump not connected")
+            pump_text = "pump not connected"
         else:
-            self.pump_section.set_summary(" · ".join(
+            pump_text = (" · ".join(
                 f"Pump {unit.unit_index + 1}: "
                 + ("unknown level" if unit.fill_level_ml is None else f"{unit.fill_level_ml:.3g} mL")
                 + (", pumping" if unit.is_pumping else "") for unit in units) or "no pump units")
+        valve = statuses[DeviceId.VALVE]
+        selector = ("selector valve: " + self.panels[DeviceId.VALVE].readback_label.text().split(" · ")[1]
+                    if valve.connection is ConnectionState.CONNECTED else "selector valve not connected")
+        self.pump_section.set_summary(f"{pump_text} | {selector}")
         camera, stage = statuses[DeviceId.CAMERA], statuses[DeviceId.Z_STAGE]
         self.imaging_section.set_summary(" | ".join((
             "camera: " + (camera_summary(camera.readback) if camera.connection is ConnectionState.CONNECTED
                           else "not connected"),
             "Z: " + (z_stage_summary(stage.readback) if stage.connection is ConnectionState.CONNECTED
                      and stage.readback is not None else "not connected"))))
+        ad2 = statuses[DeviceId.AD2]
+        self.acoustic_section.set_summary(
+            "AD2 not connected" if ad2.connection is not ConnectionState.CONNECTED
+            else self.panels[DeviceId.AD2].acoustic_status_label.text().split(" (")[0] + " · "
+            + self.panels[DeviceId.AD2].acoustic_status_label.text().split(" · ")[-1])
         tec = statuses[DeviceId.TEC]
         channels = getattr(tec.readback, "channels", ()) if tec.connection is ConnectionState.CONNECTED else ()
         self.temperature_section.set_summary(
@@ -252,7 +270,9 @@ class PreparePanel(QWidget):
         statuses: dict[DeviceId, DeviceStatus] = self.controller.statuses()
         for device in DeviceId:
             status = statuses[device]
-            self.state_labels[device].setText(status.connection.value + (" (fault)" if status.fault else ""))
+            self.state_labels[device].setText(
+                "connected · operation failed" if status.connection is ConnectionState.ERROR
+                else status.connection.value + (" (fault)" if status.fault else ""))
             self.state_labels[device].setToolTip(status.fault or "")
             self.state_labels[device].setStyleSheet(_STATE_STYLE[status.connection])
             self.input_labels[device].setText(self.panels[device].connect_inputs_text())

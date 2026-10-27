@@ -78,8 +78,8 @@ def connection_summary_html(mode: OperatingMode, statuses: dict[DeviceId, Device
     for device in DeviceId:
         status = statuses.get(device)
         state = status.connection if status is not None else ConnectionState.DISCONNECTED
-        label = state.value + (" (fault)" if status is not None and status.fault and
-                               state is not ConnectionState.ERROR else "")
+        label = ("connected, operation failed" if state is ConnectionState.ERROR else
+                 state.value + (" (fault)" if status is not None and status.fault else ""))
         chips.append(f'{_DEVICE_NAMES[device]} <span style="{_STATE_STYLE[state]}">{label}</span>')
     return head + " &nbsp;|&nbsp; " + " &nbsp;·&nbsp; ".join(chips)
 
@@ -175,19 +175,19 @@ class MainWindow(QMainWindow):
             panel.notice.connect(self._ui_notice)
             self.panels[device] = panel
             self.device_tabs.addTab(panel, _TAB_LABELS[device])
-        self.connector = DeviceConnector(controller, submit=self._submit_connect, parent=self)
-        self.prepare_panel = PreparePanel(controller, self.panels, self.connector, self._open_device_page,
-                                          lambda: self.show_workspace("configure"),
-                                          lambda: self.show_workspace("prepare"))
-        for panel in self.panels.values():
-            panel.open_prepare_requested.connect(lambda: self.show_workspace("prepare"))
-        self.workflow_panel = WorkflowPanel()
+        self.workflow_panel = WorkflowPanel()  # the manual flush; shown in Prepare, next to the pump cards
         self.workflow_panel.command_requested.connect(
             lambda action, command: self._submit(self.workflow_panel, action, command)
         )
         self.workflow_panel.abort_requested.connect(controller.cancel_active_workflow)
         self.workflow_panel.notice.connect(self._ui_notice)
-        self.device_tabs.addTab(self._scrolling(self.workflow_panel), "Flush")
+        self.connector = DeviceConnector(controller, submit=self._submit_connect, parent=self)
+        self.prepare_panel = PreparePanel(controller, self.panels, self.connector, self._open_device_page,
+                                          lambda: self.show_workspace("configure"),
+                                          lambda: self.show_workspace("prepare"),
+                                          workflow_panel=self.workflow_panel)
+        for panel in self.panels.values():
+            panel.open_prepare_requested.connect(lambda: self.show_workspace("prepare"))
         from .z_stack_panel import ZStackPanel
         self.z_stack_panel = ZStackPanel(controller.z_stack, self.panels[DeviceId.CAMERA])
         self.device_tabs.addTab(self._scrolling(self.z_stack_panel), "Z stack")

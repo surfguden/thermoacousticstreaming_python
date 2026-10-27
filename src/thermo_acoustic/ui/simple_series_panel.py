@@ -107,7 +107,9 @@ class SimpleSeriesPanel(QWidget):
         self.tiff_format.addItem("Stacked TIFF", "stacked")
         left_groups = [output]
 
-        timing = QGroupBox("Hardware timing from PC trigger")
+        timing = QGroupBox("Timing of one experiment (from the PC trigger)")
+        timing.setToolTip("When, after the PC trigger, the ultrasound and the laser start and how long they run, "
+                          "and when the camera starts. Requested values; the hardware timing is checked at start.")
         form = QFormLayout(timing)
         self.sound_start = number(0)
         self.sound_run = number(1, 0.001)
@@ -131,6 +133,7 @@ class SimpleSeriesPanel(QWidget):
         self.sweep_period = number(1, 0.001, 1_000_000)
         form.addRow("Sweep period (ms), triangle", self.sweep_period)
         left_groups.append(frequency)
+        left_groups.append(timing)  # the single-experiment output timing is core, not an engineering detail
 
         temperature = QGroupBox("Temperature program")
         form = QFormLayout(temperature)
@@ -206,14 +209,12 @@ class SimpleSeriesPanel(QWidget):
 
         # Advanced values stay editable and are still saved/queued while folded away; the
         # folded header summarizes them so a non-default value is not hidden from view.
-        self.advanced = CollapsibleSection("Advanced: hardware timing and temperature stability")
+        self.advanced = CollapsibleSection("Advanced: temperature stability policy")
         advanced_body = QWidget()
         advanced_grid = QGridLayout(advanced_body)
         advanced_grid.setContentsMargins(0, 0, 0, 0)
-        advanced_grid.addWidget(timing, 0, 0)
-        advanced_grid.addWidget(stability, 0, 1)
+        advanced_grid.addWidget(stability, 0, 0)
         advanced_grid.setColumnStretch(0, 1)
-        advanced_grid.setColumnStretch(1, 1)
         self.advanced.set_content(advanced_body)
         self._left_groups, self._right_groups = left_groups, right_groups
         self._grid_columns = 0
@@ -354,11 +355,14 @@ class SimpleSeriesPanel(QWidget):
                 grid.addWidget(group, row, 0, 1, 2)
             rows = len(groups)
         else:
-            for row, group in enumerate(self._left_groups):
+            # Output (descriptor and folder) is one short row across the top; the two columns follow it.
+            grid.addWidget(self._left_groups[0], 0, 0, 1, 2)
+            left = self._left_groups[1:]
+            for row, group in enumerate(left, start=1):
                 grid.addWidget(group, row, 0)
-            for row, group in enumerate(self._right_groups):
+            for row, group in enumerate(self._right_groups, start=1):
                 grid.addWidget(group, row, 1)
-            rows = max(len(self._left_groups), len(self._right_groups))
+            rows = 1 + max(len(left), len(self._right_groups))
         grid.addWidget(self.advanced, rows, 0, 1, 2)
         for row in range(rows + 2):
             grid.setRowStretch(row, 1 if row == rows + 1 else 0)
@@ -574,13 +578,12 @@ class SimpleSeriesPanel(QWidget):
         return compile_simple_series(self._settings())
 
     def _update_advanced_summary(self) -> None:
-        text = (f"sound {self.sound_start.value():g}+{self.sound_run.value():g} s · "
-                f"laser {self.laser_start.value():g}+{self.laser_run.value():g} s · "
-                f"camera from {self.camera_start.value():g} s")
         if self.temperature_control.isChecked() and self.temperature_wait_for_stability.isChecked():
-            text += (f" · stability ±{self.temperature_tolerance.value():g} °C, "
-                     f"settle {self.temperature_min_settle.value():g} s, "
-                     f"max {self.temperature_max_wait.value():g} s")
+            text = (f"stability ±{self.temperature_tolerance.value():g} °C, "
+                    f"settle {self.temperature_min_settle.value():g} s, "
+                    f"max {self.temperature_max_wait.value():g} s")
+        else:
+            text = "used only when waiting for temperature stability"
         self.advanced.set_summary(text)
 
     @staticmethod

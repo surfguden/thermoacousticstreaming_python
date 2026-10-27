@@ -99,7 +99,7 @@ from .temperature_plot import TemperaturePlot
 from ..application.configuration import DEFAULT_PUMP_CONFIGURATION_DIR
 from .ad2_scope import OscilloscopePanel
 from .status_dashboard import camera_summary, z_stage_summary
-from .widgets import CameraImageWindow
+from .widgets import CameraImageWindow, CollapsibleSection
 
 
 def double_spin(
@@ -122,14 +122,14 @@ def int_spin(value: int = 0, minimum: int = 0, maximum: int = 10_000_000) -> QSp
     return widget
 
 
-def button_row(*buttons: QPushButton) -> QWidget:
+def button_row(*buttons: QPushButton, per_row: int = 3) -> QWidget:
     widget = QWidget()
     layout = QGridLayout(widget)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setHorizontalSpacing(4)
     layout.setVerticalSpacing(4)
     for index, button in enumerate(buttons):
-        layout.addWidget(button, index // 3, index % 3)
+        layout.addWidget(button, index // per_row, index % per_row)
     return widget
 
 
@@ -189,8 +189,9 @@ class DevicePanel(QScrollArea):
         header_layout.addWidget(self.connection_label, 0, 1)
         header_layout.addWidget(QLabel("State"), 0, 2)
         header_layout.addWidget(self.state_label, 0, 3)
-        header_layout.addWidget(QLabel("Fault"), 1, 0)
-        header_layout.addWidget(self.fault_label, 1, 1, 1, 3)
+        header_layout.addWidget(QLabel("Fault"), 0, 4)
+        header_layout.addWidget(self.fault_label, 0, 5)
+        header_layout.setColumnStretch(5, 1)
         connect = self.action_button(
             "connect", "Connect", DeviceOperation.CONNECT,
             self._connect_arguments, requires_connection=False,
@@ -200,7 +201,7 @@ class DevicePanel(QScrollArea):
         )
         abort = self.action_button("abort", "Abort active", DeviceOperation.ABORT_ACTIVE)
         safe_stop = self.action_button("safe_stop", "Safe stop", DeviceOperation.SAFE_STOP)
-        header_layout.addWidget(button_row(connect, disconnect, abort, safe_stop), 2, 0, 1, 4)
+        header_layout.addWidget(button_row(connect, disconnect, abort, safe_stop, per_row=4), 1, 0, 1, 6)
         self.layout.addWidget(header)
 
         self.notice_label = QLabel("")
@@ -335,7 +336,10 @@ class DevicePanel(QScrollArea):
             ConnectionState.ERROR,
         }
         self._busy = status.busy
-        self.connection_label.setText(status.connection.value.replace("_", " ").title())
+        # ERROR is a connected device whose last operation failed (see the comment above), not a lost link.
+        self.connection_label.setText("Connected · last operation failed"
+                                      if status.connection is ConnectionState.ERROR
+                                      else status.connection.value.replace("_", " ").title())
         flags = ["busy" if status.busy else "idle"]
         if status.configured:
             flags.append("configured")
@@ -845,6 +849,11 @@ class Ad2Panel(DevicePanel):
         # Place per-instrument state directly beneath the common AD2 header,
         # before transient notices and the instrument controls.
         self.layout.insertWidget(1, self.instrument_status_label)
+        manual_note = QLabel(
+            "Manual signal test. The experiment's ultrasound is set in Configure (Ultrasound and Timing), "
+            "not here; nothing below runs until Start or PC trigger is pressed.")
+        manual_note.setWordWrap(True)
+        self.layout.insertWidget(2, manual_note)
         self.instrument_tabs = QTabWidget()
         self.instrument_tabs.setMinimumWidth(0)
         self.instrument_tabs.setSizePolicy(
@@ -922,6 +931,21 @@ class Ad2Panel(DevicePanel):
         digital_layout.setColumnStretch(1, 1)
         digital_layout.setRowStretch(1, 1)
         self.instrument_tabs.addTab(digital_tab, "Digital output")
+        # Everyday part for the Prepare tab: what the outputs are doing, and a way to stop them.
+        self.acoustic_status_label = QLabel("WFG: idle · Digital output: idle")
+        self.acoustic_status_label.setWordWrap(True)
+        stop_group, stop_form = form_group("Manual outputs")
+        stop_note = QLabel("Outputs stay off until a manual Start or an experiment turns them on. These stop "
+                           "the manual outputs; the experiment is stopped from the buttons at the top of the "
+                           "window. Signal settings: Device details, AD2.")
+        stop_note.setWordWrap(True)
+        stop_form.addRow(stop_note)
+        stop_form.addRow(self.acoustic_status_label)
+        stop_form.addRow(button_row(
+            self.action_button("wave_stop_quick", "Stop waveform", DeviceOperation.AD2_WAVEFORM_STOP),
+            self.action_button("do_stop_quick", "Stop digital output", DeviceOperation.AD2_DIGITAL_OUTPUT_STOP),
+            per_row=2))
+        self.daily_container().layout().addWidget(stop_group)
 
         self.readback_label = QLabel("No readback")
         self.readback_label.setWordWrap(True)
@@ -1048,6 +1072,8 @@ class Ad2Panel(DevicePanel):
                 f"Digital output: {digital_state}"
             )
             self.readback_label.setText(f"WFG configuration: {channel_text}")
+            self.acoustic_status_label.setText(
+                f"WFG: {wfg_state} ({channel_text}) · Digital output: {digital_state}")
 
     def _apply_capabilities(self, capabilities: Ad2Capabilities) -> None:
         by_channel = {
@@ -1514,7 +1540,7 @@ class ValvePanel(DevicePanel):
         port_form.addRow("COM port", self.port)
         port_form.addRow(button_row(refresh_ports))
         self.layout.addWidget(port_group)
-        group, form = form_group("Valve position")
+        group, form = form_group("Selector valve position (separate from the pumps' own valves)")
         self.position = self.register_profile("position", QComboBox())
         self.position.addItem("Open (position 1)", ValvePosition.OPEN.value)
         self.position.addItem("Closed (position 2)", ValvePosition.CLOSED.value)
@@ -1528,13 +1554,14 @@ class ValvePanel(DevicePanel):
         form.addRow("Ready timeout (s)", self.wait_timeout)
         form.addRow("Poll interval (s)", self.wait_poll)
         form.addRow(button_row(self.action_button("wait", "Wait until ready", DeviceOperation.VALVE_WAIT_READY, self._wait_args)))
-        self.layout.addWidget(group)
+        daily = self.daily_container().layout()
+        daily.addWidget(group)
         self.readback_label = QLabel("Requested: — · Confirmed: — · Ready: —")
         self.readback_label.setWordWrap(True)
         self.readback_label.setSizePolicy(
             QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
         )
-        self.layout.addWidget(self.readback_label)
+        daily.addWidget(self.readback_label)
         self.finish_layout()
 
     def _refresh_ports(self) -> None:
@@ -2078,10 +2105,19 @@ class TecPanel(DevicePanel):
         for label, widget in (
             ("Target mode", self.target_mode), ("Broadcast target (°C)", self.target),
             ("Channel 1 target (°C)", self.target_1), ("Channel 2 target (°C)", self.target_2),
-            ("Tolerance (°C)", self.tolerance), ("Minimum settle (s)", self.settle),
-            ("Maximum wait (s)", self.max_wait), ("Poll interval (s)", self.poll),
         ):
             form.addRow(label, widget)
+        # Used only by Wait until stable; folded so the target and the buttons stay in view.
+        criteria = CollapsibleSection("Stability criteria for Wait until stable")
+        criteria_body = QWidget()
+        criteria_form = QFormLayout(criteria_body)
+        criteria_form.setContentsMargins(12, 0, 0, 0)
+        for label, widget in (("Tolerance (°C)", self.tolerance), ("Minimum settle (s)", self.settle),
+                              ("Maximum wait (s)", self.max_wait), ("Poll interval (s)", self.poll)):
+            criteria_form.addRow(label, widget)
+        criteria.set_content(criteria_body)
+        criteria.set_summary("tolerance, settle time, maximum wait (not applied until you press Wait)")
+        form.addRow(criteria)
         form.addRow(button_row(
             self.action_button("apply", "Apply setpoints", DeviceOperation.TEC_SETPOINTS_APPLY, self._apply_args),
             self.action_button("wait", "Wait until stable", DeviceOperation.TEC_WAIT_STABLE, self._wait_args),

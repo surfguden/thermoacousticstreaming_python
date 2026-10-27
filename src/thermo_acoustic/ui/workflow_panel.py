@@ -25,7 +25,7 @@ class WorkflowPanel(QWidget):
         self._experiment_locked = False
         layout = QVBoxLayout(self)
 
-        flush = QGroupBox("Flush")
+        flush = QGroupBox("Manual flush (the experiment's own flush is set in Configure, Repeats and flush)")
         form = QFormLayout(flush)
         self.unit = QComboBox()
         self.unit.addItem("Select connected pump unit", None)
@@ -41,7 +41,7 @@ class WorkflowPanel(QWidget):
         form.addRow(self.flush_button)
         layout.addWidget(flush)
 
-        self.abort_button = QPushButton("Abort active workflow")
+        self.abort_button = QPushButton("Abort manual flush")
         self.abort_button.clicked.connect(self.abort_requested.emit)
         layout.addWidget(self.abort_button)
         self.progress_label = QLabel("No workflow running")
