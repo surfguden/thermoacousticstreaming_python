@@ -176,7 +176,7 @@ class StatusDashboard(QWidget):
         self._status = status
         state = status.get("state")
         phase = status.get("phase", "")
-        self.stage.setText(describe_phase(phase) + (f"  [{phase}]" if describe_phase(phase) != phase and phase else ""))
+        self.stage.setText(describe_phase(phase) or "—")
         self._render_saved(status.get("last_saved"))
         text, color = {"failed": (phase, "#b71c1c"), "aborted": (phase, "#a65a00"),
                        "stopped": ("Stopped after the current experiment; the remaining ones were not run.",
@@ -265,7 +265,7 @@ class StatusDashboard(QWidget):
             if status.fault:
                 pass
             elif is_connected(status) and (status.busy or status.active):
-                pieces.insert(1, "working")
+                pieces.insert(1, "active")
             request = self._requested_text(device) if self._status.get("state") == "running" else ""
             if request:
                 pieces.append(request)

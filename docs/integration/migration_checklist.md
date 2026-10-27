@@ -269,3 +269,31 @@ temperature stability policy is folded. The Z stack page is grouped (scan range,
 run). A device whose last operation failed reads "Connected, last operation failed", not "Error".
 The queue page's plan facts (frames, requested timing, temperature strategy) come from the queued
 definition itself (`application/plan_facts.py`), so an experiment-builder edit shows there.
+
+## Run monitor, newest saved acquisition, status wording (2026-10-28)
+
+**Run monitor** (3): *Current run* names the batch, series, experiment and repeat, the condition (the
+experiment's own parameters) and the **Stage** in plain words (`application/run_activity.py` maps the
+runner's phase constants; an unknown phase is shown as written). Devices the stage involves are marked
+"▶"; each device line gives what the device reports, and a running batch adds "requested: …" from the
+runner's own plan (`status()["current_plan"]`, `application/plan_facts.py`) so a request is never shown as
+a reading. There are no percentages or time estimates: the runner publishes phases and counts only.
+
+**Newest saved acquisition** tab: `status()["last_saved"]` (set when the images are on disk; outcome
+`saved` while flush and closing may still run, `completed` when the experiment finished,
+`failed_after_save` if it later failed). The viewer is the saved-frames viewer, loaded on demand.
+*Follow newest* loads each new result only while the viewer is still at frame 1 of what it last loaded;
+if you moved to another frame or folder it is left alone and the label says a newer result exists
+(*Show newest*). Live frames (first tab) and saved data are always labelled apart.
+
+**Status wording**: `ui/status_text.py` is the one place for connection and readback wording. ERROR is a
+connected device whose last operation failed; every surface (header, tables, folded summaries, device
+pages, monitor) says "connected · last operation failed". The queue plan reports a disabled output as
+disabled and says why when a definition is not one uniform acquisition block.
+
+| To change | Edit |
+|---|---|
+| Device state wording / readback summaries | `ui/status_text.py` |
+| Which devices a stage marks, stage descriptions | `application/run_activity.py` |
+| Monitor layout, requested text, newest-saved follow | `ui/status_dashboard.py` |
+| Queue plan facts (enabled, uniform) | `application/plan_facts.py` |

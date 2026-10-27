@@ -491,9 +491,13 @@ class WaveformChannelEditor(QGroupBox):
         for idle in Ad2AnalogOutputIdle:
             self.idle.addItem(idle.value, idle.value)
         self.idle.setCurrentIndex(self.idle.findData(Ad2AnalogOutputIdle.INITIAL.value))
-        common_form.addRow("Mode", self.mode)
-        common_form.addRow("Output enabled", self.enabled)
-        common_form.addRow("Idle output", self.idle)
+        header = QWidget()
+        header_row = QHBoxLayout(header)
+        header_row.setContentsMargins(0, 0, 0, 0)
+        for caption, widget in (("Mode", self.mode), ("Output enabled", self.enabled), ("Idle output", self.idle)):
+            header_row.addWidget(QLabel(caption))
+            header_row.addWidget(widget, 1 if isinstance(widget, QComboBox) else 0)
+        common_form.addRow(header)
         layout.addWidget(common)
 
         self.pages = CurrentPageStack()
@@ -506,7 +510,14 @@ class WaveformChannelEditor(QGroupBox):
         trigger_group, trigger_form = form_group("Trigger")
         trigger_prefix = "wave" if channel_index == 0 else self.prefix
         self.trigger = panel._add_trigger_controls(trigger_prefix, trigger_form)
-        layout.addWidget(trigger_group)
+        self.trigger_section = CollapsibleSection("Trigger and repeat")
+        self.trigger_section.set_content(trigger_group)
+        layout.addWidget(self.trigger_section)
+        for widget in self.trigger.values():
+            (widget.currentIndexChanged if isinstance(widget, QComboBox)
+             else widget.toggled if isinstance(widget, QCheckBox) else widget.valueChanged).connect(
+                self._trigger_summary)
+        self._trigger_summary()
         self.applied_label = QLabel("Not configured")
         self.applied_label.setWordWrap(True)
         layout.addWidget(self.applied_label)
@@ -517,6 +528,13 @@ class WaveformChannelEditor(QGroupBox):
                 widget.currentIndexChanged.connect(self._sync_current_to_advanced)
             elif isinstance(widget, QDoubleSpinBox):
                 widget.valueChanged.connect(self._sync_current_to_advanced)
+
+    def _trigger_summary(self, *_args) -> None:
+        trigger = self.trigger
+        self.trigger_section.set_summary(
+            f"source {trigger['source'].currentText()} · wait {trigger['wait'].value():g} s · "
+            f"run {trigger['run'].value():g} s · repeat {trigger['repeat'].value()}"
+            + (" · retrigger" if trigger["retrigger"].isChecked() else ""))
 
     def _profile(self, name: str, widget: QWidget) -> QWidget:
         return self.panel.register_profile(name, widget)
