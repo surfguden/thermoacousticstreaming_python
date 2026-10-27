@@ -496,3 +496,81 @@ def test_start_plan_follows_the_queued_definition_not_the_form_or_the_list_brows
     panel.update_button.click()
     assert "9 saved frames" in panel.queue_plan_text.text() and panel.form_differs_label.text() == ""
     assert "Preview of this form" in panel.form_preview.toggle.text()
+
+
+def test_queue_plan_follows_the_queued_definition_after_an_edit_made_elsewhere(two_queued):
+    """The experiment builder (or any caller) updates the queue through update_queued; the queue page must
+    show that definition, not the settings the series was first queued with."""
+    from dataclasses import replace
+    from thermo_acoustic.application.simple_series import compile_simple_series
+    window, panel, a, b = two_queued
+    _select(panel, a)
+    assert "3 saved frames" in panel.queue_plan_text.text()
+    assert [panel.queue_timing_table.item(0, c).text() for c in range(4)] == ["Ultrasound (AD2)", "0", "1", "1"]
+    assert "Temperature strategy" not in panel.queue_plan_text.text()
+    edited = replace(panel._settings(), frame_count=7, sound_run_s=2.0, temperature_control=True,
+                     temperature_wait_for_stability=True, temperature_tolerance_c=0.5,
+                     temperature_min_settle_s=3.0, temperature_max_wait_s=40.0, temperature_wait_s=6.0,
+                     tec_channel=1)
+    panel.manager.update_queued(a, compile_simple_series(edited))  # what the builder's update goes through
+    window.experiment_panel._status(panel.manager.status())
+    text = panel.queue_plan_text.text()
+    assert "7 saved frames" in text and "3 saved frames" not in text
+    assert [panel.queue_timing_table.item(0, c).text() for c in range(4)] == ["Ultrasound (AD2)", "0", "2", "2"]
+    assert "wait for stability (±0.5°C, settled 3s, max wait 40s), then hold 6s" in text
+    assert panel.queue_timing_table.item(2, 2).text() == "0.7"  # 7 frames at the form's 10 fps
+    # The other series is untouched, and a definition without plain facts is said to be so.
+    _select(panel, b)
+    assert "4 saved frames" in panel.queue_plan_text.text()
+
+
+def test_plan_facts_leave_out_what_a_definition_does_not_state_plainly():
+    from thermo_acoustic.application.experiments import validate_definition
+    from thermo_acoustic.application.plan_facts import plan_facts
+    from test_experiments import described_default_definition
+    facts = plan_facts(validate_definition(described_default_definition()).steps)
+    assert facts.temperature_strategy is None  # no temperature program in that definition
+    assert facts.uniform in (True, False)
+
+
+def test_builder_edit_of_a_form_queued_series_shows_in_the_queue_plan(two_queued, monkeypatch):
+    """Form -> queue -> experiment builder (load, edit the JSON, update) -> back to the queue page."""
+    import json
+    window, panel, a, b = two_queued
+    builder = window.builder_window.panel
+    builder._render_batch_list(builder.manager.status())
+    for index in range(builder.batch_list.topLevelItemCount()):
+        if builder.batch_list.topLevelItem(index).text(5) == a:
+            builder.batch_list.setCurrentItem(builder.batch_list.topLevelItem(index))
+    builder._queue_load()
+    definition = json.loads(builder.definition_json.toPlainText())
+
+    def edit(steps):
+        for step in steps:
+            if step.get("type") == "camera_configure":
+                step["args"]["frame_count"] = 7
+            if step.get("type") == "ad2_configure":
+                step["args"]["ultrasound"]["run_s"] = 2.0
+                step["args"]["dio"]["frame_count"] = 7
+            edit(step.get("steps", []))
+            for branch in step.get("branches", []):
+                edit(branch)
+    edit(definition["steps"])
+    builder.definition_json.setPlainText(json.dumps(definition))
+    builder._queue_update()
+    window.show_workspace("queue")
+    _select(panel, a)
+    text = panel.queue_plan_text.text()
+    assert "7 saved frames" in text and "3 saved frames" not in text
+    assert [panel.queue_timing_table.item(0, c).text() for c in range(4)] == ["Ultrasound (AD2)", "0", "2", "2"]
+    assert "Series “A”" in panel.queue_plan_title.text()
+    _select(panel, b)
+    assert "4 saved frames" in panel.queue_plan_text.text()  # the other series is unchanged
+    _select(panel, a)
+    # The form cannot take over a definition the builder changed; it says so and the plan stays as queued.
+    from PySide6.QtWidgets import QMessageBox
+    warned = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: warned.append(args[2]))
+    panel.load_button.click()
+    assert warned and "outside the simple form" in warned[0]
+    assert panel.queue_plan_text.text() == text

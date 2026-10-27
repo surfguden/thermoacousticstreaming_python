@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..application.experiments import validate_definition
+from ..application.plan_facts import PlanFacts, plan_facts
 from ..application.experiment_runner import BATCH_ACTIVE_STATES
 from ..application.commands import DeviceCommand, DeviceOperation, NoArguments
 from ..application.simple_preflight import SimpleSeriesPreflight
@@ -632,40 +633,55 @@ class SimpleSeriesPanel(QWidget):
         if not has_plan:
             self.queue_plan_title.setText("Select a queued series above to see what Start will run for it.")
             return
-        settings = self._queued_settings.get(folder)
+        facts = plan_facts(expansion.steps)  # from the queued definition itself, whoever last edited it
         count = len(expansion.experiments)
         lines = [f"{count} experiments"]
         flush = self.manager.queued_flush_budget(folder)
         if flush:
             lines[0] += " · flush volume: " + ", ".join(f"pump unit {unit + 1}: {ml:g} mL" for unit, ml in sorted(flush.items()))
-        if settings is not None:
-            lines[0] += f" · {count * settings.frame_count} saved frames"
+        if facts.frames is not None:
+            lines[0] += f" · {count * facts.frames} saved frames ({facts.frames} per experiment)"
         repeats = max((experiment.repeat_index for experiment in expansion.experiments), default=0)
         lines.append(f"Repeats per point: {repeats}")
         lines.extend(self._parameter_lines(expansion))
-        if settings is not None:
-            strategy = self._strategy_line(settings.temperature_control, settings.temperature_wait_for_stability,
-                                           settings.temperature_tolerance_c, settings.temperature_min_settle_s,
-                                           settings.temperature_max_wait_s, settings.temperature_wait_s)
-            if strategy:
-                lines.append(strategy)
+        if facts.temperature_strategy:
+            lines.append(facts.temperature_strategy)
         lines.append(f"Output location: {folder}")
         self.queue_plan_title.setText(f"Series “{item.text(0)}” · {item.text(1)}")
         self.queue_plan_text.setText("\n".join(lines))
-        self.queue_timing_caption.setVisible(settings is not None)
-        self.queue_timing_table.setVisible(settings is not None)
-        if settings is not None:
-            self._fill_timing(self.queue_timing_table, settings)
+        rows = self._fill_timing_facts(self.queue_timing_table, facts)
+        self.queue_timing_caption.setText(
+            "Requested timing of one experiment (not measured; the hardware timing is checked when the series "
+            "starts)" if rows else "Requested timing is not shown: this definition does not state it as one "
+            "plain set of values (open it in the experiment builder).")
+        self.queue_timing_table.setVisible(rows > 0)
+
+    @staticmethod
+    def _fill_timing_facts(table: QTableWidget, facts: PlanFacts) -> int:
+        """Rows the definition states plainly; returns how many were filled."""
+        rows = []
+        if None not in (facts.sound_start_s, facts.sound_run_s):
+            rows.append(("Ultrasound (AD2)", facts.sound_start_s, facts.sound_run_s))
+        if None not in (facts.laser_start_s, facts.laser_run_s):
+            rows.append(("Laser", facts.laser_start_s, facts.laser_run_s))
+        if None not in (facts.camera_start_s, facts.frames, facts.camera_fps) and facts.camera_fps:
+            rows.append(("Camera frames", facts.camera_start_s, facts.frames / facts.camera_fps))
+        table.setRowCount(len(rows))
+        for row, (name, start, length) in enumerate(rows):
+            for column, value in enumerate((name, f"{start:g}", f"{length:g}", f"{start + length:g}")):
+                table.setItem(row, column, QTableWidgetItem(value))
+        return len(rows)
 
     def _form_differs_text(self) -> str:
-        """Edits in the form that the queue does not have yet (they only count after Update loaded series)."""
+        """Edits in the form that the queue does not have yet (they only count after Update loaded series).
+        Compared as definitions against what is queued now, so an edit made elsewhere is not hidden."""
         folder = self._editing_folder
-        stored = self._queued_settings.get(folder) if folder else None
-        if stored is None:
+        if folder is None:
             return ""
         try:
-            changed = self._settings(require_pump_unit=False) != stored
-        except (ValueError, ZeroDivisionError):
+            changed = compile_simple_series(self._settings(require_pump_unit=False)) != \
+                self.manager.queued_definition(folder)
+        except (ValueError, ZeroDivisionError, StopIteration):
             return ""
         return ("The form has changes that are not in the queue; Start runs the queued definition. "
                 "Press Update loaded series on Configure to apply them." if changed else "")
