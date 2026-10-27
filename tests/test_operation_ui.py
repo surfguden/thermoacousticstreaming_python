@@ -211,3 +211,151 @@ def test_queue_edit_buttons_keep_their_meaning_across_the_two_pages(qt_app, tmp_
     finally:
         window.close()
         controller.shutdown()
+
+
+@pytest.fixture
+def two_queued(qt_app, tmp_path):
+    """A real window with series 'A' and 'B' queued (simulation); yields (window, panel, folder_a, folder_b)."""
+    from time import monotonic, sleep
+
+    from thermo_acoustic.application.commands import DeviceCommand, DeviceOperation
+
+    controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
+    controller.start()
+    window = MainWindow(controller)
+    results = []
+    controller.command_result.connect(results.append)
+    window.panels[DeviceId.PUMP]._buttons["connect"].click()
+    deadline = monotonic() + 5
+    panel = window.experiment_panel
+    while monotonic() < deadline and panel.pump_unit.count() == 0:
+        qt_app.processEvents(); sleep(0.01)
+    assert panel.pump_unit.count() > 0
+    panel.pump_unit.setCurrentIndex(0)
+    panel.output_root.setText(str(tmp_path))
+    folders = []
+    for name, frames in (("A", 3), ("B", 4)):
+        panel.description.setText(name)
+        panel.frames.setValue(frames)
+        panel.queue_button.click()
+        assert panel.state_label.text().startswith("Queued:"), panel.state_label.text()
+        folders.append(panel.state_label.text().removeprefix("Queued: "))
+    yield window, panel, folders[0], folders[1]
+    window.close()
+    controller.shutdown()
+
+
+def _select(panel, folder):
+    for index in range(panel.batch_list.topLevelItemCount()):
+        item = panel.batch_list.topLevelItem(index)
+        if item.text(5) == folder:
+            panel.batch_list.setCurrentItem(item)
+            return
+    raise AssertionError(folder)
+
+
+def _described(panel, folder):
+    return panel.manager.queued_definition(folder)["description"]
+
+
+def test_update_changes_the_loaded_series_not_the_one_selected_afterwards(two_queued):
+    window, panel, a, b = two_queued
+    assert not panel.update_button.isEnabled()  # nothing loaded yet
+    _select(panel, a)
+    panel.load_button.click()
+    assert "Editing queued series: A" in panel.edit_target_label.text()
+    _select(panel, b)  # browsing the list must not retarget Update
+    panel.pages.setCurrentIndex(0)
+    panel.exposure[0].setValue(2); panel.exposure[1].setValue(2)
+    panel.update_button.click()
+    assert panel.manager.queued_definition(a) != panel.manager.queued_definition(b)
+    assert _described(panel, a) == "A" and _described(panel, b) == "B"
+    assert panel.manager.queued_definition(a)["steps"] == compile_definition(panel)["steps"]
+
+
+def compile_definition(panel):
+    from thermo_acoustic.application.simple_series import compile_simple_series
+    return compile_simple_series(panel._settings())
+
+
+def test_update_without_a_loaded_series_changes_nothing(two_queued, monkeypatch):
+    window, panel, a, b = two_queued
+    from PySide6.QtWidgets import QMessageBox
+    warned = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: warned.append(args[2]))
+    _select(panel, b)
+    before = {f: panel.manager.queued_definition(f) for f in (a, b)}
+    panel.description.setText("changed")
+    panel._update_selected()
+    assert warned and "No queued series is loaded" in warned[0]  # even if reached by another route, no selected row is modified
+    assert {f: panel.manager.queued_definition(f) for f in (a, b)} == before
+    assert "Not editing a queued series" in panel.edit_target_label.text()
+
+
+def test_editing_target_is_dropped_when_it_goes_away_or_is_replaced(two_queued):
+    window, panel, a, b = two_queued
+    _select(panel, a); panel.load_button.click()
+    _select(panel, b); panel.load_button.click()  # loading another series retargets explicitly
+    assert "Editing queued series: B" in panel.edit_target_label.text()
+    panel.queue_button.click()  # Queue a new series ends editing; nothing is overwritten
+    assert "Not editing" in panel.edit_target_label.text() and not panel.update_button.isEnabled()
+    _select(panel, a); panel.load_button.click()
+    panel.manager.remove_queued(a)  # removed behind the form's back (e.g. another entry point)
+    window.experiment_panel._status(panel.manager.status())
+    assert "no longer queued" in panel.edit_target_label.text()
+    assert not panel.update_button.isEnabled() and _described(panel, b) == "B"
+
+
+def test_editing_target_is_dropped_when_the_batch_starts(two_queued):
+    window, panel, a, b = two_queued
+    _select(panel, a); panel.load_button.click()
+    panel._status({**panel.manager.status(), "state": "running"})
+    assert not panel.update_button.isEnabled()
+    panel._status({**panel.manager.status(), "state": "idle", "series": []})
+    assert "no longer queued" in panel.edit_target_label.text()
+
+
+def _finished_manager(qt_app, tmp_path):
+    controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
+    manager = controller.experiments
+    manager._state, manager._phase = "completed", "Experiment series completed"
+    manager._planned_total, manager._batch_series_total = 5, 1
+    manager._batch_output_root = tmp_path
+    return controller, manager
+
+
+@pytest.mark.parametrize("reason", ["non_empty_folder", "missing_folder", "invalid_definition"])
+def test_rejected_queue_keeps_the_finished_batch_record(qt_app, tmp_path, reason):
+    from test_experiments import described_default_definition
+    controller, manager = _finished_manager(qt_app, tmp_path)
+    try:
+        definition = described_default_definition()
+        root = tmp_path
+        if reason == "non_empty_folder":
+            (tmp_path / "old_results").mkdir()
+        elif reason == "missing_folder":
+            root = tmp_path / "does_not_exist"
+        else:
+            definition["steps"] = "not steps"
+        before = (manager._state, manager._phase, manager._planned_total,
+                  manager._batch_series_total, manager._batch_output_root)
+        with pytest.raises(ValueError):
+            manager.queue(definition, root)
+        assert (manager._state, manager._phase, manager._planned_total,
+                manager._batch_series_total, manager._batch_output_root) == before
+        assert manager.status()["state"] == "completed"
+    finally:
+        controller.shutdown()
+
+
+def test_accepted_queue_after_a_finished_batch_starts_a_fresh_batch(qt_app, tmp_path):
+    from test_experiments import described_default_definition
+    controller, manager = _finished_manager(qt_app, tmp_path)
+    try:
+        fresh = tmp_path / "fresh"
+        fresh.mkdir()
+        manager.queue(described_default_definition(), fresh)
+        status = manager.status()
+        assert status["state"] == "idle" and status["queued_series"] == 1
+    finally:
+        controller.shutdown()

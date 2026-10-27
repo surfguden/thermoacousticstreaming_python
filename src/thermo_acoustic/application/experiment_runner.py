@@ -133,7 +133,20 @@ class ExperimentManager(QObject):
         if not isinstance(definition.get("description"), str) or not definition["description"].strip():
             raise ValueError("Enter a series descriptor before queueing")
         definition = {**definition, "description": definition["description"].strip()}
-        if self._state in {"completed", "failed", "aborted", "stopped"}:
+        # A finished batch is forgotten only once the new series is really stored: a rejected
+        # Queue (invalid definition, bad folder, storage error) must leave the old record as it was.
+        finished = self._state in {"completed", "failed", "aborted", "stopped"}
+        batch_root = None if finished else self._batch_output_root
+        expansion = validate_definition(definition)
+        output = Path(output_root).expanduser().resolve()
+        if batch_root is not None and output != batch_root:
+            raise ValueError("All queued series in one batch must use the same experiment base folder")
+        storage = SeriesStorage(output, expansion,
+                                image_format or definition.get("tiff_format", "frames"),
+                                continuing_batch=batch_root is not None,
+                                run_identity={"mode": self.controller.mode.value,
+                                              "software": cached_software_identity()})
+        if finished:
             self._state = "idle"
             self._phase = "Idle"
             self._planned_total = 0
@@ -141,16 +154,6 @@ class ExperimentManager(QObject):
             self._batch_completed_at_start = self._completed
             self._batch_items = []
             self._series_states.clear()
-            self._batch_output_root = None
-        expansion = validate_definition(definition)
-        output = Path(output_root).expanduser().resolve()
-        if self._batch_output_root is not None and output != self._batch_output_root:
-            raise ValueError("All queued series in one batch must use the same experiment base folder")
-        storage = SeriesStorage(output, expansion,
-                                image_format or definition.get("tiff_format", "frames"),
-                                continuing_batch=self._batch_output_root is not None,
-                                run_identity={"mode": self.controller.mode.value,
-                                              "software": cached_software_identity()})
         self._batch_output_root = output
         self._queued.append((expansion, storage))
         self._invalidate_syringe_preflight()

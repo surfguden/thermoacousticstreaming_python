@@ -45,6 +45,11 @@ class SimpleSeriesPanel(QWidget):
         self.manager = controller.experiments
         self.preflight = SimpleSeriesPreflight(controller, self)
         self._queued_settings: dict[str, SimpleSeriesSettings] = {}
+        # The one queued series the form is editing (set only by "Load selected for editing").
+        # Update acts on this folder, never on whatever row is selected in the list.
+        self._editing_folder: str | None = None
+        self._edit_target_lost = False
+        self._edit_buttons_allowed = True
         self._camera_import_request: str | None = None
         # Set by _apply_settings() when a loaded flush_unit_index isn't
         # among the pump_unit combo's current choices (most commonly:
@@ -60,6 +65,9 @@ class SimpleSeriesPanel(QWidget):
         root.addWidget(self.pages, 1)
         configure_page = QWidget()
         configure_layout = QVBoxLayout(configure_page)
+        self.edit_target_label = QLabel()
+        self.edit_target_label.setWordWrap(True)
+        configure_layout.addWidget(self.edit_target_label)
         scan_order = QLabel("Scan order: temperature → frequency → sweep width → amplitude → exposure → repeats")
         scan_order.setWordWrap(True)
         configure_layout.addWidget(scan_order)
@@ -183,7 +191,7 @@ class SimpleSeriesPanel(QWidget):
         self.syringe_preflight_button = QPushButton("Preflight batch syringe level")
         self.queue_button = QPushButton("Queue series")
         self.load_button = QPushButton("Load selected for editing")
-        self.update_button = QPushButton("Update selected series")
+        self.update_button = QPushButton("Update loaded series")
         self.remove_button = QPushButton("Remove selected series")
         self.start_button = QPushButton("Start queued batch")
         self.start_button.setStyleSheet("font-weight: 600; padding: 6px 18px")
@@ -678,6 +686,8 @@ class SimpleSeriesPanel(QWidget):
                 raise ValueError("Choose an experiment base folder")
             folder = self.manager.queue(definition, root)
             self._queued_settings[str(folder)] = self._settings()
+            self._editing_folder = None
+            self._render_edit_target()
             self.state_label.setText(f"Queued: {folder}")
         except Exception as exc:
             QMessageBox.warning(self, "Could not queue series", str(exc))
@@ -716,26 +726,58 @@ class SimpleSeriesPanel(QWidget):
                 raise ValueError("This series was changed outside the simple form; edit it in the JSON builder")
             self._apply_settings(settings)
             self.output_root.setText(str(Path(folder).parent))
+            self._editing_folder = folder
+            self._render_edit_target()
             self.pages.setCurrentIndex(0)
-            self.state_label.setText("Selected series loaded; edit and press Update selected series")
+            self.state_label.setText("Series loaded for editing; edit and press Update loaded series")
         except Exception as exc:
             QMessageBox.warning(self, "Could not load series", str(exc))
 
     def _update_selected(self) -> None:
         try:
-            folder = self._selected_folder()
+            folder = self._editing_folder
+            if folder is None:
+                raise ValueError("No queued series is loaded for editing. Select one under Review and "
+                                 "start and press Load selected for editing")
             settings = self._settings()
             self.manager.update_queued(folder, compile_simple_series(settings))
             self._queued_settings[folder] = settings
+            self._render_edit_target()
             self.state_label.setText("Queued series updated; batch syringe preflight reset")
         except Exception as exc:
             QMessageBox.warning(self, "Could not update series", str(exc))
+
+    def _queued_descriptor(self, folder: str, status: dict | None = None) -> str | None:
+        for series in (status or self.manager.status()).get("series", []):
+            if series["folder"] == folder and series["state"] == "queued":
+                return series["description"]
+        return None
+
+    def _render_edit_target(self, status: dict | None = None) -> None:
+        """Show which queued series Update will change, or that none is loaded."""
+        folder = self._editing_folder
+        if folder is not None and self._queued_descriptor(folder, status) is None:
+            # Removed, started or finished since it was loaded: drop the target, change nothing.
+            self._editing_folder = folder = None
+            self._edit_target_lost = True
+        if folder is None:
+            lost = getattr(self, "_edit_target_lost", False)
+            text = ("The loaded series is no longer queued; nothing was changed. " if lost else "") +                 "Not editing a queued series: Queue adds a new series."
+            self.edit_target_label.setStyleSheet("color: #a65a00; font-weight: 600" if lost else "")
+        else:
+            text = (f"Editing queued series: {self._queued_descriptor(folder, status)} — Update changes it, "
+                    "Queue adds a new series.")
+            self.edit_target_label.setStyleSheet("font-weight: 600")
+            self._edit_target_lost = False
+        self.edit_target_label.setText(text)
+        self.update_button.setEnabled(folder is not None and self._edit_buttons_allowed)
 
     def _remove_selected(self) -> None:
         try:
             folder = self._selected_folder()
             self.manager.remove_queued(folder)
             self._queued_settings.pop(folder, None)
+            self._render_edit_target()
             self.state_label.setText("Series removed from batch; its output folder was kept")
         except Exception as exc:
             QMessageBox.warning(self, "Could not remove series", str(exc))
@@ -829,8 +871,10 @@ class SimpleSeriesPanel(QWidget):
         self.preflight_button.setEnabled(not locked and not self.preflight._active)
         self.syringe_preflight_button.setEnabled(not locked and not status["syringe_preflight_active"])
         self.queue_button.setEnabled(not editing_locked)
-        for button in (self.load_button, self.update_button, self.remove_button):
+        self._edit_buttons_allowed = not editing_locked
+        for button in (self.load_button, self.remove_button):
             button.setEnabled(not editing_locked and status["queued_series"] > 0)
+        self._render_edit_target(status)
         self.start_button.setEnabled(not locked)
         self._render_batch_list(status)
         self.state_label.setText(f"Batch: {status['state']} · queued: {status['queued_series']} · "
