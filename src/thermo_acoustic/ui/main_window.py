@@ -39,7 +39,9 @@ from ..application.event_formatting import detailed_event_text, event_summary
 from ..application.experiment_runner import BATCH_ACTIVE_STATES
 from ..application.simple_series import simple_series_settings_from_profile, simple_series_settings_to_profile
 from ..domain.models import ConnectionState, DeviceId, DeviceStatus, OperatingMode
+from ..application.device_connect import DeviceConnector
 from .device_panels import DevicePanel, PANEL_TYPES
+from .prepare_panel import PreparePanel
 from .workflow_panel import WorkflowPanel
 from .experiment_panel import ExperimentPanel
 from .saved_frames_window import SavedFramesWindow
@@ -169,6 +171,10 @@ class MainWindow(QMainWindow):
             panel.notice.connect(self._ui_notice)
             self.panels[device] = panel
             self.tabs.addTab(panel, _TAB_LABELS[device])
+        self.connector = DeviceConnector(controller, submit=self._submit_connect, parent=self)
+        self.prepare_panel = PreparePanel(controller, self.panels, self.connector, self._open_device_page)
+        self.tabs.insertTab(0, self._scrolling(self.prepare_panel), "Prepare")
+        self.tabs.setCurrentIndex(0)
         self.workflow_panel = WorkflowPanel()
         self.workflow_panel.command_requested.connect(
             lambda action, command: self._submit(self.workflow_panel, action, command)
@@ -251,7 +257,7 @@ class MainWindow(QMainWindow):
 
     def _navigate(self, name: str) -> None:
         if name == "prepare":
-            self.tabs.setCurrentIndex(self._last_device_tab)
+            self.tabs.setCurrentWidget(self._scroll_pages[self.prepare_panel])
         elif name in {"configure", "review"}:
             self.tabs.setCurrentWidget(self.experiment_panel)
             self.experiment_panel.pages.setCurrentIndex(0 if name == "configure" else 1)
@@ -260,7 +266,8 @@ class MainWindow(QMainWindow):
 
     def _sync_navigation(self, *_args) -> None:
         current = self.tabs.currentWidget()
-        if current in self.panels.values() or current in (self._scroll_pages[self.workflow_panel],
+        if current in self.panels.values() or current in (self._scroll_pages[self.prepare_panel],
+                                                          self._scroll_pages[self.workflow_panel],
                                                           self._scroll_pages[self.z_stack_panel]):
             self._last_device_tab = self.tabs.currentIndex()
             key = "prepare"
@@ -438,6 +445,22 @@ class MainWindow(QMainWindow):
             self._requests.pop(command.request_id, None)
             panel.clear_pending(command.request_id)
             panel.show_notice(f"Command was not submitted: {exc}")
+
+    def _submit_connect(self, command) -> str:
+        """Submit one CONNECT of a group through the device page, so its Connect button shows the
+        request as pending and its notice/feedback work as for a click. Raises if not submitted."""
+        panel = self.panels[command.device]
+        panel.mark_pending("connect", command.request_id)
+        self._requests[command.request_id] = (panel, "connect")
+        try:
+            return self.controller.submit(command)
+        except Exception:
+            self._requests.pop(command.request_id, None)
+            panel.clear_pending(command.request_id)
+            raise
+
+    def _open_device_page(self, device: DeviceId) -> None:
+        self.tabs.setCurrentWidget(self.panels[device])
 
     def confirm_operation(self, request: ConfirmationRequest) -> bool:
         answer = QMessageBox.question(

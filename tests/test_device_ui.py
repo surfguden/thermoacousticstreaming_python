@@ -953,12 +953,12 @@ def test_panels_fit_half_of_a_1920_by_1200_screen(qt_app):
     window.show()
     qt_app.processEvents()
     for index, panel in enumerate(window.panels.values()):
-        window.tabs.setCurrentIndex(index)
+        window.tabs.setCurrentWidget(panel)
         qt_app.processEvents()
         assert panel.horizontalScrollBar().maximum() == 0
         assert panel.verticalScrollBar().maximum() == 0
     ad2 = window.panels[DeviceId.AD2]
-    window.tabs.setCurrentIndex(0)
+    window.tabs.setCurrentWidget(ad2)
     for mode in range(3):
         for channel in ad2.wave_channels:
             channel.mode.setCurrentIndex(mode)

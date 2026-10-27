@@ -96,6 +96,13 @@ class ApplicationController(QObject):
         self.status_changed.emit(dict(self._statuses))
         self.temperature_monitor.start()
 
+    def has_pending_command(self, device: DeviceId, operation: DeviceOperation) -> bool:
+        """True while `operation` for `device` is queued or running. Read-only."""
+        pending = [self._active] if self._active is not None else []
+        pending.extend(self._queue)
+        return any(isinstance(item.command, DeviceCommand) and item.command.device is device
+                   and item.command.operation is operation for item in pending)
+
     def panic_status(self) -> dict[str, object]:
         return {"state": self._panic_state, "pending": len(self._panic_pending),
                 "errors": tuple(self._panic_errors)}

@@ -212,6 +212,17 @@ class DevicePanel(QScrollArea):
     def _connect_arguments(self) -> object | None:
         return None
 
+    def build_connect_command(self) -> DeviceCommand:
+        """The CONNECT command this page's own Connect button would send, from the same inputs
+        (raises ValueError if an input is missing). Used by the Prepare page; sends nothing."""
+        value = self._connect_arguments()
+        return (DeviceCommand(self.device_id, DeviceOperation.CONNECT, source="ui") if value is None
+                else DeviceCommand(self.device_id, DeviceOperation.CONNECT, value, source="ui"))
+
+    def connect_inputs_text(self) -> str:
+        """Short read-only summary of what Connect will use; edited on this page, not elsewhere."""
+        return "no connection inputs"
+
     def action_button(
         self,
         action: str,
@@ -1252,6 +1263,9 @@ class PumpPanel(DevicePanel):
         if folder:
             self.configuration_dir.setText(folder)
 
+    def connect_inputs_text(self) -> str:
+        return f"Qmix configuration folder: {self.configuration_dir.text().strip() or 'not chosen'}"
+
     def _connect_arguments(self) -> PumpConnectArgs:
         selected = self.configuration_dir.text().strip()
         if not selected:
@@ -1480,6 +1494,11 @@ class ValvePanel(DevicePanel):
                 self.port.setCurrentIndex(index)
         if not ports:
             self.show_notice("No serial COM ports found")
+
+    def connect_inputs_text(self) -> str:
+        port = self.port.currentData()
+        return f"COM port: {port}" if port is not None else (
+            "COM port: not selected" if self.require_port else "default (no COM port chosen)")
 
     def _connect_arguments(self) -> ValveConnectArgs | None:
         port = self.port.currentData()
@@ -1988,6 +2007,10 @@ class TecPanel(DevicePanel):
         index = self.port.findData(selected)
         if index >= 0:
             self.port.setCurrentIndex(index)
+
+    def connect_inputs_text(self) -> str:
+        port = self.port.currentData()
+        return f"COM port: {port}" if port is not None else "COM port: not selected"
 
     def _connect_arguments(self) -> TecConnectArgs | None:
         port = self.port.currentData()

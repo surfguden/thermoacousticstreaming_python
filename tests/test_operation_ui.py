@@ -52,12 +52,12 @@ def test_task_buttons_only_switch_tabs_and_follow_the_visible_page(window):
     window._nav_buttons["monitor"].click()
     assert window.tabs.tabText(window.tabs.currentIndex()) == "Run monitor"
     # Any tab stays reachable directly; the highlight follows, nothing is blocked.
-    window.tabs.setCurrentIndex(3)
-    assert window.tabs.tabText(3) == "Camera"
+    window.tabs.setCurrentWidget(window.panels[DeviceId.CAMERA])
+    assert window.tabs.tabText(window.tabs.currentIndex()) == "Camera"
     assert [key for key, button in window._nav_buttons.items() if button.isChecked()] == ["prepare"]
     window._nav_buttons["monitor"].click()
-    window._nav_buttons["prepare"].click()  # back to the device tab last used
-    assert window.tabs.tabText(window.tabs.currentIndex()) == "Camera"
+    window._nav_buttons["prepare"].click()  # the Prepare page, where devices are chosen and connected
+    assert window.tabs.tabText(window.tabs.currentIndex()) == "Prepare"
     assert window.submitted == []
 
 
