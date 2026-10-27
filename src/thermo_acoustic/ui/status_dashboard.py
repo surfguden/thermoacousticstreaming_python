@@ -182,7 +182,7 @@ class StatusDashboard(QWidget):
         self._status = status
         state = status.get("state")
         phase = status.get("phase", "")
-        self.stage.setText(describe_phase(phase) or "—")
+        self.stage.setText((describe_phase(phase) or "—") if state == "running" else "— (no stage is running)")
         self._render_saved(status.get("last_saved"), state)
         text, color = {"failed": (phase, "#b71c1c"), "aborted": (phase, "#a65a00"),
                        "stopped": ("Stopped after the current experiment; the remaining ones were not run.",

@@ -297,3 +297,13 @@ disabled and says why when a definition is not one uniform acquisition block.
 | Which devices a stage marks, stage descriptions | `application/run_activity.py` |
 | Monitor layout, requested text, newest-saved follow | `ui/status_dashboard.py` |
 | Queue plan facts (enabled, uniform) | `application/plan_facts.py` |
+
+Wait stages and result boundaries (2026-10-28): a temperature step shows as *Setting temperature*, then
+*Checking temperature stability* (the controller's stability judgement) and *Holding after temperature
+stability* (the extra hold); a fixed-wait strategy shows *Fixed wait after setting temperature* (no
+stability check, so the temperature is not confirmed stable) and any other wait is a *Timed wait*. The
+AD2 lines separate configuration (CH1 enabled / CH2 disabled) from the reported running state of the
+waveform generator. The monitor's newest-saved line (what the batch last saved and how it ended: saved,
+completed, later failed, or stopped by the operator or Panic) is kept apart from the *Viewing* line
+(what the viewer shows and whether it is the newest, an earlier acquisition, or an earlier batch's result);
+a viewer the user moved is never replaced. A batch aborted before anything was saved says so.
