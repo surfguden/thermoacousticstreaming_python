@@ -172,7 +172,10 @@ class MainWindow(QMainWindow):
             self.panels[device] = panel
             self.tabs.addTab(panel, _TAB_LABELS[device])
         self.connector = DeviceConnector(controller, submit=self._submit_connect, parent=self)
-        self.prepare_panel = PreparePanel(controller, self.panels, self.connector, self._open_device_page)
+        self.prepare_panel = PreparePanel(controller, self.panels, self.connector, self._open_device_page,
+                                          lambda: self._navigate("configure"))
+        for panel in self.panels.values():
+            panel.open_prepare_requested.connect(lambda: self._navigate("prepare"))
         self.tabs.insertTab(0, self._scrolling(self.prepare_panel), "Prepare")
         self.tabs.setCurrentIndex(0)
         self.workflow_panel = WorkflowPanel()

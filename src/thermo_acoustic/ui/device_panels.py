@@ -156,6 +156,7 @@ class CurrentPageStack(QStackedWidget):
 class DevicePanel(QScrollArea):
     command_requested = Signal(str, object)
     notice = Signal(str)
+    open_prepare_requested = Signal()
 
     def __init__(self, device_id: DeviceId, parent=None) -> None:
         super().__init__(parent)
@@ -169,6 +170,7 @@ class DevicePanel(QScrollArea):
         self._connected = False
         self._busy = False
         self._experiment_locked = False
+        self._daily: QWidget | None = None
         self.setWidgetResizable(True)
         body = QWidget()
         self.layout = QVBoxLayout(body)
@@ -204,6 +206,37 @@ class DevicePanel(QScrollArea):
         self.notice_label.setWordWrap(True)
         self.notice_label.setStyleSheet("color: #a65a00; font-weight: 600;")
         self.layout.addWidget(self.notice_label)
+
+    def daily_container(self) -> QWidget:
+        """Holder for this device's everyday controls (put the groups in its layout).
+
+        It sits in this page until the Prepare tab takes it with `release_daily()`; the controls stay
+        owned by this panel (profile, pending state, locking, enablement), only their place changes."""
+        if self._daily is None:
+            self._daily = QWidget()
+            QVBoxLayout(self._daily).setContentsMargins(0, 0, 0, 0)
+            self.layout.addWidget(self._daily)
+        return self._daily
+
+    def release_daily(self, description: str) -> QWidget | None:
+        """Hand the everyday controls to the Prepare tab and leave a pointer to them on this page."""
+        daily = self._daily
+        if daily is None or daily.parent() is None:
+            return daily
+        index = self.layout.indexOf(daily)
+        self.layout.removeWidget(daily)
+        pointer = QWidget()
+        row = QHBoxLayout(pointer)
+        row.setContentsMargins(0, 0, 0, 0)
+        label = QLabel(f"{description} are on the Prepare tab; this page keeps the connection inputs, "
+                       "advanced settings and diagnostics.")
+        label.setWordWrap(True)
+        go = QPushButton("Open Prepare")
+        go.clicked.connect(self.open_prepare_requested)
+        row.addWidget(label, 1)
+        row.addWidget(go, 0)
+        self.layout.insertWidget(max(index, 0), pointer)
+        return daily
 
     def finish_layout(self) -> None:
         self.layout.addStretch(1)
@@ -1252,8 +1285,14 @@ class PumpPanel(DevicePanel):
         self._blink_timer.timeout.connect(self._blink)
         self._blink_timer.start()
         self.empty_label = QLabel("Connect to discover pump units in the Qmix Elements configuration.")
-        self.layout.addWidget(self.empty_label)
-        self.layout.addWidget(self.tiles)
+        daily = self.daily_container().layout()
+        daily.addWidget(self.empty_label)
+        daily.addWidget(self.tiles)
+        # Low-frequency per-unit operations (built-in valve, reference move, syringe setup) stay on this page.
+        self.detail_tiles = QWidget()
+        self.detail_layout = QGridLayout(self.detail_tiles)
+        self.detail_layout.setContentsMargins(0, 0, 0, 0)
+        self.layout.addWidget(self.detail_tiles)
         self.finish_layout()
 
     def _choose_configuration_dir(self) -> None:
@@ -1273,9 +1312,10 @@ class PumpPanel(DevicePanel):
         return PumpConnectArgs(Path(selected))
 
     def _build_tiles(self, count: int) -> None:
-        while self.tiles_layout.count():
-            item = self.tiles_layout.takeAt(0)
-            if item.widget(): item.widget().deleteLater()
+        for layout in (self.tiles_layout, self.detail_layout):
+            while layout.count():
+                item = layout.takeAt(0)
+                if item.widget(): item.widget().deleteLater()
         self._buttons = {key: value for key, value in self._buttons.items() if key in {"connect", "disconnect", "abort", "safe_stop"}}
         self._button_labels = {key: value for key, value in self._button_labels.items() if key in self._buttons}
         self._action_operations = {key: value for key, value in self._action_operations.items() if key in self._buttons}
@@ -1294,20 +1334,9 @@ class PumpPanel(DevicePanel):
             form.addRow("Syringe", syringe_configuration)
             form.addRow("Built-in valve", valve_state)
             form.addRow(button_row(
-                self.action_button(f"valve_1_{index}", "Valve 1", DeviceOperation.PUMP_VALVE_POSITION_SET,
-                                   lambda i=index: PumpValvePositionArgs(1, i)),
-                self.action_button(f"valve_2_{index}", "Valve 2", DeviceOperation.PUMP_VALVE_POSITION_SET,
-                                   lambda i=index: PumpValvePositionArgs(2, i)),
-                self.action_button(f"valve_read_{index}", "Read valve", DeviceOperation.PUMP_VALVE_POSITION_READ,
-                                   lambda i=index: PumpUnitArgs(i)),
-            ))
-            form.addRow(button_row(
                 self.action_button(f"refill_{index}", "Refill", DeviceOperation.PUMP_REFILL, lambda i=index: PumpMoveArgs(unit_index=i)),
                 self.action_button(f"empty_{index}", "Empty", DeviceOperation.PUMP_EMPTY, lambda i=index: PumpMoveArgs(unit_index=i)),
                 self.action_button(f"stop_{index}", "Stop", DeviceOperation.PUMP_FLOW_STOP, lambda i=index: PumpUnitArgs(i)),
-            ))
-            form.addRow(button_row(
-                self.action_button(f"reference_{index}", "Reference move", DeviceOperation.PUMP_REFERENCE_MOVE, lambda i=index: PumpReferenceMoveArgs(unit_index=i)),
             ))
             level_button = QPushButton("Go to level…")
             level_button.clicked.connect(lambda checked=False, i=index: self._go_to_level(i))
@@ -1322,18 +1351,32 @@ class PumpPanel(DevicePanel):
                 self._action_operations[key] = operation
                 self._requires_connection.add(key)
             form.addRow(button_row(level_button, flow_button))
+            group.volume_label = volume
+            group.flow_label = flow
+            group.state_label = state
+            group.syringe_label = syringe_configuration
+            group.valve_label = valve_state
+            detail, detail_form = form_group(f"Pump {index + 1} · valve, reference move, syringe")
+            detail_form.addRow(button_row(
+                self.action_button(f"valve_1_{index}", "Valve 1", DeviceOperation.PUMP_VALVE_POSITION_SET,
+                                   lambda i=index: PumpValvePositionArgs(1, i)),
+                self.action_button(f"valve_2_{index}", "Valve 2", DeviceOperation.PUMP_VALVE_POSITION_SET,
+                                   lambda i=index: PumpValvePositionArgs(2, i)),
+                self.action_button(f"valve_read_{index}", "Read valve", DeviceOperation.PUMP_VALVE_POSITION_READ,
+                                   lambda i=index: PumpUnitArgs(i)),
+            ))
+            detail_form.addRow(button_row(
+                self.action_button(f"reference_{index}", "Reference move", DeviceOperation.PUMP_REFERENCE_MOVE, lambda i=index: PumpReferenceMoveArgs(unit_index=i)),
+            ))
             syringe = QPushButton("Configure syringe…")
             syringe.clicked.connect(lambda checked=False, i=index: self._configure_syringe(i))
             self._buttons[f"syringe_{index}"] = syringe
             self._button_labels[f"syringe_{index}"] = "Configure syringe…"
             self._action_operations[f"syringe_{index}"] = DeviceOperation.PUMP_SYRINGE_CONFIGURE
             self._requires_connection.add(f"syringe_{index}")
-            form.addRow(syringe)
-            group.volume_label = volume
-            group.flow_label = flow
-            group.state_label = state
-            group.syringe_label = syringe_configuration
-            group.valve_label = valve_state
+            detail_form.addRow(syringe)
+            self.detail_layout.addWidget(detail, 0, index)
+            self.detail_layout.setColumnStretch(index, 1)
             self.tiles_layout.addWidget(group, 0, index)
             self.tiles_layout.setColumnStretch(index, 1)
         self.empty_label.setVisible(count == 0)
@@ -1546,6 +1589,7 @@ class CameraPanel(DevicePanel):
         # placed behind it while acquisition controls remain accessible.
         self.image_window = CameraImageWindow()
         self.preview = self.image_window.preview
+        daily = self.daily_container().layout()
         notes_row = QWidget()
         notes_layout = QHBoxLayout(notes_row)
         notes_layout.setContentsMargins(0, 0, 0, 0)
@@ -1562,7 +1606,7 @@ class CameraPanel(DevicePanel):
         self.show_image_button.clicked.connect(self.show_image_window)
         notes_layout.addWidget(self.camera_notes, 1)
         notes_layout.addWidget(self.show_image_button, 0)
-        self.layout.addWidget(notes_row)
+        daily.addWidget(notes_row)
         controls = QWidget()
         controls_layout = QGridLayout(controls)
         controls_layout.setContentsMargins(0, 0, 0, 0)
@@ -1579,7 +1623,7 @@ class CameraPanel(DevicePanel):
         ))
         form.addRow("Exposure (ms)", self.exposure)
         form.addRow(button_row(self.action_button("exposure", "Set exposure", DeviceOperation.CAMERA_EXPOSURE_CONFIGURE, lambda: CameraConfigureExposureArgs(self.exposure.value()))))
-        controls_layout.addWidget(group, 0, 0)
+        daily.addWidget(group)
 
         group, form = form_group("Buffered sequence")
         self.sequence_frames = self.register_profile("sequence_frames", int_spin(10, 1, 1_000_000))
@@ -1609,7 +1653,7 @@ class CameraPanel(DevicePanel):
         form.addRow(button_row(
             self.action_button("sequence_save", "Save camera sequence", DeviceOperation.CAMERA_SEQUENCE_SAVE, self._save_args)
         ))
-        controls_layout.addWidget(group, 1, 0)
+        controls_layout.addWidget(group, 0, 0, 2, 1)
 
         group, form = form_group("ROI and timing")
         self.roi_x = self.register_profile("roi_x", int_spin(0, 0, 100_000))
@@ -1624,7 +1668,11 @@ class CameraPanel(DevicePanel):
             self._roi_button("full_sensor", "Full sensor", self._full_sensor_args),
             self.action_button("timing", "Read timing", DeviceOperation.CAMERA_TIMING_READ),
         ))
-        controls_layout.addWidget(group, 2, 0)
+        daily.addWidget(group)
+        roi_note = QLabel("This ROI is the camera's acquisition ROI: Set ROI sends it to the camera. The analysis "
+                          "ROI drawn in the image window only measures the displayed image and sends nothing.")
+        roi_note.setWordWrap(True)
+        daily.addWidget(roi_note)
 
         group, form = form_group("Sequence trigger")
         self.trigger_source = self.register_profile("trigger_source", QComboBox())
@@ -1950,7 +1998,8 @@ class TecPanel(DevicePanel):
         self.layout.addWidget(connection)
         controls = QWidget()
         controls_layout = QGridLayout(controls)
-        self.layout.addWidget(controls)
+        daily = self.daily_container().layout()
+        daily.addWidget(controls)
         group, form = form_group("Setpoints and stabilization")
         note = QLabel("Manual setpoints act on the controller now. Experiments use the temperature range and "
                       "stability policy in the Experiments tab, not these values. Regulation stays on after a "
@@ -1994,7 +2043,7 @@ class TecPanel(DevicePanel):
         controls_layout.setColumnStretch(0, 1)
         controls_layout.setColumnStretch(1, 2)
         self.temperature_plot = TemperaturePlot()
-        self.layout.addWidget(self.temperature_plot)
+        daily.addWidget(self.temperature_plot)
         self.finish_layout()
 
     def _refresh_ports(self) -> None:
@@ -2122,13 +2171,14 @@ class ZStagePanel(DevicePanel):
             self.action_button("down", "Down", DeviceOperation.Z_STAGE_POSITION_RELATIVE,
                                lambda: ZStageRelativeMoveArgs(-self.step.value())),
         ))
-        self.layout.addWidget(group)
+        daily = self.daily_container().layout()
+        daily.addWidget(group)
         self.readback_label = QLabel("No readback")
         self.readback_label.setWordWrap(True)
         self.readback_label.setSizePolicy(
             QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
         )
-        self.layout.addWidget(self.readback_label)
+        daily.addWidget(self.readback_label)
         self.finish_layout()
 
     def update_readback(self, readback: object) -> None:
