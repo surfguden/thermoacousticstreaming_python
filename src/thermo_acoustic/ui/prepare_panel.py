@@ -41,7 +41,8 @@ _RESULT_STYLE = {"connected": "color:#2e7d32", "failed": "color:#b71c1c;font-wei
 class PreparePanel(QWidget):
     def __init__(self, controller, panels: dict, connector: DeviceConnector,
                  open_device_page: Callable[[DeviceId], None],
-                 open_configure: Callable[[], None] = lambda: None, parent=None) -> None:
+                 open_configure: Callable[[], None] = lambda: None,
+                 show_prepare: Callable[[], None] = lambda: None, parent=None) -> None:
         super().__init__(parent)
         self.controller = controller
         self.panels = panels
@@ -103,14 +104,7 @@ class PreparePanel(QWidget):
         # Folding a section only hides it: nothing is sent and nothing is disabled.
         self.pump_section = self._section(
             root, "Pump and flow path", [panels[DeviceId.PUMP].release_daily("Everyday pump controls")])
-        imaging = QWidget()
-        imaging_layout = QHBoxLayout(imaging)
-        imaging_layout.setContentsMargins(0, 0, 0, 0)
-        imaging_layout.addWidget(panels[DeviceId.CAMERA].release_daily("Everyday camera controls"), 3,
-                                 Qt.AlignmentFlag.AlignTop)
-        imaging_layout.addWidget(panels[DeviceId.Z_STAGE].release_daily("Everyday focus controls"), 2,
-                                 Qt.AlignmentFlag.AlignTop)
-        self.imaging_section = self._section(root, "Imaging and focus", [imaging])
+        self.imaging_section = self._section(root, "Imaging and focus", [self._imaging_body(panels, show_prepare)])
         self.temperature_section = self._section(
             root, "Fixed temperature", [panels[DeviceId.TEC].release_daily("Everyday temperature controls")])
 
@@ -130,6 +124,56 @@ class PreparePanel(QWidget):
         controller.panic_changed.connect(self._refresh)
         controller.experiments.changed.connect(self._refresh)
         self._refresh()
+
+    def _imaging_body(self, panels: dict, show_prepare: Callable[[], None]) -> QWidget:
+        """Image beside its exposure/ROI and focus controls; the viewer is the existing one, docked here."""
+        camera = panels[DeviceId.CAMERA]
+        body = QWidget()
+        grid = QGridLayout(body)
+        grid.setContentsMargins(0, 0, 0, 0)
+        image_box = QWidget()
+        image_layout = QVBoxLayout(image_box)
+        image_layout.setContentsMargins(0, 0, 0, 0)
+        header = QHBoxLayout()
+        caption = QLabel("Live image or last frame from the camera (saved frames are under 4 Results)")
+        caption.setWordWrap(True)
+        self.measure_toggle = QCheckBox("Display and measurement")
+        self.measure_toggle.setToolTip("Display range, histogram, analysis ROI and intensity profile "
+                                       "(display only; nothing is sent to the camera)")
+        self.measure_toggle.toggled.connect(camera.image_window.set_measurement_visible)
+        self.pop_button = QPushButton("Pop out")
+        self.pop_button.setToolTip("Show the same viewer as a separate window")
+        self.pop_button.clicked.connect(self._toggle_pop_out)
+        header.addWidget(caption, 1)
+        header.addWidget(self.measure_toggle)
+        header.addWidget(self.pop_button)
+        image_layout.addLayout(header)
+        camera.dock_image(image_layout)
+        camera.image_window.setMinimumHeight(360)
+        camera.image_reveal = lambda: (show_prepare(), self.imaging_section.set_expanded(True))
+        controls = QWidget()
+        controls_layout = QVBoxLayout(controls)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.addWidget(camera.release_daily("Everyday camera controls"))
+        controls_layout.addWidget(panels[DeviceId.Z_STAGE].release_daily("Everyday focus controls"))
+        controls_layout.addStretch(1)
+        grid.addWidget(image_box, 0, 0)
+        grid.addWidget(controls, 0, 1)
+        grid.setColumnStretch(0, 3)
+        grid.setColumnStretch(1, 2)
+        return body
+
+    def _toggle_pop_out(self) -> None:
+        camera = self.panels[DeviceId.CAMERA]
+        if camera.image_docked:
+            camera.pop_out_image()
+            self.pop_button.setText("Dock image")
+            self.measure_toggle.setEnabled(False)
+        else:
+            camera.redock_image()
+            self.pop_button.setText("Pop out")
+            self.measure_toggle.setEnabled(True)
+            camera.image_window.set_measurement_visible(self.measure_toggle.isChecked())
 
     @staticmethod
     def _section(root: QVBoxLayout, title: str, widgets: list) -> CollapsibleSection:

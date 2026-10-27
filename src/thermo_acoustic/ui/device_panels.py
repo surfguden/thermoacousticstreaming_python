@@ -4,7 +4,7 @@ import math
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -1330,9 +1331,15 @@ class PumpPanel(DevicePanel):
             syringe_configuration.setWordWrap(True)
             form.addRow("State", state)
             form.addRow("Volume (mL)", volume)
+            fill_bar = QProgressBar()
+            fill_bar.setTextVisible(False)
+            fill_bar.setRange(0, 1000)
+            fill_bar.setFixedHeight(10)
+            fill_bar.setVisible(False)  # drawn only when level and capacity are both known
+            form.addRow(fill_bar)
             form.addRow("Current flow (µL/min)", flow)
             form.addRow("Syringe", syringe_configuration)
-            form.addRow("Built-in valve", valve_state)
+            form.addRow("Pump's own valve", valve_state)
             form.addRow(button_row(
                 self.action_button(f"refill_{index}", "Refill", DeviceOperation.PUMP_REFILL, lambda i=index: PumpMoveArgs(unit_index=i)),
                 self.action_button(f"empty_{index}", "Empty", DeviceOperation.PUMP_EMPTY, lambda i=index: PumpMoveArgs(unit_index=i)),
@@ -1352,6 +1359,7 @@ class PumpPanel(DevicePanel):
                 self._requires_connection.add(key)
             form.addRow(button_row(level_button, flow_button))
             group.volume_label = volume
+            group.fill_bar = fill_bar
             group.flow_label = flow
             group.state_label = state
             group.syringe_label = syringe_configuration
@@ -1468,6 +1476,13 @@ class PumpPanel(DevicePanel):
             if item is None or item.widget() is None: continue
             group = item.widget()
             group.volume_label.setText("—" if unit.fill_level_ml is None or unit.max_volume_ml is None else f"{unit.fill_level_ml:.4g} / {unit.max_volume_ml:.4g}")
+            # Proportion only from known numbers: no capacity or no level means no bar, never a guess.
+            known = unit.fill_level_ml is not None and unit.max_volume_ml not in (None, 0)
+            group.fill_bar.setVisible(known)
+            if known:
+                group.fill_bar.setValue(round(1000 * max(0.0, min(1.0, unit.fill_level_ml / unit.max_volume_ml))))
+            elif unit.fill_level_ml is not None:
+                group.volume_label.setText(f"{unit.fill_level_ml:.4g} (capacity unknown)")
             group.flow_label.setText("—" if unit.current_flow_ul_min is None else f"{unit.current_flow_ul_min:.4g}")
             geometry = (
                 f"{unit.syringe_inner_diameter_mm:.4g} mm bore × {unit.syringe_max_piston_stroke_mm:.4g} mm stroke"
@@ -1589,6 +1604,9 @@ class CameraPanel(DevicePanel):
         # placed behind it while acquisition controls remain accessible.
         self.image_window = CameraImageWindow()
         self.preview = self.image_window.preview
+        self.image_docked = False
+        self.image_reveal = lambda: None  # set by the Prepare tab when it hosts the viewer
+        self._image_dock_layout: QVBoxLayout | None = None
         daily = self.daily_container().layout()
         notes_row = QWidget()
         notes_layout = QHBoxLayout(notes_row)
@@ -1615,13 +1633,13 @@ class CameraPanel(DevicePanel):
         group, form = form_group("Snapshot and exposure")
         self.snapshot_exposure = self.register_profile("snapshot_exposure_ms", double_spin(2.5, 0, 1_000_000))
         self.exposure = self.register_profile("exposure_ms", double_spin(2.5, 0, 1_000_000))
-        form.addRow("Snapshot exposure (ms)", self.snapshot_exposure)
+        form.addRow("Exposure for snapshot / live (ms)", self.snapshot_exposure)
         form.addRow(button_row(
             self.action_button("snapshot", "Capture snapshot", DeviceOperation.CAMERA_SNAPSHOT_CAPTURE, self._snapshot_args),
             self.action_button("continuous", "Continuous snapshot", DeviceOperation.CAMERA_CONTINUOUS_CAPTURE, self._snapshot_args),
             self.action_button("capture_stop", "Stop capture", DeviceOperation.CAMERA_CAPTURE_STOP),
         ))
-        form.addRow("Exposure (ms)", self.exposure)
+        form.addRow("Exposure to set on the camera (ms)", self.exposure)
         form.addRow(button_row(self.action_button("exposure", "Set exposure", DeviceOperation.CAMERA_EXPOSURE_CONFIGURE, lambda: CameraConfigureExposureArgs(self.exposure.value()))))
         daily.addWidget(group)
 
@@ -1660,8 +1678,14 @@ class CameraPanel(DevicePanel):
         self.roi_y = self.register_profile("roi_y", int_spin(0, 0, 100_000))
         self.roi_width = self.register_profile("roi_width", int_spin(512, 1, 100_000))
         self.roi_height = self.register_profile("roi_height", int_spin(512, 1, 100_000))
-        for label, widget in (("X", self.roi_x), ("Y", self.roi_y), ("Width", self.roi_width), ("Height", self.roi_height)):
-            form.addRow(label, widget)
+        roi_grid = QWidget()
+        roi_layout = QGridLayout(roi_grid)
+        roi_layout.setContentsMargins(0, 0, 0, 0)
+        for index, (label, widget) in enumerate((("X", self.roi_x), ("Y", self.roi_y),
+                                                 ("Width", self.roi_width), ("Height", self.roi_height))):
+            roi_layout.addWidget(QLabel(f"{label} (px)"), index // 2, (index % 2) * 2)
+            roi_layout.addWidget(widget, index // 2, (index % 2) * 2 + 1)
+        form.addRow(roi_grid)
         form.addRow(button_row(
             self._roi_button("roi", "Set ROI", self._roi_args),
             self._roi_button("center_roi", "Center ROI", self._center_roi_args),
@@ -1838,8 +1862,36 @@ class CameraPanel(DevicePanel):
             CameraSequenceSaveFormat(self.sequence_save_format.currentData()),
         )
 
+    def dock_image(self, layout: QVBoxLayout) -> None:
+        """Show the image viewer inside `layout` (the Prepare tab) instead of as its own window."""
+        window = self.image_window
+        window.setWindowFlags(Qt.WindowType.Widget)
+        layout.addWidget(window, 1)
+        self._image_dock_layout = layout
+        self.image_docked = True
+        window.set_measurement_visible(False)
+        window.show()
+
+    def pop_out_image(self) -> None:
+        """Show the same viewer as a separate window; dock_image() puts it back."""
+        window = self.image_window
+        if self._image_dock_layout is not None:
+            self._image_dock_layout.removeWidget(window)
+        window.setParent(None)
+        window.setWindowFlags(Qt.WindowType.Dialog)
+        window.set_measurement_visible(True)
+        self.image_docked = False
+        window.show()
+
+    def redock_image(self) -> None:
+        if self._image_dock_layout is not None and not self.image_docked:
+            self.dock_image(self._image_dock_layout)
+
     def show_image_window(self) -> None:
-        """Bring up the image window as it is (live image or last frame); no acquisition is started."""
+        """Bring up the image viewer as it is (live image or last frame); no acquisition is started."""
+        if self.image_docked:
+            self.image_reveal()
+            return
         window = self.image_window
         window.show()
         window.raise_()
@@ -1847,6 +1899,8 @@ class CameraPanel(DevicePanel):
 
     def _show_image_window(self, status: str) -> None:
         self.image_window.begin_acquisition(status)
+        if self.image_docked:
+            self.image_reveal()
 
     def set_status(self, status: DeviceStatus) -> None:
         super().set_status(status)
@@ -2030,9 +2084,15 @@ class TecPanel(DevicePanel):
             self.action_button("off", "Outputs off", DeviceOperation.TEC_OUTPUTS_OFF),
         ))
         controls_layout.addWidget(group, 0, 0)
-        self.table = QTableWidget(2, 6)
-        self.table.setHorizontalHeaderLabels(("Channel", "Current °C", "Target °C", "Output", "Ready", "Fault"))
+        self.table = QTableWidget(2, 7)
+        self.table.setHorizontalHeaderLabels(("Channel", "Current °C", "Requested °C", "Reported target °C",
+                                              "Output", "Ready", "Fault"))
+        self._requested: dict[int, float] = {}
+        self._last_channels: tuple = ()
         self.table.horizontalHeaderItem(2).setToolTip(
+            "What this page last applied successfully (Apply setpoints or Wait until stable). "
+            "Blank until then; it is a request, not a controller readback.")
+        self.table.horizontalHeaderItem(3).setToolTip(
             "The controller's own reported target, not necessarily this panel's last "
             "requested setpoint above -- the controller can report no target here even "
             "while genuinely ready and outputting; that is a protocol characteristic, "
@@ -2127,19 +2187,26 @@ class TecPanel(DevicePanel):
             else:
                 self.target_mode.setCurrentIndex(self.target_mode.findData("broadcast"))
                 self.target.setValue(targets)
+            self._requested = dict(targets) if isinstance(targets, dict) else {1: targets, 2: targets}
+            self._set_channels_from_last()
             if isinstance(args, TecWaitStableArgs):
                 self.tolerance.setValue(args.tolerance_c)
                 self.settle.setValue(args.min_settle_s)
                 self.max_wait.setValue(args.max_wait_s)
                 self.poll.setValue(args.poll_interval_s)
 
+    def _set_channels_from_last(self) -> None:
+        self._set_channels(self._last_channels)
+
     def _set_channels(self, channels: object) -> None:
-        for row, channel in enumerate(channels):
+        self._last_channels = tuple(channels)
+        for row, channel in enumerate(self._last_channels):
             if row >= self.table.rowCount():
                 self.table.insertRow(row)
             values = (
                 channel.channel,
                 channel.current_temperature_c,
+                self._requested.get(channel.channel),
                 channel.target_temperature_c,
                 channel.output_enabled,
                 channel.ready,
@@ -2159,8 +2226,8 @@ class ZStagePanel(DevicePanel):
             self.action_button("requirement", "Check closed-loop requirement", DeviceOperation.Z_STAGE_CLOSED_LOOP_REQUIREMENT_READ),
             self.action_button("enable", "Enable closed loop", DeviceOperation.Z_STAGE_CLOSED_LOOP_ENABLE),
         ))
-        form.addRow("Position (µm)", self.position)
-        form.addRow("Relative step (µm)", self.step)
+        form.addRow("Target position (µm)", self.position)
+        form.addRow("Jog step (µm)", self.step)
         form.addRow(button_row(
             self.action_button("move", "Move", DeviceOperation.Z_STAGE_POSITION_SET, lambda: ZStageSetPositionArgs(self.position.value())),
             self.action_button("read", "Read position", DeviceOperation.Z_STAGE_POSITION_READ),

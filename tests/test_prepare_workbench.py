@@ -159,3 +159,40 @@ def test_device_pages_point_to_prepare_and_the_pointer_opens_it(env):
     window.prepare_panel.configure_button.click()
     assert window.tabs.currentWidget() is window.experiment_panel
     assert window.experiment_panel.pages.currentIndex() == 0
+
+
+def test_pump_fill_bar_is_drawn_only_from_known_level_and_capacity(env):
+    from thermo_acoustic.domain.models import PumpReadback, PumpUnitReadback
+    window, controller, events, wait = env
+    pump = window.panels[DeviceId.PUMP]
+    show = lambda unit: (pump.update_readback(PumpReadback(units=(unit,))), pump.tiles_layout.itemAtPosition(0, 0).widget())[1]
+    group = show(PumpUnitReadback(0, fill_level_ml=0.5, max_volume_ml=1.0))
+    assert not group.fill_bar.isHidden() and group.fill_bar.value() == 500
+    group = show(PumpUnitReadback(0, fill_level_ml=0.5, max_volume_ml=None))  # capacity unknown: no invented scale
+    assert group.fill_bar.isHidden() and "capacity unknown" in group.volume_label.text()
+    group = show(PumpUnitReadback(0, fill_level_ml=None, max_volume_ml=1.0))
+    assert group.fill_bar.isHidden() and group.volume_label.text() == "—"
+
+
+def test_image_viewer_docks_and_pops_out_without_any_device_command(env):
+    window, controller, events, wait = env
+    camera, prepare = window.panels[DeviceId.CAMERA], window.prepare_panel
+    assert camera.image_docked and _inside(camera.image_window, prepare)
+    prepare.pop_button.click()
+    assert not camera.image_docked and not _inside(camera.image_window, prepare)
+    prepare.pop_button.click()
+    assert camera.image_docked and _inside(camera.image_window, prepare)
+    camera.image_window.close() if not camera.image_docked else None
+    assert [e for e in events if e.state == "queued"] == []
+
+
+def test_requested_temperature_is_kept_apart_from_the_reported_target(env):
+    window, controller, events, wait = env
+    _connect(window, wait, DeviceId.TEC)
+    tec = window.panels[DeviceId.TEC]
+    assert tec.table.item(0, 2) is None or tec.table.item(0, 2).text() == "—"  # nothing requested yet
+    tec.target.setValue(27.5)
+    tec._buttons["apply"].click()
+    wait(lambda: any(e.operation is DeviceOperation.TEC_SETPOINTS_APPLY and e.state == "completed" for e in events))
+    wait(lambda: tec.table.item(0, 2) is not None and tec.table.item(0, 2).text() == "27.5")
+    assert tec.table.horizontalHeaderItem(3).text() == "Reported target °C"

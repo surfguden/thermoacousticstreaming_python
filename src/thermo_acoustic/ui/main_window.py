@@ -177,7 +177,8 @@ class MainWindow(QMainWindow):
             self.device_tabs.addTab(panel, _TAB_LABELS[device])
         self.connector = DeviceConnector(controller, submit=self._submit_connect, parent=self)
         self.prepare_panel = PreparePanel(controller, self.panels, self.connector, self._open_device_page,
-                                          lambda: self.show_workspace("configure"))
+                                          lambda: self.show_workspace("configure"),
+                                          lambda: self.show_workspace("prepare"))
         for panel in self.panels.values():
             panel.open_prepare_requested.connect(lambda: self.show_workspace("prepare"))
         self.workflow_panel = WorkflowPanel()

@@ -186,9 +186,11 @@ def test_tec_table_shows_dash_not_literal_none_for_an_unreported_target(qt_app):
             TecChannelReadback(1, current_temperature_c=24.5, target_temperature_c=None,
                               output_enabled=True, ready=True),
         ))))
-    assert panel.table.item(0, 2).text() == "—"
+    assert panel.table.item(0, 3).text() == "—"  # reported target: unreported, not "None"
+    assert panel.table.item(0, 2).text() == "—"  # requested: nothing applied from this page yet
     assert panel.table.item(0, 1).text() == "24.5"
-    assert "protocol characteristic" in panel.table.horizontalHeaderItem(2).toolTip()
+    assert "protocol characteristic" in panel.table.horizontalHeaderItem(3).toolTip()
+    assert "not a controller readback" in panel.table.horizontalHeaderItem(2).toolTip()
 
 
 def test_duplicate_operation_is_blocked_across_ad2_subtabs(qt_app):

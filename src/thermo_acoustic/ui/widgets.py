@@ -984,6 +984,7 @@ class CameraImageWindow(QDialog):
         side_scroll.setWidget(side_body)
         side_scroll.setMinimumWidth(400)
         layout.addWidget(side_scroll)
+        self.side_panel = side_scroll
 
         # Preview state. `_clock` is injectable so tests need no real waiting.
         self._clock = datetime.now
@@ -1004,6 +1005,10 @@ class CameraImageWindow(QDialog):
         self._timer.timeout.connect(self._render_state)
         self._update_zoom_label()
         self._render_state()
+
+    def set_measurement_visible(self, visible: bool) -> None:
+        """Show or hide the display-range, histogram and measurement column (display only)."""
+        self.side_panel.setVisible(visible)
 
     # ---------------------------------------------------------- intensity
     @staticmethod
