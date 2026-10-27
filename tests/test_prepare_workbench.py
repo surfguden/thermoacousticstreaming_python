@@ -350,3 +350,47 @@ def test_every_surface_says_connected_when_the_last_operation_failed(env):
     assert "last operation failed" in texts["table"] and "operation failed" in texts["page"].lower()
     assert "24.00 °C" in texts["summary"] and "wait timed out" in texts["monitor"]
     assert "reported target none" in texts["summary"]  # unknown is written as unknown
+
+
+def _surfaces(window):
+    window.prepare_panel._refresh()
+    return {"strip": window.panels[DeviceId.AD2].acoustic_status_label.text(),
+            "summary": window.prepare_panel.acoustic_section.summary.text(),
+            "monitor": window.dashboard.rows[DeviceId.AD2].text(),
+            "page": window.panels[DeviceId.AD2].readback_label.text()}
+
+
+def test_ad2_configuration_is_not_shown_as_a_running_output(env):
+    window, controller, events, wait = env
+    _connect(window, wait, DeviceId.AD2)
+    ad2 = window.panels[DeviceId.AD2]
+
+    def done(operation):
+        return lambda: any(e.operation is operation and e.state == "completed" for e in events)
+
+    def state_is(text):
+        window._status(controller.statuses())
+        return text in window.prepare_panel.acoustic_section.summary.text()
+    wait(lambda: state_is("idle (nothing configured)"))  # nothing configured yet
+    ad2._buttons["wave_config"].click()
+    wait(done(DeviceOperation.AD2_WAVEFORM_CONFIGURE))
+    wait(lambda: state_is("not running (configured"))
+    for where, text in _surfaces(window).items():  # configured only: enabled in configuration, not running
+        assert "running" not in text.replace("not running", "") or where == "page", (where, text)
+    surfaces = _surfaces(window)
+    assert "CH1 enabled" in surfaces["summary"] and "CH2 disabled" in surfaces["summary"]  # a disabled channel is said so
+    assert "CH1 enabled" in surfaces["monitor"] and "not running" in surfaces["monitor"]
+    ad2._buttons["wave_start"].click()
+    wait(done(DeviceOperation.AD2_WAVEFORM_START))
+    wait(lambda: state_is("waveform generator running"))
+    for where, text in _surfaces(window).items():
+        if where != "page":
+            assert "waveform generator running" in text, (where, text)
+    ad2._buttons["wave_stop"].click()
+    wait(done(DeviceOperation.AD2_WAVEFORM_STOP))
+    wait(lambda: state_is("not running (configured"))
+    for where, text in _surfaces(window).items():  # stopped: no "on", still shown as configured, not as output
+        assert "waveform generator running" not in text and " on " not in f" {text} ", (where, text)
+        if where != "page":
+            assert "CH1 enabled" in text and "not running" in text, (where, text)
+    assert "not a running state" in ad2.readback_label.text()

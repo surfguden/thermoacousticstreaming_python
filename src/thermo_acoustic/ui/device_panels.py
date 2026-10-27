@@ -99,7 +99,7 @@ from .temperature_plot import TemperaturePlot
 from ..application.configuration import DEFAULT_PUMP_CONFIGURATION_DIR
 from .ad2_scope import OscilloscopePanel
 from .status_dashboard import camera_summary, z_stage_summary
-from .status_text import ad2_outputs_summary, valve_summary
+from .status_text import ad2_channels_configured, ad2_outputs_summary, valve_summary
 from .widgets import CameraImageWindow, CollapsibleSection
 
 
@@ -1065,12 +1065,7 @@ class Ad2Panel(DevicePanel):
                 self._apply_capabilities(capabilities)
                 self._applied_capabilities = capabilities
             channels = getattr(readback, "waveform_channels", ())
-            channel_text = ", ".join(
-                f"CH{channel.channel_index + 1} "
-                f"{'on' if channel.enabled else 'off'} "
-                f"{channel.frequency_hz:g} Hz/{channel.amplitude_v:g} V"
-                for channel in channels
-            ) or "not configured"
+            channel_text = ad2_channels_configured(readback)
             wfg_state = (
                 "running"
                 if getattr(readback, "waveform_running", False)
@@ -1090,7 +1085,7 @@ class Ad2Panel(DevicePanel):
                 f"Oscilloscope: {getattr(readback, 'scope_state', 'idle')} · "
                 f"Digital output: {digital_state}"
             )
-            self.readback_label.setText(f"WFG configuration: {channel_text}")
+            self.readback_label.setText(f"WFG configuration (not a running state): {channel_text}")
             self.acoustic_status_label.setText(ad2_outputs_summary(readback))
 
     def _apply_capabilities(self, capabilities: Ad2Capabilities) -> None:

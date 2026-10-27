@@ -1824,3 +1824,147 @@ def test_runner_reports_saved_images_before_the_experiment_is_complete(tmp_path)
     finally:
         panel.close()
         controller.shutdown()
+
+
+def _mkdir(path):
+    path.mkdir()
+    return path
+
+
+def _phases_of_a_run(app, tmp_path, *, stability: bool, edit=None):
+    from thermo_acoustic.application.run_activity import describe_phase
+    controller, panel, results, events = _connected_temperature_series_harness(app, repeats=1, hold_s=0.3)
+    seen: list[str] = []
+    controller.experiments.changed.connect(
+        lambda status: seen.append(status["phase"]) if not seen or seen[-1] != status["phase"] else None)
+    try:
+        panel.temperature_wait_for_stability.setChecked(stability)
+        definition = panel._definition()
+        if edit is not None:
+            edit(definition)
+        controller.experiments.queue(definition, tmp_path)
+        assert controller.experiments.start()
+        status = _wait_until_terminal(app, controller)
+        assert status["state"] == "completed", status
+        return seen, describe_phase
+    finally:
+        panel.close()
+        controller.shutdown()
+
+
+def test_wait_stages_are_named_for_what_they_actually_are(tmp_path):
+    app = QApplication.instance() or QApplication(["test-wait-stages"])
+    # Stability check, then the extra hold after it: never one name for both.
+    seen, describe = _phases_of_a_run(app, _mkdir(tmp_path / "a"), stability=True)
+    assert "Checking temperature stability" in seen and "Holding after temperature stability" in seen
+    assert seen.index("Checking temperature stability") < seen.index("Holding after temperature stability")
+    assert "reports the temperature stable" in describe("Checking temperature stability")
+    assert "Stability was reported" in describe("Holding after temperature stability")
+    assert "Waiting for temperature stabilization" not in seen
+    # Fixed wait strategy: the wait is a timed wait after setting; it must not read as a stability check.
+    seen, describe = _phases_of_a_run(app, _mkdir(tmp_path / "b"), stability=False)
+    assert "Fixed wait after setting temperature" in seen
+    assert "Checking temperature stability" not in seen and "Holding after temperature stability" not in seen
+    assert "not confirmed stable" in describe("Fixed wait after setting temperature")
+
+    def add_plain_wait(definition):  # what the experiment builder can add: a timed wait after the first flush
+        definition["steps"].insert(1, {"type": "wait", "args": {"seconds": 0.3}})
+    seen, describe = _phases_of_a_run(app, _mkdir(tmp_path / "c"), stability=True, edit=add_plain_wait)
+    assert "Timed wait" in seen  # a plain wait is not described as a temperature wait
+    assert "does not check any device" in describe("Timed wait")
+
+
+def _scenario_window(app, tmp_path, ending):
+    """A real MainWindow on simulated devices, one 2-repeat series, ended in the way `ending` says."""
+    from thermo_acoustic.ui.main_window import MainWindow
+    controller = ApplicationController(DeviceRegistry(mode=OperatingMode.SIMULATION), mode=OperatingMode.SIMULATION)
+    results, events = [], []
+    controller.command_result.connect(results.append)
+    controller.command_event.connect(events.append)
+    controller.start()
+    window = MainWindow(controller)
+    window.show()
+    controller.experiments.confirm_unchecked = lambda summary: True  # the window would open a dialog
+    try:
+        for device in (DeviceId.AD2, DeviceId.CAMERA, DeviceId.PUMP, DeviceId.VALVE):
+            controller.submit(DeviceCommand(device, DeviceOperation.CONNECT))
+        deadline = monotonic() + 5
+        while monotonic() < deadline and sum(r.operation is DeviceOperation.CONNECT and r.ok for r in results) < 4:
+            app.processEvents(); sleep(0.01)
+        controller.submit(DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_FILL_LEVEL_SET, PumpSetFillLevelArgs(1.0)))
+        deadline = monotonic() + 3
+        while monotonic() < deadline and not any(r.operation is DeviceOperation.PUMP_FILL_LEVEL_SET and r.ok
+                                                  for r in results):
+            app.processEvents(); sleep(0.01)
+        calls = {"n": 0}
+        real_start_flush = controller._start_flush
+
+        def hold_second_flush(command):  # the experiment's own flush never finishes by itself
+            calls["n"] += 1
+            if calls["n"] == 2 and ending != "abort_before_save":
+                controller._flush_command, controller._flush = command, None
+                return
+            real_start_flush(command)
+        controller._start_flush = hold_second_flush
+        definition = compile_simple_series(replace(settings(), repeats=2, frame_count=2,
+            frequency_hz=NumericRange(1_000_000, 1_000_000, 1), amplitude_v=NumericRange(1, 1, 1),
+            exposure_ms=NumericRange(1, 1, 1), sweep_enabled=False, temperature_control=False,
+            temperature_logging=False, roi=(0, 0, 16, 16), flush_unit_index=0))
+        folder = controller.experiments.queue(definition, tmp_path)
+        assert controller.experiments.start()
+        if ending == "abort_before_save":
+            controller.experiments.abort()
+        else:
+            deadline = monotonic() + 15
+            while monotonic() < deadline and not (calls["n"] >= 2 and controller.experiments._experiment_frames_saved):
+                app.processEvents(); sleep(0.01)
+            assert controller.experiments._experiment_frames_saved
+            if ending == "flush_failure":
+                controller._finish_flush(False, "simulated post-acquisition flush failure")
+            else:
+                controller.experiments.abort()
+        status = _wait_until_terminal(app, controller)
+        for _ in range(20):
+            app.processEvents(); sleep(0.01)
+        return controller, window, status, folder
+    except Exception:
+        window.close()
+        controller.shutdown()
+        raise
+
+
+def test_monitor_tells_a_flush_failure_after_saving_from_an_operator_abort(tmp_path):
+    app = QApplication.instance() or QApplication(["test-preview-boundaries"])
+    for ending in ("flush_failure", "abort_after_save", "abort_before_save"):
+        base = tmp_path / ending
+        base.mkdir()
+        controller, window, status, folder = _scenario_window(app, base, ending)
+        try:
+            label = window.dashboard.saved_label.text()
+            on_disk = json.loads((folder / "metadata" / "status.json").read_text())
+            saved = status["last_saved"]
+            if ending == "flush_failure":
+                assert status["state"] == "failed" and saved["outcome"] == "failed_after_save"
+                assert "later failed" in label and "simulated post-acquisition flush failure" in label
+                assert on_disk["finalized_outcome"] == "failed"
+            elif ending == "abort_after_save":
+                assert status["state"] == "aborted" and saved["outcome"] == "aborted_after_save"
+                assert "stopped before the experiment finished" in label and "failed" not in label
+                assert "Operator aborted" in label and on_disk["finalized_outcome"] == "aborted"
+            else:
+                assert status["state"] == "aborted" and saved is None
+                # The batch was aborted before this series reached its first save: the series is recorded as
+                # cancelled on disk (it never started), the batch as aborted on screen.
+                assert "before it ended (aborted)" in label and on_disk["finalized_outcome"] == "cancelled"
+            if saved is not None:
+                leaf = Path(saved["experiment_folder"])
+                assert len(list(leaf.glob("*.tif"))) == 2  # the images are on disk, whatever the ending
+                assert on_disk["experiments_completed"] == 0  # saved is not completed
+                assert window.dashboard.saved_viewer.loaded_folder() == str(leaf)  # and the viewer is on it
+                assert "newest saved acquisition of this batch" in window.dashboard.viewing_label.text()
+            else:
+                assert window.dashboard.saved_viewer.loaded_folder() is None
+                assert "Viewing: nothing loaded" in window.dashboard.viewing_label.text()
+        finally:
+            window.close()
+            controller.shutdown()

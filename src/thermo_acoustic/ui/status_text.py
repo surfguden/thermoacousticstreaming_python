@@ -45,18 +45,31 @@ def valve_summary(readback: object) -> str:
     return f"requested position {requested} · confirmed position {confirmed} · ready {ready}{note}"
 
 
+def ad2_channels_configured(readback: object) -> str:
+    """The channels as configured (enabled or disabled, setting). A configuration is not a running output."""
+    channels = getattr(readback, "waveform_channels", ()) if readback is not None else ()
+    return ", ".join(
+        f"CH{channel.channel_index + 1} " + (f"enabled {channel.frequency_hz:g} Hz/{channel.amplitude_v:g} V"
+                                             if channel.enabled else "disabled")
+        for channel in channels) or "none configured"
+
+
 def ad2_outputs_summary(readback: object) -> str:
-    """What the AD2 reports its waveform and digital outputs are doing (a report, not the experiment's plan)."""
+    """What the AD2 reports about its outputs. Whether the waveform generator is running is one reported flag
+    for the instrument; the channel list is the configuration, not a per-channel live state."""
     if readback is None:
         return "no readback"
     channels = getattr(readback, "waveform_channels", ())
-    channel_text = ", ".join(
-        f"CH{channel.channel_index + 1} {'on' if channel.enabled else 'off'} "
-        f"{channel.frequency_hz:g} Hz/{channel.amplitude_v:g} V" for channel in channels) or "not configured"
-    wfg = "running" if getattr(readback, "waveform_running", False) else "configured" if channels else "idle"
+    configured = ad2_channels_configured(readback)
+    if getattr(readback, "waveform_running", False):
+        wfg = f"waveform generator running (configured: {configured})"
+    elif channels:
+        wfg = f"waveform generator not running (configured: {configured})"
+    else:
+        wfg = "waveform generator idle (nothing configured)"
     digital = ("running" if getattr(readback, "digital_output_running", False)
-               else "configured" if getattr(readback, "digital_output_configured", False) else "idle")
-    return f"WFG {wfg} ({channel_text}) · digital output {digital}"
+               else "configured, not running" if getattr(readback, "digital_output_configured", False) else "idle")
+    return f"{wfg} · digital output {digital}"
 
 
 def pump_summary(readback: object) -> str:

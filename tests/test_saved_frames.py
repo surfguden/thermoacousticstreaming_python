@@ -434,7 +434,7 @@ def test_monitor_newest_saved_follows_without_replacing_a_view_the_user_moved(tm
     dashboard.saved_viewer.show_position(1)  # the user looks at frame 2 of this experiment
     dashboard.update_experiment({**base, "last_saved": saved(2)})
     assert dashboard.saved_viewer.loaded_folder() == str(infos[1].folder) and dashboard.saved_viewer.position() == 1
-    assert "newer result is available" in dashboard.saved_label.text()
+    assert "press Show newest" in dashboard.saved_label.text()
     dashboard.show_newest_button.click()  # explicit request only
     assert dashboard.saved_viewer.loaded_folder() == str(infos[2].folder)
     dashboard.update_experiment({**base, "last_saved": saved(2, "failed_after_save", "valve timeout")})
@@ -453,7 +453,7 @@ def test_monitor_marks_devices_the_stage_involves_and_keeps_requests_apart_from_
         TecChannelReadback(1, current_temperature_c=24.0, target_temperature_c=None, output_enabled=True, ready=True),)))
     dashboard.update_statuses(statuses)
     dashboard.update_experiment({"state": "running", "planned_experiments": 2, "batch_completed_experiments": 0,
-                                 "phase": "Waiting for temperature stabilization", "series": [], "last_saved": None,
+                                 "phase": "Checking temperature stability", "series": [], "last_saved": None,
                                  "current_parameters": {"temperature_c": 30.0, "frequency_hz": 1e6},
                                  "current_plan": {"sound_enabled": True, "sound_start_s": 0.0, "sound_run_s": 1.0}})
     assert dashboard.names[DeviceId.TEC].text().startswith("▶")
@@ -461,4 +461,46 @@ def test_monitor_marks_devices_the_stage_involves_and_keeps_requests_apart_from_
     tec = dashboard.rows[DeviceId.TEC].text()
     assert "requested: target 30 °C" in tec and "CH1" in tec and "→ unknown" in tec  # request and report differ, unknown stays unknown
     assert "requested: frequency 1e+06 Hz" in dashboard.rows[DeviceId.AD2].text()
-    assert "Waiting for the controller" in dashboard.stage.text()
+    assert "reports the temperature stable" in dashboard.stage.text()
+
+
+def test_monitor_keeps_history_labelled_when_a_new_batch_has_no_result_yet(tmp_path, qt_app):
+    from thermo_acoustic.ui.status_dashboard import StatusDashboard
+    old, _ = make_series(_mk(tmp_path / "old"), "frames", saved=1)
+    new, _ = make_series(_mk(tmp_path / "new"), "frames", saved=2)
+    old_info, new_infos = find_experiments(old)[0], find_experiments(new)
+    dashboard = StatusDashboard()
+    dashboard.show()
+
+    def saved(info, series, outcome="saved", reason=""):
+        return {"series_folder": str(series), "experiment_id": info.experiment_id, "experiment_folder": str(info.folder),
+                "parameters": dict(info.parameters), "repeat_index": 1, "frame_count": 4, "outcome": outcome,
+                "reason": reason}
+    batch = {"state": "running", "planned_experiments": 2, "batch_completed_experiments": 0, "phase": "Flushing",
+             "current_parameters": None, "current_series": str(new), "series": []}
+    # 1. an earlier batch's result is on screen; the new batch has saved nothing yet.
+    dashboard.update_experiment({**batch, "last_saved": saved(old_info, old, "completed")})
+    assert dashboard.saved_viewer.loaded_folder() == str(old_info.folder)
+    dashboard.update_experiment({**batch, "last_saved": None})
+    assert "No acquisition has been saved in this batch yet" in dashboard.saved_label.text()
+    assert dashboard.saved_viewer.loaded_folder() == str(old_info.folder)  # not blanked, not replaced
+    assert "not from this batch" in dashboard.viewing_label.text() and old_info.experiment_id in dashboard.viewing_label.text()
+    # 2. the user pins history (stays on frame 2): the batch's first result arrives, the view is left alone and
+    #    the two lines say different things.
+    dashboard.saved_viewer.show_position(1)
+    dashboard.update_experiment({**batch, "last_saved": saved(new_infos[0], new)})
+    assert dashboard.saved_viewer.loaded_folder() == str(old_info.folder) and dashboard.saved_viewer.position() == 1
+    assert "Newest saved: " + new_infos[0].experiment_id in dashboard.saved_label.text()
+    assert "press Show newest" in dashboard.saved_label.text()
+    assert "not the newest" in dashboard.viewing_label.text() or "not from this batch" in dashboard.viewing_label.text()
+    dashboard.follow_check.setChecked(False)
+    dashboard.update_experiment({**batch, "last_saved": saved(new_infos[1], new)})
+    assert dashboard.saved_viewer.loaded_folder() == str(old_info.folder)
+    assert "following is off" in dashboard.viewing_label.text()
+    # An abort (not a fault) after saving, and a batch that ended before anything was saved, read differently.
+    dashboard.update_experiment({**batch, "state": "aborted",
+                                 "last_saved": saved(new_infos[1], new, "aborted_after_save", "Operator aborted experiment batch")})
+    text = dashboard.saved_label.text()
+    assert "stopped before the experiment finished" in text and "Operator aborted" in text and "failed" not in text
+    dashboard.update_experiment({**batch, "state": "aborted", "last_saved": None})
+    assert "before it ended (aborted)" in dashboard.saved_label.text()

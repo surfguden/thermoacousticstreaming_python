@@ -95,8 +95,12 @@ class ExperimentManager(QObject):
         self._parallel_depth = 0
         # The newest acquisition whose images are on disk, for the run monitor (read-only):
         # outcome is "saved" (images written; flush and closing may still be running), "completed"
-        # (the whole experiment finished) or "failed_after_save". Cleared when a batch starts.
+        # (the whole experiment finished), "failed_after_save" (a later fault) or "aborted_after_save"
+        # (the operator or Panic stopped the batch). Cleared when a batch starts.
         self._last_saved: dict[str, Any] | None = None
+        # Kind of the action that just finished (display only: tells a timed wait that follows a
+        # temperature stability check or a temperature set from any other timed wait).
+        self._previous_action: str | None = None
         self._series_completed_at_start = 0
         controller.command_result.connect(self._command_result)
         controller.command_result.connect(self._syringe_preflight_result)
@@ -1029,12 +1033,18 @@ class ExperimentManager(QObject):
 
     def _run_action(self, node: dict[str, Any], done: Callable[[], None]) -> None:
         kind, args = node["type"], node["args"]
+        previous, finish = self._previous_action, done
+
+        def done() -> None:
+            self._previous_action = kind
+            finish()
         if not self._parallel_depth:
+            # A timed wait is named for what precedes it: it is never reported as a stability check.
+            wait_phase = {"tec_wait_stable": "Holding after temperature stability",
+                          "tec_set": "Fixed wait after setting temperature"}.get(previous or "", "Timed wait")
             self._phase = {
-                "flush": "Flushing", "wait": "Waiting for temperature stabilization"
-                    if self._current and self._current[0].definition.get("simple_series")
-                    and self._experiment is None else "Waiting",
-                "tec_set": "Setting temperature", "tec_wait_stable": "Waiting for temperature stabilization",
+                "flush": "Flushing", "wait": wait_phase,
+                "tec_set": "Setting temperature", "tec_wait_stable": "Checking temperature stability",
                 "stage_move": "Moving Z-stage", "camera_configure": "Configuring camera",
                 "ad2_configure": "Configuring AD2", "camera_arm": "Arming camera",
                 "ad2_arm": "Arming AD2", "pc_trigger": "Triggering acquisition",
@@ -1385,7 +1395,10 @@ class ExperimentManager(QObject):
                 storage.event("experiment_preserved_after_later_failure",
                               experiment_id=self._experiment.experiment_id, reason=reason)
                 if self._last_saved and self._last_saved["experiment_id"] == self._experiment.experiment_id:
-                    self._last_saved = {**self._last_saved, "outcome": "failed_after_save", "reason": reason}
+                    # An operator abort (or Panic) after the images were written is not a device or saving
+                    # fault: say which, and let the reason carry the details.
+                    outcome = "aborted_after_save" if self._abort_requested else "failed_after_save"
+                    self._last_saved = {**self._last_saved, "outcome": outcome, "reason": reason}
             else:
                 incomplete = (storage.folder / self._experiment.relative_path).resolve()
                 if not incomplete.is_relative_to(storage.folder.resolve()):

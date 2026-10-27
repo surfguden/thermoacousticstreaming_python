@@ -123,12 +123,18 @@ class StatusDashboard(QWidget):
         header.addWidget(self.follow_check)
         header.addWidget(self.show_newest_button)
         saved_layout.addLayout(header)
+        # What the viewer shows, kept apart from the newest-saved line above: it may be an older result.
+        self.viewing_label = QLabel()
+        self.viewing_label.setWordWrap(True)
+        saved_layout.addWidget(self.viewing_label)
         self.saved_viewer = SavedFramesWindow()
         self.saved_viewer.setWindowFlags(Qt.WindowType.Widget)
         self.saved_viewer.set_measurement_visible(False)
         saved_layout.addWidget(self.saved_viewer, 1)
         self.saved_viewer.show()
         self.image_tabs.addTab(saved_page, "Newest saved acquisition")
+        self.saved_viewer.source_changed.connect(self._render_viewing)
+        self.follow_check.toggled.connect(lambda *_: self._render_viewing())
         middle.addWidget(self.image_tabs, 3)
         self._last_saved: dict | None = None
         self._followed_folder: str | None = None
@@ -177,7 +183,7 @@ class StatusDashboard(QWidget):
         state = status.get("state")
         phase = status.get("phase", "")
         self.stage.setText(describe_phase(phase) or "—")
-        self._render_saved(status.get("last_saved"))
+        self._render_saved(status.get("last_saved"), state)
         text, color = {"failed": (phase, "#b71c1c"), "aborted": (phase, "#a65a00"),
                        "stopped": ("Stopped after the current experiment; the remaining ones were not run.",
                                    "#a65a00")}.get(state, ("", ""))
@@ -275,21 +281,48 @@ class StatusDashboard(QWidget):
             self.names[device].setText(("▶ " if device in involved else "") + device.value)
 
     # ------------------------------------------------------------- newest saved
-    def _render_saved(self, saved: dict | None) -> None:
-        """Name what is on disk and how far that experiment got; images saved is not experiment completed."""
+    def _render_saved(self, saved: dict | None, batch_state: str | None = None) -> None:
+        """Name what is on disk and how far that experiment got. Images saved is not experiment completed,
+        and a stop by the operator is not a fault."""
         self._last_saved = saved
         self.show_newest_button.setEnabled(saved is not None)
         if saved is None:
-            self.saved_label.setText("No acquisition has been saved in this batch yet.")
+            ended = batch_state in {"aborted", "failed", "stopped"}
+            self.saved_label.setText(
+                f"No acquisition was saved in this batch before it ended ({batch_state})." if ended
+                else "No acquisition has been saved in this batch yet.")
+            self._render_viewing()
             return
         outcome = {"saved": "images saved; the experiment has not finished (flush and closing may still run)",
                    "completed": "the experiment completed",
-                   "failed_after_save": "images saved, but the experiment later failed: " + (saved.get("reason") or "")
+                   "failed_after_save": "images saved, but the experiment later failed: " + (saved.get("reason") or ""),
+                   "aborted_after_save": "images saved, then the batch was stopped before the experiment finished"
+                                         + (f" ({saved['reason']})" if saved.get("reason") else "")
                    }.get(saved["outcome"], saved["outcome"])
         self.saved_label.setText(
-            f"{saved['experiment_id']} · repeat {saved['repeat_index']} · {describe_condition(saved['parameters'])}"
-            f" · {saved['frame_count']} frames — {outcome}")
+            f"Newest saved: {saved['experiment_id']} · repeat {saved['repeat_index']} · "
+            f"{describe_condition(saved['parameters'])} · {saved['frame_count']} frames — {outcome}")
         self._show_saved(force=False)
+        self._render_viewing()
+
+    def _render_viewing(self) -> None:
+        """Provenance of what the viewer shows now: the newest result, or something else, said plainly."""
+        viewer, saved = self.saved_viewer, self._last_saved
+        loaded = viewer.loaded_folder()
+        if loaded is None:
+            self.viewing_label.setText("Viewing: nothing loaded.")
+            return
+        what = f"{viewer.loaded_experiment_id()} ({loaded})"
+        if saved is not None and loaded == saved["experiment_folder"]:
+            note = "the newest saved acquisition of this batch"
+        elif saved is not None and Path(loaded).is_relative_to(saved["series_folder"]):
+            note = "an earlier acquisition of this series, not the newest saved"
+        elif saved is not None:
+            note = "a result outside this batch's newest series, not from this batch's newest save"
+        else:
+            note = "an earlier result, not from this batch (nothing has been saved in this batch yet)"
+        mode = "following newest" if self.follow_check.isChecked() else "following is off"
+        self.viewing_label.setText(f"Viewing: {what} — {note} · {mode}")
 
     def _show_saved(self, *, force: bool) -> None:
         """Load the newest saved experiment into the viewer. Automatic only when following and the viewer is
@@ -303,7 +336,7 @@ class StatusDashboard(QWidget):
             return
         untouched = viewer.loaded_folder() in (None, self._followed_folder) and viewer.position() == 0
         if not force and not (self.follow_check.isChecked() and untouched):
-            self.saved_label.setText(self.saved_label.text() + "  — a newer result is available: press Show newest.")
+            self.saved_label.setText(self.saved_label.text() + "  — your view was left as it is; press Show newest to switch.")
             return
         try:
             viewer.open_folder(folder)
@@ -311,3 +344,4 @@ class StatusDashboard(QWidget):
             self.saved_label.setText(self.saved_label.text() + f"  — cannot be shown yet: {exc}")
             return
         self._followed_folder = folder
+        self._render_viewing()
