@@ -38,27 +38,22 @@ def window(qt_app):
     controller.shutdown()
 
 
-def test_task_buttons_only_switch_tabs_and_follow_the_visible_page(window):
-    names = {"prepare": "1 Prepare devices", "configure": "2 Configure", "review": "3 Review and start",
-             "monitor": "4 Monitor run"}
-    assert {key: button.text() for key, button in window._nav_buttons.items()} == names
-    window._nav_buttons["review"].click()
+def test_primary_navigation_has_the_four_workspaces_and_device_details_as_secondary(window):
+    assert [window.tabs.tabText(i) for i in range(window.tabs.count())] == [
+        "1  Prepare devices", "2  Configure experiment", "3  Run monitor", "4  Results", "Device details"]
+    window.show_workspace("queue")
     assert window.tabs.currentWidget() is window.experiment_panel
     assert window.experiment_panel.pages.currentIndex() == 1
-    assert [key for key, button in window._nav_buttons.items() if button.isChecked()] == ["review"]
-    window._nav_buttons["configure"].click()
+    window.show_workspace("configure")
     assert window.experiment_panel.pages.currentIndex() == 0
-    assert [key for key, button in window._nav_buttons.items() if button.isChecked()] == ["configure"]
-    window._nav_buttons["monitor"].click()
-    assert window.tabs.tabText(window.tabs.currentIndex()) == "Run monitor"
-    # Any tab stays reachable directly; the highlight follows, nothing is blocked.
-    window.tabs.setCurrentWidget(window.panels[DeviceId.CAMERA])
-    assert window.tabs.tabText(window.tabs.currentIndex()) == "Camera"
-    assert [key for key, button in window._nav_buttons.items() if button.isChecked()] == ["prepare"]
-    window._nav_buttons["monitor"].click()
-    window._nav_buttons["prepare"].click()  # the Prepare page, where devices are chosen and connected
-    assert window.tabs.tabText(window.tabs.currentIndex()) == "Prepare"
-    assert window.submitted == []
+    window.show_workspace("monitor")
+    assert window.tabs.tabText(window.tabs.currentIndex()) == "3  Run monitor"
+    window.open_page(window.panels[DeviceId.CAMERA])  # a device page opens inside Device details
+    assert window.tabs.currentWidget() is window.device_tabs
+    assert window.device_tabs.tabText(window.device_tabs.currentIndex()) == "Camera"
+    window.show_workspace("prepare")
+    assert window.tabs.tabText(window.tabs.currentIndex()) == "1  Prepare devices"
+    assert window.submitted == []  # navigation never reaches a device
 
 
 def test_stop_controls_are_always_visible_and_only_enabled_when_they_apply(window):
@@ -97,7 +92,7 @@ def test_advanced_values_are_folded_but_still_part_of_the_series(window):
 
 def test_form_uses_one_column_on_a_narrow_window_and_two_on_a_wide_one(window, qt_app):
     panel = window.experiment_panel
-    window._navigate("configure")  # a hidden tab is not laid out until it is shown
+    window.show_workspace("configure")  # a hidden tab is not laid out until it is shown
     for size, columns in (((1300, 800), 2), ((900, 600), 1), ((1300, 800), 2)):
         window.resize(*size)
         qt_app.processEvents()
@@ -438,7 +433,7 @@ def test_camera_page_can_show_the_image_window_without_acquiring_and_flush_tab_i
     camera.show_image_button.click()
     assert camera.image_window.isVisible()
     assert window.submitted == []  # showing the window issues no camera command
-    assert window.tabs.tabText(window.tabs.indexOf(window._scroll_pages[window.workflow_panel])) == "Flush"
+    assert window.device_tabs.tabText(window.device_tabs.indexOf(window._scroll_pages[window.workflow_panel])) == "Flush"
     camera.image_window.close()
 
 

@@ -249,8 +249,8 @@ def test_main_window_uses_fixed_minimum_and_separate_detailed_log(qt_app):
     assert window.log.parent() is window.log_window
     assert [action.text() for action in window.menuBar().actions()] == [
         "&File", "&Log", "Experiment &builder"]
-    assert window.tabs.tabText(window.tabs.count() - 2) == "Experiments"
-    assert window.tabs.tabText(window.tabs.count() - 1) == "Run monitor"
+    assert [window.tabs.tabText(i) for i in range(window.tabs.count())] == [
+        "1  Prepare devices", "2  Configure experiment", "3  Run monitor", "4  Results", "Device details"]
     assert window.builder_window.panel.parent() is window.builder_window
     for spin in window.findChildren(QAbstractSpinBox):
         assert spin.buttonSymbols() is QAbstractSpinBox.ButtonSymbols.NoButtons
@@ -953,12 +953,12 @@ def test_panels_fit_half_of_a_1920_by_1200_screen(qt_app):
     window.show()
     qt_app.processEvents()
     for index, panel in enumerate(window.panels.values()):
-        window.tabs.setCurrentWidget(panel)
+        window.open_page(panel)
         qt_app.processEvents()
         assert panel.horizontalScrollBar().maximum() == 0
         assert panel.verticalScrollBar().maximum() == 0
     ad2 = window.panels[DeviceId.AD2]
-    window.tabs.setCurrentWidget(ad2)
+    window.open_page(ad2)
     for mode in range(3):
         for channel in ad2.wave_channels:
             channel.mode.setCurrentIndex(mode)

@@ -84,7 +84,7 @@ def test_everyday_controls_live_on_prepare_and_detail_controls_stay_on_the_devic
 def test_looking_at_prepare_and_folding_sections_sends_nothing(env):
     window, controller, events, wait = env
     prepare = window.prepare_panel
-    window.tabs.setCurrentWidget(window._scroll_pages[prepare])
+    window.show_workspace("prepare")
     for section in (prepare.pump_section, prepare.imaging_section, prepare.temperature_section):
         section.set_expanded(True)
         section.set_expanded(False)
@@ -153,6 +153,7 @@ def test_device_pages_point_to_prepare_and_the_pointer_opens_it(env):
     window, controller, events, wait = env
     pointer_buttons = [b for b in window.panels[DeviceId.CAMERA].findChildren(type(window.configure_button_proxy))] \
         if hasattr(window, "configure_button_proxy") else []
+    window.show_workspace("devices")
     window.panels[DeviceId.CAMERA].open_prepare_requested.emit()
     assert window.tabs.currentWidget() is window._scroll_pages[window.prepare_panel]
     window.prepare_panel.configure_button.click()

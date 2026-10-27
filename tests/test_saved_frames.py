@@ -206,14 +206,14 @@ def test_saved_review_is_separate_from_the_live_viewer_and_sends_no_device_comma
     live_text = live.preview_state.text()
     window._review_saved_frames(str(series))
     review = window.saved_frames_window
-    assert review is not live and review.isVisible()
+    assert review is not live
+    assert window.tabs.currentWidget() is window.results_panel  # reviewing happens in the Results workspace
     assert "historical, not live" in review.preview_state.text()
     assert live.preview_state.text() == live_text and not live.preview.has_image  # live view untouched
-    window._navigate("monitor")
-    window._navigate("review")
-    window._navigate("prepare")
+    window.show_workspace("monitor")
+    window.show_workspace("queue")
+    window.show_workspace("prepare")
     assert submitted == []
-    review.close()
     window.close()
     controller.shutdown()
 

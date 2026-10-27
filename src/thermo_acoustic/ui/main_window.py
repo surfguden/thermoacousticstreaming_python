@@ -44,6 +44,7 @@ from .device_panels import DevicePanel, PANEL_TYPES
 from .prepare_panel import PreparePanel
 from .workflow_panel import WorkflowPanel
 from .experiment_panel import ExperimentPanel
+from .results_panel import ResultsPanel
 from .saved_frames_window import SavedFramesWindow
 from .simple_series_panel import SimpleSeriesPanel
 from .status_dashboard import StatusDashboard
@@ -151,15 +152,18 @@ class MainWindow(QMainWindow):
             button.setMinimumHeight(32)
             header.addWidget(button)
         root_layout.addLayout(header)
-        root_layout.addLayout(self._navigation_row())
         self.connection_summary = QLabel()
         self.connection_summary.setTextFormat(Qt.TextFormat.RichText)
         # One line that never widens the window or grows taller; the full text is also the tooltip.
         self.connection_summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         root_layout.addWidget(self.connection_summary)
 
+        # Primary navigation: the four workspaces in experiment order, then the device pages
+        # (detailed controls, diagnostics, advanced settings) as one secondary entry.
         self.tabs = QTabWidget()
         self.tabs.setMinimumWidth(0)
+        self.device_tabs = QTabWidget()
+        self.device_tabs.setMinimumWidth(0)
         self.panels: dict[DeviceId, DevicePanel] = {}
         for device in DeviceId:
             panel = PANEL_TYPES[device]()
@@ -170,31 +174,33 @@ class MainWindow(QMainWindow):
             )
             panel.notice.connect(self._ui_notice)
             self.panels[device] = panel
-            self.tabs.addTab(panel, _TAB_LABELS[device])
+            self.device_tabs.addTab(panel, _TAB_LABELS[device])
         self.connector = DeviceConnector(controller, submit=self._submit_connect, parent=self)
         self.prepare_panel = PreparePanel(controller, self.panels, self.connector, self._open_device_page,
-                                          lambda: self._navigate("configure"))
+                                          lambda: self.show_workspace("configure"))
         for panel in self.panels.values():
-            panel.open_prepare_requested.connect(lambda: self._navigate("prepare"))
-        self.tabs.insertTab(0, self._scrolling(self.prepare_panel), "Prepare")
-        self.tabs.setCurrentIndex(0)
+            panel.open_prepare_requested.connect(lambda: self.show_workspace("prepare"))
         self.workflow_panel = WorkflowPanel()
         self.workflow_panel.command_requested.connect(
             lambda action, command: self._submit(self.workflow_panel, action, command)
         )
         self.workflow_panel.abort_requested.connect(controller.cancel_active_workflow)
         self.workflow_panel.notice.connect(self._ui_notice)
-        self.tabs.addTab(self._scrolling(self.workflow_panel), "Flush")
+        self.device_tabs.addTab(self._scrolling(self.workflow_panel), "Flush")
         from .z_stack_panel import ZStackPanel
         self.z_stack_panel = ZStackPanel(controller.z_stack, self.panels[DeviceId.CAMERA])
-        self.tabs.addTab(self._scrolling(self.z_stack_panel), "Z stack")
+        self.device_tabs.addTab(self._scrolling(self.z_stack_panel), "Z stack")
         self.experiment_panel = SimpleSeriesPanel(controller)
-        self.tabs.addTab(self.experiment_panel, "Experiments")
         self.dashboard = StatusDashboard()
-        self.tabs.addTab(self._scrolling(self.dashboard), "Run monitor")
         self.dashboard.image_window_requested.connect(self._show_camera_image_window)
         self.dashboard.review_requested.connect(self._review_saved_frames)
-        self.saved_frames_window: SavedFramesWindow | None = None
+        self.results_panel = ResultsPanel()
+        self.saved_frames_window: SavedFramesWindow = self.results_panel.viewer
+        self.tabs.addTab(self._scrolling(self.prepare_panel), "1  Prepare devices")
+        self.tabs.addTab(self.experiment_panel, "2  Configure experiment")
+        self.tabs.addTab(self._scrolling(self.dashboard), "3  Run monitor")
+        self.tabs.addTab(self.results_panel, "4  Results")
+        self.tabs.addTab(self.device_tabs, "Device details")
         self.builder_window = ExperimentBuilderWindow(controller.experiments, self)
         controller.experiments.confirm_batch = self.confirm_experiment_batch
         controller.experiments.confirm_unchecked = self.confirm_unchecked_preflight
@@ -221,9 +227,6 @@ class MainWindow(QMainWindow):
         controller.panic_changed.connect(self._panic_changed)
         self._status(controller.statuses())
         self._experiment_changed(self._experiment_status)
-        self.tabs.currentChanged.connect(self._sync_navigation)
-        self.experiment_panel.pages.currentChanged.connect(self._sync_navigation)
-        self._sync_navigation()
 
     def _scrolling(self, widget: QWidget) -> QScrollArea:
         """Tabs without their own scrolling get one, so a short window never squeezes their content."""
@@ -234,71 +237,32 @@ class MainWindow(QMainWindow):
         self._scroll_pages[widget] = area
         return area
 
-    def _navigation_row(self) -> QHBoxLayout:
-        """Shortcuts to existing tabs. Navigation only: no command is issued and no step is required."""
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Task:"))
-        self._nav_group = QButtonGroup(self)
-        self._nav_buttons: dict[str, QPushButton] = {}
-        for key, label, tip in (
-            ("prepare", "1 Prepare devices", "Connect and set up instruments in the device tabs"),
-            ("configure", "2 Configure", "Experiments tab, Configure page"),
-            ("review", "3 Review and start", "Experiments tab, Review and start page"),
-            ("monitor", "4 Monitor run", "Run monitor tab"),
-        ):
-            button = QPushButton(label)
-            button.setCheckable(True)
-            button.setFlat(True)
-            button.setToolTip(tip + ". Any tab can be opened at any time.")
-            self._nav_group.addButton(button)
-            self._nav_buttons[key] = button
-            row.addWidget(button)
-            button.clicked.connect(lambda _checked=False, name=key: self._navigate(name))
-        row.addStretch(1)
-        self._last_device_tab = 0
-        return row
-
-    def _navigate(self, name: str) -> None:
-        if name == "prepare":
-            self.tabs.setCurrentWidget(self._scroll_pages[self.prepare_panel])
-        elif name in {"configure", "review"}:
+    def show_workspace(self, key: str) -> None:
+        """Switch to a primary workspace: prepare, configure, queue (the Configure workspace's start page),
+        monitor, results or devices. Navigation only: no command is issued and nothing is required first."""
+        if key in {"configure", "queue"}:
             self.tabs.setCurrentWidget(self.experiment_panel)
-            self.experiment_panel.pages.setCurrentIndex(0 if name == "configure" else 1)
-        elif name == "monitor":
-            self.tabs.setCurrentWidget(self._scroll_pages[self.dashboard])
+            self.experiment_panel.pages.setCurrentIndex(0 if key == "configure" else 1)
+            return
+        targets = {"prepare": self._scroll_pages[self.prepare_panel], "monitor": self._scroll_pages[self.dashboard],
+                   "results": self.results_panel, "devices": self.device_tabs}
+        self.tabs.setCurrentWidget(targets[key])
 
-    def _sync_navigation(self, *_args) -> None:
-        current = self.tabs.currentWidget()
-        if current in self.panels.values() or current in (self._scroll_pages[self.prepare_panel],
-                                                          self._scroll_pages[self.workflow_panel],
-                                                          self._scroll_pages[self.z_stack_panel]):
-            self._last_device_tab = self.tabs.currentIndex()
-            key = "prepare"
-        elif current is self.experiment_panel:
-            key = "configure" if self.experiment_panel.pages.currentIndex() == 0 else "review"
-        elif current is self._scroll_pages[self.dashboard]:
-            key = "monitor"
+    def open_page(self, widget: QWidget) -> None:
+        """Show any page: a device page opens inside Device details, a workspace opens directly."""
+        page = self._scroll_pages.get(widget, widget)
+        if self.device_tabs.indexOf(page) >= 0:
+            self.tabs.setCurrentWidget(self.device_tabs)
+            self.device_tabs.setCurrentWidget(page)
         else:
-            key = None
-        self._nav_group.setExclusive(False)
-        for name, button in self._nav_buttons.items():
-            button.setChecked(name == key)
-        self._nav_group.setExclusive(True)
+            self.tabs.setCurrentWidget(page)
 
     def _review_saved_frames(self, folder: str = "") -> None:
-        """Open the saved-frames viewer on ``folder`` (a series or experiment folder) or ask for one.
+        """Open the Results workspace on ``folder`` (a series or experiment folder) or ask for one.
 
         The viewer only reads files; it never touches a device or the running batch."""
-        if self.saved_frames_window is None:
-            self.saved_frames_window = SavedFramesWindow(self)
-        window = self.saved_frames_window
-        window.show()
-        window.raise_()
-        window.activateWindow()
-        if folder and Path(folder).is_dir():
-            window.open_or_report(folder)
-        else:
-            window.choose_folder(self.dashboard.output_folder or "")
+        self.show_workspace("results")
+        self.results_panel.open_folder(folder or self.dashboard.output_folder or "")
 
     def _show_camera_image_window(self) -> None:
         self.panels[DeviceId.CAMERA].show_image_window()
@@ -347,6 +311,7 @@ class MainWindow(QMainWindow):
             panel.set_experiment_locked(locked)
         self.workflow_panel.set_experiment_locked(locked)
         self.dashboard.update_experiment(status)
+        self.results_panel.set_latest(self.dashboard.output_folder or "")
         running = status["state"] == "running" and self._panic_status["state"] != "stopping"
         stop_requested = bool(status.get("stop_after_current"))
         self.stop_after_button.setEnabled(running and not stop_requested)
@@ -463,7 +428,7 @@ class MainWindow(QMainWindow):
             raise
 
     def _open_device_page(self, device: DeviceId) -> None:
-        self.tabs.setCurrentWidget(self.panels[device])
+        self.open_page(self.panels[device])
 
     def confirm_operation(self, request: ConfirmationRequest) -> bool:
         answer = QMessageBox.question(
@@ -736,8 +701,6 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self.panels[DeviceId.CAMERA].image_window.close()
-        if self.saved_frames_window is not None:
-            self.saved_frames_window.close()
         self.builder_window.close()
         event.accept()
 

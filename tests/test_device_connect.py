@@ -263,4 +263,5 @@ def test_device_pages_keep_their_own_connect_disconnect_and_open_page_works(env)
     panel._buttons["disconnect"].click()
     wait(lambda: _connection(controller, DeviceId.VALVE) is ConnectionState.DISCONNECTED)
     window.prepare_panel.page_buttons[DeviceId.TEC].click()
-    assert window.tabs.currentWidget() is window.panels[DeviceId.TEC]
+    assert window.tabs.currentWidget() is window.device_tabs
+    assert window.device_tabs.currentWidget() is window.panels[DeviceId.TEC]
