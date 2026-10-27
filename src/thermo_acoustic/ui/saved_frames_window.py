@@ -12,7 +12,7 @@ from PySide6.QtCore import Signal, Qt
 from ..application.saved_frames import (
     SavedExperiment, SavedExperimentInfo, SavedFramesError, find_experiments,
 )
-from .status_dashboard import describe_condition
+from .status_text import describe_condition
 from .widgets import CameraImageWindow
 
 
@@ -72,6 +72,10 @@ class SavedFramesWindow(CameraImageWindow):
     def loaded_folder(self) -> str | None:
         """The folder whose frames are on screen now; None when nothing (or nothing readable) is loaded."""
         return self._source if self._experiment is not None else None
+
+    def position(self) -> int:
+        """Zero-based frame shown now."""
+        return self._position
 
     def loaded_experiment_id(self) -> str | None:
         return self._experiment.experiment_id if self._experiment is not None else None

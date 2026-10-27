@@ -73,3 +73,24 @@ def tec_summary(readback: object) -> str:
         f"ch{item.channel}: now " + ("unknown" if item.current_temperature_c is None else f"{item.current_temperature_c:.2f} °C")
         + " · reported target " + ("none" if item.target_temperature_c is None else f"{item.target_temperature_c:g} °C")
         + (" · output on" if item.output_enabled else " · output off") for item in channels) or "no channel readback"
+
+
+# Same parameter names as the compiled plan; anything not listed is shown as key=value.
+_PARAMETER_LABELS = (("frequency_hz", "frequency", " Hz"), ("amplitude_v", "amplitude", " V"),
+                     ("exposure_ms", "exposure", " ms"), ("sweep_width_hz", "sweep width", " Hz"),
+                     ("temperature_c", "temperature", " °C"))
+
+
+def describe_condition(parameters: dict | None) -> str:
+    """Current experiment's own parameters as stored in the plan; nothing is derived."""
+    if not parameters:
+        return "—"
+    pieces = []
+    known = set()
+    for key, label, unit in _PARAMETER_LABELS:
+        if key in parameters:
+            known.add(key)
+            if parameters[key] != "NaN":  # the plan's marker for a disabled sweep/temperature axis
+                pieces.append(f"{label} {_value(parameters[key], unit)}")
+    pieces.extend(f"{key}={_value(value)}" for key, value in parameters.items() if key not in known)
+    return " · ".join(pieces) if pieces else "—"

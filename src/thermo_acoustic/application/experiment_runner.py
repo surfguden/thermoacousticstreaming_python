@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 import math
@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
+from .plan_facts import plan_facts
 from ..domain.models import ConnectionState, DeviceId, OperatingMode, PumpReadback, ZStageReadback
 from .run_identity import cached_software_identity
 from .commands import (
@@ -92,6 +93,10 @@ class ExperimentManager(QObject):
         self._batch_series_total = 0
         self._phase = "Idle"
         self._parallel_depth = 0
+        # The newest acquisition whose images are on disk, for the run monitor (read-only):
+        # outcome is "saved" (images written; flush and closing may still be running), "completed"
+        # (the whole experiment finished) or "failed_after_save". Cleared when a batch starts.
+        self._last_saved: dict[str, Any] | None = None
         self._series_completed_at_start = 0
         controller.command_result.connect(self._command_result)
         controller.command_result.connect(self._syringe_preflight_result)
@@ -336,6 +341,8 @@ class ExperimentManager(QObject):
                 "phase": self._phase,
                 "failure_reason": self._failure_reason,
                 "series": queue_details,
+                "last_saved": dict(self._last_saved) if self._last_saved else None,
+                "current_plan": asdict(plan_facts(self._current[0].steps)) if self._current else None,
                 "current_series": str(self._current[1].folder) if self._current else None,
                 "current_experiment": self._experiment.experiment_id if self._experiment else None,
                 "current_parameters": dict(self._experiment.parameters) if self._experiment else None,
@@ -406,6 +413,7 @@ class ExperimentManager(QObject):
                 "This may move pumps/stage and activate ultrasound, laser, LED and camera."
             ):
                 return False
+        self._last_saved = None
         self._approved = queued_now
         self._batch_items = list(self._queued)
         self._planned_total = count
@@ -962,6 +970,8 @@ class ExperimentManager(QObject):
                     self._fail(f"Final experiment metadata could not be written: {exc}")
                     return
                 self._completed += 1
+                if self._last_saved and self._last_saved["experiment_id"] == self._experiment.experiment_id:
+                    self._last_saved = {**self._last_saved, "outcome": "completed"}
                 self._phase = "Experiment completed"
                 storage.event("experiment_completed", experiment_id=self._experiment.experiment_id)
                 storage.record_experiment_completed()
@@ -1185,6 +1195,14 @@ class ExperimentManager(QObject):
             storage.event("frames_saved", experiment_id=record["experiment_id"],
                           frame_count=record["frame_count"])
             self._experiment_frames_saved = True
+            experiment = self._experiment
+            if experiment is not None:
+                self._last_saved = {
+                    "series_folder": str(storage.folder), "experiment_id": experiment.experiment_id,
+                    "experiment_folder": str((storage.folder / experiment.relative_path).resolve()),
+                    "parameters": dict(experiment.parameters), "repeat_index": experiment.repeat_index,
+                    "frame_count": record["frame_count"], "outcome": "saved", "reason": ""}
+                self._publish()
             done()
         QTimer.singleShot(0, poll)
 
@@ -1366,6 +1384,8 @@ class ExperimentManager(QObject):
                     reason += f"; failure outcome could not be recorded on the saved experiment: {exc}"
                 storage.event("experiment_preserved_after_later_failure",
                               experiment_id=self._experiment.experiment_id, reason=reason)
+                if self._last_saved and self._last_saved["experiment_id"] == self._experiment.experiment_id:
+                    self._last_saved = {**self._last_saved, "outcome": "failed_after_save", "reason": reason}
             else:
                 incomplete = (storage.folder / self._experiment.relative_path).resolve()
                 if not incomplete.is_relative_to(storage.folder.resolve()):

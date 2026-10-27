@@ -406,3 +406,59 @@ def test_results_names_the_viewed_folder_apart_from_the_latest_output(tmp_path, 
 def _mk(path: Path) -> Path:
     path.mkdir()
     return path
+
+
+def test_monitor_newest_saved_follows_without_replacing_a_view_the_user_moved(tmp_path, qt_app):
+    from thermo_acoustic.ui.status_dashboard import StatusDashboard
+    series, _planned = make_series(_mk(tmp_path / "s1"), "frames", saved=2)
+    second, _ = make_series(_mk(tmp_path / "s2"), "frames", saved=1)
+    infos = find_experiments(series) + find_experiments(second)
+    dashboard = StatusDashboard()
+    dashboard.show()
+
+    def saved(index, outcome="saved", reason=""):
+        info = infos[index]
+        return {"series_folder": str(series), "experiment_id": info.experiment_id,
+                "experiment_folder": str(info.folder), "parameters": dict(info.parameters), "repeat_index": 1,
+                "frame_count": 4, "outcome": outcome, "reason": reason}
+    base = {"state": "running", "planned_experiments": 3, "batch_completed_experiments": 0, "phase": "Flushing",
+            "current_parameters": None, "current_series": str(series), "series": []}
+    dashboard.update_experiment({**base, "last_saved": saved(0)})
+    assert dashboard.saved_viewer.loaded_folder() == str(infos[0].folder)
+    assert "images saved" in dashboard.saved_label.text() and "has not finished" in dashboard.saved_label.text()
+    assert "completed" not in dashboard.saved_label.text().replace("has not finished", "")
+    dashboard.update_experiment({**base, "last_saved": saved(0, "completed")})
+    assert "the experiment completed" in dashboard.saved_label.text()
+    dashboard.update_experiment({**base, "last_saved": saved(1)})  # untouched view: follows the newest
+    assert dashboard.saved_viewer.loaded_folder() == str(infos[1].folder)
+    dashboard.saved_viewer.show_position(1)  # the user looks at frame 2 of this experiment
+    dashboard.update_experiment({**base, "last_saved": saved(2)})
+    assert dashboard.saved_viewer.loaded_folder() == str(infos[1].folder) and dashboard.saved_viewer.position() == 1
+    assert "newer result is available" in dashboard.saved_label.text()
+    dashboard.show_newest_button.click()  # explicit request only
+    assert dashboard.saved_viewer.loaded_folder() == str(infos[2].folder)
+    dashboard.update_experiment({**base, "last_saved": saved(2, "failed_after_save", "valve timeout")})
+    assert "later failed: valve timeout" in dashboard.saved_label.text()
+    dashboard.follow_check.setChecked(False)
+    dashboard.update_experiment({**base, "last_saved": saved(0)})
+    assert dashboard.saved_viewer.loaded_folder() == str(infos[2].folder)  # follow off: nothing replaced
+
+
+def test_monitor_marks_devices_the_stage_involves_and_keeps_requests_apart_from_reports(qt_app):
+    from thermo_acoustic.domain.models import ConnectionState, DeviceId, DeviceStatus, TecChannelReadback, TecReadback
+    from thermo_acoustic.ui.status_dashboard import StatusDashboard
+    dashboard = StatusDashboard()
+    statuses = {d: DeviceStatus(d, ConnectionState.CONNECTED) for d in DeviceId}
+    statuses[DeviceId.TEC] = DeviceStatus(DeviceId.TEC, ConnectionState.CONNECTED, readback=TecReadback(channels=(
+        TecChannelReadback(1, current_temperature_c=24.0, target_temperature_c=None, output_enabled=True, ready=True),)))
+    dashboard.update_statuses(statuses)
+    dashboard.update_experiment({"state": "running", "planned_experiments": 2, "batch_completed_experiments": 0,
+                                 "phase": "Waiting for temperature stabilization", "series": [], "last_saved": None,
+                                 "current_parameters": {"temperature_c": 30.0, "frequency_hz": 1e6},
+                                 "current_plan": {"sound_enabled": True, "sound_start_s": 0.0, "sound_run_s": 1.0}})
+    assert dashboard.names[DeviceId.TEC].text().startswith("▶")
+    assert not dashboard.names[DeviceId.PUMP].text().startswith("▶")
+    tec = dashboard.rows[DeviceId.TEC].text()
+    assert "requested: target 30 °C" in tec and "CH1" in tec and "→ unknown" in tec  # request and report differ, unknown stays unknown
+    assert "requested: frequency 1e+06 Hz" in dashboard.rows[DeviceId.AD2].text()
+    assert "Waiting for the controller" in dashboard.stage.text()

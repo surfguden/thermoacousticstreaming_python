@@ -7,11 +7,17 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QGridLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget,
+    QCheckBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton, QScrollArea, QTabWidget, QVBoxLayout,
+    QWidget,
 )
 
+from ..application.run_activity import describe_phase, devices_for_phase
+from ..application.saved_frames import SavedFramesError
 from ..domain.models import DeviceId
-from .status_text import connection_phrase, is_connected, valve_summary, ad2_outputs_summary
+from .status_text import (  # describe_condition is re-exported for existing importers
+    ad2_outputs_summary, connection_phrase, describe_condition, is_connected, valve_summary,
+)
+from .saved_frames_window import SavedFramesWindow
 from .temperature_plot import TemperaturePlot
 
 
@@ -46,27 +52,6 @@ def z_stage_summary(data: object) -> str:
     return " · ".join(pieces)
 
 
-# Same parameter names as the compiled plan; anything not listed is shown as key=value.
-_PARAMETER_LABELS = (("frequency_hz", "frequency", " Hz"), ("amplitude_v", "amplitude", " V"),
-                     ("exposure_ms", "exposure", " ms"), ("sweep_width_hz", "sweep width", " Hz"),
-                     ("temperature_c", "temperature", " °C"))
-
-
-def describe_condition(parameters: dict | None) -> str:
-    """Current experiment's own parameters as stored in the plan; nothing is derived."""
-    if not parameters:
-        return "—"
-    pieces = []
-    known = set()
-    for key, label, unit in _PARAMETER_LABELS:
-        if key in parameters:
-            known.add(key)
-            if parameters[key] != "NaN":  # the plan's marker for a disabled sweep/temperature axis
-                pieces.append(f"{label} {_value(parameters[key], unit)}")
-    pieces.extend(f"{key}={_value(value)}" for key, value in parameters.items() if key not in known)
-    return " · ".join(pieces) if pieces else "—"
-
-
 class StatusDashboard(QWidget):
     review_requested = Signal(str)
     image_window_requested = Signal()
@@ -80,6 +65,8 @@ class StatusDashboard(QWidget):
         self.experiment.setWordWrap(True)
         self.condition = QLabel("—")
         self.condition.setWordWrap(True)
+        self.stage = QLabel("—")
+        self.stage.setWordWrap(True)
         self.series = QLabel("—")
         self.series.setWordWrap(True)
         self.output = QLabel("—")
@@ -90,9 +77,9 @@ class StatusDashboard(QWidget):
         self.alert = QLabel()
         self.alert.setWordWrap(True)
         self.alert.setVisible(False)
-        run_grid.addWidget(self.alert, 5, 0, 1, 2)
-        for row, (caption, label) in enumerate((("Condition", self.condition), ("Series", self.series),
-                                                ("Output folder", self.output)), 1):
+        run_grid.addWidget(self.alert, 6, 0, 1, 2)
+        for row, (caption, label) in enumerate((("Condition", self.condition), ("Stage", self.stage),
+                                                ("Series", self.series), ("Output folder", self.output)), 1):
             run_grid.addWidget(QLabel(caption), row, 0)
             run_grid.addWidget(label, row, 1)
         run_grid.setColumnStretch(1, 1)
@@ -108,15 +95,45 @@ class StatusDashboard(QWidget):
         for button in (self.open_output_button, self.review_button, self.image_window_button):
             buttons.addWidget(button)
         buttons.addStretch(1)
-        run_grid.addLayout(buttons, 4, 0, 1, 2)
+        run_grid.addLayout(buttons, 5, 0, 1, 2)
         root.addWidget(run)
         self._folder: str | None = None
 
         middle = QHBoxLayout()
         # The live image viewer is the camera page's own viewer, moved here while this workspace is shown.
-        image_box = QGroupBox("Live image or last frame")
-        self.image_layout = QVBoxLayout(image_box)
-        middle.addWidget(image_box, 3)
+        self.image_tabs = QTabWidget()
+        live_page = QWidget()
+        self.image_layout = QVBoxLayout(live_page)
+        self.image_layout.setContentsMargins(0, 0, 0, 0)
+        self.image_tabs.addTab(live_page, "Live image or last frame (not saved data)")
+        saved_page = QWidget()
+        saved_layout = QVBoxLayout(saved_page)
+        saved_layout.setContentsMargins(0, 0, 0, 0)
+        header = QHBoxLayout()
+        self.saved_label = QLabel("No acquisition has been saved in this batch yet.")
+        self.saved_label.setWordWrap(True)
+        self.follow_check = QCheckBox("Follow newest")
+        self.follow_check.setChecked(True)
+        self.follow_check.setToolTip("Show each newly saved acquisition here, unless you have moved to another frame "
+                                     "or folder (then your view is left alone). Display only.")
+        self.show_newest_button = QPushButton("Show newest")
+        self.show_newest_button.setEnabled(False)
+        self.show_newest_button.clicked.connect(lambda: self._show_saved(force=True))
+        header.addWidget(self.saved_label, 1)
+        header.addWidget(self.follow_check)
+        header.addWidget(self.show_newest_button)
+        saved_layout.addLayout(header)
+        self.saved_viewer = SavedFramesWindow()
+        self.saved_viewer.setWindowFlags(Qt.WindowType.Widget)
+        self.saved_viewer.set_measurement_visible(False)
+        saved_layout.addWidget(self.saved_viewer, 1)
+        self.saved_viewer.show()
+        self.image_tabs.addTab(saved_page, "Newest saved acquisition")
+        middle.addWidget(self.image_tabs, 3)
+        self._last_saved: dict | None = None
+        self._followed_folder: str | None = None
+        self._status: dict = {}
+        self._statuses: dict = {}
         side = QVBoxLayout()
         middle.addLayout(side, 2)
         root.addLayout(middle, 1)
@@ -125,9 +142,12 @@ class StatusDashboard(QWidget):
         body = QWidget()
         grid = QGridLayout(body)
         self.rows = {}
+        self.names = {}
         for index, device in enumerate(DeviceId):
-            grid.addWidget(QLabel(device.value), index, 0)
-            label = QLabel("disconnected")
+            name = QLabel(device.value)
+            self.names[device] = name
+            grid.addWidget(name, index, 0)
+            label = QLabel("not connected")
             label.setWordWrap(True)
             grid.addWidget(label, index, 1)
             self.rows[device] = label
@@ -153,8 +173,11 @@ class StatusDashboard(QWidget):
         self.experiment.setText(
             f"Batch: {status['state']} · completed {completed}/{count} · "
             f"remaining {max(0, count - completed)} · {status.get('phase', 'unknown')}")
+        self._status = status
         state = status.get("state")
         phase = status.get("phase", "")
+        self.stage.setText(describe_phase(phase) + (f"  [{phase}]" if describe_phase(phase) != phase and phase else ""))
+        self._render_saved(status.get("last_saved"))
         text, color = {"failed": (phase, "#b71c1c"), "aborted": (phase, "#a65a00"),
                        "stopped": ("Stopped after the current experiment; the remaining ones were not run.",
                                    "#a65a00")}.get(state, ("", ""))
@@ -178,12 +201,45 @@ class StatusDashboard(QWidget):
                                  f"{series['experiment_count']} experiments planned")
         self.output.setText(self._folder or "— (nothing has run yet in this session)")
         self.open_output_button.setEnabled(self._folder is not None)
+        self._render_devices()
 
     def add_temperature_sample(self, sample: dict) -> None:
         self.temperature_plot.add_sample(sample)
 
     def update_statuses(self, statuses: dict) -> None:
-        for device, status in statuses.items():
+        self._statuses = dict(statuses)
+        self._render_devices()
+
+    def _requested_text(self, device: DeviceId) -> str:
+        """What the running experiment asks of the device (from the runner's own plan), kept apart from what the
+        device reports."""
+        parameters = self._status.get("current_parameters") or {}
+        plan = self._status.get("current_plan") or {}
+        def known(key):
+            value = parameters.get(key)
+            return None if value in (None, "NaN") else value
+        pieces = []
+        if device is DeviceId.AD2:
+            if known("frequency_hz") is not None:
+                pieces.append(f"frequency {known('frequency_hz'):g} Hz")
+            if known("amplitude_v") is not None:
+                pieces.append(f"amplitude {known('amplitude_v'):g} V")
+            if plan.get("sound_enabled") is False:
+                pieces.append("ultrasound disabled")
+            elif plan.get("sound_run_s") is not None:
+                pieces.append(f"ultrasound {plan['sound_start_s']:g}+{plan['sound_run_s']:g} s")
+        elif device is DeviceId.CAMERA:
+            if known("exposure_ms") is not None:
+                pieces.append(f"exposure {known('exposure_ms'):g} ms")
+            if plan.get("frames") is not None:
+                pieces.append(f"{plan['frames']} frames")
+        elif device is DeviceId.TEC and known("temperature_c") is not None:
+            pieces.append(f"target {known('temperature_c'):g} °C")
+        return "requested: " + ", ".join(pieces) if pieces else ""
+
+    def _render_devices(self) -> None:
+        involved = devices_for_phase(self._status.get("phase")) if self._status.get("state") == "running" else frozenset()
+        for device, status in self._statuses.items():
             data = status.readback
             pieces = [connection_phrase(status)]
             if status.fault:
@@ -210,5 +266,48 @@ class StatusDashboard(QWidget):
                 pass
             elif is_connected(status) and (status.busy or status.active):
                 pieces.insert(1, "working")
+            request = self._requested_text(device) if self._status.get("state") == "running" else ""
+            if request:
+                pieces.append(request)
             self.rows[device].setText(" · ".join(pieces))
             self.rows[device].setStyleSheet("color: #b71c1c; font-weight: 600" if status.fault else "")
+            self.names[device].setStyleSheet("font-weight: 700" if device in involved else "")
+            self.names[device].setText(("▶ " if device in involved else "") + device.value)
+
+    # ------------------------------------------------------------- newest saved
+    def _render_saved(self, saved: dict | None) -> None:
+        """Name what is on disk and how far that experiment got; images saved is not experiment completed."""
+        self._last_saved = saved
+        self.show_newest_button.setEnabled(saved is not None)
+        if saved is None:
+            self.saved_label.setText("No acquisition has been saved in this batch yet.")
+            return
+        outcome = {"saved": "images saved; the experiment has not finished (flush and closing may still run)",
+                   "completed": "the experiment completed",
+                   "failed_after_save": "images saved, but the experiment later failed: " + (saved.get("reason") or "")
+                   }.get(saved["outcome"], saved["outcome"])
+        self.saved_label.setText(
+            f"{saved['experiment_id']} · repeat {saved['repeat_index']} · {describe_condition(saved['parameters'])}"
+            f" · {saved['frame_count']} frames — {outcome}")
+        self._show_saved(force=False)
+
+    def _show_saved(self, *, force: bool) -> None:
+        """Load the newest saved experiment into the viewer. Automatic only when following and the viewer is
+        still where the last automatic load left it (frame 1 of that folder); never over a user's own view."""
+        saved = self._last_saved
+        if saved is None:
+            return
+        folder = saved["experiment_folder"]
+        viewer = self.saved_viewer
+        if viewer.loaded_folder() == folder:
+            return
+        untouched = viewer.loaded_folder() in (None, self._followed_folder) and viewer.position() == 0
+        if not force and not (self.follow_check.isChecked() and untouched):
+            self.saved_label.setText(self.saved_label.text() + "  — a newer result is available: press Show newest.")
+            return
+        try:
+            viewer.open_folder(folder)
+        except SavedFramesError as exc:
+            self.saved_label.setText(self.saved_label.text() + f"  — cannot be shown yet: {exc}")
+            return
+        self._followed_folder = folder

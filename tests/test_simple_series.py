@@ -14,6 +14,7 @@ from __future__ import annotations
 import csv
 from dataclasses import replace
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -1793,6 +1794,33 @@ def test_parallel_barrier_blocks_next_experiment_until_flush_completes(tmp_path)
         second_configure_time = completed[configures[-1]].timestamp
         elapsed = (second_configure_time - first_trigger_time).total_seconds()
         assert elapsed >= wait_after_s * 0.8
+    finally:
+        panel.close()
+        controller.shutdown()
+
+
+def test_runner_reports_saved_images_before_the_experiment_is_complete(tmp_path):
+    """last_saved says what is on disk and how far that experiment got; 'saved' is not 'completed'."""
+    app = QApplication.instance() or QApplication(["test-last-saved"])
+    controller, panel, results, events = _connected_temperature_series_harness(app, repeats=2, hold_s=0.2)
+    snapshots = []
+    controller.experiments.changed.connect(
+        lambda status: snapshots.append((status.get("last_saved"), status["batch_completed_experiments"])))
+    try:
+        assert controller.experiments.status()["last_saved"] is None
+        controller.experiments.queue(panel._definition(), tmp_path)
+        assert controller.experiments.start()
+        status = _wait_until_terminal(app, controller)
+        assert status["state"] == "completed", status
+        outcomes = [(saved["experiment_id"], saved["outcome"], completed) for saved, completed in snapshots if saved]
+        first = outcomes[0][0]
+        first_saved = next(item for item in outcomes if item[0] == first and item[1] == "saved")
+        first_done = next(item for item in outcomes if item[0] == first and item[1] == "completed")
+        assert outcomes.index(first_saved) < outcomes.index(first_done)
+        assert first_saved[2] < first_done[2]  # images were on disk before the experiment counted as completed
+        last = status["last_saved"]
+        assert last["outcome"] == "completed" and Path(last["experiment_folder"]).is_dir()
+        assert (Path(last["experiment_folder"]) / "experiment.json").is_file()
     finally:
         panel.close()
         controller.shutdown()
