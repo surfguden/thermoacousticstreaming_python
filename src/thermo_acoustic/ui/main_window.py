@@ -48,6 +48,7 @@ from .results_panel import ResultsPanel
 from .saved_frames_window import SavedFramesWindow
 from .simple_series_panel import SimpleSeriesPanel
 from .status_dashboard import StatusDashboard
+from .status_icons import action_icon
 from .status_text import connection_color, connection_phrase, is_connected
 
 
@@ -143,6 +144,10 @@ class MainWindow(QMainWindow):
         self.stop_after_button.clicked.connect(lambda: controller.experiments.stop_after_current())
         self.abort_button.clicked.connect(lambda: controller.experiments.abort())
         self.panic_button.clicked.connect(self._panic)
+        # Hierarchy: plain stop (neutral icon) < Abort (amber) < Panic (red, bold, white icon).
+        self.stop_after_button.setIcon(action_icon("stop"))
+        self.abort_button.setIcon(action_icon("abort"))
+        self.panic_button.setIcon(action_icon("panic"))
         for button in (self.stop_after_button, self.abort_button, self.panic_button):
             button.setMinimumHeight(32)
             header.addWidget(button)

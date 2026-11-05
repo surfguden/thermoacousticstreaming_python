@@ -207,13 +207,13 @@ class PreparePanel(QWidget):
         def part(device: DeviceId, name: str, describe) -> str:
             status = statuses[device]
             if not is_connected(status):
-                return f"{name} not connected"
+                return f"{name}: not connected"
             text = describe(status.readback) if status.readback is not None else "no readback yet"
-            return text + (" · last operation failed" if status.connection is ConnectionState.ERROR else "")
+            return f"{name}: {text}" + (" · last operation failed" if status.connection is ConnectionState.ERROR else "")
         self.pump_section.set_summary(" | ".join((
-            part(DeviceId.PUMP, "pump", pump_summary), part(DeviceId.VALVE, "selector valve", valve_summary))))
+            part(DeviceId.PUMP, "Pump", pump_summary), part(DeviceId.VALVE, "Selector valve", valve_summary))))
         self.imaging_section.set_summary(" | ".join((
-            part(DeviceId.CAMERA, "camera", camera_summary), part(DeviceId.Z_STAGE, "Z-stage", z_stage_summary))))
+            part(DeviceId.CAMERA, "Camera", camera_summary), part(DeviceId.Z_STAGE, "Z-stage", z_stage_summary))))
         self.acoustic_section.set_summary(part(DeviceId.AD2, "AD2", ad2_outputs_summary))
         self.temperature_section.set_summary(part(DeviceId.TEC, "TEC", tec_summary))
 

@@ -456,8 +456,12 @@ def test_monitor_marks_devices_the_stage_involves_and_keeps_requests_apart_from_
                                  "phase": "Checking temperature stability", "series": [], "last_saved": None,
                                  "current_parameters": {"temperature_c": 30.0, "frequency_hz": 1e6},
                                  "current_plan": {"sound_enabled": True, "sound_start_s": 0.0, "sound_run_s": 1.0}})
-    assert dashboard.names[DeviceId.TEC].text().startswith("▶")
-    assert not dashboard.names[DeviceId.PUMP].text().startswith("▶")
+    # "Used in this stage" is a separate tag from the device's own reported state mark, and the stage
+    # marking must not read as the device being active.
+    assert dashboard.involved_tags[DeviceId.TEC].isVisibleTo(dashboard) and not dashboard.involved_tags[DeviceId.PUMP].isVisibleTo(dashboard)
+    assert "▶" not in dashboard.names[DeviceId.TEC].text()
+    assert dashboard.marks[DeviceId.TEC].toolTip() == "connected"  # nothing reported active
+    assert "active" not in dashboard.rows[DeviceId.TEC].text().split("CH1")[0]
     tec = dashboard.rows[DeviceId.TEC].text()
     assert "requested: target 30 °C" in tec and "CH1" in tec and "→ unknown" in tec  # request and report differ, unknown stays unknown
     assert "requested: frequency 1e+06 Hz" in dashboard.rows[DeviceId.AD2].text()

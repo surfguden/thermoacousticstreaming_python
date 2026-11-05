@@ -99,6 +99,7 @@ from .temperature_plot import TemperaturePlot
 from ..application.configuration import DEFAULT_PUMP_CONFIGURATION_DIR
 from .ad2_scope import OscilloscopePanel
 from .status_dashboard import camera_summary, z_stage_summary
+from .status_icons import action_icon
 from .status_text import ad2_channels_configured, ad2_outputs_summary, valve_summary
 from .widgets import CameraImageWindow, CollapsibleSection
 
@@ -141,6 +142,18 @@ def form_group(title: str) -> tuple[QGroupBox, QFormLayout]:
     form.setVerticalSpacing(3)
     form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
     return group, form
+
+
+# Icons for the few actions that are found by shape faster than by reading. Plain stops are neutral; the
+# red/amber emphasis belongs to the batch Abort and Panic in the window header.
+_ICON_FOR_OPERATION = {
+    DeviceOperation.CONNECT: "connect", DeviceOperation.DISCONNECT: "disconnect",
+    DeviceOperation.AD2_WAVEFORM_STOP: "stop", DeviceOperation.AD2_DIGITAL_OUTPUT_STOP: "stop",
+    DeviceOperation.PUMP_FLOW_STOP: "stop", DeviceOperation.CAMERA_CAPTURE_STOP: "stop",
+    DeviceOperation.TEC_OUTPUTS_OFF: "stop", DeviceOperation.ABORT_ACTIVE: "stop",
+    DeviceOperation.SAFE_STOP: "stop", DeviceOperation.CAMERA_SNAPSHOT_CAPTURE: "capture",
+    DeviceOperation.CAMERA_CONTINUOUS_CAPTURE: "preview",
+}
 
 
 class CurrentPageStack(QStackedWidget):
@@ -269,6 +282,9 @@ class DevicePanel(QScrollArea):
         requires_connection: bool = True,
     ) -> QPushButton:
         button = QPushButton(label)
+        icon = _ICON_FOR_OPERATION.get(operation)
+        if icon is not None:  # the word stays; the icon only helps the eye find it
+            button.setIcon(action_icon(icon))
         self._buttons[action] = button
         self._button_labels[action] = label
         self._action_operations[action] = operation

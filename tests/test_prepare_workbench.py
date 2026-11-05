@@ -394,3 +394,40 @@ def test_ad2_configuration_is_not_shown_as_a_running_output(env):
         if where != "page":
             assert "CH1 enabled" in text and "not running" in text, (where, text)
     assert "not a running state" in ad2.readback_label.text()
+
+
+def test_folded_summaries_always_name_their_device(env):
+    """Connected, not connected and failed devices are all named; a valve reading never reads as the pump's."""
+    window, controller, events, wait = env
+    prepare = window.prepare_panel
+    prepare._refresh()
+    assert prepare.pump_section.summary.text().startswith("Pump: not connected")
+    assert "Selector valve: not connected" in prepare.pump_section.summary.text()
+    _connect(window, wait, DeviceId.PUMP, DeviceId.VALVE, DeviceId.CAMERA)
+    prepare._refresh()
+    text = prepare.pump_section.summary.text()
+    pump_part, valve_part = text.split(" | ")
+    assert pump_part.startswith("Pump: unit 1:") and "requested position" not in pump_part
+    assert valve_part.startswith("Selector valve: requested position")
+    assert prepare.imaging_section.summary.text().startswith("Camera: ")
+    assert "Z-stage: not connected" in prepare.imaging_section.summary.text()
+
+
+def test_frequency_display_is_engineering_format_without_visible_rounding():
+    from thermo_acoustic.ui.status_text import describe_condition, format_frequency
+    assert format_frequency(1_000_000) == "1 MHz" and format_frequency(1_200_000.0) == "1.2 MHz"
+    assert format_frequency(1_234_567.891) == "1.234567891 MHz" and format_frequency(999.5) == "999.5 Hz"
+    assert format_frequency(50_000) == "50 kHz" and format_frequency(0) == "0 Hz"
+    assert describe_condition({"frequency_hz": 1e6, "sweep_width_hz": "NaN"}) == "frequency 1 MHz"
+    assert describe_condition({"frequency_hz": 1.2e6, "sweep_width_hz": 1e5}) == "frequency 1.2 MHz · sweep width 100 kHz"
+
+
+def test_button_icons_and_stop_hierarchy_send_nothing(env):
+    window, controller, events, wait = env
+    before = len(events)
+    assert not window.stop_after_button.icon().isNull() and not window.abort_button.icon().isNull()
+    assert not window.panic_button.icon().isNull()
+    assert "background: #b71c1c" in window.panic_button.styleSheet() and "#ffe0b2" in window.abort_button.styleSheet()
+    assert "background" not in window.stop_after_button.styleSheet()
+    assert not window.panels[DeviceId.PUMP]._buttons["connect"].icon().isNull()
+    assert len(events) == before  # looking at icons does not command a device

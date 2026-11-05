@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton, QScrollArea, QTabWidget, QVBoxLayout,
     QWidget,
@@ -13,16 +13,27 @@ from PySide6.QtWidgets import (
 
 from ..application.run_activity import describe_phase, devices_for_phase
 from ..application.saved_frames import SavedFramesError
-from ..domain.models import DeviceId
+from ..domain.models import ConnectionState, DeviceId
 from .status_text import (  # describe_condition is re-exported for existing importers
     ad2_outputs_summary, connection_phrase, describe_condition, is_connected, valve_summary,
 )
 from .saved_frames_window import SavedFramesWindow
+from .status_icons import STATE_MARKS, action_icon, state_pixmap
 from .temperature_plot import TemperaturePlot
 
 
 def _value(value: object, unit: str = "") -> str:
     return "unknown" if value is None else f"{value:g}{unit}" if isinstance(value, (int, float)) else str(value)
+
+
+def _state_kind(status) -> str:
+    """The mark for what a device reports: failed, not connected, active, busy or just connected.
+    Connected says nothing about being ready for the experiment."""
+    if not is_connected(status):
+        return "disconnected"
+    if status.fault or status.connection is ConnectionState.ERROR:
+        return "failed"
+    return "active" if status.active else "busy" if status.busy else "connected"
 
 
 def camera_summary(data: object) -> str:
@@ -84,7 +95,7 @@ class StatusDashboard(QWidget):
             run_grid.addWidget(label, row, 1)
         run_grid.setColumnStretch(1, 1)
         buttons = QHBoxLayout()
-        self.open_output_button = QPushButton("Open output folder")
+        self.open_output_button = QPushButton(action_icon("folder"), "Open output folder")
         self.review_button = QPushButton("Review saved frames")
         self.image_window_button = QPushButton("Pop out image")
         self.image_window_button.setToolTip("Show the image in its own window; the same viewer, moved")
@@ -149,15 +160,25 @@ class StatusDashboard(QWidget):
         grid = QGridLayout(body)
         self.rows = {}
         self.names = {}
+        self.marks = {}  # what the device itself reports (connected / busy / active / failed)
+        self.involved_tags = {}  # what the current stage works with: not a device report
         for index, device in enumerate(DeviceId):
+            mark = QLabel()
+            mark.setFixedWidth(20)
+            self.marks[device] = mark
+            grid.addWidget(mark, index, 0)
             name = QLabel(device.value)
             self.names[device] = name
-            grid.addWidget(name, index, 0)
+            grid.addWidget(name, index, 1)
+            tag = QLabel()
+            tag.setVisible(False)
+            self.involved_tags[device] = tag
+            grid.addWidget(tag, index, 2)
             label = QLabel("not connected")
             label.setWordWrap(True)
-            grid.addWidget(label, index, 1)
+            grid.addWidget(label, index, 3)
             self.rows[device] = label
-        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(3, 1)
         grid.setRowStretch(len(DeviceId), 1)
         scroll.setWidget(body)
         side.addWidget(scroll, 1)
@@ -268,17 +289,25 @@ class StatusDashboard(QWidget):
                 for channel in getattr(data, "channels", ()):
                     pieces.append(f"CH{channel.channel}: {_value(channel.current_temperature_c, ' °C')} "
                                   f"→ {_value(channel.target_temperature_c, ' °C')}")
-            if status.fault:
-                pass
-            elif is_connected(status) and (status.busy or status.active):
-                pieces.insert(1, "active")
+            kind = _state_kind(status)
+            if kind in {"active", "busy"}:
+                pieces.insert(1, "active (reported by the device)" if kind == "active" else "busy (command running)")
             request = self._requested_text(device) if self._status.get("state") == "running" else ""
             if request:
                 pieces.append(request)
             self.rows[device].setText(" · ".join(pieces))
             self.rows[device].setStyleSheet("color: #b71c1c; font-weight: 600" if status.fault else "")
+            colour, word = STATE_MARKS[kind]
+            self.marks[device].setPixmap(state_pixmap(kind))
+            self.marks[device].setToolTip(word)
             self.names[device].setStyleSheet("font-weight: 700" if device in involved else "")
-            self.names[device].setText(("▶ " if device in involved else "") + device.value)
+            # "used in this stage" is the run plan's statement, not something the device reported.
+            tag = self.involved_tags[device]
+            tag.setVisible(device in involved)
+            tag.setText("[ this stage ]")
+            tag.setStyleSheet("color: #1f4e8c")
+            tag.setToolTip("The current run stage works with this device. This is the plan, not a device report; "
+                           "the mark on the left is what the device reports.")
 
     # ------------------------------------------------------------- newest saved
     def _render_saved(self, saved: dict | None, batch_state: str | None = None) -> None:

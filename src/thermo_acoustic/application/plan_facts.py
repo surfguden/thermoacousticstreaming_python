@@ -28,6 +28,10 @@ class PlanFacts:
     temperature_strategy: str | None = None  # None: no temperature program in the definition
     uniform: bool = True  # False: no single per-experiment summary (see note)
     note: str = ""
+    # In-experiment frequency sweep as the ultrasound step states it: None when there is no single AD2
+    # step to read; the period is None when the definition does not give it as a plain number.
+    sweep_enabled: bool | None = None
+    sweep_period_ms: float | None = None
 
 
 def _number(value: Any) -> float | None:
@@ -102,6 +106,7 @@ def plan_facts(steps) -> PlanFacts:
     frames = fps = camera_start = None
     sound_enabled = laser_enabled = None
     sound_start = sound_run = laser_start = laser_run = None
+    sweep_enabled = sweep_period = None
     if camera_steps:
         value = camera_steps[0].get("args", {}).get("frame_count")
         frames = value if isinstance(value, int) and not isinstance(value, bool) else None
@@ -110,9 +115,13 @@ def plan_facts(steps) -> PlanFacts:
         ultrasound, laser, dio = args.get("ultrasound", {}), args.get("laser", {}), args.get("dio", {})
         sound_enabled, laser_enabled = _flag(ultrasound.get("enabled")), _flag(laser.get("enabled"))
         sound_start, sound_run = _number(ultrasound.get("start_s")), _number(ultrasound.get("run_s"))
+        if sound_enabled is not False and ultrasound:
+            sweep_enabled = "sweep_width_hz" in ultrasound
+            sweep_period = _number(ultrasound.get("sweep_period_ms")) if sweep_enabled else None
         laser_start, laser_run = _number(laser.get("start_s")), _number(laser.get("run_s"))
         fps, camera_start = _number(dio.get("frame_rate_hz")), _number(dio.get("camera_delay_s"))
         if frames is None and isinstance(dio.get("frame_count"), int):
             frames = dio["frame_count"]
     return PlanFacts(frames, fps, camera_start, sound_enabled, sound_start, sound_run,
-                     laser_enabled, laser_start, laser_run, strategy, True, "; ".join(notes))
+                     laser_enabled, laser_start, laser_run, strategy, True, "; ".join(notes),
+                     sweep_enabled, sweep_period)

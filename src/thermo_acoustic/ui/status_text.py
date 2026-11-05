@@ -30,6 +30,16 @@ def connection_color(status: DeviceStatus | None) -> str:
     return RED if status.connection is ConnectionState.ERROR or status.fault else GREEN
 
 
+def format_frequency(hz: object) -> str:
+    """A frequency as Hz, kHz or MHz for reading. Display only: the value is divided by a power of ten and
+    printed with enough digits (12 significant) that no entered frequency is visibly rounded."""
+    if not isinstance(hz, (int, float)) or isinstance(hz, bool):
+        return "unknown" if hz is None else str(hz)
+    magnitude = abs(hz)
+    value, unit = (hz / 1e6, "MHz") if magnitude >= 1e6 else (hz / 1e3, "kHz") if magnitude >= 1e3 else (hz, "Hz")
+    return f"{value:.12g} {unit}"
+
+
 def _value(value: object, unit: str = "") -> str:
     return "unknown" if value is None else f"{value:g}{unit}" if isinstance(value, (int, float)) else str(value)
 
@@ -75,7 +85,7 @@ def ad2_outputs_summary(readback: object) -> str:
 def pump_summary(readback: object) -> str:
     units = readback.units if isinstance(readback, PumpReadback) else ()
     return " · ".join(
-        f"pump {unit.unit_index + 1}: " + ("level unknown" if unit.fill_level_ml is None else f"{unit.fill_level_ml:.3g} mL")
+        f"unit {unit.unit_index + 1}: " + ("level unknown" if unit.fill_level_ml is None else f"{unit.fill_level_ml:.3g} mL")
         + (" of " + f"{unit.max_volume_ml:g}" if unit.max_volume_ml else "")
         + (", pumping" if unit.is_pumping else "") for unit in units) or "no pump units"
 
@@ -92,6 +102,7 @@ def tec_summary(readback: object) -> str:
 _PARAMETER_LABELS = (("frequency_hz", "frequency", " Hz"), ("amplitude_v", "amplitude", " V"),
                      ("exposure_ms", "exposure", " ms"), ("sweep_width_hz", "sweep width", " Hz"),
                      ("temperature_c", "temperature", " °C"))
+_FREQUENCY_KEYS = {"frequency_hz", "sweep_width_hz"}  # shown as Hz/kHz/MHz
 
 
 def describe_condition(parameters: dict | None) -> str:
@@ -104,6 +115,6 @@ def describe_condition(parameters: dict | None) -> str:
         if key in parameters:
             known.add(key)
             if parameters[key] != "NaN":  # the plan's marker for a disabled sweep/temperature axis
-                pieces.append(f"{label} {_value(parameters[key], unit)}")
+                pieces.append(f"{label} {format_frequency(parameters[key]) if key in _FREQUENCY_KEYS else _value(parameters[key], unit)}")
     pieces.extend(f"{key}={_value(value)}" for key, value in parameters.items() if key not in known)
     return " · ".join(pieces) if pieces else "—"
