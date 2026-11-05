@@ -431,3 +431,31 @@ def test_button_icons_and_stop_hierarchy_send_nothing(env):
     assert "background" not in window.stop_after_button.styleSheet()
     assert not window.panels[DeviceId.PUMP]._buttons["connect"].icon().isNull()
     assert len(events) == before  # looking at icons does not command a device
+
+
+def test_tec_shows_only_the_current_mode_inputs_and_keeps_the_others(env):
+    window, controller, events, wait = env
+    tec = window.panels[DeviceId.TEC]
+    assert not tec.target.isHidden() and tec.target_1.isHidden() and tec.target_2.isHidden()
+    tec.target.setValue(31.5)
+    tec.target_1.setValue(20.0)
+    tec.target_2.setValue(22.0)
+    tec.target_mode.setCurrentIndex(tec.target_mode.findData("per_channel"))
+    assert tec.target.isHidden() and not tec.target_1.isHidden() and not tec.target_2.isHidden()
+    assert tec._targets() == {1: 20.0, 2: 22.0}
+    values = tec.profile_values()
+    assert values["target_c"] == 31.5 and values["target_1_c"] == 20.0  # hidden values are still saved
+    tec.target_mode.setCurrentIndex(tec.target_mode.findData("broadcast"))
+    assert tec._targets() == 31.5 and tec.target.value() == 31.5
+
+
+def test_valve_wait_settings_are_folded_but_still_used_and_z_leads_with_the_measured_position(env):
+    window, controller, events, wait = env
+    valve = window.panels[DeviceId.VALVE]
+    assert not valve.wait_settings.is_expanded() and "timeout 1 s" in valve.wait_settings.summary.text()
+    valve.wait_timeout.setValue(2.5)
+    assert "timeout 2.5 s" in valve.wait_settings.summary.text()
+    assert valve._wait_args().timeout_s == 2.5  # folded does not mean ignored
+    z = window.panels[DeviceId.Z_STAGE]
+    assert z.measured_label.text().startswith("Measured position:")
+    assert {"move", "read", "up", "down", "requirement", "enable"} <= set(z._buttons)

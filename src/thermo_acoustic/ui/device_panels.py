@@ -1579,10 +1579,24 @@ class ValvePanel(DevicePanel):
         form.addRow(button_row(
             self.action_button("set", "Set position", DeviceOperation.VALVE_POSITION_SET, lambda: ValveSetPositionArgs(int(self.position.currentData()))),
             self.action_button("read", "Read position", DeviceOperation.VALVE_POSITION_READ),
+            self.action_button("wait", "Wait until ready", DeviceOperation.VALVE_WAIT_READY, self._wait_args),
         ))
-        form.addRow("Ready timeout (s)", self.wait_timeout)
-        form.addRow("Poll interval (s)", self.wait_poll)
-        form.addRow(button_row(self.action_button("wait", "Wait until ready", DeviceOperation.VALVE_WAIT_READY, self._wait_args)))
+        # Timeout and polling matter only to "Wait until ready": folded, still used and saved while folded.
+        wait_settings = CollapsibleSection("Wait until ready: timeout and polling")
+        wait_body = QWidget()
+        wait_form = QFormLayout(wait_body)
+        wait_form.setContentsMargins(12, 0, 0, 0)
+        wait_form.addRow("Ready timeout (s)", self.wait_timeout)
+        wait_form.addRow("Poll interval (s)", self.wait_poll)
+        wait_settings.set_content(wait_body)
+        self.wait_settings = wait_settings
+
+        def wait_summary(*_args) -> None:
+            wait_settings.set_summary(f"timeout {self.wait_timeout.value():g} s · poll {self.wait_poll.value():g} s")
+        self.wait_timeout.valueChanged.connect(wait_summary)
+        self.wait_poll.valueChanged.connect(wait_summary)
+        wait_summary()
+        form.addRow(wait_settings)
         daily = self.daily_container().layout()
         daily.addWidget(group)
         self.readback_label = QLabel("Requested: — · Confirmed: — · Ready: —")
@@ -2110,10 +2124,14 @@ class TecPanel(DevicePanel):
         daily = self.daily_container().layout()
         daily.addWidget(controls)
         group, form = form_group("Setpoints and stabilization")
-        note = QLabel("Manual setpoints act on the controller now. Experiments use the temperature range and "
-                      "stability policy in the Experiments tab, not these values. Regulation stays on after a "
-                      "run unless Outputs off is pressed.")
-        note.setWordWrap(True)
+        group.setToolTip("Manual setpoints act on the controller now. Experiments use the temperature range and "
+                         "stability policy of the experiment form, not these values. Regulation stays on after a "
+                         "run unless Outputs off is pressed.")
+        # What is true now, per channel, ahead of the inputs: current, requested, reported target, output.
+        self.headline = QLabel("No TEC readback")
+        self.headline.setStyleSheet("font-weight: 600")
+        form.addRow(self.headline)
+        note = QLabel("Manual setpoints act now · experiments use the temperature program of the experiment form")
         form.addRow(note)
         self.target_mode = self.register_profile("target_mode", QComboBox())
         self.target_mode.addItem("Broadcast to both channels", "broadcast")
@@ -2130,6 +2148,10 @@ class TecPanel(DevicePanel):
             ("Channel 1 target (°C)", self.target_1), ("Channel 2 target (°C)", self.target_2),
         ):
             form.addRow(label, widget)
+        # Only the inputs of the chosen mode are shown; the others keep their values (and stay in saved settings).
+        self._target_form = form
+        self.target_mode.currentIndexChanged.connect(self._target_mode_changed)
+        self._target_mode_changed()
         # Used only by Wait until stable; folded so the target and the buttons stay in view.
         criteria = CollapsibleSection("Stability criteria for Wait until stable")
         criteria_body = QWidget()
@@ -2169,6 +2191,12 @@ class TecPanel(DevicePanel):
         self.temperature_plot = TemperaturePlot()
         daily.addWidget(self.temperature_plot)
         self.finish_layout()
+
+    def _target_mode_changed(self, *_args) -> None:
+        broadcast = self.target_mode.currentData() == "broadcast"
+        self._target_form.setRowVisible(self.target, broadcast)
+        self._target_form.setRowVisible(self.target_1, not broadcast)
+        self._target_form.setRowVisible(self.target_2, not broadcast)
 
     def _refresh_ports(self) -> None:
         from serial.tools import list_ports
@@ -2262,8 +2290,21 @@ class TecPanel(DevicePanel):
     def _set_channels_from_last(self) -> None:
         self._set_channels(self._last_channels)
 
+    def _headline_text(self) -> str:
+        """Per channel: current temperature, what this page last requested, the controller's own target, output."""
+        if not self._last_channels:
+            return "No TEC readback"
+        def part(item) -> str:
+            now = "unknown" if item.current_temperature_c is None else f"{item.current_temperature_c:.2f} °C"
+            requested = self._requested.get(item.channel)
+            target = "none" if item.target_temperature_c is None else f"{item.target_temperature_c:g} °C"
+            return (f"CH{item.channel} now {now} · requested " + ("—" if requested is None else f"{requested:g} °C")
+                    + f" · controller target {target} · output " + ("on" if item.output_enabled else "off"))
+        return "   |   ".join(part(item) for item in self._last_channels)
+
     def _set_channels(self, channels: object) -> None:
         self._last_channels = tuple(channels)
+        self.headline.setText(self._headline_text())
         for row, channel in enumerate(self._last_channels):
             if row >= self.table.rowCount():
                 self.table.insertRow(row)
@@ -2283,24 +2324,40 @@ class TecPanel(DevicePanel):
 class ZStagePanel(DevicePanel):
     def __init__(self, parent=None) -> None:
         super().__init__(DeviceId.Z_STAGE, parent)
-        group, form = form_group("Closed-loop position")
+        group, form = form_group("Closed-loop position (focus)")
         self.position = self.register_profile("position_um", double_spin(50, -1_000_000, 1_000_000))
         self.step = self.register_profile("relative_step_um", double_spin(1, 0.001, 1_000_000))
+        # The measured position comes first: it is the only statement of where the stage is. A move command
+        # being accepted is not arrival (see the summary below).
+        self.measured_label = QLabel("Measured position: — (not read yet)")
+        measured_font = self.measured_label.font()
+        measured_font.setBold(True)
+        measured_font.setPointSizeF(measured_font.pointSizeF() * 1.25)
+        self.measured_label.setFont(measured_font)
+        form.addRow(self.measured_label)
+        move_row = QWidget()
+        move_layout = QHBoxLayout(move_row)
+        move_layout.setContentsMargins(0, 0, 0, 0)
+        move_layout.addWidget(QLabel("Target (µm)"))
+        move_layout.addWidget(self.position, 1)
+        move_layout.addWidget(self.action_button("move", "Move", DeviceOperation.Z_STAGE_POSITION_SET,
+                                                  lambda: ZStageSetPositionArgs(self.position.value())))
+        move_layout.addWidget(self.action_button("read", "Read position", DeviceOperation.Z_STAGE_POSITION_READ))
+        form.addRow(move_row)
+        jog_row = QWidget()
+        jog_layout = QHBoxLayout(jog_row)
+        jog_layout.setContentsMargins(0, 0, 0, 0)
+        jog_layout.addWidget(QLabel("Jog step (µm)"))
+        jog_layout.addWidget(self.step, 1)
+        jog_layout.addWidget(self.action_button("up", "Up", DeviceOperation.Z_STAGE_POSITION_RELATIVE,
+                                                 lambda: ZStageRelativeMoveArgs(self.step.value())))
+        jog_layout.addWidget(self.action_button("down", "Down", DeviceOperation.Z_STAGE_POSITION_RELATIVE,
+                                                 lambda: ZStageRelativeMoveArgs(-self.step.value())))
+        form.addRow(jog_row)
+        # Closed loop is set up once per session; the two actions keep their order (check, then enable).
         form.addRow(button_row(
             self.action_button("requirement", "Check closed-loop requirement", DeviceOperation.Z_STAGE_CLOSED_LOOP_REQUIREMENT_READ),
             self.action_button("enable", "Enable closed loop", DeviceOperation.Z_STAGE_CLOSED_LOOP_ENABLE),
-        ))
-        form.addRow("Target position (µm)", self.position)
-        form.addRow("Jog step (µm)", self.step)
-        form.addRow(button_row(
-            self.action_button("move", "Move", DeviceOperation.Z_STAGE_POSITION_SET, lambda: ZStageSetPositionArgs(self.position.value())),
-            self.action_button("read", "Read position", DeviceOperation.Z_STAGE_POSITION_READ),
-        ))
-        form.addRow(button_row(
-            self.action_button("up", "Up", DeviceOperation.Z_STAGE_POSITION_RELATIVE,
-                               lambda: ZStageRelativeMoveArgs(self.step.value())),
-            self.action_button("down", "Down", DeviceOperation.Z_STAGE_POSITION_RELATIVE,
-                               lambda: ZStageRelativeMoveArgs(-self.step.value())),
         ))
         daily = self.daily_container().layout()
         daily.addWidget(group)
@@ -2313,6 +2370,11 @@ class ZStagePanel(DevicePanel):
         self.finish_layout()
 
     def update_readback(self, readback: object) -> None:
+        position = getattr(readback, "position_um", None)
+        self.measured_label.setText("Measured position: " + (f"{position:g} µm" if position is not None
+                                                             else "— (not read yet)")
+                                    + ("" if readback is None or not getattr(readback, "closed_loop", False)
+                                       else "  ·  closed loop on"))
         if readback is not None:
             self.readback_label.setText(z_stage_summary(readback))
 
