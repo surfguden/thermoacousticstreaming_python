@@ -464,7 +464,7 @@ def test_monitor_marks_devices_the_stage_involves_and_keeps_requests_apart_from_
     assert "active" not in dashboard.rows[DeviceId.TEC].text().split("CH1")[0]
     tec = dashboard.rows[DeviceId.TEC].text()
     assert "requested: target 30 °C" in tec and "CH1" in tec and "→ unknown" in tec  # request and report differ, unknown stays unknown
-    assert "requested: frequency 1e+06 Hz" in dashboard.rows[DeviceId.AD2].text()
+    assert "requested: center frequency 1 MHz" in dashboard.rows[DeviceId.AD2].text()
     assert "reports the temperature stable" in dashboard.stage.text()
 
 

@@ -473,11 +473,10 @@ def test_simple_tab_imports_live_camera_roi_and_exposure():
         assert "only Start is used" in panel.frequency[2].toolTip()
         for controls in (panel.frequency, panel.amplitude, panel.sweep_width,
                          panel.temperature, panel.exposure):
-            layout = controls[0].parentWidget().layout()
-            assert isinstance(layout, QGridLayout)
-            for column, (caption, control) in enumerate(zip(("Start", "Stop", "Steps"), controls)):
-                assert layout.itemAtPosition(0, column).widget().text() == caption
-                assert layout.itemAtPosition(1, column).widget() is control
+            editor = controls[0].parentWidget()
+            assert editor.controls == tuple(controls)  # the same three spin boxes the settings are read from
+            assert (editor.start_caption.text(), editor.stop_caption.text(), editor.steps_caption.text()) == (
+                "Value", "To", "Points")  # Fixed (one point) is the default; Scan shows From / To / Points
         assert (panel.roi_x.value(), panel.roi_y.value(),
                 panel.roi_width.value(), panel.roi_height.value()) == (0, 0, 2048, 1024)
         assert panel.exposure[0].value() == panel.exposure[1].value() == 2.5
@@ -630,7 +629,7 @@ def test_run_preview_summarizes_the_compiled_plan_without_reimplementing_it(tmp_
         text = panel.summary.text()
 
         assert "Repeats per point: 3" in text
-        assert "Frequency (Hz): 1e+06 .. 2e+06 (3 values)" in text
+        assert "Center frequency: 1 MHz .. 2 MHz (3 values)" in text
         assert "Amplitude (V): 1" in text  # single fixed value, no "x values" suffix
         assert "Sweep width" not in text  # sweep disabled by the harness -- compiles to "NaN", must not show as a range
         assert "Temperature strategy: wait for stability" in text
@@ -794,9 +793,9 @@ def test_full_main_window_operator_flow_queue_start_status_output_and_stop(tmp_p
         assert _completed_triggers() > triggers_after_series_one, "series 2's first repeat never completed"
         # The monitor shows the running experiment's own parameters and where its output goes.
         deadline = monotonic() + 15
-        while monotonic() < deadline and "frequency 1e+06 Hz" not in window.dashboard.condition.text():
+        while monotonic() < deadline and "frequency 1 MHz" not in window.dashboard.condition.text():
             app.processEvents(); sleep(0.01)
-        assert "frequency 1e+06 Hz" in window.dashboard.condition.text(), window.dashboard.condition.text()
+        assert "frequency 1 MHz" in window.dashboard.condition.text(), window.dashboard.condition.text()
         assert window.dashboard.output_folder in {str(first_folder), str(second_folder)}
         assert window.dashboard.output_folder in window.dashboard.output.text()
         assert window.stop_after_button.isEnabled()

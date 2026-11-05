@@ -59,7 +59,7 @@ def ad2_channels_configured(readback: object) -> str:
     """The channels as configured (enabled or disabled, setting). A configuration is not a running output."""
     channels = getattr(readback, "waveform_channels", ()) if readback is not None else ()
     return ", ".join(
-        f"CH{channel.channel_index + 1} " + (f"enabled {channel.frequency_hz:g} Hz/{channel.amplitude_v:g} V"
+        f"CH{channel.channel_index + 1} " + (f"enabled {format_frequency(channel.frequency_hz)}/{channel.amplitude_v:g} V"
                                              if channel.enabled else "disabled")
         for channel in channels) or "none configured"
 
@@ -105,8 +105,36 @@ _PARAMETER_LABELS = (("frequency_hz", "frequency", " Hz"), ("amplitude_v", "ampl
 _FREQUENCY_KEYS = {"frequency_hz", "sweep_width_hz"}  # shown as Hz/kHz/MHz
 
 
-def describe_condition(parameters: dict | None) -> str:
-    """Current experiment's own parameters as stored in the plan; nothing is derived."""
+def _is_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def sweep_summary(parameters: dict | None, plan: dict | None = None, *, say_requested: bool = True) -> str | None:
+    """The in-experiment frequency sweep of one experiment, from the parameters stored for it and, when known, the
+    plan's own statement of it. A missing mode or period is said to be unknown / not recorded; nothing is
+    filled in from any form. None when the parameters say nothing about a sweep."""
+    parameters = parameters or {}
+    width, center = parameters.get("sweep_width_hz"), parameters.get("frequency_hz")
+    flag = (plan or {}).get("sweep_enabled")
+    if flag is False or width == "NaN":
+        return "sweep off"
+    if not _is_number(width):
+        return "sweep on (width not stated)" if flag else None
+    band = (f" ({format_frequency(center - width / 2)} … {format_frequency(center + width / 2)})"
+            if _is_number(center) else "")
+    period = (plan or {}).get("sweep_period_ms")
+    if flag and _is_number(period):
+        timing = f"{period:g} ms triangle" + (" (requested)" if say_requested else "")
+    elif flag:
+        timing = "period not stated"
+    else:
+        timing = "period not recorded"
+    return f"sweep full width {format_frequency(width)}{band}, {timing}"
+
+
+def describe_condition(parameters: dict | None, plan: dict | None = None) -> str:
+    """One experiment's own parameters as stored; `plan` (the running plan's facts) only adds what that plan states
+    about the sweep. Nothing is derived from any form."""
     if not parameters:
         return "—"
     pieces = []
@@ -114,7 +142,11 @@ def describe_condition(parameters: dict | None) -> str:
     for key, label, unit in _PARAMETER_LABELS:
         if key in parameters:
             known.add(key)
-            if parameters[key] != "NaN":  # the plan's marker for a disabled sweep/temperature axis
+            if key == "sweep_width_hz":
+                piece = sweep_summary(parameters, plan)
+                if piece:
+                    pieces.append(piece)
+            elif parameters[key] != "NaN":  # the plan's marker for a disabled temperature axis
                 pieces.append(f"{label} {format_frequency(parameters[key]) if key in _FREQUENCY_KEYS else _value(parameters[key], unit)}")
     pieces.extend(f"{key}={_value(value)}" for key, value in parameters.items() if key not in known)
     return " · ".join(pieces) if pieces else "—"

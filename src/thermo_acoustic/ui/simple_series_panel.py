@@ -22,6 +22,8 @@ from ..application.commands import DeviceCommand, DeviceOperation, NoArguments
 from ..application.simple_preflight import SimpleSeriesPreflight
 from ..application.simple_series import NumericRange, SimpleSeriesSettings, compile_simple_series
 from ..domain.models import ConnectionState, DeviceId, PumpReadback, TecReadback
+from .frequency_section import RangeEditor, SweepSchematic, wrapped_label
+from .status_text import format_frequency
 from .widgets import CollapsibleSection
 
 
@@ -64,6 +66,7 @@ class SimpleSeriesPanel(QWidget):
         # saved selection instead of silently leaving Qt's own "first item
         # becomes current" default in place. Cleared once matched.
         self._pending_flush_unit_index: int | None = None
+        self._editors: dict[str, RangeEditor] = {}
         root = QVBoxLayout(self)
         # Two free-to-visit pages of one form; neither is a required step. The Configure
         # page edits the form, the Review page works on what is queued.
@@ -123,15 +126,62 @@ class SimpleSeriesPanel(QWidget):
                                ("Camera start (s)", self.camera_start)):
             form.addRow(label, control)
 
-        frequency = QGroupBox("Ultrasound")
+        frequency = QGroupBox("Ultrasound frequency")
         form = QFormLayout(frequency)
-        self.frequency = self._range(form, "Center frequency (Hz)", 1_000_000, 1_000_000)
-        self.amplitude = self._range(form, "AD2 source peak amplitude (V)", 1, 1, maximum=5)
-        self.sweep_enabled = QCheckBox("Frequency sweep within each experiment · frequencies become centers")
-        form.addRow(self.sweep_enabled)
-        self.sweep_width = self._range(form, "Full sweep width (Hz)", 100_000, 100_000)
+        self.frequency_plan = wrapped_label(lines=3)
+        self.frequency_plan.setStyleSheet("background: #eef3fa; border: 1px solid #c5d3e8; padding: 4px 8px; "
+                                          "color: #111")
+        form.addRow(self.frequency_plan)
+        # Two independent choices: (1) the center frequency is fixed or scanned across experiments;
+        # (2) a frequency sweep inside each experiment is off or on (its width is again fixed or scanned).
+        self.frequency = self._range(form, "Center frequency", 1_000_000, 1_000_000, frequency=True, unit="MHz",
+                                value_name="Frequency")
+        sweep_head = QWidget()
+        head = QHBoxLayout(sweep_head)
+        head.setContentsMargins(0, 4, 0, 0)
+        self.sweep_enabled = QCheckBox("Sweep the frequency inside each experiment")
+        self.sweep_enabled.setStyleSheet("font-weight: 600")
+        self.sweep_enabled.setToolTip("Independent of scanning the center frequency. When on, each experiment's "
+                                      "frequency goes up and down (triangle) around its center frequency.")
+        self.sweep_badge = QLabel()
+        head.addWidget(self.sweep_enabled)
+        head.addWidget(self.sweep_badge)
+        head.addStretch(1)
+        form.addRow(sweep_head)
+        self.sweep_detail = QWidget()
+        detail = QFormLayout(self.sweep_detail)
+        detail.setContentsMargins(0, 0, 0, 0)
+        self.sweep_width = self._range(detail, "Full sweep width", 100_000, 100_000, frequency=True, unit="kHz",
+                                   value_name="Sweep width")
         self.sweep_period = number(1, 0.001, 1_000_000)
-        form.addRow("Sweep period (ms), triangle", self.sweep_period)
+        detail.addRow("Sweep period (ms), triangle", self.sweep_period)
+        self.sweep_explain = wrapped_label(lines=3)
+        self.sweep_explain.setStyleSheet("color: #444")
+        detail.addRow(self.sweep_explain)
+        form.addRow(self.sweep_detail)
+        self.sweep_off_note = wrapped_label("Off: each experiment uses its center frequency as one fixed "
+                                            "frequency. Width and period stay stored for when it is on.", lines=2)
+        self.sweep_off_note.setStyleSheet("color: #444")
+        form.addRow(self.sweep_off_note)
+        self.amplitude = self._range(form, "AD2 source peak amplitude (V)", 1, 1, maximum=5)
+        self.schematic = SweepSchematic()
+        self.combination = integer(1, 1, 1)
+        self.combination_label = wrapped_label(lines=2)
+        self.schematic_picker = QWidget()
+        picker_row = QHBoxLayout(self.schematic_picker)
+        picker_row.setContentsMargins(0, 0, 0, 0)
+        picker_row.addWidget(QLabel("Schematic of combination"))
+        picker_row.addWidget(self.combination)
+        picker_row.addWidget(self.combination_label, 1)
+        form.addRow(self.schematic_picker)
+        form.addRow(self.schematic)
+        self.schematic_note = wrapped_label("Requested values, for illustration — not a measured waveform. "
+                                            "The phase of the sweep is not shown.", lines=2)
+        note_font = self.schematic_note.font()
+        note_font.setItalic(True)
+        self.schematic_note.setFont(note_font)
+        self.schematic_note.setStyleSheet("color: #8a5a00")
+        form.addRow(self.schematic_note)
         left_groups.append(frequency)
         left_groups.append(timing)  # the single-experiment output timing is core, not an engineering detail
 
@@ -373,39 +423,15 @@ class SimpleSeriesPanel(QWidget):
         super().resizeEvent(event)
         self._arrange_groups(1 if self.width() < 1000 else 2)
 
-    @staticmethod
-    def _range(form: QFormLayout, label: str, start: float, stop: float,
-               *, minimum: float = 0, maximum: float = 100_000_000) -> tuple:
-        box = QWidget()
-        row = QGridLayout(box)
-        row.setContentsMargins(0, 0, 0, 0)
-        start_widget = number(start, minimum, maximum)
-        stop_widget = number(stop, minimum, maximum)
-        steps = integer(1)
-        steps_tip = ("Steps is the number of evenly spaced values. With 1 step, only Start is used "
-                     "and Stop is ignored. With 2 or more steps, both endpoints are included.")
-        steps.setToolTip(steps_tip)
-        stop_widget.setToolTip(steps_tip)
-        steps_label = QLabel("Steps")
-        steps_label.setToolTip(steps_tip)
-        for column, (caption, control) in enumerate(((QLabel("Start"), start_widget),
-                                                     (QLabel("Stop"), stop_widget),
-                                                     (steps_label, steps))):
-            row.addWidget(caption, 0, column)
-            row.addWidget(control, 1, column)
-            row.setColumnStretch(column, 1)
-        kind = QLabel()
-        kind.setStyleSheet("color: #555")
-        row.addWidget(kind, 2, 0, 1, 3)
-
-        def describe(*_args) -> None:
-            count = steps.value()
-            kind.setText("Fixed value: Start is used for every experiment" if count == 1
-                         else f"Scan across experiments: {count} values from Start to Stop")
-        steps.valueChanged.connect(describe)
-        describe()
-        form.addRow(label, box)
-        return start_widget, stop_widget, steps
+    def _range(self, form: QFormLayout, label: str, start: float, stop: float,
+               *, minimum: float = 0, maximum: float = 100_000_000, frequency: bool = False,
+               unit: str = "MHz", value_name: str | None = None) -> tuple:
+        """One scanned value: Fixed or Scan across experiments over Start / Stop / Steps (see RangeEditor)."""
+        editor = RangeEditor(value_name or label, start, stop, minimum=minimum, maximum=maximum,
+                             frequency=frequency, unit=unit)
+        self._editors[editor.name] = editor
+        form.addRow(label, editor)
+        return editor.controls
 
     @staticmethod
     def _values(controls: tuple) -> NumericRange:
@@ -469,6 +495,8 @@ class SimpleSeriesPanel(QWidget):
         self.temperature_control.setChecked(settings.temperature_control)
         self.temperature_logging.setChecked(settings.temperature_logging)
         self.temperature_wait_for_stability.setChecked(settings.temperature_wait_for_stability)
+        for editor in self._editors.values():
+            editor.fit_unit()  # display unit only; the stored values are exactly the loaded ones
         self._apply_flush_unit_index(settings.flush_unit_index)
         self.tec_channel.setCurrentIndex(self.tec_channel.findData(settings.tec_channel))
         self.tiff_format.setCurrentIndex(self.tiff_format.findData(settings.tiff_format))
@@ -647,6 +675,8 @@ class SimpleSeriesPanel(QWidget):
         repeats = max((experiment.repeat_index for experiment in expansion.experiments), default=0)
         lines.append(f"Repeats per point: {repeats}")
         lines.extend(self._parameter_lines(expansion))
+        if self._sweep_line(facts):
+            lines.append(self._sweep_line(facts))
         if facts.uniform:
             for name, enabled in (("Ultrasound", facts.sound_enabled), ("Laser", facts.laser_enabled)):
                 if enabled is False:
@@ -712,6 +742,7 @@ class SimpleSeriesPanel(QWidget):
             expansion = validate_definition(definition)
             count = len(expansion.experiments)
             self.summary.setText(self._run_preview_text(expansion, count))
+            self._render_frequency(count, None)
             self.form_preview.set_summary(self.summary.text().split("\n")[0])
             self.config_hint.setText(f"Current form: {count} experiments planned. Details under Queue and start.")
             self.config_hint.setStyleSheet("")
@@ -720,17 +751,90 @@ class SimpleSeriesPanel(QWidget):
             self.camera_preflight_label.setStyleSheet(
                 f"color: {'#2e7d32' if passed else '#b71c1c'}; font-weight: 600")
         except (ValueError, ZeroDivisionError) as exc:
+            self._render_frequency(None, str(exc))
             self.summary.setText(f"Settings need attention: {exc}")
             self.form_preview.set_summary(f"Settings need attention: {exc}")
             self.config_hint.setText(f"Settings need attention: {exc}")
             self.config_hint.setStyleSheet("color: #b71c1c")
             self.camera_preflight_label.setText("Camera preflight: No")
 
+    def _render_frequency(self, count: int | None, error: str | None) -> None:
+        """Frequency area: sweep on/off, the actual points, combinations and the total from the compiled plan.
+        The counts of points come from the same NumericRange values the compile uses; the total experiment count
+        is the compiled plan's, or is stated as not available (with the reason) when the form does not compile."""
+        sweep = self.sweep_enabled.isChecked()
+        self.sweep_badge.setText("ON" if sweep else "OFF")
+        self.sweep_badge.setStyleSheet(
+            "background: %s; color: white; font-weight: 700; border-radius: 8px; padding: 1px 10px"
+            % ("#1f4e8c" if sweep else "#616161"))
+        self.sweep_detail.setVisible(sweep)
+        self.sweep_off_note.setVisible(not sweep)
+        center, width = self._editors["Frequency"], self._editors["Sweep width"]
+        self._locate_frequency_error(error or "")
+        try:
+            centers = center.points()
+            widths = width.points() if sweep else []
+        except ValueError as exc:
+            self.frequency_plan.setText(f"Frequency combinations: not available — {exc}")
+            self.sweep_explain.setText("")
+            self.schematic.show_combination(None, None, None, False)
+            self.schematic_picker.setVisible(False)
+            self.schematic_note.setVisible(False)
+            return
+        nc, nw = len(centers), (len(widths) if sweep else 1)
+        def noun(n: int, one: str, many: str) -> str:
+            return f"{n} {one if n == 1 else many}"
+        centers_text = noun(nc, "center frequency", "center frequencies")
+        combos = (f"{centers_text} × {noun(nw, 'sweep width', 'sweep widths')} = "
+                  f"{noun(nc * nw, 'frequency combination', 'frequency combinations')}" if sweep else
+                  f"{centers_text}, no sweep = {noun(nc, 'frequency combination', 'frequency combinations')}")
+        total = (f"Total experiments: {count} (every scan axis and the repeats, from the compiled plan)"
+                 if count is not None else f"Total experiments: not available — {error}")
+        self.frequency_plan.setText(f"{combos}\n{total}")
+        if sweep:
+            low = min(c - w / 2 for c in centers for w in widths)
+            high = max(c + w / 2 for c in centers for w in widths)
+            self.sweep_explain.setText(
+                "Full width = highest minus lowest frequency in one experiment: center − width/2 to "
+                f"center + width/2 and back (triangle, {self.sweep_period.value():g} ms). "
+                f"Requested band over all experiments: {format_frequency(low)} … {format_frequency(high)}.")
+        total_combinations = nc * nw
+        self.combination.blockSignals(True)
+        self.combination.setMaximum(total_combinations)
+        self.combination.blockSignals(False)
+        index = min(self.combination.value(), total_combinations) - 1
+        c, w = centers[index // nw], (widths[index % nw] if sweep else None)
+        self.schematic.show_combination(c, w, self.sweep_period.value() if sweep else None, sweep)
+        self.schematic_picker.setVisible(total_combinations > 1)
+        self.schematic_note.setVisible(True)
+        self.combination_label.setText(
+            f"of {total_combinations}: center {format_frequency(c)}" + (f" · full width {format_frequency(w)}" if sweep else "")
+            + (" · the others are not drawn" if total_combinations > 1 else ""))
+
+    def _locate_frequency_error(self, message: str) -> None:
+        """Put an error of the existing compile validation next to the inputs it is about."""
+        center, width = self._editors["Frequency"], self._editors["Sweep width"]
+        targets = ([center, width] if message.startswith("Sweep start frequency") else
+                   [center] if message.startswith("Frequency ") else
+                   [width] if message.startswith("Sweep width") else [])
+        for editor in (center, width):
+            editor.set_error(message if editor in targets else None)
+
+    @staticmethod
+    def _sweep_line(facts: PlanFacts) -> str:
+        """The in-experiment sweep as the definition itself states it (requested, not measured)."""
+        if facts.sweep_enabled is True:
+            period = f"{facts.sweep_period_ms:g} ms" if facts.sweep_period_ms is not None else "period not stated"
+            return f"Frequency sweep inside each experiment: ON · triangle · {period} (requested)"
+        if facts.sweep_enabled is False:
+            return "Frequency sweep inside each experiment: off (one fixed frequency per experiment)"
+        return ""
+
     @staticmethod
     def _parameter_lines(expansion) -> list[str]:
         lines: list[str] = []
-        for key, label in (("frequency_hz", "Frequency (Hz)"), ("amplitude_v", "Amplitude (V)"),
-                           ("exposure_ms", "Exposure (ms)"), ("sweep_width_hz", "Sweep width (Hz)"),
+        for key, label in (("frequency_hz", "Center frequency"), ("amplitude_v", "Amplitude (V)"),
+                           ("exposure_ms", "Exposure (ms)"), ("sweep_width_hz", "Sweep full width"),
                            ("temperature_c", "Temperature (°C)")):
             # compile_simple_series() fills a disabled sweep/temperature
             # axis with the literal string "NaN" (not a float, not an
@@ -741,8 +845,9 @@ class SimpleSeriesPanel(QWidget):
                              if key in experiment.parameters and experiment.parameters[key] != "NaN"})
             if not values:
                 continue
-            lines.append(f"{label}: {values[0]:g}" if len(values) == 1
-                         else f"{label}: {values[0]:g} .. {values[-1]:g} ({len(values)} values)")
+            show = format_frequency if key in {"frequency_hz", "sweep_width_hz"} else (lambda v: f"{v:g}")
+            lines.append(f"{label}: {show(values[0])}" if len(values) == 1
+                         else f"{label}: {show(values[0])} .. {show(values[-1])} ({len(values)} values)")
         return lines
 
     @staticmethod
@@ -771,6 +876,9 @@ class SimpleSeriesPanel(QWidget):
         repeats = max((experiment.repeat_index for experiment in expansion.experiments), default=0)
         lines.append(f"Repeats per point: {repeats}")
         lines.extend(self._parameter_lines(expansion))
+        sweep_line = self._sweep_line(plan_facts(expansion.steps))
+        if sweep_line:
+            lines.append(sweep_line)
         strategy = self._strategy_line(
             self.temperature_control.isChecked(), self.temperature_wait_for_stability.isChecked(),
             self.temperature_tolerance.value(), self.temperature_min_settle.value(),

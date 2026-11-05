@@ -95,6 +95,7 @@ def _draw(kind: str, color: str, size: int = _SIZE) -> QPixmap:
             painter.setBrush(Qt.BrushStyle.NoBrush)
     del fill
     painter.end()
+    pixmap.setDevicePixelRatio(scale)  # drawn at 3x, shown at `size`
     return pixmap
 
 

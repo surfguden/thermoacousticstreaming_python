@@ -15,7 +15,8 @@ from ..application.run_activity import describe_phase, devices_for_phase
 from ..application.saved_frames import SavedFramesError
 from ..domain.models import ConnectionState, DeviceId
 from .status_text import (  # describe_condition is re-exported for existing importers
-    ad2_outputs_summary, connection_phrase, describe_condition, is_connected, valve_summary,
+    ad2_outputs_summary, connection_phrase, describe_condition, format_frequency, is_connected, sweep_summary,
+    valve_summary,
 )
 from .saved_frames_window import SavedFramesWindow
 from .status_icons import STATE_MARKS, action_icon, state_pixmap
@@ -216,7 +217,8 @@ class StatusDashboard(QWidget):
         if status.get("current_parameters"):
             prefix = f"Experiment {number}/{count}" if number else "Experiment"
             suffix = f" · repeat {repeat}" if repeat else ""
-            self.condition.setText(f"{prefix}{suffix} · {describe_condition(status['current_parameters'])}")
+            self.condition.setText(f"{prefix}{suffix} · "
+                                   f"{describe_condition(status['current_parameters'], status.get('current_plan'))}")
         else:
             self.condition.setText("— (no experiment running)")
         current = status.get("current_series")
@@ -248,7 +250,10 @@ class StatusDashboard(QWidget):
         pieces = []
         if device is DeviceId.AD2:
             if known("frequency_hz") is not None:
-                pieces.append(f"frequency {known('frequency_hz'):g} Hz")
+                pieces.append(f"center frequency {format_frequency(known('frequency_hz'))}")
+            sweep = sweep_summary(parameters, plan, say_requested=False)
+            if sweep:
+                pieces.append(sweep)
             if known("amplitude_v") is not None:
                 pieces.append(f"amplitude {known('amplitude_v'):g} V")
             if plan.get("sound_enabled") is False:

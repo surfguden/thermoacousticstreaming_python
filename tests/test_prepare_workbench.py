@@ -418,8 +418,8 @@ def test_frequency_display_is_engineering_format_without_visible_rounding():
     assert format_frequency(1_000_000) == "1 MHz" and format_frequency(1_200_000.0) == "1.2 MHz"
     assert format_frequency(1_234_567.891) == "1.234567891 MHz" and format_frequency(999.5) == "999.5 Hz"
     assert format_frequency(50_000) == "50 kHz" and format_frequency(0) == "0 Hz"
-    assert describe_condition({"frequency_hz": 1e6, "sweep_width_hz": "NaN"}) == "frequency 1 MHz"
-    assert describe_condition({"frequency_hz": 1.2e6, "sweep_width_hz": 1e5}) == "frequency 1.2 MHz · sweep width 100 kHz"
+    assert describe_condition({"frequency_hz": 1e6, "sweep_width_hz": "NaN"}) == "frequency 1 MHz · sweep off"
+    assert describe_condition({"frequency_hz": 1.2e6, "sweep_width_hz": 1e5}) == "frequency 1.2 MHz · sweep full width 100 kHz (1.15 MHz … 1.25 MHz), period not recorded"
 
 
 def test_button_icons_and_stop_hierarchy_send_nothing(env):

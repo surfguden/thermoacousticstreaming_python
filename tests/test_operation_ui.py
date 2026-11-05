@@ -105,7 +105,7 @@ def test_condition_text_uses_the_plans_own_values_and_skips_unused_axes():
     parameters = {"temperature_c": "NaN", "frequency_hz": 1_000_000.0, "sweep_width_hz": "NaN",
                   "amplitude_v": 1.5, "exposure_ms": 10.0, "custom": "a"}
     text = describe_condition(parameters)
-    assert text == "frequency 1e+06 Hz · amplitude 1.5 V · exposure 10 ms · custom=a"
+    assert text == "frequency 1 MHz · amplitude 1.5 V · exposure 10 ms · sweep off · custom=a"
     assert describe_condition(None) == "—" and describe_condition({}) == "—"
 
 
@@ -126,7 +126,7 @@ def test_run_monitor_shows_progress_condition_and_output_location(qt_app, tmp_pa
                           "experiment_count": 6}]}
     dashboard.update_experiment(status)
     assert "completed 2/6" in dashboard.experiment.text() and "remaining 4" in dashboard.experiment.text()
-    assert dashboard.condition.text() == "Experiment 3/6 · repeat 2 · frequency 2e+06 Hz · amplitude 1 V"
+    assert dashboard.condition.text() == "Experiment 3/6 · repeat 2 · frequency 2 MHz · amplitude 1 V"
     assert "Scan A" in dashboard.series.text() and dashboard.output.text() == str(series)
     dashboard.open_output_button.click()
     assert len(opened) == 1 and Path(opened[0]) == series
@@ -456,13 +456,11 @@ def test_range_rows_say_whether_they_are_fixed_or_a_scan_and_timing_table_follow
     panel = window.experiment_panel
     start, stop, steps = panel.frequency
     steps.setValue(1)
-    # The row's own description is the label under its Start/Stop/Steps fields.
-    descriptions = [label.text() for label in panel.findChildren(type(panel.edit_target_label))
-                    if label.text().startswith(("Fixed value", "Scan across"))]
-    assert any(text.startswith("Fixed value") for text in descriptions)
+    editor = start.parentWidget()
+    assert editor.fixed_button.isChecked() and not editor.scan_button.isChecked()
+    assert "same value in every experiment" in editor.info.text()
     steps.setValue(3)
-    assert any("Scan across experiments: 3 values" in label.text()
-               for label in panel.findChildren(type(panel.edit_target_label)))
+    assert editor.scan_button.isChecked() and "3 points:" in editor.info.text()
     panel.sound_start.setValue(0.5)
     panel.sound_run.setValue(2.0)
     assert [panel.timing_table.item(0, c).text() for c in range(4)] == ["Ultrasound (AD2)", "0.5", "2", "2.5"]

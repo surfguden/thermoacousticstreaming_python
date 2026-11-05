@@ -93,16 +93,29 @@ def plan_facts(steps) -> PlanFacts:
         notes.append("different temperature strategies")
 
     blocks = found["experiments"]
-    if len(blocks) != 1:
+    if not blocks:
         return PlanFacts(temperature_strategy=strategy, uniform=False,
-                         note="; ".join(["the definition has " + ("no" if not blocks else str(len(blocks)))
-                                         + " acquisition blocks", *notes]))
-    block_steps = blocks[0].get("steps", ())
+                         note="; ".join(["the definition has no acquisition blocks", *notes]))
+    # A scanned series has one block per experiment; they only differ in resolved values (frequency, exposure...),
+    # which are not facts of this summary. The summary is given when every block states the same facts.
+    results = [_block_facts(block) for block in blocks]
+    first = results[0]
+    if isinstance(first, str):
+        return PlanFacts(temperature_strategy=strategy, uniform=False, note=first)
+    if any(result != first for result in results):
+        return PlanFacts(temperature_strategy=strategy, uniform=False,
+                         note="; ".join([f"the definition has {len(blocks)} acquisition blocks that are not alike", *notes]))
+    return PlanFacts(*first[:9], strategy, True, "; ".join(notes), *first[9:])
+
+
+def _block_facts(block: dict[str, Any]):
+    """The facts one acquisition block states, as a tuple (frames, fps, camera_start, sound_enabled, sound_start,
+    sound_run, laser_enabled, laser_start, laser_run, sweep_enabled, sweep_period); a string says why it has none."""
+    block_steps = block.get("steps", ())
     camera_steps = [s for s in block_steps if s.get("type") == "camera_configure"]
     ad2_steps = [s for s in block_steps if s.get("type") == "ad2_configure"]
     if len(camera_steps) > 1 or len(ad2_steps) > 1:
-        return PlanFacts(temperature_strategy=strategy, uniform=False,
-                         note="the acquisition block configures the camera or AD2 more than once")
+        return "the acquisition block configures the camera or AD2 more than once"
     frames = fps = camera_start = None
     sound_enabled = laser_enabled = None
     sound_start = sound_run = laser_start = laser_run = None
@@ -122,6 +135,5 @@ def plan_facts(steps) -> PlanFacts:
         fps, camera_start = _number(dio.get("frame_rate_hz")), _number(dio.get("camera_delay_s"))
         if frames is None and isinstance(dio.get("frame_count"), int):
             frames = dio["frame_count"]
-    return PlanFacts(frames, fps, camera_start, sound_enabled, sound_start, sound_run,
-                     laser_enabled, laser_start, laser_run, strategy, True, "; ".join(notes),
-                     sweep_enabled, sweep_period)
+    return (frames, fps, camera_start, sound_enabled, sound_start, sound_run, laser_enabled, laser_start, laser_run,
+            sweep_enabled, sweep_period)
