@@ -250,6 +250,8 @@ class SimpleSeriesPanel(QWidget):
                 pair_row.addWidget(control, 1)
             form.addRow(label, pair)
         self.import_camera = QPushButton("Import ROI and exposure from camera")
+        self.import_camera.setToolTip("Copies the camera's current ROI and exposure into this form (camera to form "
+                                      "only). They enter the queue after Queue series or Update loaded series.")
         form.addRow(self.import_camera)
         left_groups.append(camera)
         self.camera_preflight_label = QLabel("Camera preflight: No")

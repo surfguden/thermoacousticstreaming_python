@@ -140,14 +140,14 @@ class MainWindow(QMainWindow):
         self.panic_button.setStyleSheet(
             "QPushButton:enabled { background: #b71c1c; color: white; font-weight: 700; }")
         self._stop_tips = (self.stop_after_button.toolTip(), self.abort_button.toolTip())
+        self._panic_tip = self.panic_button.toolTip()
         self.stop_after_button.setEnabled(False)
         self.abort_button.setEnabled(False)
         self.stop_after_button.clicked.connect(lambda: controller.experiments.stop_after_current())
         self.abort_button.clicked.connect(lambda: controller.experiments.abort())
         self.panic_button.clicked.connect(self._panic)
-        # Hierarchy: plain stop (neutral icon) < Abort (amber) < Panic (red, bold, white icon).
-        self.stop_after_button.setIcon(action_icon("stop"))
-        self.abort_button.setIcon(action_icon("abort"))
+        # Hierarchy by text and colour: plain Stop after current < Abort (amber) < Panic (red, bold, warning
+        # icon). Only Panic carries an icon: icons on all three made the header wider than the window minimum.
         self.panic_button.setIcon(action_icon("panic"))
         for button in (self.stop_after_button, self.abort_button, self.panic_button):
             button.setMinimumHeight(32)
@@ -344,12 +344,31 @@ class MainWindow(QMainWindow):
         running = status["state"] == "running" and self._panic_status["state"] != "stopping"
         stop_requested = bool(status.get("stop_after_current"))
         self.stop_after_button.setEnabled(running and not stop_requested)
-        for button, base in ((self.stop_after_button, self._stop_tips[0]), (self.abort_button, self._stop_tips[1])):
-            button.setToolTip(base if running else base + chr(10) + "Unavailable: no batch is running.")
         self.stop_after_button.setText("Stop requested" if running and stop_requested
                                        else "Stop after current")
         self.abort_button.setEnabled(running)
+        self._stop_button_tips(status, running, stop_requested)
         self._render_activity()
+
+    def _stop_button_tips(self, status: dict, running: bool, stop_requested: bool) -> None:
+        """A disabled stop button says which condition disabled it (the enable rules are unchanged)."""
+        panic_stopping = self._panic_status["state"] == "stopping"
+        winding_down = status["state"] in {"stopping", "aborting"}
+        if panic_stopping:
+            reason = "Panic safe stop is in progress."
+        elif winding_down:
+            reason = "the batch is already stopping."
+        else:
+            reason = "no batch is running."
+        after_reason = ("stop was requested: the batch ends after the current experiment finishes."
+                        if running and stop_requested else reason)
+        for button, base, enabled, why in (
+                (self.stop_after_button, self._stop_tips[0], self.stop_after_button.isEnabled(), after_reason),
+                (self.abort_button, self._stop_tips[1], self.abort_button.isEnabled(), reason)):
+            button.setToolTip(base if enabled else base + chr(10) + "Unavailable: " + why)
+        self.panic_button.setToolTip(
+            self._panic_tip if self.panic_button.isEnabled()
+            else self._panic_tip + chr(10) + "Unavailable: Panic safe stop is already in progress.")
 
     def _idle_detail(self) -> str:
         """Three separate facts: no batch is running, what the devices report, and the last operator action."""

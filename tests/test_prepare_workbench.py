@@ -430,8 +430,8 @@ def test_frequency_summary_is_readable_and_the_exact_value_stays_available():
 def test_button_icons_and_stop_hierarchy_send_nothing(env):
     window, controller, events, wait = env
     before = len(events)
-    assert not window.stop_after_button.icon().isNull() and not window.abort_button.icon().isNull()
     assert not window.panic_button.icon().isNull()
+    assert window.stop_after_button.icon().isNull() and window.abort_button.icon().isNull()  # text and colour rank them
     assert "background: #b71c1c" in window.panic_button.styleSheet() and "#ffe0b2" in window.abort_button.styleSheet()
     assert "background" not in window.stop_after_button.styleSheet()
     assert not window.panels[DeviceId.PUMP]._buttons["connect"].icon().isNull()
@@ -476,3 +476,58 @@ def test_z_position_text_keeps_long_values_and_says_why_it_is_unread(env):
     assert "not read; closed loop is off" in z.measured_label.text()  # nothing is invented
     z.update_readback(None)
     assert "not read yet" in z.measured_label.text()
+
+
+def _hover_tooltip(window, button, wait_s=1.5):
+    """Move the pointer over the button in the shown window and return the tooltip Qt really displays."""
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QToolTip
+    QToolTip.hideText()
+    settle = monotonic() + 0.4
+    while monotonic() < settle:  # let the resized, shown window finish its layout
+        QApplication.processEvents()
+        sleep(0.01)
+    QTest.mouseMove(window, button.mapTo(window, button.rect().bottomRight()))
+    QTest.mouseMove(window, button.mapTo(window, button.rect().center()))
+    deadline = monotonic() + wait_s
+    while monotonic() < deadline and not QToolTip.isVisible():
+        QApplication.processEvents()
+        sleep(0.01)
+    return QToolTip.text() if QToolTip.isVisible() else ""
+
+
+def test_disabled_stop_buttons_give_the_real_reason_and_get_their_own_tooltip_back(env):
+    window, controller, events, wait = env
+    window.resize(1200, 800)
+    base_abort = window._stop_tips[1]
+    assert "Unavailable: no batch is running." in _hover_tooltip(window, window.abort_button)  # seen in the UI
+    # Stop was requested: the button says so and the tooltip says what is being waited for.
+    running = {**controller.experiments.status(), "state": "running", "stop_after_current": True}
+    window._experiment_changed(running)
+    assert window.stop_after_button.text() == "Stop requested" and not window.stop_after_button.isEnabled()
+    assert "ends after the current experiment finishes" in window.stop_after_button.toolTip()
+    assert window.abort_button.isEnabled() and window.abort_button.toolTip() == base_abort  # enabled: own text back
+    # Panic stopping is not "no batch is running".
+    window._panic_changed({**window._panic_status, "state": "stopping", "pending": 2})
+    assert "Panic safe stop is in progress" in window.abort_button.toolTip()
+    assert "no batch is running" not in window.abort_button.toolTip()
+    assert "already in progress" in window.panic_button.toolTip() and not window.panic_button.isEnabled()
+    window._panic_changed({**window._panic_status, "state": "idle", "pending": 0})
+    window._experiment_changed({**controller.experiments.status(), "state": "running"})
+    assert window.stop_after_button.isEnabled() and window.stop_after_button.toolTip() == window._stop_tips[0]
+    assert window.panic_button.toolTip() == window._panic_tip
+
+
+def test_the_second_pc_trigger_entry_says_it_waits_for_the_other_one(env):
+    window, controller, events, wait = env
+    _connect(window, wait, DeviceId.AD2)
+    ad2 = window.panels[DeviceId.AD2]
+    ad2._pending["wave_trigger_pc"] = "request-1"
+    ad2._update_controls()
+    other = ad2._buttons["do_trigger_pc"]
+    assert not other.isEnabled() and "other tab" in other.toolTip() and "pending" in other.toolTip()
+    assert "other tab" not in ad2._buttons["wave_trigger_pc"].toolTip()  # that one says its own request is pending
+    assert "still pending" in ad2._buttons["wave_trigger_pc"].toolTip()
+    ad2._pending.clear()
+    ad2._update_controls()
+    assert other.isEnabled() and "Unavailable" not in other.toolTip()  # enabled again: no leftover reason

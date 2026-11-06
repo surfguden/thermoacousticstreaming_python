@@ -419,6 +419,8 @@ class DevicePanel(QScrollArea):
             if (pc_trigger_pending
                     and self._action_operations.get(action) is DeviceOperation.AD2_SOFTWARE_TRIGGER):
                 enabled = False
+                if action not in self._pending:  # the same PC trigger, requested from the other entry point
+                    reason = "a PC trigger request from the other tab (Waveform generator / Digital output) is still pending"
             if self._experiment_locked and self._action_operations.get(action) not in {
                 DeviceOperation.CAMERA_TIMING_READ, DeviceOperation.PUMP_FILL_LEVEL_READ,
                 DeviceOperation.PUMP_STATUS_READ, DeviceOperation.VALVE_POSITION_READ,
@@ -1704,11 +1706,13 @@ class CameraPanel(DevicePanel):
         notes_layout = QHBoxLayout(notes_row)
         notes_layout.setContentsMargins(0, 0, 0, 0)
         self.camera_notes = QLabel(
-            "These act on the camera now. Experiments use the exposure and ROI of the experiment form "
-            "(its Import button copies them from here).")
+            "Manual controls act on the camera now. A running experiment uses the exposure and ROI of its "
+            "queued definition, not these.")
         self.camera_notes.setToolTip(
-            "Snapshot and Continuous use Snapshot exposure. Set exposure applies Exposure. Buffered "
-            "sequence uses its own frames and exposure. Set ROI applies the ROI to the camera.")
+            "Import on the Configure page only copies the camera's ROI and exposure into that form; a form "
+            "change enters the queue after Queue series or Update loaded series. Snapshot and Continuous use "
+            "Snapshot exposure. Set exposure applies Exposure. Buffered sequence uses its own frames and "
+            "exposure. Set ROI applies the ROI to the camera.")
         self.camera_notes.setWordWrap(True)
         self.show_image_button = QPushButton("Show image window")
         self.show_image_button.setToolTip("Shows the existing image window; it does not start a capture")
