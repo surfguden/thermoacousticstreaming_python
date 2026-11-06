@@ -998,10 +998,10 @@ class Ad2Panel(DevicePanel):
         self.acoustic_status_label = QLabel("WFG: idle · Digital output: idle")
         self.acoustic_status_label.setWordWrap(True)
         stop_group, stop_form = form_group("Manual outputs")
-        stop_note = QLabel("Outputs stay off until a manual Start or an experiment turns them on. These stop "
-                           "the manual outputs; the experiment is stopped from the buttons at the top of the "
-                           "window. Signal settings: Device details, AD2.")
+        stop_note = QLabel("Stops manual outputs only; a running experiment is stopped from the header buttons. "
+                           "Signal settings: Device details → AD2.")
         stop_note.setWordWrap(True)
+        stop_note.setToolTip("Outputs stay off until a manual Start or an experiment turns them on.")
         stop_form.addRow(stop_note)
         stop_form.addRow(self.acoustic_status_label)
         stop_form.addRow(button_row(
@@ -1675,7 +1675,7 @@ class ValvePanel(DevicePanel):
 
     def update_readback(self, readback: object) -> None:
         if isinstance(readback, ValveReadback):
-            self.readback_label.setText(valve_summary(readback))
+            self.readback_label.setText("Selector valve: " + valve_summary(readback))
 
     def apply_successful_command(self, command: DeviceCommand | None) -> None:
         if command is None:
@@ -1704,9 +1704,8 @@ class CameraPanel(DevicePanel):
         notes_layout = QHBoxLayout(notes_row)
         notes_layout.setContentsMargins(0, 0, 0, 0)
         self.camera_notes = QLabel(
-            "Controls here act on the camera now and are not used by Experiments, which apply their own "
-            "exposure and ROI from the Experiments tab; its Import button copies the camera's current ROI "
-            "and exposure there (camera to form only).")
+            "These act on the camera now. Experiments use the exposure and ROI of the experiment form "
+            "(its Import button copies them from here).")
         self.camera_notes.setToolTip(
             "Snapshot and Continuous use Snapshot exposure. Set exposure applies Exposure. Buffered "
             "sequence uses its own frames and exposure. Set ROI applies the ROI to the camera.")
@@ -1785,8 +1784,7 @@ class CameraPanel(DevicePanel):
             self.action_button("timing", "Read timing", DeviceOperation.CAMERA_TIMING_READ),
         ))
         daily.addWidget(group)
-        roi_note = QLabel("This ROI is the camera's acquisition ROI: Set ROI sends it to the camera. The analysis "
-                          "ROI drawn in the image window only measures the displayed image and sends nothing.")
+        roi_note = QLabel("Acquisition ROI: Set ROI sends it to the camera. The analysis ROI in the image only measures.")
         roi_note.setWordWrap(True)
         daily.addWidget(roi_note)
 
@@ -2213,7 +2211,10 @@ class TecPanel(DevicePanel):
             "not an error."
         )
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        controls_layout.addWidget(self.table, 0, 1)
+        # two channels: the table is as tall as its rows, the height beyond goes to the temperature trend
+        self.table.setMaximumHeight(self.table.horizontalHeader().sizeHint().height()
+                                    + 2 * self.table.verticalHeader().defaultSectionSize() + 8)
+        controls_layout.addWidget(self.table, 0, 1, Qt.AlignmentFlag.AlignTop)
         controls_layout.setColumnStretch(0, 1)
         controls_layout.setColumnStretch(1, 2)
         self.temperature_plot = TemperaturePlot()
