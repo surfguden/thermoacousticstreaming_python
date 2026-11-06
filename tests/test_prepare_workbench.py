@@ -464,3 +464,15 @@ def test_valve_wait_settings_are_folded_but_still_used_and_z_leads_with_the_meas
     z = window.panels[DeviceId.Z_STAGE]
     assert z.measured_label.text().startswith("Measured position:")
     assert {"move", "read", "up", "down", "requirement", "enable"} <= set(z._buttons)
+
+
+def test_z_position_text_keeps_long_values_and_says_why_it_is_unread(env):
+    from thermo_acoustic.domain.models import ZStageReadback
+    window, controller, events, wait = env
+    z = window.panels[DeviceId.Z_STAGE]
+    z.update_readback(ZStageReadback(closed_loop=True, position_um=123456.789012, commanded_position_um=12.5))
+    assert "123456.789 µm" in z.measured_label.text() and "closed loop on" in z.measured_label.text()
+    z.update_readback(ZStageReadback(closed_loop=False))
+    assert "not read; closed loop is off" in z.measured_label.text()  # nothing is invented
+    z.update_readback(None)
+    assert "not read yet" in z.measured_label.text()

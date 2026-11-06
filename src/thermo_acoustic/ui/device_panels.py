@@ -156,6 +156,10 @@ _ICON_FOR_OPERATION = {
 }
 
 
+def _position_text(position: float) -> str:
+    return f"{position:.3f}".rstrip("0").rstrip(".") + " µm"
+
+
 class CurrentPageStack(QStackedWidget):
     """Let responsive layouts size to the exposed mode, not hidden pages."""
 
@@ -2371,8 +2375,9 @@ class ZStagePanel(DevicePanel):
 
     def update_readback(self, readback: object) -> None:
         position = getattr(readback, "position_um", None)
-        self.measured_label.setText("Measured position: " + (f"{position:g} µm" if position is not None
-                                                             else "— (not read yet)")
+        unread = ("— (not read; closed loop is off)" if readback is not None and not getattr(readback, "closed_loop", False)
+                  else "— (not read yet)")
+        self.measured_label.setText("Measured position: " + (_position_text(position) if position is not None else unread)
                                     + ("" if readback is None or not getattr(readback, "closed_loop", False)
                                        else "  ·  closed loop on"))
         if readback is not None:

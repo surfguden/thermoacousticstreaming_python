@@ -52,12 +52,17 @@ def camera_summary(data: object) -> str:
     return " · ".join(pieces)
 
 
+def _um(value: object) -> str:
+    """A stage position in µm to the nearest nm, without trailing zeros (not the 6-digit general format)."""
+    return "unknown" if value is None else f"{value:.3f}".rstrip("0").rstrip(".") + " µm"
+
+
 def z_stage_summary(data: object) -> str:
     """Measured position and last commanded target are different facts and are labelled as such."""
-    pieces = [f"measured position {_value(getattr(data, 'position_um', None), ' µm')} (last read)"]
+    pieces = [f"measured position {_um(getattr(data, 'position_um', None))} (last read)"]
     commanded = getattr(data, "commanded_position_um", None)
     pieces.append("no move commanded yet" if commanded is None else
-                  f"last commanded target {_value(commanded, ' µm')} (arrival is not confirmed by this)")
+                  f"last commanded target {_um(commanded)} (arrival is not confirmed by this)")
     pieces.append("closed loop on" if getattr(data, "closed_loop", False) else "closed loop off")
     maximum = getattr(data, "max_travel_um", None)
     if maximum is not None:
@@ -183,10 +188,10 @@ class StatusDashboard(QWidget):
         grid.setColumnStretch(3, 1)
         grid.setRowStretch(len(DeviceId), 1)
         scroll.setWidget(body)
-        side.addWidget(scroll, 1)
+        side.addWidget(scroll, 3)  # the device states matter more than the trend under them
         side.addWidget(QLabel("TEC temperatures · latest rolling samples"))
         self.temperature_plot = TemperaturePlot()
-        side.addWidget(self.temperature_plot, 2)  # the trend gets more height than the short device list
+        side.addWidget(self.temperature_plot, 2)
 
     @property
     def output_folder(self) -> str | None:
