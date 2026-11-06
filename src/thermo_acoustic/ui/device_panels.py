@@ -99,8 +99,8 @@ from .temperature_plot import TemperaturePlot
 from ..application.configuration import DEFAULT_PUMP_CONFIGURATION_DIR
 from .ad2_scope import OscilloscopePanel
 from .status_dashboard import camera_summary, z_stage_summary
-from .status_icons import action_icon
-from .status_text import ad2_channels_configured, ad2_outputs_summary, valve_summary
+from .status_icons import action_icon, state_pixmap
+from .status_text import ad2_channels_configured, ad2_outputs_summary, connection_color, valve_summary
 from .widgets import CameraImageWindow, CollapsibleSection
 
 
@@ -205,7 +205,16 @@ class DevicePanel(QScrollArea):
         self.fault_label = QLabel("")
         self.fault_label.setWordWrap(True)
         header_layout.addWidget(QLabel("Connection"), 0, 0)
-        header_layout.addWidget(self.connection_label, 0, 1)
+        # Shape + word + colour for the link state; "connected" says nothing about readiness for an experiment.
+        self.connection_mark = QLabel()
+        self.connection_mark.setFixedWidth(18)
+        connection_box = QWidget()
+        connection_row = QHBoxLayout(connection_box)
+        connection_row.setContentsMargins(0, 0, 0, 0)
+        connection_row.setSpacing(2)
+        connection_row.addWidget(self.connection_mark)
+        connection_row.addWidget(self.connection_label)
+        header_layout.addWidget(connection_box, 0, 1)
         header_layout.addWidget(QLabel("State"), 0, 2)
         header_layout.addWidget(self.state_label, 0, 3)
         header_layout.addWidget(QLabel("Fault"), 0, 4)
@@ -362,6 +371,10 @@ class DevicePanel(QScrollArea):
         self.connection_label.setText("Connected · last operation failed"
                                       if status.connection is ConnectionState.ERROR
                                       else status.connection.value.replace("_", " ").title())
+        kind = ("disconnected" if not self._connected else "failed" if status.connection is ConnectionState.ERROR
+                or status.fault else "connected")
+        self.connection_mark.setPixmap(state_pixmap(kind))
+        self.connection_label.setStyleSheet(f"color: {connection_color(status)}; font-weight: 600")
         flags = ["busy" if status.busy else "idle"]
         if status.configured:
             flags.append("configured")

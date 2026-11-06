@@ -238,9 +238,17 @@ class SimpleSeriesPanel(QWidget):
         self.roi_y = integer(0, 0)
         self.roi_width = integer(512)
         self.roi_height = integer(512)
-        for label, control in (("ROI X", self.roi_x), ("ROI Y", self.roi_y),
-                               ("ROI width", self.roi_width), ("ROI height", self.roi_height)):
-            form.addRow(label, control)
+        # Offset and size are two pairs, one row each (the same four inputs as before).
+        for label, (first_caption, first), (second_caption, second) in (
+                ("ROI offset (px)", ("X", self.roi_x), ("Y", self.roi_y)),
+                ("ROI size (px)", ("Width", self.roi_width), ("Height", self.roi_height))):
+            pair = QWidget()
+            pair_row = QHBoxLayout(pair)
+            pair_row.setContentsMargins(0, 0, 0, 0)
+            for caption, control in ((first_caption, first), (second_caption, second)):
+                pair_row.addWidget(QLabel(caption))
+                pair_row.addWidget(control, 1)
+            form.addRow(label, pair)
         self.import_camera = QPushButton("Import ROI and exposure from camera")
         form.addRow(self.import_camera)
         left_groups.append(camera)
