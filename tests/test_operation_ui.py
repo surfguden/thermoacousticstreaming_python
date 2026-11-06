@@ -98,7 +98,9 @@ def test_form_uses_one_column_on_a_narrow_window_and_two_on_a_wide_one(window, q
         assert panel._grid_columns == columns, size
     # Moving groups around must keep every group in the form.
     placed = {panel._body_grid.itemAt(i).widget() for i in range(panel._body_grid.count())}
-    assert set(panel._top_groups + panel._left_groups + panel._right_groups + [panel.advanced]) <= placed
+    assert set(panel._top_groups + [panel._left_column, panel._right_column, panel.advanced]) <= placed
+    assert all(group.parentWidget() in (panel._left_column, panel._right_column)
+               for group in panel._left_groups + panel._right_groups)
 
 
 def test_condition_text_uses_the_plans_own_values_and_skips_unused_axes():

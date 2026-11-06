@@ -189,6 +189,7 @@ class DevicePanel(QScrollArea):
         self._connected = False
         self._busy = False
         self._experiment_locked = False
+        self._base_tips: dict[str, str] = {}
         self._daily: QWidget | None = None
         self.setWidgetResizable(True)
         body = QWidget()
@@ -384,18 +385,24 @@ class DevicePanel(QScrollArea):
             for action in self._pending
         )
         for action, button in self._buttons.items():
+            reason = ""
             if action == "connect":
                 enabled = not self._connected
+                reason = "already connected"
             elif action == "disconnect":
                 enabled = self._connected
+                reason = "not connected"
             elif action == "abort":
                 enabled = self._connected and self._busy
+                reason = "not connected" if not self._connected else "nothing is running on this device"
             elif action in self._requires_connection:
                 enabled = self._connected
+                reason = "not connected: connect this device first"
             else:
                 enabled = True
             if action in self._pending:
                 enabled = False
+                reason = "the previous request for this action is still pending"
             if (pc_trigger_pending
                     and self._action_operations.get(action) is DeviceOperation.AD2_SOFTWARE_TRIGGER):
                 enabled = False
@@ -406,7 +413,11 @@ class DevicePanel(QScrollArea):
                 DeviceOperation.AD2_OUTPUT_STATUS_READ,
             }:
                 enabled = False
+                reason = "locked while an experiment batch is running (reads stay available)"
             button.setEnabled(enabled)
+            # A disabled button says why; its own explanation comes back when it is enabled again.
+            base = self._base_tips.setdefault(action, button.toolTip())
+            button.setToolTip(base if enabled or not reason else (base + chr(10) if base else "") + f"Unavailable: {reason}")
 
     def update_readback(self, readback: object) -> None:
         del readback

@@ -260,7 +260,7 @@ class SimpleSeriesPanel(QWidget):
         form.addRow("Flow (µL/min)", self.flow)
         form.addRow("Wait after flush (s)", self.wait_after_flush)
         form.addRow(QLabel("One initial flush and one after every acquisition."))
-        right_groups.append(fluidics)
+        right_groups.insert(0, fluidics)  # repeats and flush first; the temperature program is often off
 
         self.preflight_button = QPushButton("Preflight camera settings")
         self.syringe_preflight_button = QPushButton("Preflight batch syringe level")
@@ -286,6 +286,13 @@ class SimpleSeriesPanel(QWidget):
         self._top_groups, self._left_groups, self._right_groups = top_groups, left_groups, right_groups
         self._grid_columns = 0
         self._body_grid = grid
+        self._left_column, self._right_column = QWidget(), QWidget()
+        for column, groups in ((self._left_column, left_groups), (self._right_column, right_groups)):
+            box = QVBoxLayout(column)
+            box.setContentsMargins(0, 0, 0, 0)
+            for group in groups:
+                box.addWidget(group)
+            box.addStretch(1)
         self._arrange_groups(2)
 
         # The form's own plan: what Queue series would add. Not what Start runs (that is on Queue and start).
@@ -409,30 +416,26 @@ class SimpleSeriesPanel(QWidget):
         self._status(self.manager.status())
 
     def _arrange_groups(self, columns: int) -> None:
-        """One column on a narrow window, two otherwise; only moves existing widgets."""
+        """One column on a narrow window, two otherwise. The groups live in two independent column boxes
+        (timing, acquisition | repeats and flush, temperature), so a short group - a temperature program
+        that is switched off - never leaves a gap or pushes its neighbour down."""
         if columns == self._grid_columns:
             return
         self._grid_columns = columns
         grid = self._body_grid
-        for group in (*self._top_groups, *self._left_groups, *self._right_groups, self.advanced):
-            grid.removeWidget(group)
+        for widget in (*self._top_groups, self._left_column, self._right_column, self.advanced):
+            grid.removeWidget(widget)
+        top = len(self._top_groups)
+        for row, group in enumerate(self._top_groups):
+            grid.addWidget(group, row, 0, 1, 2)
         if columns == 1:
-            groups = [*self._top_groups, *self._left_groups, *self._right_groups]
-            for row, group in enumerate(groups):
-                grid.addWidget(group, row, 0, 1, 2)
-            rows = len(groups)
+            grid.addWidget(self._left_column, top, 0, 1, 2)
+            grid.addWidget(self._right_column, top + 1, 0, 1, 2)
+            rows = top + 2
         else:
-            # Output (descriptor and folder) and the ultrasound frequency run across the top; the two columns
-            # (timing, acquisition | temperature, repeats and flush) follow, so they are not a long tail.
-            top = len(self._top_groups)
-            for row, group in enumerate(self._top_groups):
-                grid.addWidget(group, row, 0, 1, 2)
-            left = self._left_groups
-            for row, group in enumerate(left, start=top):
-                grid.addWidget(group, row, 0)
-            for row, group in enumerate(self._right_groups, start=top):
-                grid.addWidget(group, row, 1)
-            rows = top + max(len(left), len(self._right_groups))
+            grid.addWidget(self._left_column, top, 0)
+            grid.addWidget(self._right_column, top, 1)
+            rows = top + 1
         grid.addWidget(self.advanced, rows, 0, 1, 2)
         for row in range(rows + 2):
             grid.setRowStretch(row, 1 if row == rows + 1 else 0)

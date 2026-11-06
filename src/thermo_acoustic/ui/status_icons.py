@@ -84,6 +84,10 @@ def _draw(kind: str, color: str, size: int = _SIZE) -> QPixmap:
         painter.drawLine(QPointF(10, 2.5), QPointF(10, 6))
         painter.drawRoundedRect(QRectF(4, 6, 8, 4), 1, 1)
         painter.drawLine(QPointF(2.5, 13.5), QPointF(13.5, 2.5))
+    elif kind == "preview":  # a screen with a play mark: live view (not the bare triangle of "active")
+        painter.drawRoundedRect(QRectF(1.8, 3, 12.4, 9), 1.5, 1.5)
+        painter.setBrush(c)
+        painter.drawPolygon(QPolygonF([QPointF(6.6, 5.4), QPointF(10.4, 7.5), QPointF(6.6, 9.6)]))
     elif kind == "capture":  # camera
         painter.drawRoundedRect(QRectF(1.8, 4.5, 12.4, 8.5), 1.5, 1.5)
         painter.drawEllipse(QRectF(5.3, 6.1, 5.4, 5.4))
@@ -114,7 +118,7 @@ def action_icon(name: str) -> QIcon:
     """Icon for a button that also has a text label. Qt standard icons where one exists."""
     app = QApplication.instance()
     style = app.style() if app is not None else None
-    standard = {"preview": QStyle.StandardPixmap.SP_MediaPlay, "folder": QStyle.StandardPixmap.SP_DirOpenIcon}
+    standard = {"folder": QStyle.StandardPixmap.SP_DirOpenIcon}
     if name in standard and style is not None:
         return style.standardIcon(standard[name])
     text = app.palette().windowText().color().name() if app is not None else "#222222"

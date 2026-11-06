@@ -139,6 +139,7 @@ class MainWindow(QMainWindow):
         self.panic_button.setToolTip("Confirm, then urgently stop connected outputs and abort the batch")
         self.panic_button.setStyleSheet(
             "QPushButton:enabled { background: #b71c1c; color: white; font-weight: 700; }")
+        self._stop_tips = (self.stop_after_button.toolTip(), self.abort_button.toolTip())
         self.stop_after_button.setEnabled(False)
         self.abort_button.setEnabled(False)
         self.stop_after_button.clicked.connect(lambda: controller.experiments.stop_after_current())
@@ -343,6 +344,8 @@ class MainWindow(QMainWindow):
         running = status["state"] == "running" and self._panic_status["state"] != "stopping"
         stop_requested = bool(status.get("stop_after_current"))
         self.stop_after_button.setEnabled(running and not stop_requested)
+        for button, base in ((self.stop_after_button, self._stop_tips[0]), (self.abort_button, self._stop_tips[1])):
+            button.setToolTip(base if running else base + chr(10) + "Unavailable: no batch is running.")
         self.stop_after_button.setText("Stop requested" if running and stop_requested
                                        else "Stop after current")
         self.abort_button.setEnabled(running)
