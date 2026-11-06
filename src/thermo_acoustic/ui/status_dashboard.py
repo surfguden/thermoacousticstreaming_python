@@ -15,7 +15,8 @@ from ..application.run_activity import describe_phase, devices_for_phase
 from ..application.saved_frames import SavedFramesError
 from ..domain.models import ConnectionState, DeviceId
 from .status_text import (  # describe_condition is re-exported for existing importers
-    ad2_outputs_summary, connection_phrase, describe_condition, format_frequency, is_connected, sweep_summary,
+    ad2_outputs_summary, connection_phrase, describe_condition, exact_condition_text, format_frequency, is_connected,
+    sweep_summary,
     valve_summary,
 )
 from .saved_frames_window import SavedFramesWindow
@@ -219,6 +220,8 @@ class StatusDashboard(QWidget):
             suffix = f" · repeat {repeat}" if repeat else ""
             self.condition.setText(f"{prefix}{suffix} · "
                                    f"{describe_condition(status['current_parameters'], status.get('current_plan'))}")
+            # the line above is a readable summary; the stored values, exactly, are in the tooltip
+            self.condition.setToolTip(exact_condition_text(status["current_parameters"]))
         else:
             self.condition.setText("— (no experiment running)")
         current = status.get("current_series")

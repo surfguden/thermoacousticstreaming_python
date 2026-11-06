@@ -108,7 +108,6 @@ class SimpleSeriesPanel(QWidget):
         self.tiff_format = QComboBox()
         self.tiff_format.addItem("Individual TIFF", "frames")
         self.tiff_format.addItem("Stacked TIFF", "stacked")
-        left_groups = [output]
 
         timing = QGroupBox("Timing of one experiment (from the PC trigger)")
         timing.setToolTip("When, after the PC trigger, the ultrasound and the laser start and how long they run, "
@@ -127,18 +126,32 @@ class SimpleSeriesPanel(QWidget):
             form.addRow(label, control)
 
         frequency = QGroupBox("Ultrasound frequency")
-        form = QFormLayout(frequency)
-        self.frequency_plan = wrapped_label(lines=3)
-        self.frequency_plan.setStyleSheet("background: #eef3fa; border: 1px solid #c5d3e8; padding: 4px 8px; "
+        outer = QVBoxLayout(frequency)
+        # What the plan is, first: combinations and the total from the compiled plan.
+        self.frequency_plan = wrapped_label(lines=2)
+        self.frequency_plan.setStyleSheet("background: #eef3fa; border: 1px solid #c5d3e8; padding: 3px 8px; "
                                           "color: #111")
-        form.addRow(self.frequency_plan)
-        # Two independent choices: (1) the center frequency is fixed or scanned across experiments;
-        # (2) a frequency sweep inside each experiment is off or on (its width is again fixed or scanned).
+        outer.addWidget(self.frequency_plan)
+        # Two independent choices side by side: (1) the center frequency is fixed or scanned across experiments
+        # (with the amplitude); (2) a frequency sweep inside each experiment is off or on, its width again
+        # fixed or scanned.
+        columns = QHBoxLayout()
+        columns.setSpacing(16)
+        form = QFormLayout()
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        right = QFormLayout()
+        right.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        form.setVerticalSpacing(4)
+        right.setVerticalSpacing(4)
+        columns.addLayout(form, 1)
+        columns.addLayout(right, 1)
+        outer.addLayout(columns)
         self.frequency = self._range(form, "Center frequency", 1_000_000, 1_000_000, frequency=True, unit="MHz",
-                                value_name="Frequency")
+                                     value_name="Frequency")
+        self.amplitude = self._range(form, "AD2 source peak amplitude (V)", 1, 1, maximum=5)
         sweep_head = QWidget()
         head = QHBoxLayout(sweep_head)
-        head.setContentsMargins(0, 4, 0, 0)
+        head.setContentsMargins(0, 0, 0, 0)
         self.sweep_enabled = QCheckBox("Sweep the frequency inside each experiment")
         self.sweep_enabled.setStyleSheet("font-weight: 600")
         self.sweep_enabled.setToolTip("Independent of scanning the center frequency. When on, each experiment's "
@@ -147,23 +160,23 @@ class SimpleSeriesPanel(QWidget):
         head.addWidget(self.sweep_enabled)
         head.addWidget(self.sweep_badge)
         head.addStretch(1)
-        form.addRow(sweep_head)
+        right.addRow(sweep_head)
         self.sweep_detail = QWidget()
         detail = QFormLayout(self.sweep_detail)
         detail.setContentsMargins(0, 0, 0, 0)
-        self.sweep_width = self._range(detail, "Full sweep width", 100_000, 100_000, frequency=True, unit="kHz",
-                                   value_name="Sweep width")
+        detail.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        self.sweep_width = self._range(detail, "Full sweep width (center ± width/2)", 100_000, 100_000,
+                                       frequency=True, unit="kHz", value_name="Sweep width")
         self.sweep_period = number(1, 0.001, 1_000_000)
         detail.addRow("Sweep period (ms), triangle", self.sweep_period)
+        right.addRow(self.sweep_detail)
+        self.sweep_off_note = wrapped_label("Off: each experiment uses its center frequency as one fixed "
+                                            "frequency. Width and period are kept for when it is on.", lines=2)
+        self.sweep_off_note.setStyleSheet("color: #444")
+        right.addRow(self.sweep_off_note)
+        # Explanation and schematic on demand; the summary line keeps the shown combination readable when folded.
         self.sweep_explain = wrapped_label(lines=3)
         self.sweep_explain.setStyleSheet("color: #444")
-        detail.addRow(self.sweep_explain)
-        form.addRow(self.sweep_detail)
-        self.sweep_off_note = wrapped_label("Off: each experiment uses its center frequency as one fixed "
-                                            "frequency. Width and period stay stored for when it is on.", lines=2)
-        self.sweep_off_note.setStyleSheet("color: #444")
-        form.addRow(self.sweep_off_note)
-        self.amplitude = self._range(form, "AD2 source peak amplitude (V)", 1, 1, maximum=5)
         self.schematic = SweepSchematic()
         self.combination = integer(1, 1, 1)
         self.combination_label = wrapped_label(lines=2)
@@ -173,17 +186,22 @@ class SimpleSeriesPanel(QWidget):
         picker_row.addWidget(QLabel("Schematic of combination"))
         picker_row.addWidget(self.combination)
         picker_row.addWidget(self.combination_label, 1)
-        form.addRow(self.schematic_picker)
-        form.addRow(self.schematic)
         self.schematic_note = wrapped_label("Requested values, for illustration — not a measured waveform. "
                                             "The phase of the sweep is not shown.", lines=2)
         note_font = self.schematic_note.font()
         note_font.setItalic(True)
         self.schematic_note.setFont(note_font)
         self.schematic_note.setStyleSheet("color: #8a5a00")
-        form.addRow(self.schematic_note)
-        left_groups.append(frequency)
-        left_groups.append(timing)  # the single-experiment output timing is core, not an engineering detail
+        self.frequency_details = CollapsibleSection("Explanation and schematic")
+        details_body = QWidget()
+        details_layout = QVBoxLayout(details_body)
+        details_layout.setContentsMargins(12, 0, 0, 0)
+        for widget in (self.sweep_explain, self.schematic_picker, self.schematic, self.schematic_note):
+            details_layout.addWidget(widget)
+        self.frequency_details.set_content(details_body)
+        outer.addWidget(self.frequency_details)
+        top_groups = [output, frequency]
+        left_groups = [timing]  # the single-experiment output timing is core, not an engineering detail
 
         temperature = QGroupBox("Temperature program")
         form = QFormLayout(temperature)
@@ -192,6 +210,7 @@ class SimpleSeriesPanel(QWidget):
         self.tec_channel = QComboBox()
         self.tec_channel.addItem("Channel 1", 1)
         self.tec_channel.addItem("Channel 2", 2)
+        self._temperature_form = form
         self.temperature = self._range(form, "Temperature (°C)", 25, 25, minimum=0, maximum=80)
         self.temperature_wait_for_stability = QCheckBox(
             "Wait for the controller to confirm stability (instead of a fixed duration alone)")
@@ -266,7 +285,7 @@ class SimpleSeriesPanel(QWidget):
         advanced_grid.addWidget(stability, 0, 0)
         advanced_grid.setColumnStretch(0, 1)
         self.advanced.set_content(advanced_body)
-        self._left_groups, self._right_groups = left_groups, right_groups
+        self._top_groups, self._left_groups, self._right_groups = top_groups, left_groups, right_groups
         self._grid_columns = 0
         self._body_grid = grid
         self._arrange_groups(2)
@@ -397,22 +416,25 @@ class SimpleSeriesPanel(QWidget):
             return
         self._grid_columns = columns
         grid = self._body_grid
-        for group in (*self._left_groups, *self._right_groups, self.advanced):
+        for group in (*self._top_groups, *self._left_groups, *self._right_groups, self.advanced):
             grid.removeWidget(group)
         if columns == 1:
-            groups = [*self._left_groups, *self._right_groups]
+            groups = [*self._top_groups, *self._left_groups, *self._right_groups]
             for row, group in enumerate(groups):
                 grid.addWidget(group, row, 0, 1, 2)
             rows = len(groups)
         else:
-            # Output (descriptor and folder) is one short row across the top; the two columns follow it.
-            grid.addWidget(self._left_groups[0], 0, 0, 1, 2)
-            left = self._left_groups[1:]
-            for row, group in enumerate(left, start=1):
+            # Output (descriptor and folder) and the ultrasound frequency run across the top; the two columns
+            # (timing, acquisition | temperature, repeats and flush) follow, so they are not a long tail.
+            top = len(self._top_groups)
+            for row, group in enumerate(self._top_groups):
+                grid.addWidget(group, row, 0, 1, 2)
+            left = self._left_groups
+            for row, group in enumerate(left, start=top):
                 grid.addWidget(group, row, 0)
-            for row, group in enumerate(self._right_groups, start=1):
+            for row, group in enumerate(self._right_groups, start=top):
                 grid.addWidget(group, row, 1)
-            rows = 1 + max(len(left), len(self._right_groups))
+            rows = top + max(len(left), len(self._right_groups))
         grid.addWidget(self.advanced, rows, 0, 1, 2)
         for row in range(rows + 2):
             grid.setRowStretch(row, 1 if row == rows + 1 else 0)
@@ -780,6 +802,7 @@ class SimpleSeriesPanel(QWidget):
             self.schematic.show_combination(None, None, None, False)
             self.schematic_picker.setVisible(False)
             self.schematic_note.setVisible(False)
+            self.frequency_details.set_summary("not available")
             return
         nc, nw = len(centers), (len(widths) if sweep else 1)
         def noun(n: int, one: str, many: str) -> str:
@@ -807,6 +830,9 @@ class SimpleSeriesPanel(QWidget):
         self.schematic.show_combination(c, w, self.sweep_period.value() if sweep else None, sweep)
         self.schematic_picker.setVisible(total_combinations > 1)
         self.schematic_note.setVisible(True)
+        self.frequency_details.set_summary(
+            f"combination {index + 1} of {total_combinations}: center {format_frequency(c)}"
+            + (f" · full width {format_frequency(w)}" if sweep else " · fixed"))
         self.combination_label.setText(
             f"of {total_combinations}: center {format_frequency(c)}" + (f" · full width {format_frequency(w)}" if sweep else "")
             + (" · the others are not drawn" if total_combinations > 1 else ""))
@@ -896,6 +922,10 @@ class SimpleSeriesPanel(QWidget):
         for widget in (*self.temperature, self.tec_channel, self.temp_wait,
                       self.temperature_wait_for_stability):
             widget.setEnabled(control)
+        # Unused rows take no space; their values stay and come back with the switch.
+        for widget in (self._editors["Temperature (°C)"], self.tec_channel, self.temperature_wait_for_stability,
+                       self.temp_wait):
+            self._temperature_form.setRowVisible(widget, control)
         for widget in (self.temperature_tolerance, self.temperature_min_settle, self.temperature_max_wait):
             widget.setEnabled(control and self.temperature_wait_for_stability.isChecked())
 

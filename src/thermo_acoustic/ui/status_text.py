@@ -31,8 +31,9 @@ def connection_color(status: DeviceStatus | None) -> str:
 
 
 def format_frequency(hz: object) -> str:
-    """A frequency as Hz, kHz or MHz for reading. Display only: the value is divided by a power of ten and
-    printed with enough digits (12 significant) that no entered frequency is visibly rounded."""
+    """A frequency as Hz, kHz or MHz for reading: a summary with at most 12 significant digits, so a very long value
+    is rounded here (99,999,999.999999 Hz reads as 100 MHz). The exact value is the stored Hz number: it stays in the
+    input fields (which show it in full) and in `exact_condition_text` for tooltips."""
     if not isinstance(hz, (int, float)) or isinstance(hz, bool):
         return "unknown" if hz is None else str(hz)
     magnitude = abs(hz)
@@ -130,6 +131,11 @@ def sweep_summary(parameters: dict | None, plan: dict | None = None, *, say_requ
     else:
         timing = "period not recorded"
     return f"sweep full width {format_frequency(width)}{band}, {timing}"
+
+
+def exact_condition_text(parameters: dict | None) -> str:
+    """The stored parameter values exactly as they are (Hz, V, ms, °C), for a tooltip next to a readable summary."""
+    return "\n".join(f"{key} = {value!r}" for key, value in (parameters or {}).items())
 
 
 def describe_condition(parameters: dict | None, plan: dict | None = None) -> str:

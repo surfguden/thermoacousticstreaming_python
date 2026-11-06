@@ -230,6 +230,8 @@ class RangeEditor(QWidget):
         self.start_caption.setText("From" if scan else "Value")
         for widget in (self.stop, self.stop_caption, self.steps, self.steps_caption):
             widget.setVisible(scan)
+        self.start_caption.setVisible(scan)  # a single field needs no "Value" caption; the mode button says it
+        self.info.setVisible(True)
         if scan:
             try:
                 self.info.setText(f"{self.steps.value()} points: " + bounded_values(self.points(), self.frequency))
@@ -239,7 +241,8 @@ class RangeEditor(QWidget):
             kept = ""
             if self.stop.value() != self.start.value():
                 kept = f" Stop ({_fmt(self.stop.value(), self.frequency)}) is kept but not used with 1 point."
-            self.info.setText("The same value in every experiment." + kept)
+            self.info.setText(kept.strip())
+            self.info.setVisible(bool(kept))  # "same value in every experiment" is the Fixed button's tooltip
 
     def set_error(self, text: str | None) -> None:
         """Show an error of the existing validation under the input it is about. Text and a warning sign carry

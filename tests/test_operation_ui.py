@@ -98,7 +98,7 @@ def test_form_uses_one_column_on_a_narrow_window_and_two_on_a_wide_one(window, q
         assert panel._grid_columns == columns, size
     # Moving groups around must keep every group in the form.
     placed = {panel._body_grid.itemAt(i).widget() for i in range(panel._body_grid.count())}
-    assert set(panel._left_groups + panel._right_groups + [panel.advanced]) <= placed
+    assert set(panel._top_groups + panel._left_groups + panel._right_groups + [panel.advanced]) <= placed
 
 
 def test_condition_text_uses_the_plans_own_values_and_skips_unused_axes():
@@ -458,7 +458,7 @@ def test_range_rows_say_whether_they_are_fixed_or_a_scan_and_timing_table_follow
     steps.setValue(1)
     editor = start.parentWidget()
     assert editor.fixed_button.isChecked() and not editor.scan_button.isChecked()
-    assert "same value in every experiment" in editor.info.text()
+    assert editor.info.isHidden()  # fixed and nothing kept: no extra text needed
     steps.setValue(3)
     assert editor.scan_button.isChecked() and "3 points:" in editor.info.text()
     panel.sound_start.setValue(0.5)

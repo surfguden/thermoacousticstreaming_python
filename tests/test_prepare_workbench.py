@@ -413,11 +413,16 @@ def test_folded_summaries_always_name_their_device(env):
     assert "Z-stage: not connected" in prepare.imaging_section.summary.text()
 
 
-def test_frequency_display_is_engineering_format_without_visible_rounding():
+def test_frequency_summary_is_readable_and_the_exact_value_stays_available():
     from thermo_acoustic.ui.status_text import describe_condition, format_frequency
     assert format_frequency(1_000_000) == "1 MHz" and format_frequency(1_200_000.0) == "1.2 MHz"
     assert format_frequency(1_234_567.891) == "1.234567891 MHz" and format_frequency(999.5) == "999.5 Hz"
     assert format_frequency(50_000) == "50 kHz" and format_frequency(0) == "0 Hz"
+    # the summary keeps 12 significant digits, so a very long value is rounded in it ...
+    assert format_frequency(99_999_999.999999) == "100 MHz"
+    # ... and the exact stored value is in the tooltip text, and in the input fields (see test_frequency_section)
+    from thermo_acoustic.ui.status_text import exact_condition_text
+    assert "frequency_hz = 99999999.999999" in exact_condition_text({"frequency_hz": 99_999_999.999999})
     assert describe_condition({"frequency_hz": 1e6, "sweep_width_hz": "NaN"}) == "frequency 1 MHz · sweep off"
     assert describe_condition({"frequency_hz": 1.2e6, "sweep_width_hz": 1e5}) == "frequency 1.2 MHz · sweep full width 100 kHz (1.15 MHz … 1.25 MHz), period not recorded"
 

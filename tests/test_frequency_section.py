@@ -186,3 +186,13 @@ def test_scanned_series_still_summarise_timing_and_sweep_from_the_definition(pan
     assert "Frequency sweep inside each experiment: ON · triangle · 5 ms (requested)" in panel.summary.text()
     assert "Center frequency: 1 MHz .. 1.4 MHz (3 values)" in panel.summary.text()
     assert "Sweep full width: 100 kHz .. 200 kHz (2 values)" in panel.summary.text()
+
+
+def test_input_shows_the_exact_stored_value_even_where_the_summary_rounds(panel):
+    editor = panel._editors["Frequency"]
+    start = panel.frequency[0]
+    start.setValue(99_999_999.999999)
+    editor.unit.setCurrentText("MHz")
+    assert start.text() == "99.999999999999" and start.value() == 99_999_999.999999
+    editor.unit.setCurrentText("Hz")
+    assert start.text() == "99999999.999999"
