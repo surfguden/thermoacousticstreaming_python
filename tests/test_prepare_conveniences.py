@@ -143,8 +143,23 @@ def test_raw_frame_file_has_exactly_the_pixels_and_nothing_is_overwritten_by_fai
     assert not (tmp_path / "bad.tif").exists()
 
 
-def test_the_viewer_saves_the_frame_shown_at_the_click_not_a_later_one(qt_app, tmp_path, monkeypatch):
-    viewer = CameraImageWindow()
+@pytest.fixture
+def viewers(qt_app):
+    """Viewers show themselves when a frame arrives; close every one so no top-level window outlives its test
+    (a leftover visible window sits over the next test's window and swallows its pointer events)."""
+    made = []
+
+    def make():
+        made.append(CameraImageWindow())
+        return made[-1]
+    yield make
+    for window in made:
+        window.close()
+        window.deleteLater()
+
+
+def test_the_viewer_saves_the_frame_shown_at_the_click_not_a_later_one(viewers, tmp_path, monkeypatch):
+    viewer = viewers()
     shown, later = _frame(1), _frame(2)
     viewer.show_frame(shown, "live")
     viewer.limit_low.setValue(100)
@@ -163,7 +178,7 @@ def test_the_viewer_saves_the_frame_shown_at_the_click_not_a_later_one(qt_app, t
     monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: ("", ""))
     viewer.save_current_raw_frame()
     assert "no file was chosen" in viewer.save_feedback.text()
-    empty = CameraImageWindow()
+    empty = viewers()
     empty.save_current_raw_frame()
     assert "no image is shown" in empty.save_feedback.text()
     monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(tmp_path / "no" / "x.tif"), ""))
