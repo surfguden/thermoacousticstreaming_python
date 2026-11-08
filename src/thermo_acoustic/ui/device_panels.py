@@ -1358,7 +1358,7 @@ def queued_flush_text(needed_ml: float | None, level_ml: float | None, connected
         return f"{need} · level unknown (pump not connected)"
     if level_ml is None:
         return f"{need} · level not read yet"
-    left = level_ml - needed_ml
+    left = round(level_ml - needed_ml, 9)  # float noise (1e-16) is not a shortfall
     result = f"{left:g} mL left after it" if left >= 0 else f"short by {-left:g} mL"
     return f"{need} · level {level_ml:g} mL as last read · {result} (arithmetic, not measured)"
 

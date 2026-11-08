@@ -253,4 +253,5 @@ def test_a_running_experiment_shows_its_frames_as_they_arrive(env, tmp_path):
     # frames arrived one by one while the sequence was still short of its last frame
     assert any(f"frame {k}/6" in text for text in seen_status for k in (1, 2, 3, 4, 5)), seen_status
     assert len({frame.tobytes() for frame in seen_frames}) >= 2  # different frames, not one repeated image
+    assert all("/6" in text for text in seen_status), seen_status  # the counted sequence only, never the preview
     assert "this experiment" in seen_status[0] and "saved to disk after the last frame" in seen_status[0]

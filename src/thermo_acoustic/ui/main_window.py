@@ -546,9 +546,13 @@ class MainWindow(QMainWindow):
         if pending is None:
             if not isinstance(value, CameraFrameProgress):
                 return
-            # A frame report from a request this window did not start: the experiment's own acquisition.
-            # (The preview between acquisitions belongs to a request started from the camera panel.)
-            self.panels[DeviceId.CAMERA].handle_experiment_progress(value)
+            # A frame report from a request this window did not start. A counted sequence is the experiment's own
+            # acquisition; an open-ended one is the continuous preview, which keeps its own wording.
+            camera = self.panels[DeviceId.CAMERA]
+            if value.requested_frame_count is None:
+                camera.handle_progress(value)
+            else:
+                camera.handle_experiment_progress(value)
             return
         else:
             panel, _action = pending
