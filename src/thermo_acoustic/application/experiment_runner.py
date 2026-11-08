@@ -470,6 +470,9 @@ class ExperimentManager(QObject):
             timer.stop()
             timer.deleteLater()
         self._timers.clear()
+        # Commands of this batch that were queued but have not started must not run after the stop: first drop them
+        # (before anything below can dispatch the next queued command), then end the running workflow.
+        self.controller.cancel_queued_commands("experiment", "Cancelled: the experiment batch was aborted")
         self.controller.cancel_active_workflow()
         self._request_stops((DeviceId.AD2, DeviceId.CAMERA, DeviceId.PUMP, DeviceId.VALVE))
         self._fail(reason)
@@ -1356,6 +1359,7 @@ class ExperimentManager(QObject):
         self._failure_reason = reason
         self._state = "stopping"
         self._phase = f"Safe stop after failure: {reason}"
+        self.controller.cancel_queued_commands("experiment", "Cancelled: the experiment batch ended")
         # Stop active electrical/camera outputs. An already-started flush is
         # allowed to perform its own valve/pump cleanup; a host-owned file save
         # is allowed to finish. No subsequent experiment is dispatched.

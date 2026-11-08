@@ -175,3 +175,52 @@ def test_panic_while_a_stop_is_outstanding_does_not_leave_the_batch_stuck(qt_app
         release.set()
         panel.close()
         controller.shutdown()
+
+
+def test_abort_does_not_let_a_queued_experiment_command_run_afterwards(qt_app, tmp_path):
+    """The camera stop succeeds, then the already queued sequence collect used to run and fault the camera."""
+    marks = {}
+
+    def remember(controller):
+        marks["after"] = len(controller_events)
+    controller, panel, events, log, _folder = _run_and_abort(qt_app, tmp_path, before_abort=lambda c: marks.update(
+        index=len(events)))
+    controller_events = events
+    try:
+        status = _wait_until_terminal(qt_app, controller)
+        assert status["state"] == "aborted"
+        later = events[marks["index"]:]
+        started_after = [e for e in later if e.state == "running" and e.source == "experiment"
+                         and e.operation is not DeviceOperation.SAFE_STOP]
+        assert started_after == [], [(e.operation.value, e.state) for e in started_after]
+        camera = controller.statuses()[DeviceId.CAMERA]
+        assert camera.fault is None and camera.connection is ConnectionState.CONNECTED, camera.fault
+        assert not controller._queue and controller._active is None  # nothing left queued or running
+    finally:
+        panel.close()
+        controller.shutdown()
+
+
+def test_cancel_queued_commands_takes_only_the_batchs_waiting_commands_and_ends_them_normally(qt_app):
+    from time import monotonic as now
+    from thermo_acoustic.application.commands import DeviceCommand, NoArguments, WaitArgs, WorkflowCommand, WorkflowOperation
+    from thermo_acoustic.application.controller import _Pending
+    from thermo_acoustic.hal.registry import DeviceRegistry
+    from thermo_acoustic.application import ApplicationController
+    from thermo_acoustic.domain.models import OperatingMode
+    controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
+    experiment = DeviceCommand(DeviceId.CAMERA, DeviceOperation.CAMERA_SEQUENCE_COLLECT, source="experiment")
+    wait = WorkflowCommand(WorkflowOperation.WAIT, WaitArgs(1.0), source="experiment")
+    manual = DeviceCommand(DeviceId.PUMP, DeviceOperation.PUMP_STATUS_READ, source="ui")
+    for command in (experiment, manual, wait):
+        controller._queue.append(_Pending(command, now()))
+    results, events = [], []
+    controller.command_result.connect(results.append)
+    controller.command_event.connect(events.append)
+    assert controller.cancel_queued_commands("experiment", "Cancelled: test") == 2
+    assert [p.command for p in controller._queue] == [manual]  # a manual request is not the batch's to cancel
+    assert {r.request_id for r in results} == {experiment.request_id, wait.request_id}
+    assert all(not r.ok and r.error == "Cancelled: test" for r in results)
+    assert {e.request_id for e in events if e.state == "cancelled"} == {experiment.request_id, wait.request_id}
+    assert controller._active is None  # cancelling dispatched nothing
+    assert controller.cancel_queued_commands("experiment", "again") == 0

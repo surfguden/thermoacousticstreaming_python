@@ -440,6 +440,23 @@ class ApplicationController(QObject):
         self._active = None
         self._dispatch_next()
 
+    def cancel_queued_commands(self, source: str, reason: str) -> int:
+        """End every command of `source` that is still waiting in the queue, with a normal 'cancelled' result and
+        event. Nothing that has started is touched (stop requests are urgent and never queued; a running command
+        ends through its own cancel path), and commands of other sources stay queued. The queue is rewritten before
+        any result is emitted, so a handler cannot cause an old command to be dispatched meanwhile."""
+        cancelled = [pending.command for pending in self._queue if pending.command.source == source]
+        if not cancelled:
+            return 0
+        kept = [pending for pending in self._queue if pending.command.source != source]
+        self._queue.clear()
+        self._queue.extend(kept)
+        for command in cancelled:
+            self.command_result.emit(CommandResult(command.request_id, command.device, command.operation, False,
+                                                   error=reason, command=command))
+            self._emit(command, "cancelled", reason)
+        return len(cancelled)
+
     def cancel_active_workflow(self) -> None:
         if self._flush is not None:
             self._flush.abort("Flush aborted by operator")
