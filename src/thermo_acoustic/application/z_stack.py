@@ -71,6 +71,7 @@ class ZStackRunner(QObject):
         # sent by an earlier run (or after this one ended) must neither send commands nor rewrite a final state.
         self._run = 0
         self._terminal: dict[int, str] = {}
+        self._saves: list[dict] = []  # image saves that have started and are not yet recorded
         self._writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="z-stack-save")
         self._save_future: Future | None = None
         controller.command_result.connect(self._result)
@@ -270,33 +271,46 @@ class ZStackRunner(QObject):
                   "captured_utc": datetime.now(timezone.utc).isoformat(),
                   "file": f"point_{index + 1:04d}.tif"}
         self._publish(f"Saving point {index + 1}/{self._settings.points}")
-        run, records, settings = self._run, self._records, self._settings
-        camera = getattr(self, "_camera_settings", None)
-        future = self._writer.submit(self._save_frame, settings.folder / record["file"], frame)
-        self._save_future = future
+        job = {"future": self._writer.submit(self._save_frame, self._settings.folder / record["file"], frame),
+               "run": self._run, "record": record, "records": self._records, "settings": self._settings,
+               "camera": getattr(self, "_camera_settings", None), "done": False}
+        self._save_future = job["future"]
+        self._saves.append(job)
+        self._poll_save(job)
 
-        def check() -> None:
-            # A started save is always finished and recorded in the run it belongs to, even after that run ended
-            # (the image is on disk); it never touches a later run's records or state.
-            if not future.done():
-                QTimer.singleShot(20, check)
-                return
-            current = run == self._run
-            try:
-                future.result()
-            except Exception as exc:
-                if current and self.state == "running":
-                    self._fail(f"Z stack image save failed: {exc}")
-                else:
-                    self.notice.emit(f"Z stack image save failed after the run ended: {exc}")
-                return
-            records.append(record)
-            state = self.state if current else self._terminal.get(run, "aborted")
-            write_json(settings.folder / "metadata.json", {
-                "state": state, "settings": settings, "applied_camera_settings": camera, "points": records})
+    def _poll_save(self, job: dict) -> None:
+        if job["done"]:
+            return
+        if not job["future"].done():
+            QTimer.singleShot(20, lambda: self._poll_save(job))
+            return
+        self._complete_save(job)
+
+    def _complete_save(self, job: dict) -> None:
+        """Record a finished save once, in the run that started it, whoever notices it first: the polling timer or
+        close(). The image is on disk by now; it never touches a later run's records or state."""
+        if job["done"] or not job["future"].done():
+            return
+        job["done"] = True
+        if job in self._saves:
+            self._saves.remove(job)
+        run, settings = job["run"], job["settings"]
+        current = run == self._run
+        try:
+            job["future"].result()
+        except Exception as exc:
             if current and self.state == "running":
-                self._resume_preview()
-        check()
+                self._fail(f"Z stack image save failed: {exc}")
+            else:
+                self.notice.emit(f"Z stack image save failed after the run ended: {exc}")
+            return
+        job["records"].append(job["record"])
+        state = self.state if current else self._terminal.get(run, "aborted")
+        write_json(settings.folder / "metadata.json", {
+            "state": state, "settings": settings, "applied_camera_settings": job["camera"],
+            "points": job["records"]})
+        if current and self.state == "running":
+            self._resume_preview()
 
     @staticmethod
     def _save_frame(path: Path, frame: np.ndarray) -> None:
@@ -323,6 +337,8 @@ class ZStackRunner(QObject):
     def close(self) -> None:
         self.abort_for_panic()
         self._writer.shutdown(wait=True)
+        for job in list(self._saves):  # every started save has finished: record it now, not on a later timer tick
+            self._complete_save(job)
 
     def _finish(self, state: str) -> None:
         self._write_metadata(state)

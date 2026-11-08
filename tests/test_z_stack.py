@@ -184,3 +184,79 @@ def test_a_save_finishing_after_an_abort_is_kept_and_belongs_to_the_run_that_sta
     assert saved["state"] == "aborted" and [p["file"] for p in saved["points"]] == ["point_0001.tif"]
     assert runner._records == []  # and it was not added to the new run
     assert json.loads((second / "metadata.json").read_text())["points"] == []
+
+
+# ------------------------------------------------ closing while an image is still being saved
+def _blocked_save_run(tmp_path, name="first"):
+    controller, runner, folder = _runner(tmp_path, name)
+    _start_run(runner, folder)
+    release = threading.Event()
+    original = ZStackRunner._save_frame
+
+    def slow_save(path, frame):
+        assert release.wait(10)
+        original(path, frame)
+    runner._save_frame = slow_save
+    runner.current_index = 0
+    runner._observed_position = 10.0
+    runner._captured(SimpleNamespace(frame=np.zeros((4, 4), np.uint16)))
+    return controller, runner, folder, release
+
+
+def _points(folder):
+    data = json.loads((folder / "metadata.json").read_text())
+    return data["state"], [p["file"] for p in data["points"]]
+
+
+def test_close_during_a_save_returns_with_the_image_and_its_record_together(tmp_path):
+    controller, runner, folder, release = _blocked_save_run(tmp_path)
+    threading.Timer(0.1, release.set).start()  # the save finishes while close() is waiting for it
+    runner.close()  # no event processing afterwards: what is on disk now is what a reader sees
+    assert (folder / "point_0001.tif").exists()
+    assert _points(folder) == ("aborted", ["point_0001.tif"])  # used to be [] until a later Qt event
+    assert runner.state == "aborted"
+
+
+def test_late_callbacks_and_a_second_close_after_close_change_nothing(tmp_path):
+    app = QApplication.instance() or QApplication(["test-z-stack"])
+    controller, runner, folder, release = _blocked_save_run(tmp_path)
+    threading.Timer(0.1, release.set).start()
+    runner.close()
+    controller.commands.clear()
+    _spin(app, 0.3)  # the polling timer from before close fires here
+    runner.close()
+    assert _points(folder) == ("aborted", ["point_0001.tif"])  # recorded once, state untouched
+    assert controller.commands == [] and runner.state == "aborted" and len(runner._records) == 1
+
+
+def test_a_failing_save_is_reported_not_recorded(tmp_path):
+    controller, runner, folder = _runner(tmp_path)
+    _start_run(runner, folder)
+    notices = []
+    runner.notice.connect(notices.append)
+    release = threading.Event()
+
+    def failing_save(path, frame):
+        assert release.wait(10)
+        raise OSError("disk full")
+    runner._save_frame = failing_save
+    runner.current_index = 0
+    runner._observed_position = 10.0
+    runner._captured(SimpleNamespace(frame=np.zeros((4, 4), np.uint16)))
+    runner.abort_for_panic()  # the run ends while the save is still going to fail
+    threading.Timer(0.1, release.set).start()
+    runner.close()
+    assert _points(folder) == ("aborted", [])  # nothing is claimed that is not on disk
+    assert any("disk full" in text for text in notices)
+
+
+def test_a_save_from_an_old_run_closed_over_a_new_run_stays_with_the_old_run(tmp_path):
+    controller, runner, first, release = _blocked_save_run(tmp_path, "first")
+    runner.abort_for_panic()
+    second = tmp_path / "second"
+    second.mkdir()
+    _start_run(runner, second)
+    threading.Timer(0.1, release.set).start()
+    runner.close()  # closes the second run too, while the first run's save is finishing
+    assert _points(first) == ("aborted", ["point_0001.tif"])
+    assert _points(second) == ("aborted", [])
