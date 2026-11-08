@@ -91,6 +91,10 @@ is part of the current plan. Restore labelled partial captures only if a concret
 | Z labels | Measured `position_um` separated from `commanded_position_um`; generic move records requested/sent/unconfirmed. `test_device_workers.py`, `test_abort_and_close.py`. |
 | Data and lifecycle | Saved captures survive later failure; save/flush and recorder drain guard finalization. Existing failure/race tests in `test_simple_series.py`. |
 | Exit | Window drains a running batch, workers cancel/stop/disconnect, errors come from the worker result, shared wait deadline retains pending threads and their owners. Panic during shutdown reports rather than re-dispatching. `test_abort_and_close.py` includes subprocess coverage. |
+| Abort stops | Ordinary Abort/failure stops connected devices including those in ERROR (connected, last operation failed), asks each device once, waits for the stop results before the end state and adds a failed stop to the end reason, saved status/events, `stop_failures` and a red monitor alert. TEC regulation is still not touched. Command success is not a measured physical stop. `test_abort_stop_results.py`. |
+| Multi-pump stop | `PumpWorker.safe_stop` tries every unit and reports each failure with its unit. `test_device_workers.py`. |
+| Z-stack lifecycle | Timers, late results and started saves are tied to their run; an ended run cannot send commands or rewrite its state/metadata, and cannot add to a later run. `test_z_stack.py`. |
+| Z reference helpers | A reading older than a requested/accepted move is shown as old and not copied or recorded. `test_prepare_conveniences.py`. |
 | S12 | Targeted fake-SDK regressions added for changed code; no requirement to migrate every old driver test. |
 | Confirmation / framework choices | Current single Z confirmation strategy retained; no duplicate gate, general audit subsystem or automatic resume. |
 
