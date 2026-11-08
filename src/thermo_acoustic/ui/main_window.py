@@ -99,6 +99,7 @@ class MainWindow(QMainWindow):
         self.controller = controller
         self._ui_log_writer = ui_log_writer
         self._requests: dict[str, tuple[DevicePanel | WorkflowPanel, str]] = {}
+        self._camera_request_sources: dict[str, str] = {}  # request id -> who started it, for frame progress labels
         self._scroll_pages: dict[QWidget, QScrollArea] = {}
         self.setWindowTitle("Thermo-acoustic control — Simulation mode" if
                             controller.mode is OperatingMode.SIMULATION else "Thermo-acoustic control")
@@ -505,6 +506,8 @@ class MainWindow(QMainWindow):
         return answer == QMessageBox.StandardButton.Yes
 
     def _event(self, event: CommandEvent) -> None:
+        if event.device is DeviceId.CAMERA:
+            self._camera_request_sources[event.request_id] = event.source
         line = detailed_event_text(event)
         self.log.append(line)
         if self._ui_log_writer is not None:
@@ -528,6 +531,7 @@ class MainWindow(QMainWindow):
                 target.set_feedback(
                     summary, success=event.state == "completed"
                 )
+            self._camera_request_sources.pop(event.request_id, None)
             pending = self._requests.pop(event.request_id, None)
             if pending is not None:
                 panel, _action = pending
@@ -546,13 +550,14 @@ class MainWindow(QMainWindow):
         if pending is None:
             if not isinstance(value, CameraFrameProgress):
                 return
-            # A frame report from a request this window did not start. A counted sequence is the experiment's own
-            # acquisition; an open-ended one is the continuous preview, which keeps its own wording.
+            # A frame report from a request this window did not start. An open-ended one is the continuous
+            # preview and keeps its own wording; a counted sequence is named after the command that started it
+            # (the experiment, its preflight, or another source), not assumed to be the experiment.
             camera = self.panels[DeviceId.CAMERA]
             if value.requested_frame_count is None:
                 camera.handle_progress(value)
             else:
-                camera.handle_experiment_progress(value)
+                camera.handle_sequence_progress(value, self._camera_request_sources.get(request_id, ""))
             return
         else:
             panel, _action = pending

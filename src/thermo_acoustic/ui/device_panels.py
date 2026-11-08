@@ -2147,15 +2147,17 @@ class CameraPanel(DevicePanel):
                 f"Saved {result.frame_count} frames to {result.folder} ({result.format.value})"
             )
 
-    def handle_experiment_progress(self, progress: object) -> None:
-        """A frame of the running experiment's acquisition, shown as it arrives. The screen may skip frames;
-        what is saved is the complete sequence, written after the last frame."""
+    def handle_sequence_progress(self, progress: object, source: str) -> None:
+        """A frame of a counted sequence that the camera panel did not start, named by the command that started
+        it. The screen may skip frames; an experiment's complete sequence is saved after its last frame."""
         if not isinstance(progress, CameraFrameProgress):
             return
+        kind = {"experiment": "Experiment acquisition", "experiment-preflight": "Camera preflight capture"}.get(
+            source, f"Camera sequence (started by {source or 'an unidentified source'})")
         total = progress.requested_frame_count
+        note = " (this experiment; saved after the last frame)" if source == "experiment" else ""
         self.image_window.show_frame(
-            progress.frame, f"Experiment acquisition · frame {progress.captured_frame_count}"
-            + (f"/{total}" if total else "") + " (this experiment; saved to disk after the last frame)")
+            progress.frame, f"{kind} · frame {progress.captured_frame_count}" + (f"/{total}" if total else "") + note)
 
     def handle_progress(self, progress: object) -> None:
         if not isinstance(progress, CameraFrameProgress):

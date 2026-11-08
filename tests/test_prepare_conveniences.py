@@ -250,9 +250,15 @@ def test_a_running_experiment_shows_its_frames_as_they_arrive(env, tmp_path):
     panel.description.setText("live frames")
     panel.frames.setValue(6)
     panel.queue_button.click()
+    viewer = window.panels[DeviceId.CAMERA].image_window
+    preflight_status = []
+    controller.command_progress.connect(lambda *_: preflight_status.append(viewer.status.text())
+                                        if viewer.status.text().startswith("Camera ") else None)
     panel.preflight_button.click()
     wait(lambda: panel.camera_preflight_label.text().endswith("Yes"), timeout=15)
-    viewer = window.panels[DeviceId.CAMERA].image_window
+    # the preflight's own test capture is named as such, never as the experiment's acquisition
+    assert not any(text.startswith("Experiment acquisition") for text in preflight_status)
+    assert all(text.startswith("Camera preflight capture") for text in preflight_status), preflight_status
     seen_status, seen_frames = [], []
 
     def record():
@@ -269,4 +275,22 @@ def test_a_running_experiment_shows_its_frames_as_they_arrive(env, tmp_path):
     assert any(f"frame {k}/6" in text for text in seen_status for k in (1, 2, 3, 4, 5)), seen_status
     assert len({frame.tobytes() for frame in seen_frames}) >= 2  # different frames, not one repeated image
     assert all("/6" in text for text in seen_status), seen_status  # the counted sequence only, never the preview
-    assert "this experiment" in seen_status[0] and "saved to disk after the last frame" in seen_status[0]
+    assert "this experiment" in seen_status[0] and "saved after the last frame" in seen_status[0]
+
+
+def test_a_counted_sequence_is_named_after_the_command_that_started_it(qt_app):
+    """The source comes from the command, not from the fact that a total frame count exists."""
+    from thermo_acoustic.application.commands import CameraFrameProgress
+    from thermo_acoustic.ui.device_panels import CameraPanel
+    camera = CameraPanel()
+    frame = np.zeros((4, 4), np.uint16)
+    progress = CameraFrameProgress(frame, 2, 6, mode="sequence")
+    for source, expected in (("experiment", "Experiment acquisition · frame 2/6 (this experiment; saved after the last frame)"),
+                             ("experiment-preflight", "Camera preflight capture · frame 2/6"),
+                             ("z-stack", "Camera sequence (started by z-stack) · frame 2/6"),
+                             ("", "Camera sequence (started by an unidentified source) · frame 2/6")):
+        camera.handle_sequence_progress(progress, source)
+        assert camera.image_window.status.text() == expected
+    camera.handle_progress(CameraFrameProgress(frame, 41, None, mode="continuous"))  # the preview keeps its wording
+    assert camera.image_window.status.text() == "Continuous snapshot · frame 41"
+    camera.image_window.close()

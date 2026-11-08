@@ -980,12 +980,12 @@ class CameraImageWindow(QDialog):
         self.extra_top = QVBoxLayout()  # room for a subclass's own controls above the image
         left.addLayout(self.extra_top)
         left.addWidget(self.preview_state)
+        left.addWidget(self.status)  # the source and frame number of what is shown, above the image
         left.addWidget(self.frame_info)
         left.addWidget(self.preview, 1)
         left.addLayout(view_row)
         left.addLayout(save_row)
         left.addWidget(self.cursor_status)
-        left.addWidget(self.status)
         layout.addLayout(left, 1)
         side_body = QWidget()
         side = QVBoxLayout(side_body)
