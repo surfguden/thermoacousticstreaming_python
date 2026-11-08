@@ -988,7 +988,7 @@ def test_profile_round_trip_is_input_only_and_submits_nothing(qt_app, tmp_path):
     window.save_profile(path)
 
     document = json.loads(path.read_text(encoding="utf-8"))
-    assert set(document) == {"schema_version", "devices", "experiment"}
+    assert set(document) == {"schema_version", "devices", "experiment", "prepare"}
     assert "connection" not in path.read_text(encoding="utf-8")
 
     assert document["devices"]["pump"] == {}

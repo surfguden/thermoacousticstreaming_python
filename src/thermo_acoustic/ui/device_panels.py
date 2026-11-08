@@ -1348,6 +1348,21 @@ class LegacyPumpPanel(DevicePanel):
                     self.syringe_stroke.setValue(args.max_piston_stroke_mm)
 
 
+def queued_flush_text(needed_ml: float | None, level_ml: float | None, connected: bool) -> str:
+    """One pump unit: what the queued series need for flushing against the level as last read. The difference is
+    arithmetic on those two numbers, not a measurement; an unknown level is never treated as zero."""
+    if needed_ml is None:
+        return "Queued flush: none"
+    need = f"Queued flush needs {needed_ml:g} mL"
+    if not connected:
+        return f"{need} · level unknown (pump not connected)"
+    if level_ml is None:
+        return f"{need} · level not read yet"
+    left = level_ml - needed_ml
+    result = f"{left:g} mL left after it" if left >= 0 else f"short by {-left:g} mL"
+    return f"{need} · level {level_ml:g} mL as last read · {result} (arithmetic, not measured)"
+
+
 class PumpPanel(DevicePanel):
     """Dynamic tiles for the pump units declared by the Qmix Elements project."""
 
@@ -1365,6 +1380,7 @@ class PumpPanel(DevicePanel):
         self.tiles_layout = QGridLayout(self.tiles)
         self.tiles_layout.setContentsMargins(0, 0, 0, 0)
         self._last_units = ()
+        self._queued_flush: dict[int, float] = {}  # mL per pump unit needed by the queued series (from the queue)
         self._blink_visible = True
         self._blink_timer = QTimer(self)
         self._blink_timer.setInterval(500)
@@ -1373,6 +1389,10 @@ class PumpPanel(DevicePanel):
         self.empty_label = QLabel("Connect to discover pump units in the Qmix Elements configuration.")
         daily = self.daily_container().layout()
         daily.addWidget(self.empty_label)
+        self.queue_summary = QLabel()
+        self.queue_summary.setWordWrap(True)
+        self.queue_summary.setVisible(False)
+        daily.addWidget(self.queue_summary)
         daily.addWidget(self.tiles)
         # Low-frequency per-unit operations (built-in valve, reference move, syringe setup) stay on this page.
         self.detail_tiles = QWidget()
@@ -1422,6 +1442,9 @@ class PumpPanel(DevicePanel):
             fill_bar.setFixedHeight(10)
             fill_bar.setVisible(False)  # drawn only when level and capacity are both known
             form.addRow(fill_bar)
+            queue_label = QLabel()
+            queue_label.setWordWrap(True)
+            form.addRow(queue_label)
             form.addRow("Current flow (µL/min)", flow)
             form.addRow("Syringe", syringe_configuration)
             form.addRow("Pump's own valve", valve_state)
@@ -1445,6 +1468,7 @@ class PumpPanel(DevicePanel):
             form.addRow(button_row(level_button, flow_button))
             group.volume_label = volume
             group.fill_bar = fill_bar
+            group.queue_label = queue_label
             group.flow_label = flow
             group.state_label = state
             group.syringe_label = syringe_configuration
@@ -1473,7 +1497,33 @@ class PumpPanel(DevicePanel):
             self.tiles_layout.addWidget(group, 0, index)
             self.tiles_layout.setColumnStretch(index, 1)
         self.empty_label.setVisible(count == 0)
+        self._render_queued()
         self._update_controls()
+
+    def set_queued_flush(self, budget: dict[int, float]) -> None:
+        """Flush volume per unit that the queued (not yet started) series need; shown beside each unit's level."""
+        self._queued_flush = dict(budget)
+        self._render_queued()
+
+    def _render_queued(self) -> None:
+        demand = self._queued_flush
+        self.queue_summary.setVisible(bool(demand))
+        self.queue_summary.setText("Queued series need for flushing: " + " · ".join(
+            f"unit {unit + 1}: {ml:g} mL" for unit, ml in sorted(demand.items())) if demand else "")
+        levels = {unit.unit_index: unit.fill_level_ml for unit in self._last_units}
+        for unit in self._last_units:
+            item = self.tiles_layout.itemAtPosition(0, unit.unit_index)
+            if item is None or item.widget() is None or not hasattr(item.widget(), "queue_label"):
+                continue
+            label = item.widget().queue_label
+            label.setText(queued_flush_text(demand.get(unit.unit_index), levels.get(unit.unit_index), self._connected))
+            short = (demand.get(unit.unit_index) is not None and levels.get(unit.unit_index) is not None
+                     and self._connected and levels[unit.unit_index] < demand[unit.unit_index])
+            label.setStyleSheet("color: #a65a00; font-weight: 600" if short else "")
+
+    def set_status(self, status: DeviceStatus) -> None:
+        super().set_status(status)
+        self._render_queued()  # a disconnected pump's last level is not shown as a current one
 
     def _unit(self, index: int):
         return self._last_units[index] if index < len(self._last_units) else None
@@ -1576,6 +1626,7 @@ class PumpPanel(DevicePanel):
             group.syringe_label.setText(f"{unit.syringe_name} · {geometry}" if unit.syringe_name else geometry)
             group.valve_label.setText("Unavailable" if unit.valve_position is None else f"Position {unit.valve_position}")
         self._render_states()
+        self._render_queued()
 
     def _update_controls(self) -> None:
         super()._update_controls()
@@ -2093,6 +2144,16 @@ class CameraPanel(DevicePanel):
                 f"Saved {result.frame_count} frames to {result.folder} ({result.format.value})"
             )
 
+    def handle_experiment_progress(self, progress: object) -> None:
+        """A frame of the running experiment's acquisition, shown as it arrives. The screen may skip frames;
+        what is saved is the complete sequence, written after the last frame."""
+        if not isinstance(progress, CameraFrameProgress):
+            return
+        total = progress.requested_frame_count
+        self.image_window.show_frame(
+            progress.frame, f"Experiment acquisition · frame {progress.captured_frame_count}"
+            + (f"/{total}" if total else "") + " (this experiment; saved to disk after the last frame)")
+
     def handle_progress(self, progress: object) -> None:
         if not isinstance(progress, CameraFrameProgress):
             return
@@ -2367,7 +2428,18 @@ class ZStagePanel(DevicePanel):
         measured_font.setBold(True)
         measured_font.setPointSizeF(measured_font.pointSizeF() * 1.25)
         self.measured_label.setFont(measured_font)
-        form.addRow(self.measured_label)
+        self._measured: float | None = None  # last measured position (a reading, never a commanded target)
+        self._reference_um: float | None = None  # this session's single reference focus, recorded from a measurement
+        self.use_measured_button = QPushButton("Use as target")
+        self.use_measured_button.setToolTip("Copies the measured position into the Target field. Nothing moves: "
+                                            "press Move to go there.")
+        self.use_measured_button.clicked.connect(self._copy_measured_to_target)
+        measured_row = QWidget()
+        measured_layout = QHBoxLayout(measured_row)
+        measured_layout.setContentsMargins(0, 0, 0, 0)
+        measured_layout.addWidget(self.measured_label, 1)
+        measured_layout.addWidget(self.use_measured_button)
+        form.addRow(measured_row)
         move_row = QWidget()
         move_layout = QHBoxLayout(move_row)
         move_layout.setContentsMargins(0, 0, 0, 0)
@@ -2387,6 +2459,26 @@ class ZStagePanel(DevicePanel):
         jog_layout.addWidget(self.action_button("down", "Down", DeviceOperation.Z_STAGE_POSITION_RELATIVE,
                                                  lambda: ZStageRelativeMoveArgs(-self.step.value())))
         form.addRow(jog_row)
+        # One reference focus for this session: recorded from a measured position, shown with the difference to the
+        # current measurement. It is not a hardware zero and not a "focused" state; moving stays with Move.
+        self.reference_label = QLabel()
+        self.set_reference_button = QPushButton("Set reference")
+        self.set_reference_button.setToolTip("Records the measured position now as this session's reference focus. "
+                                             "It is forgotten when the stage is disconnected or the program closes.")
+        self.reference_to_target_button = QPushButton("Reference → target")
+        self.reference_to_target_button.setToolTip("Copies the reference into the Target field. Nothing moves.")
+        self.clear_reference_button = QPushButton("Clear")
+        self.set_reference_button.clicked.connect(self._set_reference)
+        self.reference_to_target_button.clicked.connect(self._reference_to_target)
+        self.clear_reference_button.clicked.connect(self._clear_reference)
+        reference_row = QWidget()
+        reference_layout = QHBoxLayout(reference_row)
+        reference_layout.setContentsMargins(0, 0, 0, 0)
+        reference_layout.addWidget(self.reference_label, 1)
+        for button in (self.set_reference_button, self.reference_to_target_button, self.clear_reference_button):
+            reference_layout.addWidget(button)
+        form.addRow(reference_row)
+        self._render_reference()
         # Closed loop is set up once per session; the two actions keep their order (check, then enable).
         form.addRow(button_row(
             self.action_button("requirement", "Check closed-loop requirement", DeviceOperation.Z_STAGE_CLOSED_LOOP_REQUIREMENT_READ),
@@ -2402,8 +2494,46 @@ class ZStagePanel(DevicePanel):
         daily.addWidget(self.readback_label)
         self.finish_layout()
 
+    def _copy_measured_to_target(self) -> None:
+        if self._measured is not None:
+            self.position.setValue(self._measured)  # fills the field only; no command is sent
+
+    def _set_reference(self) -> None:
+        if self._measured is not None:
+            self._reference_um = self._measured
+            self._render_reference()
+
+    def _reference_to_target(self) -> None:
+        if self._reference_um is not None:
+            self.position.setValue(self._reference_um)
+
+    def _clear_reference(self) -> None:
+        self._reference_um = None
+        self._render_reference()
+
+    def _render_reference(self) -> None:
+        measured, reference = self._measured, self._reference_um
+        if reference is None:
+            self.reference_label.setText("Reference focus: none (this session only)")
+        else:
+            now = ("measured now unknown" if measured is None
+                   else f"measured now {_position_text(measured)} ({measured - reference:+.3f} µm from it)")
+            self.reference_label.setText(f"Reference focus {_position_text(reference)} · {now}")
+        self.use_measured_button.setEnabled(measured is not None)
+        self.set_reference_button.setEnabled(measured is not None)
+        self.reference_to_target_button.setEnabled(reference is not None)
+        self.clear_reference_button.setEnabled(reference is not None)
+
+    def set_status(self, status: DeviceStatus) -> None:
+        super().set_status(status)
+        if not self._connected:  # a reference from another connection is not kept
+            self._reference_um = None
+            self._render_reference()
+
     def update_readback(self, readback: object) -> None:
         position = getattr(readback, "position_um", None)
+        self._measured = position
+        self._render_reference()
         unread = ("— (not read; closed loop is off)" if readback is not None and not getattr(readback, "closed_loop", False)
                   else "— (not read yet)")
         self.measured_label.setText("Measured position: " + (_position_text(position) if position is not None else unread)

@@ -546,7 +546,10 @@ class MainWindow(QMainWindow):
         if pending is None:
             if not isinstance(value, CameraFrameProgress):
                 return
-            panel = self.panels[DeviceId.CAMERA]
+            # A frame report from a request this window did not start: the experiment's own acquisition.
+            # (The preview between acquisitions belongs to a request started from the camera panel.)
+            self.panels[DeviceId.CAMERA].handle_experiment_progress(value)
+            return
         else:
             panel, _action = pending
         handler = getattr(panel, "handle_progress", None)
@@ -610,6 +613,9 @@ class MainWindow(QMainWindow):
             "experiment": simple_series_settings_to_profile(
                 self.experiment_panel._settings(require_pump_unit=False)
             ),
+            # Which devices Prepare has ticked for "Connect selected devices". A choice of devices only:
+            # loading it connects nothing and does not mean any device is connected or ready.
+            "prepare": {"selected_devices": [device.value for device in self.prepare_panel.selected_devices()]},
         }
 
     def save_profile(self, path: str | Path) -> None:
@@ -679,8 +685,20 @@ class MainWindow(QMainWindow):
             # reject gracefully; checked here, against this panel's own
             # live widgets, before anything is applied.
             self.experiment_panel._validate_settings_ranges(experiment_settings)
+        selected_devices = None
+        if "prepare" in document:  # absent in older files: the current ticks are left as they are
+            prepare = document["prepare"]
+            names = prepare.get("selected_devices") if isinstance(prepare, dict) else None
+            known = {device.value for device in DeviceId}
+            if (not isinstance(names, list) or any(not isinstance(name, str) for name in names)
+                    or set(names) - known or len(set(names)) != len(names)):
+                raise ValueError("prepare.selected_devices must be a list of distinct device names "
+                                 f"from: {', '.join(sorted(known))}")
+            selected_devices = [DeviceId(name) for name in names]
         for device, values in validated.items():
             self.panels[device].apply_profile(values)
+        if selected_devices is not None:
+            self.prepare_panel.set_selected_devices(selected_devices)  # ticks only; no connect, no command
         if experiment_settings is not None:
             # Pure input restoration: _apply_settings() only calls
             # setValue()/setChecked()/setCurrentIndex() on widgets -- no

@@ -221,6 +221,12 @@ class PreparePanel(QWidget):
         self._start_error = ""
         self._refresh()
 
+    def set_selected_devices(self, devices: list[DeviceId]) -> None:
+        """Set the ticks (loading saved settings). Only the checkboxes change: nothing is connected or sent."""
+        wanted = set(devices)
+        for device, box in self.checkboxes.items():
+            box.setChecked(device in wanted)
+
     def selected_devices(self) -> list[DeviceId]:
         return [device for device in DeviceId if self.checkboxes[device].isChecked()]
 
@@ -261,6 +267,8 @@ class PreparePanel(QWidget):
             self.state_labels[device].setStyleSheet(f"color: {connection_color(status)}")
             self.input_labels[device].setText(self.panels[device].connect_inputs_text())
         self._section_summaries(statuses)
+        # The pump cards compare each unit's level with what the queued series need; the queue is the source.
+        self.panels[DeviceId.PUMP].set_queued_flush(self.controller.experiments.queued_flush_budget())
         blocked = self.connector.blocked_reason()
         self.connect_button.setEnabled(blocked is None and not self.connector.active)
         if self._start_error and not self.connector.active:

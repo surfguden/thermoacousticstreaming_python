@@ -39,6 +39,7 @@ class SavedFramesWindow(CameraImageWindow):
         banner.setStyleSheet(f"background: {self._BLUE}; color: white; font-weight: 700; padding: 3px 6px;")
         self.banner = banner
         self.extra_top.addWidget(banner)
+        self.save_raw_button.setVisible(False)  # these are already files on disk; saving is for the live image
         source_row = QHBoxLayout()
         self.open_button = QPushButton("Open series or experiment folder…")
         self.experiment_combo = QComboBox()

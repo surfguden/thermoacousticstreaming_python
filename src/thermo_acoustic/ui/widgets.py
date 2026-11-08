@@ -5,6 +5,7 @@ from datetime import datetime
 
 import numpy as np
 from PIL import Image
+from ..application.frame_export import save_raw_frame
 from ..application.image_analysis import (
     Rect, RoiStats, clamp_rect, column_profile, move_rect, rect_from_points, roi_statistics, row_profile,
 )
@@ -14,6 +15,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QFileDialog,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -958,6 +960,17 @@ class CameraImageWindow(QDialog):
                        self.zoom_in_button, self.zoom_label):
             view_row.addWidget(widget)
         view_row.addStretch(1)
+        # Saves the pixels of the frame shown now, as received (no display range, zoom, ROI or marks).
+        self.save_raw_button = QPushButton("Save current raw frame…")
+        self.save_raw_button.setToolTip(
+            "Writes the frame shown right now as a TIFF with its original pixel values. The display range, "
+            "zoom, analysis ROI and marks are not part of the file. Nothing is captured and the camera is not "
+            "touched. Experiment output is not affected.")
+        self.save_raw_button.clicked.connect(self.save_current_raw_frame)
+        view_row.addWidget(self.save_raw_button)
+        self.save_feedback = QLabel()
+        self.save_feedback.setWordWrap(True)
+        self.save_feedback.setVisible(False)
         # Image and its state on the left; display and measurement controls scroll on the right,
         # so a short screen does not push either out of reach.
         left = QVBoxLayout()
@@ -967,6 +980,7 @@ class CameraImageWindow(QDialog):
         left.addWidget(self.frame_info)
         left.addWidget(self.preview, 1)
         left.addLayout(view_row)
+        left.addWidget(self.save_feedback)
         left.addWidget(self.cursor_status)
         left.addWidget(self.status)
         layout.addLayout(left, 1)
@@ -1091,6 +1105,36 @@ class CameraImageWindow(QDialog):
             return
         mode = "Fit" if self.preview.is_fit else "Manual"
         self.zoom_label.setText(f"Zoom: {mode} ({self.preview.zoom_percent():.0f}%)")
+
+    # ------------------------------------------------------------- saving
+    def _say_saved(self, text: str, ok: bool) -> None:
+        self.save_feedback.setText(text)
+        self.save_feedback.setStyleSheet("color: #2e7d32" if ok else "color: #a65a00; font-weight: 600")
+        self.save_feedback.setVisible(True)
+
+    def save_current_raw_frame(self) -> None:
+        """Ask for a file name, then save the frame that was shown when the button was pressed. The frame is
+        taken before the dialog opens: live frames keep arriving while it is open and must not replace it."""
+        raw = self.preview.raw_frame
+        frame = None if raw is None else raw.copy()
+        if frame is None:
+            self._say_saved("Not saved: no image is shown.", False)
+            return
+        path, _filter = QFileDialog.getSaveFileName(self, "Save current raw frame", "", "TIFF image (*.tif *.tiff)")
+        if not path:
+            self._say_saved("Not saved: no file was chosen.", False)
+            return
+        self.save_raw_frame_to(frame, path)
+
+    def save_raw_frame_to(self, frame: object, path: str) -> bool:
+        try:
+            saved = save_raw_frame(frame, path)
+        except (OSError, ValueError) as exc:
+            self._say_saved(f"Not saved: {exc}", False)
+            return False
+        self._say_saved(f"Saved raw frame {frame.shape[1]} × {frame.shape[0]} · {frame.dtype} to {saved} "
+                        "(pixel values as received; no exposure or time recorded)", True)
+        return True
 
     # ------------------------------------------------------------- frames
     def show_frame(self, frame: object, status: str) -> None:
