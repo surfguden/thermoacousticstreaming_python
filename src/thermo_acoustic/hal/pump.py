@@ -165,5 +165,17 @@ class PumpWorker(DeviceWorker):
         return PumpValvePositionResult(position, True)
     def safe_stop(self) -> None:
         if self.device_constructed and self.state.connected:
-            for index in range(self._count()): self._call(index, "stop")
-            self._refresh()
+            # Every unit is asked to stop whatever happens to the others, and every failure is reported with its
+            # unit. A failed unit is not marked idle: the refresh below reports what the device says.
+            errors: list[str] = []
+            for index in range(self._count()):
+                try:
+                    self._call(index, "stop")
+                except Exception as exc:
+                    errors.append(f"pump unit {index + 1}: {exc}")
+            try:
+                self._refresh()
+            except Exception as exc:
+                errors.append(f"status refresh after stop failed: {exc}")
+            if errors:
+                raise RuntimeError("; ".join(errors))

@@ -274,3 +274,48 @@ def test_a_position_command_is_recorded_as_commanded_not_as_a_measured_position(
     assert recorder.succeeded[-1][1].position_um == 15.0
     readback = worker.status().readback
     assert readback.position_um == 15.0 and readback.commanded_position_um == 20.0
+
+
+# ----------------------------------------------------------- safe stop on a bank of several pumps
+class StopRecordingBank(RecordingBank):
+    def __init__(self, failing_units=()):
+        super().__init__()
+        self.stops: list[int] = []
+        self.failing_units = set(failing_units)
+
+    def stop(self, index):
+        self.stops.append(index)
+        if index in self.failing_units:
+            raise RuntimeError(f"stop refused by pump {index + 1}")
+        super().stop(index)
+
+
+def _bank_worker(failing_units=()):
+    bank = StopRecordingBank(failing_units)
+    worker = PumpWorker(lambda: bank)
+    recorder = Recorder(worker)
+    assert recorder.run(DeviceOperation.CONNECT)
+    return bank, worker, recorder
+
+
+def test_safe_stop_tries_every_pump_unit_even_after_one_fails(qt_app):
+    bank, worker, _recorder = _bank_worker(failing_units={0})
+    with pytest.raises(RuntimeError, match=r"pump unit 1: stop refused by pump 1"):
+        worker.safe_stop()
+    assert bank.stops == [0, 1]  # the second pump was still asked (it used to be skipped)
+
+
+def test_safe_stop_reports_every_failing_unit_and_a_refresh_failure_does_not_hide_them(qt_app):
+    bank, worker, _recorder = _bank_worker(failing_units={0, 1})
+    bank.read_errors.extend([RuntimeError("level read failed")] * 4)
+    with pytest.raises(RuntimeError) as caught:
+        worker.safe_stop()
+    text = str(caught.value)
+    assert "pump unit 1: stop refused by pump 1" in text and "pump unit 2: stop refused by pump 2" in text
+    assert bank.stops == [0, 1]
+
+
+def test_safe_stop_on_a_healthy_bank_still_stops_every_unit_quietly(qt_app):
+    bank, worker, _recorder = _bank_worker()
+    worker.safe_stop()
+    assert bank.stops == [0, 1]
