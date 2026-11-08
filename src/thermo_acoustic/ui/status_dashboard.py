@@ -215,6 +215,10 @@ class StatusDashboard(QWidget):
         text, color = {"failed": (phase, "#b71c1c"), "aborted": (phase, "#a65a00"),
                        "stopped": ("Stopped after the current experiment; the remaining ones were not run.",
                                    "#a65a00")}.get(state, ("", ""))
+        if text and status.get("stop_failures"):
+            color = "#b71c1c"  # a stop that failed is not an ordinary operator abort: say so in red
+            if "safe stop problems" not in text:
+                text += " Safe stop problems: " + "; ".join(status["stop_failures"])
         self.alert.setVisible(bool(text))
         self.alert.setText(text)
         self.alert.setStyleSheet(f"color: {color}; font-weight: 600")

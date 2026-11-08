@@ -85,6 +85,9 @@ class ExperimentManager(QObject):
         self._failure_reason: str | None = None
         self._stop_after_current = False
         self._abort_requested = False
+        self._stop_sent: set[DeviceId] = set()  # devices already asked to stop in this wind-down
+        self._stop_pending: dict[str, DeviceId] = {}  # request id -> device, until its result returns
+        self._stop_failures: list[str] = []  # stops that failed or could not be requested, shown with the end state
         self._failed = False
         self._failure_reason = None
         self._state = "idle"
@@ -361,6 +364,7 @@ class ExperimentManager(QObject):
                 "failure_reason": self._failure_reason,
                 "series": queue_details,
                 "last_saved": dict(self._last_saved) if self._last_saved else None,
+                "stop_failures": list(self._stop_failures),
                 "current_plan": asdict(plan_facts(self._current[0].steps)) if self._current else None,
                 "current_series": str(self._current[1].folder) if self._current else None,
                 "current_experiment": self._experiment.experiment_id if self._experiment else None,
@@ -443,6 +447,9 @@ class ExperimentManager(QObject):
         self._failed = False
         self._abort_requested = False
         self._stop_after_current = False
+        self._stop_sent.clear()
+        self._stop_pending.clear()
+        self._stop_failures.clear()
         self._state = "running"
         self._publish()
         QTimer.singleShot(0, self._next_series)
@@ -464,11 +471,25 @@ class ExperimentManager(QObject):
             timer.deleteLater()
         self._timers.clear()
         self.controller.cancel_active_workflow()
-        for device in (DeviceId.AD2, DeviceId.CAMERA, DeviceId.PUMP, DeviceId.VALVE):
-            if self.controller.statuses()[device].connection is ConnectionState.CONNECTED:
-                self.controller.submit(DeviceCommand(device, DeviceOperation.SAFE_STOP,
-                                                     NoArguments(), source="experiment"))
+        self._request_stops((DeviceId.AD2, DeviceId.CAMERA, DeviceId.PUMP, DeviceId.VALVE))
         self._fail(reason)
+
+    def _request_stops(self, devices) -> None:
+        """Ask each of `devices` once, in this wind-down, to stop; remember the request so its result is waited for
+        and a failure is reported. A device whose last operation failed (ERROR) is still connected and still gets its
+        stop; only a disconnected one is skipped. TEC regulation is not touched here (Panic/exit handle that)."""
+        statuses = self.controller.statuses()
+        for device in devices:
+            if device in self._stop_sent or statuses[device].connection is ConnectionState.DISCONNECTED:
+                continue
+            self._stop_sent.add(device)
+            command = DeviceCommand(device, DeviceOperation.SAFE_STOP, NoArguments(), source="experiment")
+            self._stop_pending[command.request_id] = device
+            try:
+                self.controller.submit(command)
+            except Exception as exc:
+                self._stop_pending.pop(command.request_id, None)
+                self._stop_failures.append(f"{device.value}: the stop could not be requested ({exc})")
 
     def panic_abort(self) -> None:
         """Stop batch dispatch without asking the flush workflow to move the valve."""
@@ -1308,6 +1329,12 @@ class ExperimentManager(QObject):
             self._fail(str(exc))
 
     def _command_result(self, result: Any) -> None:
+        stopped = self._stop_pending.pop(result.request_id, None)
+        if stopped is not None:  # a stop this batch asked for: note a failure, never run a step callback
+            error = str(result.error or "")
+            if not result.ok and not error.startswith("Cancelled by Panic"):  # Panic sends its own stops
+                self._stop_failures.append(f"{stopped.value}: {error or 'safe stop failed'}")
+            return
         callback = self._callbacks.pop(result.request_id, None)
         if callback is None or self._failed or self._abort_requested:
             return
@@ -1334,14 +1361,7 @@ class ExperimentManager(QObject):
         # is allowed to finish. No subsequent experiment is dispatched.
         if stop_outputs:
             self._cancel_active_tec_wait()
-            statuses = self.controller.statuses()
-            for device in (DeviceId.AD2, DeviceId.CAMERA):
-                if statuses[device].connection is ConnectionState.CONNECTED:
-                    try:
-                        self.controller.submit(DeviceCommand(device, DeviceOperation.SAFE_STOP,
-                                                             NoArguments(), source="experiment"))
-                    except RuntimeError:
-                        pass
+            self._request_stops((DeviceId.AD2, DeviceId.CAMERA))  # skips what Abort already asked
         self._finish_failure_when_safe()
 
     def _cancel_active_tec_wait(self) -> None:
@@ -1373,12 +1393,16 @@ class ExperimentManager(QObject):
         # here. Checking future.done() instead of set membership would
         # read _experiment_frames_saved before poll() had a chance to set
         # it, and wrongly discard data that genuinely exists.
-        if (self.controller._flush is not None or bool(self._file_futures)
+        if (self.controller._flush is not None or bool(self._file_futures) or bool(self._stop_pending)
                 or (self._recorder is not None and not self._recorder.drained())):
             QTimer.singleShot(100, self._finish_failure_when_safe)
             return
         self._recorder = None
         reason = self._failure_reason
+        if self._stop_failures:  # every stop has returned: a failed one is part of how this ended
+            reason += "; safe stop problems: " + "; ".join(self._stop_failures)
+            if self._current is not None:
+                self._current[1].event("safe_stop_failed", failures=list(self._stop_failures))
         if self._current is not None and self._experiment is not None:
             storage = self._current[1]
             storage.record_experiment_failed()
