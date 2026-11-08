@@ -215,6 +215,8 @@ class StatusDashboard(QWidget):
         text, color = {"failed": (phase, "#b71c1c"), "aborted": (phase, "#a65a00"),
                        "stopped": ("Stopped after the current experiment; the remaining ones were not run.",
                                    "#a65a00")}.get(state, ("", ""))
+        if state == "completed" and status.get("end_problems"):  # the experiments completed; the final step did not
+            text, color = phase, "#b71c1c"
         if text and status.get("stop_failures"):
             color = "#b71c1c"  # a stop that failed is not an ordinary operator abort: say so in red
             if "safe stop problems" not in text:

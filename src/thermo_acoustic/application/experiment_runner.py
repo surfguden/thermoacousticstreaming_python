@@ -26,7 +26,8 @@ from .commands import (
     CameraSequenceResult, CameraSequenceTriggerArgs, CameraTriggerActive,
     CameraTriggerPolarity, CameraTriggerSource, DeviceCommand, DeviceOperation,
     FlushArgs, NoArguments, PumpUnitArgs, TecApplySetpointsArgs, TecWaitStableArgs,
-    WaitArgs, WorkflowCommand, WorkflowOperation, ZStageSetPositionArgs,
+    ValvePosition, ValveSetPositionArgs, ValveWaitReadyArgs, WaitArgs, WorkflowCommand, WorkflowOperation,
+    ZStageSetPositionArgs,
 )
 from .experiment_storage import FileWorker, SeriesStorage, json_ready
 from .experiments import Expansion, PlannedExperiment, validate_definition
@@ -85,6 +86,11 @@ class ExperimentManager(QObject):
         self._failure_reason: str | None = None
         self._stop_after_current = False
         self._abort_requested = False
+        self._batch_pump_units: set[int] = set()  # pump units the batch flushed through (for the end-of-batch check)
+        self._end_problems: list[str] = []  # problems of the end-of-batch valve step; the experiments still completed
+        self._end_failure: dict[str, Callable[[str], None]] = {}  # request id -> handler for a failed end-of-batch step
+        self._valve_open_sent = False
+        self._last_storage: SeriesStorage | None = None
         self._stop_sent: set[DeviceId] = set()  # devices already asked to stop in this wind-down
         self._stop_pending: dict[str, DeviceId] = {}  # request id -> device, until its result returns
         self._stop_failures: list[str] = []  # stops that failed or could not be requested, shown with the end state
@@ -365,6 +371,7 @@ class ExperimentManager(QObject):
                 "series": queue_details,
                 "last_saved": dict(self._last_saved) if self._last_saved else None,
                 "stop_failures": list(self._stop_failures),
+                "end_problems": list(self._end_problems),
                 "current_plan": asdict(plan_facts(self._current[0].steps)) if self._current else None,
                 "current_series": str(self._current[1].folder) if self._current else None,
                 "current_experiment": self._experiment.experiment_id if self._experiment else None,
@@ -450,6 +457,10 @@ class ExperimentManager(QObject):
         self._stop_sent.clear()
         self._stop_pending.clear()
         self._stop_failures.clear()
+        self._batch_pump_units.clear()
+        self._end_problems.clear()
+        self._end_failure.clear()
+        self._valve_open_sent = False
         self._state = "running"
         self._publish()
         QTimer.singleShot(0, self._next_series)
@@ -475,7 +486,12 @@ class ExperimentManager(QObject):
         self.controller.cancel_queued_commands("experiment", "Cancelled: the experiment batch was aborted")
         self.controller.cancel_active_workflow()
         self._request_stops((DeviceId.AD2, DeviceId.CAMERA, DeviceId.PUMP, DeviceId.VALVE))
-        self._fail(reason)
+        self._fail(reason + self._valve_step_note())
+
+    def _valve_step_note(self) -> str:
+        """If the end-of-batch valve step was already under way, say that its command may have been sent."""
+        return ("; the end-of-batch valve Open command had already been sent and its result was not confirmed"
+                if self._valve_open_sent and self._state != "completed" else "")
 
     def _request_stops(self, devices) -> None:
         """Ask each of `devices` once, in this wind-down, to stop; remember the request so its result is waited for
@@ -499,15 +515,18 @@ class ExperimentManager(QObject):
         if self._state not in {"running", "stopping", "aborting"} or self._failed:
             return
         self._abort_requested = True
-        self._fail("Operator pressed Panic", stop_outputs=False)
+        self._fail("Operator pressed Panic" + self._valve_step_note(), stop_outputs=False)
 
     def _next_series(self) -> None:
         if self._failed or self._abort_requested:
             return
         if self._approved <= 0 or not self._queued or self._stop_after_current:
-            self._state = "stopped" if self._stop_after_current else "completed"
-            self._phase = "Stopped after current experiment" if self._stop_after_current else "Experiment series completed"
-            self._publish()
+            if self._stop_after_current:
+                self._state = "stopped"
+                self._phase = "Stopped after current experiment"
+                self._publish()
+            else:
+                self._end_of_batch()
             return
         self._current = self._queued.popleft()
         self._series_states[self._current[1].folder] = "running"
@@ -675,6 +694,7 @@ class ExperimentManager(QObject):
                         visit(branch)
         visit(expansion.steps)
         totals = {index: math.fsum(values) for index, values in volumes.items()}
+        self._batch_pump_units.update(totals)
         pump = status[DeviceId.PUMP].readback
         units = {unit.unit_index: unit for unit in pump.units} if isinstance(pump, PumpReadback) else {}
         if any(unit.is_pumping for unit in units.values()):
@@ -968,6 +988,7 @@ class ExperimentManager(QObject):
                                       self._completed - self._series_completed_at_start})
         self._series_states[storage.folder] = "completed"
         storage.event("series_completed")
+        self._last_storage = storage
         self._current = None
         self._experiment = None
         self._phase = "Series completed"
@@ -1331,7 +1352,86 @@ class ExperimentManager(QObject):
             self._callbacks.pop(command.request_id, None)
             self._fail(str(exc))
 
+    # ---- end of a normally completed batch: leave the valve Open (Closed/Open are the chip-side meanings)
+    def _end_of_batch(self) -> None:
+        """Every series ran to the end. After the acquisitions, output stops, saves and flushes are done, make sure
+        the pumps the batch used are stopped and set the valve Open, confirmed within a bounded wait. Not used for
+        Stop after current, Abort, Panic, failures or exit. A valve that is not connected is skipped, not claimed."""
+        if self.controller.statuses()[DeviceId.VALVE].connection is ConnectionState.DISCONNECTED:
+            self._finish_batch(None, note="the valve is not connected, so it was not set Open")
+            return
+        self._phase = "Setting the valve Open after the batch"
+        self._publish()
+        units = sorted(self._batch_pump_units) if self.controller.statuses()[DeviceId.PUMP].connection \
+            is not ConnectionState.DISCONNECTED else []
+
+        def check_units(remaining: list[int]) -> None:
+            if remaining:
+                index, rest = remaining[0], remaining[1:]
+                self._end_command(DeviceId.PUMP, DeviceOperation.PUMP_STATUS_READ, PumpUnitArgs(index),
+                                  lambda _value: check_units(rest),
+                                  lambda error: self._finish_batch(f"pump unit {index + 1} state could not be read "
+                                                                   f"({error}); the valve was not set Open"))
+                return
+            pump = self.controller.statuses()[DeviceId.PUMP].readback
+            running = [unit.unit_index + 1 for unit in getattr(pump, "units", ())
+                       if unit.unit_index in self._batch_pump_units and unit.is_pumping is not False]
+            if running:
+                self._finish_batch("pump unit " + ", ".join(map(str, running)) +
+                                   " is not confirmed stopped; the valve was not set Open")
+                return
+            self._valve_open_sent = True
+            self._end_command(DeviceId.VALVE, DeviceOperation.VALVE_POSITION_SET,
+                              ValveSetPositionArgs(ValvePosition.OPEN.value), lambda _value: wait_ready(),
+                              lambda error: self._finish_batch(f"the valve could not be set Open ({error})"))
+
+        def wait_ready() -> None:
+            self._end_command(DeviceId.VALVE, DeviceOperation.VALVE_WAIT_READY, ValveWaitReadyArgs(10.0, 0.1),
+                              confirmed,
+                              lambda error: self._finish_batch(f"the valve Open was not confirmed ({error})"))
+
+        def confirmed(result: Any) -> None:
+            if getattr(result, "ready", False) and getattr(result, "confirmed_position", None) == ValvePosition.OPEN.value:
+                self._finish_batch(None)
+            else:
+                self._finish_batch("the valve did not confirm position Open within 10 s")
+        check_units(units)
+
+    def _end_command(self, device: DeviceId, operation: DeviceOperation, arguments: Any,
+                     done: Callable[[Any], None], failed: Callable[[str], None]) -> None:
+        command = DeviceCommand(device, operation, arguments, source="experiment")
+        self._end_failure[command.request_id] = failed
+        self._submit(command, done)
+        if command.request_id not in self._callbacks:  # refused (failure/abort) or not queued: no handler to keep
+            self._end_failure.pop(command.request_id, None)
+
+    def _finish_batch(self, problem: str | None, note: str = "") -> None:
+        if self._failed or self._abort_requested:
+            return
+        if problem:
+            self._end_problems.append(problem)
+        if self._last_storage is not None:
+            self._last_storage.event("batch_end_valve_open", ok=problem is None,
+                                     detail=problem or "valve confirmed Open")
+        self._state = "completed"
+        self._phase = ("Experiment series completed" + (f" ({note})" if note else "") if not self._end_problems else
+                       "Experiment series completed, but the end-of-batch step had a problem: "
+                       + "; ".join(self._end_problems))
+        if self._end_problems:
+            self.notice.emit(self._phase)
+        self._publish()
+
     def _command_result(self, result: Any) -> None:
+        failed = self._end_failure.pop(result.request_id, None)
+        if failed is not None:
+            callback = self._callbacks.pop(result.request_id, None)
+            if callback is None or self._failed or self._abort_requested:
+                return
+            if not result.ok:
+                failed(result.error or f"{result.operation.value} failed")
+            else:
+                callback(result.value)
+            return
         stopped = self._stop_pending.pop(result.request_id, None)
         if stopped is not None:  # a stop this batch asked for: note a failure, never run a step callback
             error = str(result.error or "")

@@ -396,7 +396,8 @@ class MainWindow(QMainWindow):
         elif state in {"failed", "aborted"}:
             title, detail = "Batch idle", experiment.get("phase", "Experiment series failed")
         elif state == "completed":
-            title, detail = "Batch idle", "Experiment series completed!"
+            title, detail = "Batch idle", (experiment.get("phase", "Experiment series completed") if
+                                           experiment.get("end_problems") else "Experiment series completed!")
         elif state == "stopped":
             title, detail = "Batch idle", "Experiment batch stopped after current experiment"
         else:
