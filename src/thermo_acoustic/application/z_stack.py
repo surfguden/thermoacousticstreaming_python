@@ -67,6 +67,10 @@ class ZStackRunner(QObject):
         self._stop_requested = False
         self._deadline = 0.0
         self._records: list[dict] = []
+        # Which acquisition a callback or result belongs to: every start() is a new run, and anything scheduled or
+        # sent by an earlier run (or after this one ended) must neither send commands nor rewrite a final state.
+        self._run = 0
+        self._terminal: dict[int, str] = {}
         self._writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="z-stack-save")
         self._save_future: Future | None = None
         controller.command_result.connect(self._result)
@@ -82,7 +86,7 @@ class ZStackRunner(QObject):
 
     def _send(self, device, operation, args, done) -> None:
         command = DeviceCommand(device, operation, args, source="z-stack")
-        self._pending[command.request_id] = done
+        self._pending[command.request_id] = (done, self._run if self.state == "running" else None)
         try:
             self.controller.submit(command)
         except Exception as exc:
@@ -90,9 +94,12 @@ class ZStackRunner(QObject):
             self._fail(str(exc))
 
     def _result(self, result) -> None:
-        done = self._pending.pop(result.request_id, None)
-        if done is None:
+        entry = self._pending.pop(result.request_id, None)
+        if entry is None:
             return
+        done, run = entry
+        if run is not None and (run != self._run or self.state != "running"):
+            return  # a result for a run that has ended: it neither continues that run nor changes its end state
         if not result.ok:
             self._fail(result.error or "Z stack device command failed")
             return
@@ -183,6 +190,7 @@ class ZStackRunner(QObject):
         self._records = []
         self.current_index = -1
         self._stop_requested = False
+        self._run += 1
         self.state = "running"
         write_json(folder / "metadata.json", {"state": "running", "settings": settings,
                                                "points": self._records})
@@ -250,7 +258,9 @@ class ZStackRunner(QObject):
         elif monotonic() >= self._deadline:
             self._fail(f"Z did not reach {target:.3f} µm within the position timeout")
         else:
-            QTimer.singleShot(100, self._verify_position)
+            run = self._run
+            QTimer.singleShot(100, lambda: self._verify_position() if run == self._run and self.state == "running"
+                              else None)
 
     def _captured(self, result) -> None:
         frame = np.array(result.frame, copy=True)
@@ -260,23 +270,32 @@ class ZStackRunner(QObject):
                   "captured_utc": datetime.now(timezone.utc).isoformat(),
                   "file": f"point_{index + 1:04d}.tif"}
         self._publish(f"Saving point {index + 1}/{self._settings.points}")
-        self._save_future = self._writer.submit(self._save_frame, self._settings.folder / record["file"], frame)
+        run, records, settings = self._run, self._records, self._settings
+        camera = getattr(self, "_camera_settings", None)
+        future = self._writer.submit(self._save_frame, settings.folder / record["file"], frame)
+        self._save_future = future
+
         def check() -> None:
-            if self._save_future is None:
-                return
-            if not self._save_future.done():
+            # A started save is always finished and recorded in the run it belongs to, even after that run ended
+            # (the image is on disk); it never touches a later run's records or state.
+            if not future.done():
                 QTimer.singleShot(20, check)
                 return
+            current = run == self._run
             try:
-                self._save_future.result()
+                future.result()
             except Exception as exc:
-                self._fail(f"Z stack image save failed: {exc}")
+                if current and self.state == "running":
+                    self._fail(f"Z stack image save failed: {exc}")
+                else:
+                    self.notice.emit(f"Z stack image save failed after the run ended: {exc}")
                 return
-            self._records.append(record)
-            self._write_metadata(self.state)
-            if self.state != "running":
-                return
-            self._resume_preview()
+            records.append(record)
+            state = self.state if current else self._terminal.get(run, "aborted")
+            write_json(settings.folder / "metadata.json", {
+                "state": state, "settings": settings, "applied_camera_settings": camera, "points": records})
+            if current and self.state == "running":
+                self._resume_preview()
         check()
 
     @staticmethod
@@ -307,12 +326,14 @@ class ZStackRunner(QObject):
 
     def _finish(self, state: str) -> None:
         self._write_metadata(state)
+        self._terminal[self._run] = state
         self.state = state
         self._publish(f"Z stack {state}; {len(self._records)} images saved")
 
     def _fail(self, message: str) -> None:
         if self.state == "running":
             self._write_metadata("failed")
+            self._terminal[self._run] = "failed"
         self.state = "failed"
         self._publish(message)
         self.notice.emit(message)
