@@ -99,6 +99,7 @@ from .temperature_plot import TemperaturePlot
 from ..application.configuration import DEFAULT_PUMP_CONFIGURATION_DIR
 from .ad2_scope import OscilloscopePanel
 from .status_dashboard import camera_summary, z_stage_summary
+from ..application.pump_volume import remaining_volume_ml
 from .status_icons import action_icon, state_pixmap
 from .status_text import ad2_channels_configured, ad2_outputs_summary, connection_color, valve_summary
 from .widgets import CameraImageWindow, CollapsibleSection
@@ -1358,7 +1359,9 @@ def queued_flush_text(needed_ml: float | None, level_ml: float | None, connected
         return f"{need} · level unknown (pump not connected)"
     if level_ml is None:
         return f"{need} · level not read yet"
-    left = round(level_ml - needed_ml, 9)  # float noise (1e-16) is not a shortfall
+    left = remaining_volume_ml(level_ml, needed_ml)  # the rule the series check uses: noise reads as 0, never short
+    if left is None:
+        return f"{need} · level not readable"
     result = f"{left:g} mL left after it" if left >= 0 else f"short by {-left:g} mL"
     return f"{need} · level {level_ml:g} mL as last read · {result} (arithmetic, not measured)"
 
@@ -1517,8 +1520,8 @@ class PumpPanel(DevicePanel):
                 continue
             label = item.widget().queue_label
             label.setText(queued_flush_text(demand.get(unit.unit_index), levels.get(unit.unit_index), self._connected))
-            short = (demand.get(unit.unit_index) is not None and levels.get(unit.unit_index) is not None
-                     and self._connected and levels[unit.unit_index] < demand[unit.unit_index])
+            short = (demand.get(unit.unit_index) is not None and self._connected
+                     and (remaining_volume_ml(levels.get(unit.unit_index), demand[unit.unit_index]) or 0.0) < 0)
             label.setStyleSheet("color: #a65a00; font-weight: 600" if short else "")
 
     def set_status(self, status: DeviceStatus) -> None:

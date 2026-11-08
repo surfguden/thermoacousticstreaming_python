@@ -16,6 +16,7 @@ from typing import Any, Callable
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from .plan_facts import plan_facts
+from .pump_volume import volume_available
 from ..domain.models import ConnectionState, DeviceId, OperatingMode, PumpReadback, ZStageReadback
 from .run_identity import cached_software_identity
 from .commands import (
@@ -232,13 +233,12 @@ class ExperimentManager(QObject):
 
     @staticmethod
     def _flush_totals(items: list[tuple[Expansion, SeriesStorage]]) -> dict[int, float]:
-        totals: dict[int, float] = {}
+        volumes: dict[int, list[float]] = {}
         def visit(steps):
             for step in steps:
                 if step["type"] == "flush":
                     args = step["args"]
-                    index = args["unit_index"]
-                    totals[index] = totals.get(index, 0.0) + args["volume_ml"]
+                    volumes.setdefault(args["unit_index"], []).append(args["volume_ml"])
                 elif step["type"] == "experiment":
                     visit(step["steps"])
                 elif step["type"] == "parallel":
@@ -246,7 +246,21 @@ class ExperimentManager(QObject):
                         visit(branch)
         for expansion, _storage in items:
             visit(expansion.steps)
-        return totals
+        return {index: math.fsum(values) for index, values in volumes.items()}  # no accumulated rounding error
+
+    @staticmethod
+    def _check_flush_capacity(totals: dict[int, float], units: dict) -> None:
+        """Each pump unit must hold what the series flushes through it. One rule for all units and for the
+        preflight (`volume_available`); an unreadable level is an error, never "enough"."""
+        for index, volume in totals.items():
+            unit = units.get(index)
+            if unit is None or unit.fill_level_ml is None:
+                raise RuntimeError(f"Pump unit {index + 1} has no readable fill level")
+            if not math.isfinite(unit.fill_level_ml):
+                raise RuntimeError(f"Pump unit {index + 1} reports a fill level that is not a number")
+            if not volume_available(unit.fill_level_ml, volume):
+                raise RuntimeError(f"Pump unit {index + 1} needs {volume:g} mL total flush volume "
+                                   f"but currently has {unit.fill_level_ml:g} mL")
 
     def _invalidate_syringe_preflight(self) -> None:
         self._syringe_preflight_levels = None
@@ -286,10 +300,11 @@ class ExperimentManager(QObject):
                 levels = {}
                 for index, needed in totals.items():
                     unit = units.get(index)
-                    if unit is None or unit.fill_level_ml is None or unit.is_pumping is not False:
+                    if (unit is None or unit.fill_level_ml is None or not math.isfinite(unit.fill_level_ml)
+                            or unit.is_pumping is not False):
                         complete(False, f"Pump {index + 1} has no idle, readable fill level")
                         return
-                    if unit.fill_level_ml < needed:
+                    if not volume_available(unit.fill_level_ml, needed):
                         complete(False, f"Pump {index + 1} needs {needed:g} mL; has {unit.fill_level_ml:g} mL")
                         return
                     levels[index] = unit.fill_level_ml
@@ -623,29 +638,24 @@ class ExperimentManager(QObject):
                     free_memory = memory.available_physical
         if free_memory is not None and free_memory < estimated_memory:
             raise RuntimeError(f"Insufficient memory: estimate {estimated_memory} B, available {free_memory} B")
-        totals: dict[int, float] = {}
+        volumes: dict[int, list[float]] = {}
         def visit(items):
             for item in items:
                 if item["type"] == "flush":
                     args = item["args"]
-                    totals[args["unit_index"]] = totals.get(args["unit_index"], 0) + args["volume_ml"]
+                    volumes.setdefault(args["unit_index"], []).append(args["volume_ml"])
                 elif item["type"] == "experiment":
                     visit(item["steps"])
                 elif item["type"] == "parallel":
                     for branch in item["branches"]:
                         visit(branch)
         visit(expansion.steps)
+        totals = {index: math.fsum(values) for index, values in volumes.items()}
         pump = status[DeviceId.PUMP].readback
         units = {unit.unit_index: unit for unit in pump.units} if isinstance(pump, PumpReadback) else {}
         if any(unit.is_pumping for unit in units.values()):
             raise RuntimeError("Stop active pump movement before starting an experiment series")
-        for index, volume in totals.items():
-            unit = units.get(index)
-            if unit is None or unit.fill_level_ml is None:
-                raise RuntimeError(f"Pump unit {index + 1} has no readable fill level")
-            if unit.fill_level_ml < volume:
-                raise RuntimeError(f"Pump unit {index + 1} needs {volume:g} mL total flush volume "
-                                   f"but currently has {unit.fill_level_ml:g} mL")
+        self._check_flush_capacity(totals, units)
         storage.event("capacity_estimate", frame_bytes=frame_bytes,
                       estimated_memory_bytes=estimated_memory,
                       available_memory_bytes=free_memory,

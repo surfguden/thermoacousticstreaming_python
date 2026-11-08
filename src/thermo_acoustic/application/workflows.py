@@ -20,6 +20,7 @@ from .commands import (
     ValveSetPositionArgs,
     WorkflowProgress,
 )
+from .pump_volume import volume_available
 from ..domain.models import ConnectionState, DeviceId, PumpReadback, ValveReadback
 
 
@@ -139,13 +140,15 @@ class FlushWorkflow(QObject):
                 # reading it computes that target from.
                 self._fail(implausible)
             else:
+                # Same rule as the series check and the preflight: float noise is not a shortfall, anything else is.
                 target = value.fill_level_ml - self.args.volume_ml
-                if target < 0:
+                if not volume_available(value.fill_level_ml, self.args.volume_ml):
                     self._fail(
                         f"Pump {self.args.unit_index + 1} has {value.fill_level_ml:g} mL; "
                         f"cannot flush {self.args.volume_ml:g} mL"
                     )
                 else:
+                    target = max(0.0, target)  # only reachable below zero by representation noise (see above)
                     self._command(
                         FlushState.PUMP_COMMAND, DeviceId.PUMP,
                         DeviceOperation.PUMP_FILL_LEVEL_SET,
