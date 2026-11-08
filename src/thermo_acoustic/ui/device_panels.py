@@ -2434,6 +2434,12 @@ class ZStagePanel(DevicePanel):
         measured_font.setPointSizeF(measured_font.pointSizeF() * 1.25)
         self.measured_label.setFont(measured_font)
         self._measured: float | None = None  # last measured position (a reading, never a commanded target)
+        # A move that was requested (or accepted) after that reading makes it old: it is shown as such and not
+        # used by the helper buttons until a read that was requested after the move has come back.
+        self._reading_old = False
+        self._reads_after_move: set[str] = set()
+        self._closed_loop = False
+        self._has_readback = False
         self._reference_um: float | None = None  # this session's single reference focus, recorded from a measurement
         self.use_measured_button = QPushButton("Use as target")
         self.use_measured_button.setToolTip("Copies the measured position into the Target field. Nothing moves: "
@@ -2516,40 +2522,80 @@ class ZStagePanel(DevicePanel):
         self._reference_um = None
         self._render_reference()
 
+    def mark_pending(self, action: str, request_id: str) -> None:
+        super().mark_pending(action, request_id)
+        if action in {"move", "up", "down"}:
+            self._reading_old = True
+            self._reads_after_move.clear()  # an earlier read request no longer describes the position after this move
+            self._render_reference()
+        elif action == "read" and self._reading_old:
+            self._reads_after_move.add(request_id)  # requested after the move, so it can make the reading current
+
+    def _render_measured(self) -> None:
+        position = self._measured
+        unread = ("— (not read; closed loop is off)" if not self._closed_loop and self._has_readback
+                  else "— (not read yet)")
+        text = "Measured position: " + (_position_text(position) if position is not None else unread)
+        if position is not None and self._reading_old:
+            text += " (last read, before the move — read again)"
+        elif self._closed_loop:
+            text += "  ·  closed loop on"
+        self.measured_label.setText(text)
+
     def _render_reference(self) -> None:
         measured, reference = self._measured, self._reference_um
+        usable = measured is not None and not self._reading_old
         if reference is None:
             self.reference_label.setText("Reference focus: none (this session only)")
         else:
-            now = ("measured now unknown" if measured is None
-                   else f"measured now {_position_text(measured)} ({measured - reference:+.3f} µm from it)")
+            if measured is None:
+                now = "measured now unknown"
+            elif self._reading_old:
+                now = "last reading predates a move (read again)"
+            else:
+                now = f"measured now {_position_text(measured)} ({measured - reference:+.3f} µm from it)"
             self.reference_label.setText(f"Reference focus {_position_text(reference)} · {now}")
-        self.use_measured_button.setEnabled(measured is not None)
-        self.set_reference_button.setEnabled(measured is not None)
+        reason = ("" if usable else "No current measurement. A move was requested since the last reading: press "
+                  "Read position first." if measured is not None else "No measured position yet: press Read position.")
+        self.use_measured_button.setToolTip("Copies the measured position into the Target field. Nothing moves: "
+                                            "press Move to go there." + ("" if usable else chr(10) + reason))
+        self.set_reference_button.setToolTip("Records the measured position now as this session's reference focus. "
+                                             "It is forgotten when the stage is disconnected or the program closes."
+                                             + ("" if usable else chr(10) + reason))
+        self._render_measured()
+        self.use_measured_button.setEnabled(usable)
+        self.set_reference_button.setEnabled(usable)
         self.reference_to_target_button.setEnabled(reference is not None)
         self.clear_reference_button.setEnabled(reference is not None)
 
     def set_status(self, status: DeviceStatus) -> None:
         super().set_status(status)
-        if not self._connected:  # a reference from another connection is not kept
+        if not self._connected:  # a reference and a pending move from another connection are not kept
             self._reference_um = None
+            self._reading_old = False
+            self._reads_after_move.clear()
             self._render_reference()
 
     def update_readback(self, readback: object) -> None:
-        position = getattr(readback, "position_um", None)
-        self._measured = position
+        self._measured = getattr(readback, "position_um", None)
+        self._closed_loop = bool(getattr(readback, "closed_loop", False))
+        self._has_readback = readback is not None
         self._render_reference()
-        unread = ("— (not read; closed loop is off)" if readback is not None and not getattr(readback, "closed_loop", False)
-                  else "— (not read yet)")
-        self.measured_label.setText("Measured position: " + (_position_text(position) if position is not None else unread)
-                                    + ("" if readback is None or not getattr(readback, "closed_loop", False)
-                                       else "  ·  closed loop on"))
         if readback is not None:
             self.readback_label.setText(z_stage_summary(readback))
 
     def apply_successful_command(self, command: DeviceCommand | None) -> None:
-        if command is not None and isinstance(command.arguments, ZStageSetPositionArgs):
+        if command is None:
+            return
+        if isinstance(command.arguments, ZStageSetPositionArgs):
             self.position.setValue(command.arguments.position_um)
+        if command.operation in (DeviceOperation.Z_STAGE_POSITION_SET, DeviceOperation.Z_STAGE_POSITION_RELATIVE):
+            self._reading_old = True  # accepted is not arrived: the last measurement is from before this move
+            self._render_reference()
+        elif command.operation is DeviceOperation.Z_STAGE_POSITION_READ and command.request_id in self._reads_after_move:
+            self._reads_after_move.discard(command.request_id)
+            self._reading_old = False
+            self._render_reference()
 
 
 PANEL_TYPES = {

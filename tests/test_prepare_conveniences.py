@@ -231,10 +231,10 @@ def test_demand_follows_the_queue_not_the_form(env, tmp_path):
 
 
 # ---------------------------------------------------------------- live frames of a running experiment
-def test_a_running_experiment_shows_its_frames_as_they_arrive(env, tmp_path):
+def test_a_running_experiment_shows_its_frames_as_they_arrive(env, tmp_path, monkeypatch):
     window, controller, events, wait = env
-    for message in ("warning", "information", "question", "critical"):
-        setattr(QMessageBox, message, staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
+    for message in ("warning", "information", "question", "critical"):  # undone after the test (monkeypatch)
+        monkeypatch.setattr(QMessageBox, message, staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
     controller.experiments.confirm_unchecked = lambda summary: True
     controller.experiments.confirm_batch = lambda summary: True
     prepare = window.prepare_panel
@@ -294,3 +294,48 @@ def test_a_counted_sequence_is_named_after_the_command_that_started_it(qt_app):
     camera.handle_progress(CameraFrameProgress(frame, 41, None, mode="continuous"))  # the preview keeps its wording
     assert camera.image_window.status.text() == "Continuous snapshot · frame 41"
     camera.image_window.close()
+
+
+# ---------------------------------------------------------------- Z helpers and a reading that a move has made old
+def _command(operation, args=None, request_id="r"):
+    from thermo_acoustic.application.commands import DeviceCommand
+    command = DeviceCommand(DeviceId.Z_STAGE, operation, args, source="ui") if args is not None else DeviceCommand(
+        DeviceId.Z_STAGE, operation, source="ui")
+    return dataclasses_replace(command, request_id=request_id)
+
+
+def dataclasses_replace(command, **changes):
+    from dataclasses import replace as _replace
+    return _replace(command, **changes)
+
+
+def test_z_helpers_do_not_use_a_reading_that_a_move_has_made_old(qt_app):
+    from thermo_acoustic.application.commands import DeviceOperation, ZStageSetPositionArgs
+    panel, sent = _z_panel(qt_app, position=10.0)
+    panel.set_reference_button.click()  # a reference recorded from the current reading
+    assert "Reference focus 10 µm" in panel.reference_label.text()
+    # Move to 20 µm: the request is made, the move is accepted, but the last reading is still 10 µm.
+    panel.mark_pending("move", "m1")
+    panel.apply_successful_command(_command(DeviceOperation.Z_STAGE_POSITION_SET, ZStageSetPositionArgs(20.0), "m1"))
+    panel.position.setValue(20.0)
+    assert not panel.use_measured_button.isEnabled() and not panel.set_reference_button.isEnabled()
+    assert "before the move" in panel.measured_label.text() and "read again" in panel.measured_label.text()
+    assert "read again" in panel.use_measured_button.toolTip().lower() or "read position" in panel.use_measured_button.toolTip().lower()
+    panel.use_measured_button.click()  # disabled: nothing happens, the target is still the commanded 20
+    assert panel.position.value() == 20.0 and sent == []
+    assert "predates a move" in panel.reference_label.text()  # no difference is shown against an old reading
+    # A read that was requested before the move and returns afterwards does not make the reading current.
+    panel.apply_successful_command(_command(DeviceOperation.Z_STAGE_POSITION_READ, None, "old-read"))
+    assert not panel.use_measured_button.isEnabled()
+    # A read requested after the move does, once its result arrives with the new measurement.
+    panel.mark_pending("read", "new-read")
+    panel.set_status(DeviceStatus(DeviceId.Z_STAGE, ConnectionState.CONNECTED,
+                                  readback=ZStageReadback(position_um=19.8, closed_loop=True)))
+    panel.apply_successful_command(_command(DeviceOperation.Z_STAGE_POSITION_READ, None, "new-read"))
+    assert panel.use_measured_button.isEnabled() and "19.8 µm" in panel.measured_label.text()
+    panel.use_measured_button.click()
+    assert panel.position.value() == 19.8 and sent == []  # a measurement was copied; nothing was moved
+    assert "measured now 19.8 µm (+9.800 µm from it)" in panel.reference_label.text()
+    # Disconnecting forgets the reference and the stale mark.
+    panel.set_status(DeviceStatus(DeviceId.Z_STAGE, ConnectionState.DISCONNECTED))
+    assert "none" in panel.reference_label.text() and not panel.use_measured_button.isEnabled()
