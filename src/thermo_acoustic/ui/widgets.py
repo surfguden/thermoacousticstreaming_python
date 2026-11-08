@@ -967,10 +967,13 @@ class CameraImageWindow(QDialog):
             "zoom, analysis ROI and marks are not part of the file. Nothing is captured and the camera is not "
             "touched. Experiment output is not affected.")
         self.save_raw_button.clicked.connect(self.save_current_raw_frame)
-        view_row.addWidget(self.save_raw_button)
         self.save_feedback = QLabel()
         self.save_feedback.setWordWrap(True)
         self.save_feedback.setVisible(False)
+        # Its own row under the zoom buttons, so the viewer does not get wider where it is docked.
+        save_row = QHBoxLayout()
+        save_row.addWidget(self.save_raw_button)
+        save_row.addWidget(self.save_feedback, 1)
         # Image and its state on the left; display and measurement controls scroll on the right,
         # so a short screen does not push either out of reach.
         left = QVBoxLayout()
@@ -980,7 +983,7 @@ class CameraImageWindow(QDialog):
         left.addWidget(self.frame_info)
         left.addWidget(self.preview, 1)
         left.addLayout(view_row)
-        left.addWidget(self.save_feedback)
+        left.addLayout(save_row)
         left.addWidget(self.cursor_status)
         left.addWidget(self.status)
         layout.addLayout(left, 1)
