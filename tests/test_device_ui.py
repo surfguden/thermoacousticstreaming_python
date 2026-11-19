@@ -703,13 +703,13 @@ def test_camera_viewer_intensity_controls_use_raw_16_bit_frames(qt_app):
     assert viewer.histogram.saturated_count == 1
     assert viewer.histogram.observed_range == (1000, 65535)
     assert "pixels at 65535: 1/4" in viewer.intensity_status.text()
-    viewer.autoscale_checkbox.setChecked(True)
+    viewer.display_mode.setCurrentIndex(viewer.display_mode.findData("auto"))
     assert viewer.preview.display_limits == (1000, 65535)
     viewer.show_frame(np.array([[10, 20], [30, 40]], dtype=np.uint16), "Continuous snapshot")
     assert viewer.preview.display_limits == (10, 40)
 
     viewer.full_range_button.click()
-    assert not viewer.autoscale_checkbox.isChecked()
+    assert viewer.display_mode.currentData() == "manual"
     assert viewer.preview.display_limits is None
     assert viewer.histogram.limits is None
     assert viewer.preview._image.format().name == "Format_Grayscale16"
@@ -1539,7 +1539,7 @@ def test_camera_display_adjustments_never_change_raw_frame(qt_app):
     viewer.robust_button.click()
     viewer.limit_low.setValue(100)
     viewer.limit_high.setValue(2000)
-    viewer.limit_apply_button.click()
+    viewer.limit_high.editingFinished.emit()
     viewer.zoom_in_button.click()
     viewer.full_range_button.click()
     assert np.array_equal(frame, original)
@@ -1552,16 +1552,16 @@ def test_camera_fixed_range_persists_across_frames_and_autoscale_is_per_frame(qt
     viewer.show_frame(np.full((8, 8), 500, dtype=np.uint16), "x")
     viewer.limit_low.setValue(100)
     viewer.limit_high.setValue(900)
-    viewer.limit_apply_button.click()
+    viewer.limit_high.editingFinished.emit()
     assert viewer.preview.display_limits == (100, 900)
     viewer.show_frame(np.full((8, 8), 20000, dtype=np.uint16), "x")
     viewer.show_frame(np.full((8, 8), 30000, dtype=np.uint16), "x")
     assert viewer.preview.display_limits == (100, 900)
     viewer.limit_low.setValue(900)
     viewer.limit_high.setValue(900)
-    viewer.limit_apply_button.click()
+    viewer.limit_high.editingFinished.emit()
     assert viewer.preview.display_limits == (100, 900)  # invalid range rejected
-    viewer.autoscale_checkbox.setChecked(True)
+    viewer.display_mode.setCurrentIndex(viewer.display_mode.findData("auto"))
     viewer.show_frame(np.array([[10, 20], [30, 40]], dtype=np.uint16), "x")
     assert viewer.preview.display_limits == (10, 40)
     viewer.show_frame(np.array([[50, 60], [70, 80]], dtype=np.uint16), "x")

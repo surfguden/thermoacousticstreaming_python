@@ -899,7 +899,7 @@ class CameraImageWindow(QDialog):
         self.frame_info = QLabel("Image: — · Exposure (camera readback): — · Last frame: none yet")
         self.frame_info.setWordWrap(True)
 
-        self.adjust_intensity_button = QPushButton("Min–max (once)")
+        self.adjust_intensity_button = QPushButton("Auto once")
         self.adjust_intensity_button.setToolTip(
             "Set the display range to this frame's lowest and highest pixel value, then keep it "
             "for later frames. A single hot pixel can set the high end.")
@@ -912,8 +912,12 @@ class CameraImageWindow(QDialog):
             "then keep it for later frames. Display only.")
         self.robust_button.setEnabled(False)
         self.robust_button.clicked.connect(self.robust_auto)
-        self.autoscale_checkbox = QCheckBox("Autoscale every frame (min–max)")
-        self.autoscale_checkbox.toggled.connect(self._autoscale_changed)
+        self.display_mode = QComboBox()
+        self.display_mode.addItem("Manual", "manual")
+        self.display_mode.addItem("Auto", "auto")
+        self.display_mode.setAccessibleName("Display range mode")
+        self.display_mode.setToolTip("Auto updates the display range for each frame; Manual holds it fixed.")
+        self.display_mode.currentIndexChanged.connect(self._display_mode_changed)
         self.full_range_button = QPushButton("Full range")
         self.full_range_button.setToolTip("Show the full 16-bit range 0–65535.")
         self.full_range_button.clicked.connect(self.full_range)
@@ -923,11 +927,18 @@ class CameraImageWindow(QDialog):
             box.setRange(0, 65535)
             box.setValue(value)
             box.setKeyboardTracking(False)
-        self.limit_apply_button = QPushButton("Apply range")
-        self.limit_apply_button.setToolTip(
-            "Use the typed low/high as a fixed display range. It stays in force for every later "
-            "frame until you choose another mode.")
-        self.limit_apply_button.clicked.connect(self.apply_manual_range)
+        self.limit_low.setAccessibleName("Display minimum")
+        self.limit_high.setAccessibleName("Display maximum")
+        for box in (self.limit_low, self.limit_high):
+            box.editingFinished.connect(self.apply_manual_range)
+        self.display_range_controls = QWidget()
+        range_layout = QGridLayout(self.display_range_controls)
+        range_layout.setContentsMargins(0, 0, 0, 0)
+        range_layout.addWidget(QLabel("Display range"), 0, 0)
+        range_layout.addWidget(self.display_mode, 0, 1)
+        range_layout.addWidget(self.adjust_intensity_button, 0, 2, 1, 2)
+        for column, widget in enumerate((QLabel("Min"), self.limit_low, QLabel("Max"), self.limit_high)):
+            range_layout.addWidget(widget, 1, column)
 
         self.fit_button = QPushButton("Fit")
         self.fit_button.clicked.connect(self.preview.fit_to_window)
@@ -948,13 +959,8 @@ class CameraImageWindow(QDialog):
         self.preview.pixel_hovered.connect(self._show_pixel)
 
         intensity_row = QGridLayout()
-        for column, widget in enumerate((self.full_range_button, self.adjust_intensity_button,
-                                         self.robust_button)):
+        for column, widget in enumerate((self.full_range_button, self.robust_button)):
             intensity_row.addWidget(widget, 0, column)
-        intensity_row.addWidget(self.autoscale_checkbox, 1, 0, 1, 3)
-        for column, widget in enumerate((QLabel("Low"), self.limit_low, QLabel("High"), self.limit_high)):
-            intensity_row.addWidget(widget, 2, column)
-        intensity_row.addWidget(self.limit_apply_button, 3, 0, 1, 3)
         view_row = QHBoxLayout()
         for widget in (self.fit_button, self.zoom_100_button, self.zoom_out_button,
                        self.zoom_in_button, self.zoom_label):
@@ -982,6 +988,7 @@ class CameraImageWindow(QDialog):
         left.addWidget(self.preview_state)
         left.addWidget(self.status)  # the source and frame number of what is shown, above the image
         left.addWidget(self.frame_info)
+        left.addWidget(self.display_range_controls)
         left.addWidget(self.preview, 1)
         left.addLayout(view_row)
         left.addLayout(save_row)
@@ -1029,8 +1036,19 @@ class CameraImageWindow(QDialog):
         if self.isWindow():
             super().done(result)
 
+    def keyPressEvent(self, event) -> None:
+        # Spin editors propagate Enter to QDialog after committing. Do not
+        # also activate a default button (for example Auto once or Save).
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            focus = self.focusWidget()
+            if focus is not None and any(
+                    focus is box or box.isAncestorOf(focus) for box in (self.limit_low, self.limit_high)):
+                event.accept()
+                return
+        super().keyPressEvent(event)
+
     def set_measurement_visible(self, visible: bool) -> None:
-        """Show or hide the display-range, histogram and measurement column (display only)."""
+        """Show or hide the histogram and measurement column (display only)."""
         self.side_panel.setVisible(visible)
 
     # ---------------------------------------------------------- intensity
@@ -1067,6 +1085,7 @@ class CameraImageWindow(QDialog):
     def adjust_intensity(self) -> None:
         limits = self._frame_limits(self.histogram.observed_range)
         if limits is not None:
+            self.display_mode.setCurrentIndex(self.display_mode.findData("manual"))
             self._apply_limits(limits, source="min–max")
 
     def robust_auto(self) -> None:
@@ -1074,26 +1093,34 @@ class CameraImageWindow(QDialog):
         if limits is None:
             self.intensity_status.setText("Robust auto needs a 16-bit frame")
             return
-        self.autoscale_checkbox.setChecked(False)
+        self.display_mode.setCurrentIndex(self.display_mode.findData("manual"))
         self._apply_limits(limits, source=f"robust ±{ROBUST_TAIL_FRACTION * 100:g}%")
 
     def apply_manual_range(self) -> None:
+        if self.display_mode.currentData() != "manual":
+            return
         low, high = self.limit_low.value(), self.limit_high.value()
         if low >= high:
-            self.intensity_status.setText("Range not applied: low must be smaller than high")
             self._apply_limits(self.preview.display_limits, update_preview=False)
+            self.intensity_status.setText("Range not applied: minimum must be smaller than maximum")
+            self.limit_low.setToolTip(self.intensity_status.text())
+            self.limit_high.setToolTip(self.intensity_status.text())
             return
-        self.autoscale_checkbox.setChecked(False)
+        self.limit_low.setToolTip("")
+        self.limit_high.setToolTip("")
         self._apply_limits((low, high), source="fixed")
 
-    def _autoscale_changed(self, checked: bool) -> None:
-        if checked:
-            self._limit_source = "autoscale"
-            self.adjust_intensity()
-            self._limit_source = "autoscale"
+    def _display_mode_changed(self, _index: int) -> None:
+        automatic = self.display_mode.currentData() == "auto"
+        for box in (self.limit_low, self.limit_high):
+            box.setReadOnly(automatic)
+        if automatic:
+            limits = self._frame_limits(self.histogram.observed_range)
+            if limits is not None:
+                self._apply_limits(limits, source="auto")
 
     def full_range(self) -> None:
-        self.autoscale_checkbox.setChecked(False)
+        self.display_mode.setCurrentIndex(self.display_mode.findData("manual"))
         self._apply_limits(None)
 
     def _show_pixel(self, pixel: object) -> None:
@@ -1143,14 +1170,15 @@ class CameraImageWindow(QDialog):
     def show_frame(self, frame: object, status: str) -> None:
         self.histogram.set_frame(frame)
         frame_limits = self._frame_limits(self.histogram.observed_range)
-        limits = frame_limits if self.autoscale_checkbox.isChecked() else self.preview.display_limits
+        automatic = self.display_mode.currentData() == "auto"
+        limits = frame_limits if automatic else self.preview.display_limits
         if frame_limits is None:
             limits = None
         self.preview.set_frame(frame, limits)
         self.measurement.refresh()
         self.adjust_intensity_button.setEnabled(frame_limits is not None)
         self.robust_button.setEnabled(frame_limits is not None)
-        self._apply_limits(limits, update_preview=False)
+        self._apply_limits(limits, update_preview=False, source="auto" if automatic else None)
         self.status.setText(status)
         if isinstance(frame, np.ndarray) and frame.ndim == 2:
             self._frame_description = f"{frame.shape[1]} × {frame.shape[0]} · {frame.dtype}"

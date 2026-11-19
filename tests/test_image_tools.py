@@ -16,6 +16,7 @@ from thermo_acoustic.domain.models import DeviceId, OperatingMode
 from thermo_acoustic.hal.registry import DeviceRegistry
 from thermo_acoustic.ui.main_window import MainWindow
 from thermo_acoustic.ui.widgets import CameraImageWindow
+from thermo_acoustic.ui.saved_frames_window import SavedFramesWindow
 
 
 @pytest.fixture(scope="module")
@@ -25,6 +26,52 @@ def qt_app():
 
 def ramp(rows=40, columns=60) -> np.ndarray:
     return (np.arange(rows)[:, None] * 1000 + np.arange(columns)[None, :]).astype(np.uint16)
+
+
+@pytest.mark.parametrize("viewer_type", [CameraImageWindow, SavedFramesWindow])
+def test_display_mode_and_auto_once_keep_fields_in_sync(qt_app, viewer_type):
+    window = viewer_type()
+    try:
+        window.show()
+        window.set_measurement_visible(False)
+        qt_app.processEvents()
+        assert window.display_range_controls.isVisible()
+        assert not window.side_panel.isVisible()
+        assert not window.adjust_intensity_button.isEnabled()
+        window.display_mode.setCurrentIndex(window.display_mode.findData("auto"))
+        first = np.array([[100, 200], [300, 400]], dtype=np.uint16)
+        original = first.copy()
+        window.show_frame(first, "first")
+        assert window.preview.display_limits == (100, 400)
+        assert (window.limit_low.value(), window.limit_high.value()) == (100, 400)
+        assert window.limit_low.isReadOnly() and window.limit_high.isReadOnly()
+        second = np.array([[1000, 1100], [1200, 1300]], dtype=np.uint16)
+        window.show_frame(second, "second")
+        assert (window.limit_low.value(), window.limit_high.value()) == (1000, 1300)
+        window.adjust_intensity_button.click()
+        assert window.display_mode.currentData() == "manual"
+        assert not window.limit_low.isReadOnly() and not window.limit_high.isReadOnly()
+        window.show_frame(first, "first again")
+        assert window.preview.display_limits == (1000, 1300)
+        assert (window.limit_low.value(), window.limit_high.value()) == (1000, 1300)
+        window.limit_low.setValue(50)
+        window.limit_high.setValue(500)
+        window.limit_high.editingFinished.emit()
+        assert window.preview.display_limits == (50, 500)
+        window.limit_high.setValue(450)
+        window.limit_high.setFocus()
+        QTest.keyClick(window.limit_high, Qt.Key.Key_Return)
+        assert window.preview.display_limits == (50, 450)
+        assert window.isVisible()
+        window.show_frame(second, "manual remains fixed")
+        assert window.preview.display_limits == (50, 450)
+        window.limit_low.setValue(600)
+        window.limit_low.editingFinished.emit()
+        assert window.preview.display_limits == (50, 450)
+        assert (window.limit_low.value(), window.limit_high.value()) == (50, 450)
+        assert np.array_equal(first, original)
+    finally:
+        window.close()
 
 
 # ------------------------------------------------------------------ pure numbers
