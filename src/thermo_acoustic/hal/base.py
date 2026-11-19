@@ -366,6 +366,11 @@ class DeviceWorker(QObject):
             except Exception as exc:
                 errors.append(str(exc))
         finally:
+            # Timers belong to this worker thread. Stop them before its event
+            # loop exits, including when device cleanup fails; later Python
+            # teardown may destroy their wrappers from the UI thread.
+            for timer in self.findChildren(QTimer):
+                timer.stop()
             # Written before `stopped` ends the thread, so the controller reads it
             # only after the thread has finished.
             self.shutdown_error = "; ".join(errors) or None

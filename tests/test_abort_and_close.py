@@ -30,6 +30,57 @@ def pump_events(app, seconds):
         sleep(0.005)
 
 
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_shutdown_stops_worker_timers_without_cross_thread_warnings(cleanup_fails):
+    import os
+    import subprocess
+    import sys
+
+    script = r'''
+import sys, time
+from PySide6.QtCore import QTimer, Qt
+from PySide6.QtWidgets import QApplication
+from thermo_acoustic.application import ApplicationController
+from thermo_acoustic.application.commands import CameraConfigureSnapshotArgs, DeviceCommand, DeviceOperation
+from thermo_acoustic.domain.models import DeviceId, OperatingMode
+from thermo_acoustic.hal.registry import DeviceRegistry
+
+app = QApplication(["shutdown-timers"])
+controller = ApplicationController(DeviceRegistry(), mode=OperatingMode.SIMULATION)
+controller.start()
+for device in (DeviceId.PUMP, DeviceId.CAMERA):
+    controller.submit(DeviceCommand(device, DeviceOperation.CONNECT))
+controller.submit(DeviceCommand(DeviceId.CAMERA, DeviceOperation.CAMERA_CONTINUOUS_CAPTURE,
+                                CameraConfigureSnapshotArgs()))
+deadline = time.monotonic() + 5
+while time.monotonic() < deadline:
+    app.processEvents(); time.sleep(0.01)
+    if controller.statuses()[DeviceId.CAMERA].active:
+        break
+assert controller.statuses()[DeviceId.CAMERA].active
+active_at_stop = []
+for worker in controller.registry.all():
+    worker.stopped.connect(
+        lambda w=worker: active_at_stop.extend(t.isActive() for t in w.findChildren(QTimer)),
+        Qt.DirectConnection)
+if sys.argv[1] == "True":
+    def fail_cleanup():
+        raise RuntimeError("simulated cleanup failure")
+    controller.registry.by_id(DeviceId.PUMP).cleanup_device = fail_cleanup
+errors = controller.shutdown()
+assert not controller.shutdown_pending_devices(), errors
+assert bool(errors) == (sys.argv[1] == "True"), errors
+assert active_at_stop and not any(active_at_stop), active_at_stop
+print("SHUTDOWN_COMPLETE", flush=True)
+'''
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(sys.path), "QT_QPA_PLATFORM": "offscreen"}
+    run = subprocess.run([sys.executable, "-c", script, str(cleanup_fails)],
+                         env=env, capture_output=True, text=True, timeout=30)
+    assert run.returncode == 0, (run.stdout, run.stderr)
+    assert "SHUTDOWN_COMPLETE" in run.stdout
+    assert "Timers cannot be stopped from another thread" not in run.stderr, run.stderr
+
+
 def make_tec_unstable(controller):
     """The simulated TEC reports a temperature far from the target, so stability never arrives."""
     device = controller.registry.by_id(DeviceId.TEC).device
