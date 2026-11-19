@@ -420,7 +420,7 @@ class AD2Worker(DeviceWorker):
 
     def _validate_waveform(self, channels: tuple[Ad2WaveformChannelArgs, ...]) -> None:
         if self._capabilities is None:
-            if any(not 0 <= channel.amplitude_v <= 5 for channel in channels):
+            if any(channel.enabled and not 0 <= channel.amplitude_v <= 5 for channel in channels):
                 raise ValueError("waveform amplitude_v must be within 0..5")
             return
         by_channel = {
@@ -449,6 +449,10 @@ class AD2Worker(DeviceWorker):
                         ("phase_deg", values.fm_phase_deg, node.phase_deg),
                     )
                 for name, value, limits in fields:
+                    # Disabled carriers have no effective amplitude. Experiment
+                    # definitions use zero for an inactive laser channel.
+                    if prefix == "carrier" and name == "amplitude" and not channel.enabled:
+                        continue
                     self._require_float_range(
                         f"waveform CH{channel.channel_index + 1} {prefix} {name}",
                         value,

@@ -329,6 +329,30 @@ def test_success_replaces_persistent_error_feedback(qt_app):
     window.close()
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_ad2_zero_carrier_amplitude_is_allowed_only_when_disabled(qt_app, enabled):
+    del qt_app
+    driver = SimulatedAD2()
+    capabilities = driver.capabilities()
+    for channel in capabilities["waveform_channels"]:
+        channel["carrier"]["amplitude"] = (0.01, 5.0)
+    worker = AD2Worker(lambda: driver)
+    worker.connect_device()
+    worker._capabilities = worker._convert_capabilities(capabilities)
+    args = Ad2ConfigureWaveformArgs(channels=(
+        Ad2WaveformChannelArgs(channel_index=0, amplitude_v=1.0),
+        Ad2WaveformChannelArgs(channel_index=1, enabled=enabled, amplitude_v=0.0),
+    ))
+    if enabled:
+        with pytest.raises(ValueError, match="waveform CH2 carrier amplitude"):
+            worker.configure_waveform(args)
+        assert not worker.state.configured
+    else:
+        applied = worker.configure_waveform(args)
+        assert not applied.channels[1].enabled
+        assert worker.state.configured
+
+
 def test_ad2_zero_trigger_times_bypass_positive_sdk_minimum(qt_app):
     del qt_app
     capabilities = SimulatedAD2().capabilities()
