@@ -68,7 +68,7 @@ class DeviceConnector(QObject):
             return "A count preflight is running"
         return None
 
-    def connect(self, requests: dict[DeviceId, DeviceCommand | str]) -> None:
+    def connect_devices(self, requests: dict[DeviceId, DeviceCommand | str]) -> None:
         """`requests`: one entry per chosen device, either its CONNECT command or a message saying why
         its inputs are not valid. The set and the commands are fixed here; later edits do not change them."""
         if self._active:

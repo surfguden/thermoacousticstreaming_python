@@ -215,7 +215,7 @@ def test_group_connect_cannot_bypass_active_experiment_panic_or_closing(env, blo
         window.prepare_panel._refresh()
         assert not window.prepare_panel.connect_button.isEnabled()
         with pytest.raises(RuntimeError):
-            window.connector.connect({DeviceId.PUMP: window.panels[DeviceId.PUMP].build_connect_command()})
+            window.connector.connect_devices({DeviceId.PUMP: window.panels[DeviceId.PUMP].build_connect_command()})
         assert events == []
     finally:
         controller.experiments._state = "idle"
@@ -248,7 +248,7 @@ def test_second_group_is_refused_while_one_runs_and_the_set_is_fixed_at_start(en
     _choose(window, DeviceId.PUMP)  # changing the selection must not alter the running operation
     assert set(window.connector.outcomes()) == {DeviceId.CAMERA, DeviceId.VALVE}
     with pytest.raises(RuntimeError, match="already running"):
-        window.connector.connect({DeviceId.PUMP: window.panels[DeviceId.PUMP].build_connect_command()})
+        window.connector.connect_devices({DeviceId.PUMP: window.panels[DeviceId.PUMP].build_connect_command()})
     ControlledCamera.release.set()
     wait(lambda: not window.connector.active)
     assert _connection(controller, DeviceId.VALVE) is ConnectionState.CONNECTED

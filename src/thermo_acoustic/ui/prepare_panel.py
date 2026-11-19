@@ -244,7 +244,7 @@ class PreparePanel(QWidget):
             except (TypeError, ValueError) as exc:
                 requests[device] = str(exc)  # reported on this device; the others still connect
         try:
-            self.connector.connect(requests)
+            self.connector.connect_devices(requests)
         except (RuntimeError, ValueError) as exc:
             self._start_error = f"Nothing was started: {exc}"
             self._refresh()
